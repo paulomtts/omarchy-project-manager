@@ -91,8 +91,8 @@ TestCase {
     var canvas = find(v, "graphCanvas")
     var panX = canvas.panX, panY = canvas.panY, zoom = canvas.zoom
     v._handleTouchpadWheel({ x: 30, y: -40 }, { x: 0, y: 0 }, Qt.NoModifier, { x: 100, y: 100 })
-    compare(canvas.panX, panX + 30)
-    compare(canvas.panY, panY - 40)
+    compare(canvas.panX, panX + 30 * v._panGain)
+    compare(canvas.panY, panY - 40 * v._panGain)
     compare(canvas.zoom, zoom)
   }
 
@@ -105,7 +105,7 @@ TestCase {
     v._handleTouchpadWheel({ x: 0, y: 0 }, { x: 0, y: 120 }, Qt.NoModifier, { x: 100, y: 100 })
     compare(canvas.zoom, zoom)
     compare(canvas.panX, panX)
-    compare(canvas.panY, panY + v._wheelNotchPixels)
+    compare(canvas.panY, panY + v._wheelNotchPixels * v._panGain)
   }
 
   function test_a_horizontal_touchpad_slide_without_a_pixel_delta_pans_sideways() {
@@ -114,7 +114,7 @@ TestCase {
     var panX = canvas.panX, panY = canvas.panY, zoom = canvas.zoom
     v._handleTouchpadWheel({ x: 0, y: 0 }, { x: -120, y: 0 }, Qt.NoModifier, { x: 100, y: 100 })
     compare(canvas.zoom, zoom)
-    compare(canvas.panX, panX - v._wheelNotchPixels)
+    compare(canvas.panX, panX - v._wheelNotchPixels * v._panGain)
     compare(canvas.panY, panY)
   }
 
@@ -124,7 +124,7 @@ TestCase {
     var panY = canvas.panY, zoom = canvas.zoom
     v._handleTouchpadWheel({ x: 0, y: 0 }, { x: 0, y: -120 }, Qt.NoModifier, { x: 100, y: 100 })
     compare(canvas.zoom, zoom)
-    compare(canvas.panY, panY - v._wheelNotchPixels)
+    compare(canvas.panY, panY - v._wheelNotchPixels * v._panGain)
   }
 
   // ---- what must NOT change ------------------------------------------------

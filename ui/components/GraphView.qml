@@ -182,6 +182,11 @@ Item {
   // when a touchpad slide reports no pixel delta of its own. A tuning constant.
   readonly property real _wheelNotchPixels: 50
 
+  // How far the canvas moves per pixel of touchpad slide, applied to either
+  // source above. 1 = the content tracks the fingers exactly; higher is
+  // more sensitive. A tuning constant.
+  readonly property real _panGain: 1.8
+
   // The pan delta a touchpad wheel asks for: its own pixel delta when it has a
   // usable one, else its angle delta at _wheelNotchPixels per notch. Both carry
   // the same sign convention (positive = up / away), so the fallback pans the
@@ -207,7 +212,8 @@ Item {
     }
     var delta = view._touchpadPixels(pixelDelta, angleDelta)
     if (delta.x === 0 && delta.y === 0) return
-    canvas._handleWheel(delta, { x: 0, y: 0 }, Qt.NoModifier, point)
+    canvas._handleWheel({ x: delta.x * view._panGain, y: delta.y * view._panGain },
+                        { x: 0, y: 0 }, Qt.NoModifier, point)
   }
 
   // Opt-in tracing of every wheel event that reaches the graph, so the shape a
