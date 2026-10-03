@@ -25,15 +25,18 @@ function indexTree(roots) {
 }
 
 // Descendant-only progress: card's own status never counts, so a "done"
-// parent with still-open children doesn't read as complete.
+// parent with still-open children doesn't read as complete. "merged" counts as
+// done; "canceled" work is out of scope, so it is left out of the total.
 function subtreeCounts(card) {
   var done = 0
   var total = 0
 
   function visit(node) {
     ;(node.children || []).forEach(function(child) {
-      total += 1
-      if (child.status === "done") done += 1
+      if (child.status !== "canceled") {
+        total += 1
+        if (child.status === "done" || child.status === "merged") done += 1
+      }
       visit(child)
     })
   }
@@ -50,13 +53,15 @@ function subtreeMatches(card, query) {
   return (card.children || []).some(function(child) { return subtreeMatches(child, query) })
 }
 
-// The shell theme has no green/orange tokens, so these hues are fixed; todo
+// The shell theme has no green/orange/purple/red tokens, so these hues are fixed; todo
 // (and anything unrecognised) takes the caller's neutral colour so it still
 // follows the theme.
 function statusColor(status, fallback) {
   if (status === "done") return "#7fb069"
   if (status === "blocked") return "#e8954a"
   if (status === "in_progress") return "#5fa8d3"
+  if (status === "merged") return "#9b72cf"
+  if (status === "canceled") return "#d9534f"
   return fallback
 }
 

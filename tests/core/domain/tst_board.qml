@@ -114,6 +114,20 @@ TestCase {
     compare(Board.statusColor("in_progress", "#111111"), "#5fa8d3")
   }
 
+  function test_status_color_merged_is_purple_and_canceled_is_red() {
+    compare(Board.statusColor("merged", "#111111"), "#9b72cf")
+    compare(Board.statusColor("canceled", "#111111"), "#d9534f")
+  }
+
+  function test_subtree_counts_treat_merged_as_done_and_skip_canceled() {
+    var root = makeCard("r", "todo", [
+      makeCard("a", "done"), makeCard("b", "merged"),
+      makeCard("c", "canceled"), makeCard("d", "todo")])
+    var counts = Board.subtreeCounts(root)
+    compare(counts.done, 2)
+    compare(counts.total, 3)
+  }
+
   function test_status_color_falls_back_for_todo_and_unknown() {
     compare(Board.statusColor("todo", "#111111"), "#111111")
     compare(Board.statusColor("weird", "#111111"), "#111111")

@@ -205,7 +205,7 @@ TestCase {
   function test_the_status_wording_and_resolved_cards_are_unchanged() {
     var app = make(); if (!app) return
     app.board.applyTreeData(roots())
-    compare(app.board.statuses.join(","), "todo,in_progress,done")
+    compare(app.board.statuses.join(","), "todo,in_progress,done,merged,canceled")
     compare(app.board.statusText("in_progress"), "In progress")
     compare(app.board.statusText("blocked"), "Blocked")
     compare(app.board.statusText("todo"), "Todo")
@@ -213,6 +213,10 @@ TestCase {
     compare(app.board.statusText("weird"), "weird")
     compare(app.board.statusLabel("in_progress"), "In Progress")
     compare(app.board.statusLabel("todo"), "Todo")
+    compare(app.board.statusLabel("merged"), "Merged")
+    compare(app.board.statusLabel("canceled"), "Canceled")
+    compare(app.board.statusText("merged"), "Merged")
+    compare(app.board.statusText("canceled"), "Canceled")
     compare(app.board.statusLabel("anything"), "Done")
     var known = app.board.resolvedCard("s1")
     compare(known.title, "Story")
