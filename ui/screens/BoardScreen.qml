@@ -76,7 +76,6 @@ Column {
           status: modelData.status
           issueLabel: Board.openIssueLabel(modelData, screen.app.board.issueMap)
           progress: Board.subtreeCounts(modelData)
-          depth: modelData.depth || 0
           runState: screen.hidesRunMarks(modelData) ? null : Runs.cardRunState(screen.app.runs.runs, modelData.id)
           runRollup: screen.hidesRunMarks(modelData) ? null : Runs.rollup(screen.app.runs.runs, { id: modelData.id })
           onActivated: screen.navigator.openCard(modelData.id)
@@ -92,14 +91,13 @@ Column {
     property string status: "todo"
     property string issueLabel: ""
     property var progress: ({ done: 0, total: 0 })
-    property int depth: 0
     // Runs.cardRunState / Runs.rollup for this card, or null for no mark.
     property var runState: null
     property var runRollup: null
-    // Glyph + phase rather than counts: a subtask by depth, or a card its
-    // winning run lists as a subtask (the Board shows roots only).
-    readonly property bool subtaskRun: boardCard.depth >= 2
-      || (!!boardCard.runState && typeof boardCard.runState.phase === "string" && boardCard.runState.phase !== "")
+    // Glyph + phase rather than counts: a card its winning run lists as a
+    // subtask. The Board shows roots only (depth 0), so depth never decides it.
+    readonly property bool subtaskRun: !!boardCard.runState
+      && typeof boardCard.runState.phase === "string" && boardCard.runState.phase !== ""
     signal activated()
 
     hasCursor: cardIndex >= 0 && screen.app.nav.cursorIndex === cardIndex
