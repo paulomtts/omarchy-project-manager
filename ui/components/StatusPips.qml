@@ -31,20 +31,17 @@ Row {
   })
   readonly property bool pulsing: pulse.running
 
-  // What an in-progress pip's opacity follows. 1 whenever nothing is running,
-  // so a stopped animation never leaves a pip faded.
-  property real pulseOpacity: 1
+  // What an in-progress pip's opacity follows: the shared Pulse's level, which
+  // is 1 whenever nothing is running, so a stopped animation never leaves a
+  // pip faded.
+  readonly property real pulseOpacity: pulse.level
 
   spacing: Style.space(4)
   visible: (pips.model || []).length > 0 || pips.more > 0
 
-  SequentialAnimation {
+  Pulse {
     id: pulse
     running: pips.active && pips.visible && pips.hasInProgress
-    loops: Animation.Infinite
-    NumberAnimation { target: pips; property: "pulseOpacity"; from: 1; to: 0.3; duration: 800; easing.type: Easing.InOutSine }
-    NumberAnimation { target: pips; property: "pulseOpacity"; from: 0.3; to: 1; duration: 800; easing.type: Easing.InOutSine }
-    onRunningChanged: if (!running) pips.pulseOpacity = 1
   }
 
   Repeater {

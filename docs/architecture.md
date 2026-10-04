@@ -113,12 +113,26 @@ of one entity, used by the card detail and the issue detail),
 result), `StatusPips` (one status circle per subtask on a story node, the
 overflow as a `+N`; its single pulse animation runs only while the row is
 visible AND holds an in-progress pip, so an idle graph animates nothing),
+`Pulse` (that one fade, shared: `level` swings 1 -> 0.3 -> 1 while the owner
+keeps `running` true and is back at 1 the moment it stops; `StatusPips` and
+`RunBadge` bind their opacity to it instead of declaring a second animation),
+`RunBadge` (an am run state as a glyph in a `Badge` ring -- running ⟳, parked
+⏸, escalated ‼, dead ✖, cancelled ⊘, done ✔, from `runGlyphs.js` -- with a
+subtask's phase beside it, or a parent's non-zero counts such as `⟳ 2 ⏸ 1`
+instead; escalated in `urgent`, never `Board.statusColor`; it pulses only
+while running, visible and `active`),
+`RunRollupBar` (a milestone's or story's run rollup under its title: one
+caption segment per non-zero count in the same glyphs, then `N pending`;
+escalated in `urgent`; hidden when the rollup is null or its total is 0),
+`PhaseTimeline` (one subtask's phases as a single static line such as `spec✔ → plan✔ → implement⟳ → verify· → review·`: done ✔, started ⟳ and failed ✖ from `runGlyphs.js`, pending a local ·; an unknown status shows the bare name, bad entries are skipped and missing or empty `phases` hide it; no colour-only state, no animation),
+`RunIndicator` (the toolbar's run strip beside `MilestoneJobIndicator`: one `ActionButton` per non-zero `running` / `parked` / `attention` prop, written glyph-then-count with no space such as `⟳2 ⏸1 ‼1`, glyphs from `runGlyphs.js` and counts clamped by its `countOf`; attention in `urgent`; hidden when all three are 0; static, no animation; presentation only -- the owner computes the counts, and a click emits `filterRequested(filter)` with `"live"`, `"parked"` or `"attention"` from the Runs filter set `attention` / `live` / `parked` / `all`, `all` being emitted by no segment),
 `Sidebar`, and the views
 `DocumentsView`, `MemoriesView`, `MemoryNoteView`, `GraphView`.
 `Sidebar`'s five nav rows (Board, Graph, Documents, Memories, Issues) each lead with an
 icon glyph drawn in the theme's font; `tests/architecture/test_icon_glyphs.py`
 checks every glyph literal in `ui/` and `vendor/` against the installed Nerd
 Fonts, because a glyph the font does not have renders as an empty box.
+`Sidebar.runsAttention` (int, default 0; the owner's escalated-plus-dead run count) derives `runsAttentionText` (`‼N` from `runGlyphs.js` when N > 0, otherwise empty), and `NavRow.countText` draws such a count after a row's label in `urgent` as `navCount<Section>`; no current row sets it, and the Runs row (story 5.x) binds `countText: sidebar.runsAttentionText`.
 `ui/screens/DocumentsToolbar.qml` is the Documents half of the panel's fixed
 toolbar - the category chips of the list, and the path and type picker of an
 open document - so only the document body scrolls.
