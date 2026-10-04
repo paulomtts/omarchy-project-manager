@@ -87,7 +87,8 @@ card mapping must still hold (see S4, item 5).
 ## Architecture
 
 - `core/domain/runs.js` gains `dispatchPlan(card)` (which command and flags a card
-  maps to, or why it can't be dispatched), `dispatchDefaults(project, card)`,
+  maps to, or why it can't be dispatched: a card whose brd status is `done`,
+  `merged`, `canceled` or `archived` is refused with that reason), `dispatchDefaults(project, card)`,
   `validateDispatch(form)` and `previewSummary(dryRunData)`.
 - `core/backend/runs/dispatch-preview.py` — runs the `--dry-run` command and prints
   its envelope as one JSON line. Latest run wins via `HelperRunner`.
@@ -109,10 +110,11 @@ card mapping must still hold (see S4, item 5).
   `start-run.py`. Store-to-store wiring stays in `App.qml` (store must not import
   siblings): on `started` the navigation push to Run detail is a signal the
   `Navigator` handles.
-- **Per-project dispatch settings** (verify commands, prefix history, parallelism,
-  confirm setting) live in `viewer-state.py`'s file next to the remembered
-  project, under a `dispatch` key per project root; S2's Resume reads the same
-  verify set. One helper subcommand each for `get-dispatch` and `set-dispatch`.
+- **Per-project dispatch settings** (prefix history, parallelism, confirm
+  setting) extend the per-project run settings that the controls milestone (S2,
+  subtask 2.2) adds to `viewer-state.py` (`get-run-settings` /
+  `set-run-settings`, which already hold the verify commands that S2's Resume
+  reads). S3 adds fields to that store; it does not create a second one.
 - UI: `ui/components/DispatchDialog.qml` (built on `ModalCard`, `ActionButton`,
   `Chip`; the verify list is a small repeater, no new shared component unless a
   second user appears), a **Dispatch** button in `CardDetailScreen` and the
