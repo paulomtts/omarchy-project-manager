@@ -224,8 +224,6 @@ def test_am_does_not_inherit_stdin(world):
     assert json.loads(lines[0]) == {"ok": True, "data": {"stdout": ""}}
 
 
-
-
 # --- bad output, am missing, usage, catch-all ---------------------------------
 
 @pytest.mark.parametrize("text,exit_code", [
@@ -240,6 +238,8 @@ def test_non_json_output_is_am_bad_output(world, text, exit_code):
     assert out["ok"] is False
     assert out["error"]["type"] == "AmBadOutput"
     assert "am logs" in out["error"]["message"]
+    # am's exit code is named in the message, so a crash is told from a bad print.
+    assert "(exit %d)" % exit_code in out["error"]["message"]
 
 
 @pytest.mark.parametrize("text", [
@@ -258,6 +258,7 @@ def test_non_object_or_no_ok_is_am_bad_output(world, text):
     assert out["ok"] is False
     assert out["error"]["type"] == "AmBadOutput"
     assert "am logs" in out["error"]["message"]
+    assert "(exit 0)" in out["error"]["message"]
 
 
 def test_am_missing(world):
@@ -289,7 +290,7 @@ def test_am_cannot_start_is_helper_error(world):
     assert code == 0
     assert out["ok"] is False
     assert out["error"]["type"] == "HelperError"
-    assert out["error"]["message"]
+    assert out["error"]["message"].startswith("The logs snapshot failed: ")
 
 
 def load_helper():
@@ -316,3 +317,4 @@ def test_am_timeout_is_helper_error(world, monkeypatch, capsys):
     out = json.loads(lines[0])
     assert out["ok"] is False
     assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The logs snapshot failed: ")
