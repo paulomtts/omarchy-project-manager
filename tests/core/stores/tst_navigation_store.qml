@@ -168,11 +168,10 @@ TestCase {
     compare(n.dropdownCursor, 0)
   }
 
-  // An open run goes back to the Runs list unless a card's RUNS row opened it.
+  // An open run goes back to the Runs list unless a card's RUNS row opened it
+  // (Navigator sets "entry" then; tst_navigator.qml covers that path).
   function test_a_run_returns_to_the_runs_list_by_default() {
     var n = make(); if (!n) return
     compare(n.runReturnMode, "runs")
-    n.runReturnMode = "entry"
-    compare(n.runReturnMode, "entry")
   }
 }
