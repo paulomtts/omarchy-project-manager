@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import "../../core/domain/board.js" as Board
 import "../../core/domain/runs.js" as Runs
 import "../components" as UI
 import "../theme" as T
@@ -33,7 +34,7 @@ Item {
                                                                graphScreen.app.runs.runs, graphScreen.app.runs.amStatus)
 
   function hidesRunMarks(status) {
-    return status === "merged" || status === "canceled" || status === "archived"
+    return Board.isClosedStatus(status)
   }
 
   // { marks: id -> Runs.cardRunState, rollups: id -> Runs.rollup, ringed: [pip id] }.

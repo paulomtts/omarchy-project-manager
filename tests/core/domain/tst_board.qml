@@ -128,6 +128,15 @@ TestCase {
     compare(counts.total, 3)
   }
 
+  function test_is_closed_status_names_the_statuses_brd_has_closed() {
+    compare(Board.isClosedStatus("merged"), true)
+    compare(Board.isClosedStatus("canceled"), true)
+    compare(Board.isClosedStatus("archived"), true, "should brd ever report it")
+    var open = ["todo", "in_progress", "done", "blocked", "cancelled", "", null, undefined, 5, {}]
+    for (var i = 0; i < open.length; i++)
+      compare(Board.isClosedStatus(open[i]), false, "open " + i)
+  }
+
   function test_status_color_falls_back_for_todo_and_unknown() {
     compare(Board.statusColor("todo", "#111111"), "#111111")
     compare(Board.statusColor("weird", "#111111"), "#111111")

@@ -30,7 +30,7 @@ Column {
   readonly property bool amMissing: screen.app.runs.amStatus === "missing"
 
   function hidesRunMarks(card) {
-    return screen.amMissing || !card || card.status === "merged" || card.status === "canceled" || card.status === "archived"
+    return screen.amMissing || !card || Board.isClosedStatus(card.status)
   }
 
   UI.ThemedText {

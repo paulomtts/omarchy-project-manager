@@ -65,6 +65,13 @@ function statusColor(status, fallback) {
   return fallback
 }
 
+// brd has closed this card's work: merged or canceled (or archived, should brd
+// ever report it). The one list the screens gate am run marks on (a visibility
+// rule only, never a run state) and Run detail dims its rows by.
+function isClosedStatus(status) {
+  return status === "merged" || status === "canceled" || status === "archived"
+}
+
 // Depth in the brd hierarchy: milestone > story > subtask.
 function kindLabel(depth) {
   if (typeof depth !== "number" || depth < 0) return "Card"

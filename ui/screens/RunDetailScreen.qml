@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import "../../core/domain/board.js" as Board
 import "../../core/domain/runs.js" as Runs
 import "../components/runGlyphs.js" as RunGlyphs
 import "../components" as UI
@@ -76,7 +77,7 @@ Column {
   // brd has closed this card: it is listed dimmed, never hidden.
   function isClosed(id) {
     var card = screen.cardOf(id)
-    return !!card && (card.status === "merged" || card.status === "canceled" || card.status === "archived")
+    return !!card && Board.isClosedStatus(card.status)
   }
 
   function glyphOf(status) { return RunGlyphs.glyphOf(Runs.glyphStateOf(status)) }
