@@ -8,8 +8,11 @@ its SQLite is never read. Skipped when am is absent.
 """
 import json
 import os
+import queue
 import shutil
 import subprocess
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -76,6 +79,36 @@ def expected_events():
     return events
 
 
+FOLLOW_TIMEOUT = 10
+
+
+def read_lines(stream, count, timeout=FOLLOW_TIMEOUT):
+    """The first `count` lines of `stream`, parsed as JSON.
+
+    A daemon thread pumps lines into a queue and every get is bounded by one
+    shared deadline, so an am that goes silent or exits early fails the test
+    with what it did print instead of hanging the suite.
+    """
+    lines = queue.Queue()
+
+    def pump():
+        try:
+            for line in stream:
+                lines.put(line)
+        except (OSError, ValueError):
+            return  # the pipe was closed under us once the test is done
+
+    threading.Thread(target=pump, daemon=True).start()
+    got = []
+    deadline = time.monotonic() + timeout
+    while len(got) < count:
+        try:
+            got.append(lines.get(timeout=max(deadline - time.monotonic(), 0.01)))
+        except queue.Empty:
+            pytest.fail(f"am printed {len(got)} of {count} lines within {timeout}s: {got!r}")
+    return [json.loads(line) for line in got]
+
+
 def test_runs_with_no_data_dir_is_an_empty_list(am):
     assert not am.data.exists(), "precondition: no am data dir yet"
     proc = am.run("runs", "--repo-dir", am.repo)
@@ -105,3 +138,30 @@ def test_watch_all_returns_the_events_envelope_with_journal_line_keys(am):
         assert set(event) == EVENT_KEYS, event
         assert event["ts"].endswith("Z"), event
     assert payload == {"ok": True, "data": {"events": expected_events()}}
+
+
+def test_watch_all_follow_prints_a_hello_line_then_journal_lines(am):
+    write_journals(am.data)
+    expected = expected_events()
+    with subprocess.Popen(["am", "watch", "--all", "--follow"], env=am.env,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) as proc:
+        try:
+            # --follow never exits on its own: read only the lines expected.
+            hello, *events = read_lines(proc.stdout, 1 + len(expected))
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    assert hello["event"] == "watch", hello
+    assert hello["schema"] == 1, hello
+    assert isinstance(hello["am"], str) and hello["am"], hello
+    assert isinstance(hello["runs_dir"], str), hello
+    # Hermetic: the stream reads the throwaway data dir, not the user's.
+    assert hello["runs_dir"] == str(am.data / "agent-manager" / "runs"), hello
+    for event in events:
+        assert set(event) == EVENT_KEYS, event
+        assert event["ts"].endswith("Z"), event
+    assert events == expected
