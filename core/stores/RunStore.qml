@@ -21,6 +21,7 @@ Scope {
   property string selectedRunId: ""   // set by the UI
   property string amStatus: "ok"      // "ok" | "missing" | "schema" | "error"
   property string lastError: ""
+  property bool stale: false          // the last good snapshot is over 30 s old while active
 
   // A watch has been started since the last activation or project switch:
   // later snapshots never start another (the helper picks up the project's new
@@ -33,6 +34,7 @@ Scope {
   readonly property alias snapshotRunner: snapshotRunner
   readonly property alias debounceTimer: debounceTimer
   readonly property alias livenessTimer: livenessTimer
+  readonly property alias staleTimer: staleTimer
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -56,9 +58,11 @@ Scope {
     else store.stopLive()
   }
 
-  // The panel opened: fetch now; the first good snapshot starts the watch.
+  // The panel opened: fetch now; the first good snapshot starts the watch, and
+  // the stale clock counts from now.
   function startLive() {
     store.watchTried = false
+    store.restartStale()
     store.refresh()
   }
 
@@ -67,6 +71,16 @@ Scope {
   function stopLive() {
     store.stopWatch()
     debounceTimer.stop()
+    staleTimer.stop()
+    store.stale = false
+  }
+
+  // Nothing is stale yet; the 30 s clock starts again while there is something
+  // to watch.
+  function restartStale() {
+    store.stale = false
+    if (store.active && store.project !== "") staleTimer.restart()
+    else staleTimer.stop()
   }
 
   function stopWatch() {
@@ -104,6 +118,7 @@ Scope {
   // A different project: nothing the old one left behind may show, and its
   // runs are fetched straight away.
   function projectSwitched() {
+    store.restartStale()
     store.runs = []
     store.selectedRunId = ""
     store.lastError = ""
@@ -161,7 +176,11 @@ Scope {
       store.runs = out
       store.amStatus = "ok"
       store.lastError = ""
-      if (store.active && !store.watchTried) store.startWatch()
+      store.stale = false
+      if (store.active) {
+        staleTimer.restart()
+        if (!store.watchTried) store.startWatch()
+      }
       return
     }
     if (envelope !== null && envelope.ok === false) {
@@ -210,6 +229,15 @@ Scope {
     repeat: true
     running: store.active && store.hasRunningRun
     onTriggered: store.refresh()
+  }
+
+  // Fires 30 s after the last good snapshot (or the activation) while open.
+  Timer {
+    id: staleTimer
+    objectName: "staleTimer"
+    interval: 30000
+    repeat: false
+    onTriggered: store.stale = true
   }
 
   // What the watch Process aliases read; kept apart so consumers cannot write it.

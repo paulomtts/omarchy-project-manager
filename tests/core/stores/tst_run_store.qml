@@ -532,4 +532,93 @@ TestCase {
     compare(fresh.command[3], "a")
     compare(store.watching, true)
   }
+
+  // ---- stale
+
+  // A timer firing on its own: a one-shot timer has stopped by the time its
+  // triggered() is emitted.
+  function fire(timer) {
+    if (!timer.repeat) timer.stop()
+    timer.triggered()
+  }
+
+  function test_stale_timer_runs_only_while_active() {
+    var store = makeWithProject(rootA); if (!store) return
+    var t = store.staleTimer
+    compare(t.objectName, "staleTimer")
+    compare(t.interval, 30000)
+    compare(t.repeat, false)
+    compare(t.running, false, "no stale clock while the panel is closed")
+    reply(store.snapshotRunner.current, okReply([]), 0)
+    compare(t.running, false, "a good snapshot while closed starts no clock")
+    store.active = true
+    compare(t.running, true, "opening the panel starts the clock")
+    compare(store.stale, false)
+  }
+
+  function test_stale_after_timer_fires() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    compare(store.stale, false)
+    compare(store.staleTimer.running, true, "a good snapshot (re)starts the clock")
+    fire(store.staleTimer)
+    compare(store.stale, true)
+    compare(store.runs.length, 1, "stale is not a run state: the runs are untouched")
+    compare(store.runs[0].status, "done")
+  }
+
+  function test_good_snapshot_clears_stale() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    fire(store.staleTimer)
+    compare(store.stale, true)
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+    compare(store.stale, false)
+    compare(store.staleTimer.running, true, "the clock counts from this snapshot")
+  }
+
+  function test_failed_snapshot_keeps_stale_timer_running() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var failure = '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}\n'
+    store.refresh()
+    reply(store.snapshotRunner.current, failure, 1)
+    compare(store.staleTimer.running, true, "a failed snapshot leaves the clock running")
+    compare(store.stale, false)
+    fire(store.staleTimer)
+    compare(store.stale, true)
+    store.refresh()
+    reply(store.snapshotRunner.current, failure, 1)
+    compare(store.stale, true, "a failed snapshot does not clear stale")
+    compare(store.staleTimer.running, false, "nor restart the clock")
+  }
+
+  function test_stale_cleared_on_deactivate() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    fire(store.staleTimer)
+    compare(store.stale, true)
+    store.active = false
+    compare(store.stale, false)
+    compare(store.staleTimer.running, false)
+    compare(store.runs.length, 1)
+  }
+
+  function test_project_switch_resets_stale() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    fire(store.staleTimer)
+    compare(store.stale, true)
+    store.project = rootB
+    compare(store.stale, false, "A's snapshot age says nothing about B")
+    compare(store.staleTimer.running, true, "B's clock starts now")
+  }
+
+  function test_snapshot_landing_after_deactivation_starts_nothing() {
+    var store = activeStore(rootA); if (!store) return
+    var proc = store.snapshotRunner.current
+    store.active = false
+    reply(proc, okReply([entry("a", "started", true)]), 0)
+    compare(store.runs.length, 1, "the runs are still applied")
+    verify(!store.watchProc, "no watch for a closed panel")
+    compare(store.watching, false)
+    compare(store.staleTimer.running, false)
+    compare(store.livenessTimer.running, false)
+  }
 }
