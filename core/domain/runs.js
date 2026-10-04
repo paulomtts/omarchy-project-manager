@@ -621,3 +621,58 @@ function attemptStatus(run, cardId, phase, attempt) {
   }
   return ""
 }
+
+// ---- Run controls (S2 1.1) ---------------------------------------------------------------
+//
+// Which of pause / resume / cancel a run allows, and the sentence for an am
+// control error. Pure and never throwing, like the rest of this file. Whether a
+// request is already outstanding is the store's business, not these functions'.
+
+var _REASON_INTEGRATE = "Integrate is running; it cannot be paused or cancelled"
+var _REASON_FINISHED = "The run has finished"
+var _REASON_UNKNOWN = "The run's state is unknown"
+var _REASON_PAUSE_NOT_RUNNING = "Only a running run can be paused"
+var _REASON_RESUME_RUNNING = "The run is still running"
+var _REASON_RESUME_CANCELLED = "A cancelled run cannot be resumed"
+var _REASON_CANCEL_CANCELLED = "The run is already cancelled"
+
+// A fresh {enabled, reason}: enabled exactly when there is no reason.
+function _action(reason) { return { enabled: reason === "", reason: reason } }
+
+// Integrate: the run holds a lease (an object) that is not accepting requests.
+// With no lease, accepting is unknown, so the run is not treated as in Integrate.
+function _inIntegrate(run) {
+  return _isObject(run) && _isObject(run.lease) && run.lease.accepting !== true
+}
+
+// {pause, resume, cancel}, each a fresh {enabled, reason}; reason is "" when
+// enabled. Pause needs a running run outside Integrate; resume needs dead,
+// parked or escalated and never looks at accepting; cancel needs a run that has
+// not finished and is not in Integrate. The state's reason wins over Integrate's.
+function controls(run) {
+  var state = runState(run)
+  var integrate = _inIntegrate(run)
+  var pause, resume, cancel
+  if (state === "running") {
+    pause = integrate ? _REASON_INTEGRATE : ""
+    resume = _REASON_RESUME_RUNNING
+    cancel = integrate ? _REASON_INTEGRATE : ""
+  } else if (state === "dead" || state === "parked" || state === "escalated") {
+    pause = _REASON_PAUSE_NOT_RUNNING
+    resume = ""
+    cancel = integrate ? _REASON_INTEGRATE : ""
+  } else if (state === "cancelled") {
+    pause = _REASON_FINISHED
+    resume = _REASON_RESUME_CANCELLED
+    cancel = _REASON_CANCEL_CANCELLED
+  } else if (state === "done") {
+    pause = _REASON_FINISHED
+    resume = _REASON_FINISHED
+    cancel = _REASON_FINISHED
+  } else {
+    pause = _REASON_UNKNOWN
+    resume = _REASON_UNKNOWN
+    cancel = _REASON_UNKNOWN
+  }
+  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel) }
+}

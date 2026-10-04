@@ -1102,4 +1102,130 @@ TestCase {
     for (var j = 0; j < badRuns.length; j++)
       compare(Runs.runsTouching(badRuns[j], "m1").length, 0, "bad runs " + j)
   }
+
+  // ---- S2 1.1: run controls ----------------------------------------------------------------
+
+  readonly property string ctlIntegrate: "Integrate is running; it cannot be paused or cancelled"
+  readonly property string ctlFinished: "The run has finished"
+  readonly property string ctlUnknown: "The run's state is unknown"
+  readonly property string ctlPauseNotRunning: "Only a running run can be paused"
+  readonly property string ctlResumeRunning: "The run is still running"
+  readonly property string ctlResumeCancelled: "A cancelled run cannot be resumed"
+  readonly property string ctlCancelCancelled: "The run is already cancelled"
+
+  // mkRun with the lease's accepting flag set; live === null still means no lease.
+  function ctlRun(status, live, accepting) {
+    var r = mkRun("rc", status, live)
+    if (r.lease !== null) r.lease.accepting = accepting
+    return r
+  }
+
+  // One action of a controls() result: exactly {enabled, reason}; enabled iff reason is "".
+  function checkAction(a, reason, label) {
+    compare(Object.keys(a).sort().join(","), "enabled,reason", label + " keys")
+    compare(a.enabled, reason === "", label + " enabled")
+    compare(a.reason, reason, label + " reason")
+  }
+
+  // A whole controls() result; "" means that action is enabled.
+  function checkControls(c, pause, resume, cancel, label) {
+    compare(Object.keys(c).sort().join(","), "cancel,pause,resume", label + " keys")
+    checkAction(c.pause, pause, label + " pause")
+    checkAction(c.resume, resume, label + " resume")
+    checkAction(c.cancel, cancel, label + " cancel")
+  }
+
+  function test_controls_shape() {
+    var run = ctlRun("started", true, true)
+    var a = Runs.controls(run)
+    checkControls(a, "", ctlResumeRunning, "", "running")
+    var b = Runs.controls(run)
+    verify(a !== b, "a fresh result per call")
+    verify(a.pause !== b.pause && a.resume !== b.resume && a.cancel !== b.cancel, "fresh actions per call")
+    verify(a.pause !== a.resume && a.resume !== a.cancel && a.pause !== a.cancel, "no action shared within a result")
+    a.pause.enabled = false
+    a.pause.reason = "changed"
+    a.resume.reason = "changed"
+    delete a.cancel
+    checkControls(Runs.controls(run), "", ctlResumeRunning, "", "after mutating an earlier result")
+
+    var u = Runs.controls(undefined)
+    verify(u.pause !== u.resume && u.resume !== u.cancel && u.pause !== u.cancel, "no action shared in an unknown result")
+    u.pause.reason = "changed"
+    u.resume.enabled = true
+    checkControls(Runs.controls(null), ctlUnknown, ctlUnknown, ctlUnknown, "after mutating an unknown result")
+
+    var d = Runs.controls(ctlRun("done", null, true))
+    d.cancel.reason = ""
+    d.cancel.enabled = true
+    checkControls(Runs.controls(ctlRun("done", null, true)), ctlFinished, ctlFinished, ctlFinished, "after mutating a done result")
+  }
+
+  function test_controls_running() {
+    compare(Runs.runState(ctlRun("started", true, true)), "running", "fixture")
+    checkControls(Runs.controls(ctlRun("started", true, true)), "", ctlResumeRunning, "", "running, accepting")
+    checkControls(Runs.controls(ctlRun("started", true, false)), ctlIntegrate, ctlResumeRunning, ctlIntegrate,
+                  "running, Integrate")
+  }
+
+  function test_controls_resumable_states() {
+    var states = [["started", "dead"], ["stopped", "parked"], ["escalated", "escalated"]]
+    for (var i = 0; i < states.length; i++) {
+      var status = states[i][0], label = states[i][1]
+      compare(Runs.runState(ctlRun(status, false, true)), label, label + " fixture")
+      compare(Runs.runState(ctlRun(status, null, true)), label, label + " fixture, no lease")
+      checkControls(Runs.controls(ctlRun(status, false, true)), ctlPauseNotRunning, "", "", label + ", accepting")
+      checkControls(Runs.controls(ctlRun(status, false, false)), ctlPauseNotRunning, "", ctlIntegrate,
+                    label + ", Integrate")
+      checkControls(Runs.controls(ctlRun(status, null, false)), ctlPauseNotRunning, "", "",
+                    label + ", no lease is not Integrate")
+    }
+  }
+
+  function test_controls_finished_states() {
+    var leases = [[false, true, "accepting"], [false, false, "Integrate"], [true, false, "live, Integrate"],
+                  [null, true, "no lease"]]
+    for (var i = 0; i < leases.length; i++) {
+      var live = leases[i][0], accepting = leases[i][1], label = leases[i][2]
+      compare(Runs.runState(ctlRun("cancelled", live, accepting)), "cancelled", "fixture " + label)
+      checkControls(Runs.controls(ctlRun("cancelled", live, accepting)),
+                    ctlFinished, ctlResumeCancelled, ctlCancelCancelled, "cancelled, " + label)
+      compare(Runs.runState(ctlRun("done", live, accepting)), "done", "fixture " + label)
+      checkControls(Runs.controls(ctlRun("done", live, accepting)),
+                    ctlFinished, ctlFinished, ctlFinished, "done, " + label)
+    }
+  }
+
+  function test_controls_unknown_and_garbage() {
+    var runs = [ctlRun("", true, true), ctlRun("weird", true, false), ctlRun("STARTED", true, true),
+                ctlRun("weird", null, true), undefined, null, 5, "x", {}, [], Object.create(null),
+                Runs.normalizeRun(undefined)]
+    for (var i = 0; i < runs.length; i++)
+      checkControls(Runs.controls(runs[i]), ctlUnknown, ctlUnknown, ctlUnknown, "unknown " + i)
+
+    // A lease that is not an object counts as no lease: never Integrate.
+    var arrayLease = []
+    arrayLease.accepting = false
+    var badLeases = ["x", 5, [], arrayLease]
+    for (var j = 0; j < badLeases.length; j++) {
+      checkControls(Runs.controls({ status: "stopped", lease: badLeases[j] }), ctlPauseNotRunning, "", "",
+                    "parked, lease " + j)
+      checkControls(Runs.controls({ status: "started", lease: badLeases[j] }), ctlPauseNotRunning, "", "",
+                    "dead, lease " + j)
+    }
+  }
+
+  function test_controls_from_normalized() {
+    function raw(lease) {
+      return { status: { run: { id: "r", status: "started" }, control: { lease: lease } } }
+    }
+    var stringTrue = Runs.normalizeRun(raw({ pid: 1, live: true, accepting: "true" }))
+    compare(stringTrue.lease.accepting, false, "normalised to false")
+    checkControls(Runs.controls(stringTrue), ctlIntegrate, ctlResumeRunning, ctlIntegrate, "accepting \"true\"")
+    checkControls(Runs.controls(Runs.normalizeRun(raw({ pid: 1, live: true }))),
+                  ctlIntegrate, ctlResumeRunning, ctlIntegrate, "accepting missing")
+    checkControls(Runs.controls(Runs.normalizeRun(raw({ pid: 1, live: true, accepting: true }))),
+                  "", ctlResumeRunning, "", "accepting true")
+    checkControls(Runs.controls(Runs.normalizeRun(raw(null))), ctlPauseNotRunning, "", "", "no lease: dead")
+  }
 }
