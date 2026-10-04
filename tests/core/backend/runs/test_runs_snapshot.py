@@ -305,10 +305,14 @@ def test_am_error_envelope_passthrough_status(world):
     ("runs", '{"ok": true, "data": {"runs": [{"workflow": "m", "status": "done"}]}}\n', 0),
     ("runs", '{"ok": true, "data": {"runs": [{"id": "r1"}]}}\n', 0),
     ("runs", '{"ok": true, "data": {"runs": ["r1"]}}\n', 0),
+    ("runs", '{"ok": true, "data": {"runs": [{"id": "", "status": "done"}]}}\n', 0),
+    ("runs", '{"ok": true, "data": {"runs": [{"id": 7, "status": "done"}]}}\n', 0),
+    ("runs", '{"ok": true, "data": {"runs": [{"id": "r1", "status": null}]}}\n', 0),
     ("status", '{"ok": true, "data": [1]}\n', 0),
     ("status", "Traceback (most recent call last):\n  boom\n", 1),
 ], ids=["not-json", "not-object", "crash-empty", "no-ok", "runs-not-list",
         "data-not-object", "run-without-id", "run-without-status", "run-not-object",
+        "run-empty-id", "run-id-not-string", "run-status-not-string",
         "status-data-not-object", "status-traceback"])
 def test_am_bad_output(world, target, text, exit_code):
     if target == "runs":
