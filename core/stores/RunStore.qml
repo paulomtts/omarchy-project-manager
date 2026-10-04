@@ -31,6 +31,7 @@ Scope {
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
+  readonly property alias debounceTimer: debounceTimer
 
   // Asks for a fresh snapshot of the current project. A newer call replaces an
   // older one (the runner's latest-wins rule).
@@ -63,6 +64,17 @@ Scope {
     watchState.proc = proc
     watchState.watching = true
     proc.running = true
+  }
+
+  // One stdout line of the watch. {"changed": [...]} (re)starts the debounce;
+  // anything else -- blank, not JSON, not an object -- is ignored. Never throws.
+  function watchLine(proc, data) {
+    var text = String(data || "").trim()
+    if (text === "") return
+    var value = null
+    try { value = JSON.parse(text) } catch (e) { return }
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return
+    if (Array.isArray(value.changed)) debounceTimer.restart()
   }
 
   // A different project: nothing the old one left behind may show, and its
@@ -157,6 +169,15 @@ Scope {
     onFinished: function(stdout, exitCode) { store.applySnapshot(stdout, exitCode) }
   }
 
+  // A burst of changed lines costs one snapshot.
+  Timer {
+    id: debounceTimer
+    objectName: "debounceTimer"
+    interval: 250
+    repeat: false
+    onTriggered: store.refresh()
+  }
+
   // What the watch Process aliases read; kept apart so consumers cannot write it.
   QtObject {
     id: watchState
@@ -171,7 +192,7 @@ Scope {
     Process {
       id: wp
       objectName: "watchProc"
-      stdout: SplitParser {}
+      stdout: SplitParser { onRead: function(data) { store.watchLine(wp, data) } }
       stderr: StdioCollector { waitForEnd: true }
     }
   }

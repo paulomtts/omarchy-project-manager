@@ -409,4 +409,48 @@ TestCase {
     compare(w.running, true)
     compare(w.command.length, 4, "its argv is not rewritten: the helper picks up new runs itself")
   }
+
+  // ---- debounce
+
+  // One stdout line of a watch: an object is sent as its JSON, a string as is.
+  function sendLine(proc, value) {
+    proc.stdout.read(typeof value === "string" ? value : JSON.stringify(value))
+  }
+
+  function test_changed_line_starts_debounce() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var t = store.debounceTimer
+    compare(t.objectName, "debounceTimer")
+    compare(t.interval, 250)
+    compare(t.repeat, false)
+    compare(t.running, false, "idle until a line arrives")
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, { changed: ["a"] })
+    compare(t.running, true)
+    compare(store.snapshotRunner.seq, seq, "a line alone launches no snapshot")
+  }
+
+  function test_burst_coalesces_to_one_snapshot() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, { changed: ["a"] })
+    sendLine(store.watchProc, { changed: ["b"] })
+    sendLine(store.watchProc, '{"changed": ["a", "c"]}')
+    compare(store.snapshotRunner.seq, seq, "no snapshot during the burst")
+    store.debounceTimer.triggered()
+    compare(store.snapshotRunner.seq, seq + 1, "the burst cost exactly one snapshot")
+    compare(store.snapshotRunner.current.command[1], "/plugin/core/backend/runs/runs-snapshot.py")
+  }
+
+  function test_garbage_watch_line_ignored() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var lines = ["", "   ", "not json {", "[]", "null", "3", '"changed"', "{}", '{"hello": 1}', '{"changed": "a"}', '{"changed": null}']
+    for (var i = 0; i < lines.length; i++) {
+      sendLine(store.watchProc, lines[i])
+      compare(store.debounceTimer.running, false, JSON.stringify(lines[i]) + " is ignored")
+    }
+    compare(store.watching, true, "the watch keeps running")
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+  }
 }
