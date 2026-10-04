@@ -256,3 +256,17 @@ function escalationReason(run) {
   }
   return "escalated"
 }
+
+// Display text for an am error: the {ok:false, error:{type, message}} envelope or the bare
+// {type, message}. "type: message", either alone, or "unknown error". ok:true gives "".
+function errorText(error) {
+  if (!_isObject(error)) return "unknown error"
+  if (error.ok === true) return ""
+  var e = _isObject(error.error) ? error.error : error
+  var type = _textOf(e.type)
+  var message = _textOf(e.message)
+  if (type !== "" && message !== "") return type + ": " + message
+  if (type !== "") return type
+  if (message !== "") return message
+  return "unknown error"
+}

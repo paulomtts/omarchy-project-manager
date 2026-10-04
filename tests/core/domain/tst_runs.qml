@@ -668,4 +668,29 @@ TestCase {
                { tree: { subtasks: [null, { phases: "x" }, { phases: [null, 5] }] }, rows: [null] }]
     for (var i = 0; i < bad.length; i++) compare(Runs.escalationReason(bad[i]), "escalated", "garbage " + i)
   }
+
+  // ---- 1.2: error text --------------------------------------------------------------------
+
+  function test_error_text() {
+    compare(Runs.errorText({ ok: false, error: { type: "LeaseHeld", message: "run r1 is held by pid 42" } }),
+            "LeaseHeld: run r1 is held by pid 42", "full envelope")
+    compare(Runs.errorText({ type: "NotFound", message: "no such run" }), "NotFound: no such run", "bare error")
+    compare(Runs.errorText({ ok: false, error: { type: "Timeout" } }), "Timeout", "type only")
+    compare(Runs.errorText({ ok: false, error: { message: "boom" } }), "boom", "message only")
+    compare(Runs.errorText({ ok: false, error: { type: "  ", message: "  boom  " } }), "boom", "blank type, trimmed")
+    compare(Runs.errorText({ ok: false, error: { type: " Busy ", message: " try later " } }), "Busy: try later", "trimmed")
+    compare(Runs.errorText({ ok: false, error: { type: 500, message: 7 } }), "500: 7", "coerced with String")
+    compare(Runs.errorText({ ok: false, error: {} }), "unknown error", "neither")
+    compare(Runs.errorText({ ok: false }), "unknown error", "no error key")
+    compare(Runs.errorText({ ok: false, error: "x" }), "unknown error", "string error")
+    compare(Runs.errorText({ ok: false, error: { type: null, message: undefined } }), "unknown error", "null fields")
+    compare(Runs.errorText({ ok: true, data: {} }), "", "ok envelope")
+    compare(Runs.errorText({ ok: true, error: { type: "X", message: "y" } }), "", "ok wins")
+
+    var bad = [undefined, null, "boom", 5, true, []]
+    for (var i = 0; i < bad.length; i++) compare(Runs.errorText(bad[i]), "unknown error", "garbage " + i)
+
+    var weird = Object.create(null)
+    compare(Runs.errorText({ ok: false, error: { type: weird, message: "m" } }), "m", "unconvertible type does not throw")
+  }
 }
