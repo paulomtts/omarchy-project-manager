@@ -8,14 +8,14 @@ import "../domain/runs.js" as Runs
 // and whether `am` could be asked at all. While `active` (the panel is open) a
 // long-lived runs-watch.py says which runs changed, and each burst of changes
 // costs one debounced snapshot. The project root and the backend directory are
-// handed to it from outside -- it never reaches for another store. Composing
-// it into App (3.3) comes later.
+// handed to it from outside -- it never reaches for another store. App
+// composes it as `app.runs` and binds `active` to the panel being open.
 Scope {
   id: store
 
   property string project: ""         // project root path
   property string backendDir: ""      // <plugin>/core/backend/
-  property bool active: false         // App binds this to "panel open" (3.3)
+  property bool active: false         // App binds this to "panel open" (app.panelOpen)
 
   property var runs: []               // Runs.normalizeRun output, am's order
   property string selectedRunId: ""   // set by the UI
