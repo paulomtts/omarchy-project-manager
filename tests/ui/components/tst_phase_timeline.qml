@@ -116,7 +116,9 @@ TestCase {
     var bad = [[], null, undefined, "x", 5, {}]
     var labels = ["[]", "null", "undefined", "\"x\"", "5", "{}"]
     for (var i = 0; i < bad.length; i++) {
-      var timeline = make({ theme: testTheme })
+      // Start from a shown line, so hiding is a transition and not the default.
+      var timeline = make({ theme: testTheme, phases: [{ name: "spec", status: "done" }] })
+      compare(timeline.visible, true, labels[i] + " starts shown")
       timeline.phases = bad[i]
       wait(30)
       compare(timeline.text, "", labels[i] + " renders nothing")
