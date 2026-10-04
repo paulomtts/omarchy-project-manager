@@ -5,6 +5,7 @@
 // store only in 3.3) and driven through stubbed Process objects.
 import QtQuick
 import QtTest
+import "../../../core/domain/runs.js" as Runs
 
 TestCase {
   id: tc
@@ -1184,5 +1185,213 @@ TestCase {
     verify(store.selectedAttempt, "the first attempt is picked once it exists")
     compare(store.selectedAttempt.attempt, 2)
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|implement|2")
+  }
+
+  // ---- run controls (S2 4.1)
+
+  property string ctlCmd: "python3|/plugin/core/backend/runs/run-control.py|"
+
+  // entry() for the control tests: the run's workflow ("milestone" unless
+  // given), its am control requests, and whether its lease accepts requests.
+  function ctlEntry(id, runStatus, live, workflow, requests, accepting) {
+    var e = entry(id, runStatus, live)
+    e.workflow = workflow || "milestone"
+    e.status.control.requests = requests || []
+    if (accepting === false) e.status.control.lease.accepting = false
+    return e
+  }
+
+  function running(id) { return ctlEntry(id, "started", true) }
+  function dead(id) { return ctlEntry(id, "started", false) }
+
+  // Project A whose first snapshot listed `entries`. Not active: no watch.
+  function ctlStore(entries) {
+    var store = makeWithProject(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply(entries), 0)
+    return store
+  }
+
+  function ctlOk(data) { return JSON.stringify({ ok: true, data: data }) + "\n" }
+
+  function ctlFail(type, message) {
+    return JSON.stringify({ ok: false, error: { type: type, message: message } }) + "\n"
+  }
+
+  function test_control_defaults() {
+    var store = make(); if (!store) return
+    compare(Object.keys(store.pending).length, 0)
+    compare(Object.keys(store.stillWaiting).length, 0)
+    compare(store.stillWaitingText, "still waiting — the run may be between phases or dead")
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.controlRunners.length, 0)
+  }
+
+  function test_pause_and_cancel_launch_the_exact_argv() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    compare(store.control("pause", "r1"), true)
+    compare(store.control("cancel", "r2"), true)
+    compare(store.controlRunners.length, 2)
+    compare(store.controlRunners[0].runId, "r1")
+    compare(store.controlRunners[0].action, "pause")
+    var pause = store.controlRunners[0].current
+    compare(pause.command.length, 5)
+    compare(argv(pause), tc.ctlCmd + "pause|r1|/home/u/my proj")
+    compare(pause.command[4], "/home/u/my proj", "the root with a space is one argument")
+    compare(pause.running, true)
+    compare(pause.launchGuard, "/home/u/my proj")
+    var cancel = store.controlRunners[1].current
+    compare(cancel.command.length, 5)
+    compare(argv(cancel), tc.ctlCmd + "cancel|r2|/home/u/my proj")
+  }
+
+  function test_control_sets_pending_as_a_new_object() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    var before = store.pending
+    var spy = spyC.createObject(tc, { target: store, signalName: "pendingChanged" })
+    compare(store.control("pause", "r1"), true)
+    compare(spy.count, 1)
+    compare(store.pending.r1, "pause")
+    compare(before.r1, undefined, "the old object was not changed in place")
+  }
+
+  function test_an_ok_reply_keeps_pending_and_refreshes() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    var snap = store.snapshotRunner.current
+    var seq = store.snapshotRunner.seq
+    reply(store.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", effective: true,
+      requested_at: "t1", already_requested: false, message: "pause requested" }), 0)
+    compare(store.pending.r1, "pause", "pending until a snapshot settles it")
+    compare(store.lastControlError, "")
+    compare(store.snapshotRunner.seq, seq + 1, "the runs are fetched again")
+    verify(store.snapshotRunner.current !== snap)
+    compare(store.controlRunners.length, 0)
+  }
+
+  function test_an_ok_false_reply_clears_pending_and_says_why() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("pause", "r1")
+    var seq = store.snapshotRunner.seq
+    var text = ctlFail("NotAcceptingError", "run r1 is in integrate")
+    reply(store.controlRunners[0].current, text, 0)
+    compare(store.pending.r1, undefined, "the buttons come back")
+    compare(store.lastControlError, Runs.controlError(JSON.parse(text)))
+    compare(store.lastControlError, "Integrate is running; it cannot be paused or cancelled")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastError, "", "the snapshot banner is not the control error")
+    compare(store.snapshotRunner.seq, seq + 1, "the runs are fetched again")
+
+    store.control("cancel", "r2")
+    var failed = ctlFail("AmFailed", "am: database is locked")
+    reply(store.controlRunners[0].current, failed, 0)
+    compare(store.lastControlError, Runs.controlError(JSON.parse(failed)))
+    verify(store.lastControlError !== "", "AmFailed says something")
+    compare(store.lastControlErrorRunId, "r2")
+  }
+
+  function test_garbled_control_output_names_the_exit_code() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("cancel", "r1")
+    var seq = store.snapshotRunner.seq
+    reply(store.controlRunners[0].current, "Traceback (most recent call last):\nboom\n", 1)
+    compare(store.pending.r1, undefined)
+    compare(store.lastControlError, "The run control gave no usable result (exit 1).")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.snapshotRunner.seq, seq + 1)
+  }
+
+  function test_an_unknown_run_error_survives_the_snapshot_that_drops_the_row() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("cancel", "r1")
+    reply(store.controlRunners[0].current, ctlFail("UnknownRunError", "no run r1"), 0)
+    compare(store.lastControlError, "The run no longer exists")
+    reply(store.snapshotRunner.current, okReply([running("r2")]), 0)
+    compare(store.runs.length, 1)
+    compare(store.runs[0].id, "r2", "the row is dropped")
+    compare(store.lastControlError, "The run no longer exists", "a snapshot never clears the control error")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastError, "")
+    snapshot(store, [running("r2")])
+    compare(store.lastControlError, "The run no longer exists")
+    compare(store.lastError, "")
+  }
+
+  function test_control_refusals_launch_nothing() {
+    var bare = make(); if (!bare) return
+    compare(bare.control("pause", "r1"), false, "no project")
+    compare(bare.controlRunners.length, 0)
+
+    var store = ctlStore([running("r1"), ctlEntry("r2", "stopped", false),
+                          ctlEntry("r3", "started", true, "milestone", [], false)]); if (!store) return
+    compare(store.control("stop", "r1"), false, "unknown action")
+    compare(store.control("Pause", "r1"), false, "actions are exact")
+    compare(store.control("", "r1"), false, "empty action")
+    compare(store.control("pause", ""), false, "empty id")
+    compare(store.control("pause", 7), false, "an id that is not a string")
+    compare(store.control("pause", "nope"), false, "a run not in the snapshot")
+    compare(store.control("pause", "r2"), false, "pause on a parked run is disabled")
+    compare(store.control("cancel", "r3"), false, "cancel during Integrate is disabled")
+    compare(store.control("pause", "r3"), false, "pause during Integrate is disabled")
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.control("pause", "r1"), true)
+    compare(store.control("pause", "r1"), false, "no double fire")
+    compare(store.control("cancel", "r1"), false, "one request per run at a time")
+    compare(store.controlRunners.length, 1)
+    compare(Object.keys(store.pending).join(","), "r1")
+  }
+
+  function test_two_runs_in_flight_at_once_both_apply() {
+    var store = ctlStore([running("a"), running("b")]); if (!store) return
+    store.control("pause", "a")
+    store.control("cancel", "b")
+    compare(store.controlRunners.length, 2)
+    var ra = store.controlRunners[0], rb = store.controlRunners[1]
+    compare(ra.current.running, true, "cancelling b did not stop a's pause")
+    compare(rb.current.running, true)
+    reply(ra.current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.controlRunners.length, 1)
+    compare(store.controlRunners[0].runId, "b")
+    compare(store.pending.a, "pause")
+    compare(store.pending.b, "cancel")
+    reply(rb.current, ctlFail("NotRunningError", "not running"), 0)
+    compare(store.controlRunners.length, 0)
+    compare(store.pending.a, "pause")
+    compare(store.pending.b, undefined)
+    compare(store.lastControlError, "The run is not running")
+    compare(store.lastControlErrorRunId, "b")
+  }
+
+  function test_a_finished_request_leaves_control_runners() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.controlRunners.length, 0, "an applied reply")
+
+    var other = ctlStore([running("r1")]); if (!other) return
+    other.control("pause", "r1")
+    var proc = other.controlRunners[0].current
+    other.project = rootB
+    compare(other.controlRunners.length, 1, "a launched request still completes in am")
+    var seq = other.snapshotRunner.seq
+    reply(proc, ctlOk({ requested_at: "t1" }), 0)
+    compare(other.controlRunners.length, 0, "a reply dropped by the guard still removes its runner")
+    compare(other.snapshotRunner.seq, seq, "a dropped reply does not re-snapshot")
+  }
+
+  function test_a_new_request_and_dismiss_clear_the_control_error() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
+    compare(store.lastControlError, "am is busy; try again in a moment")
+    compare(store.control("pause", "r1"), true, "the failed request no longer blocks the run")
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
+    compare(store.lastControlErrorRunId, "r1")
+    store.dismissControlError()
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
   }
 }

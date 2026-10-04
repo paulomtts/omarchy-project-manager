@@ -11,6 +11,7 @@ import "../domain/runs.js" as Runs
 // long-lived runs-watch.py that says which runs changed; each burst of changes
 // costs one debounced snapshot. Logs are fetched on a selection, on Refresh and
 // when a snapshot changes the selected attempt's status -- never on a timer.
+// Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // The project root and the backend directory are handed to it from outside --
 // it never reaches for another store. App composes it as `app.runs` and binds
 // `active` to the panel being open.
@@ -56,6 +57,17 @@ Scope {
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
 
+  // Run controls (S2 4.1). `pending` holds the requests not yet settled,
+  // {runId: action}; `stillWaiting` the pending ones 30 s or more old,
+  // {runId: true}. Both are replaced, never changed in place, so bindings see
+  // every change. The control error is its own pair of fields: a snapshot never
+  // touches it, and the snapshot's lastError never carries a control refusal.
+  property var pending: ({})
+  property var stillWaiting: ({})
+  readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
+  property string lastControlError: ""      // Runs.controlError sentence of the last failed request
+  property string lastControlErrorRunId: "" // the run that sentence is about
+
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
@@ -64,6 +76,7 @@ Scope {
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
+  readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -402,6 +415,132 @@ Scope {
     store.lastError = "The runs snapshot gave no usable result (exit " + exitCode + ")."
   }
 
+  // ---- run controls (S2 4.1)
+
+  // A copy of a {key: value} map, so a change is a new object.
+  function copyMap(map) {
+    var out = {}
+    for (var key in map) {
+      if (Object.prototype.hasOwnProperty.call(map, key)) out[key] = map[key]
+    }
+    return out
+  }
+
+  function hasKey(map, key) {
+    return Object.prototype.hasOwnProperty.call(map, key)
+  }
+
+  // Starts a pause, resume or cancel of one run of this project and returns
+  // whether it started. Refused: no project, an unknown action, a run that is
+  // not in the snapshot, an action Runs.controls says is disabled, or a run
+  // that already has a request pending. Confirming a cancel is the caller's job.
+  function control(action, runId) {
+    if (store.project === "") return false
+    if (action !== "pause" && action !== "resume" && action !== "cancel") return false
+    if (typeof runId !== "string" || runId === "") return false
+    var run = store.runById(runId)
+    if (run === null) return false
+    if (!Runs.controls(run)[action].enabled) return false
+    if (store.hasKey(store.pending, runId)) return false
+    store.dismissControlError()
+    controlState.nextToken += 1
+    var requests = store.copyMap(controlState.requests)
+    requests[runId] = { token: controlState.nextToken, action: action, baseline: Runs.runState(run),
+                        launchedMs: Date.now(), acknowledged: false, requestedAt: "" }
+    controlState.requests = requests
+    var p = store.copyMap(store.pending)
+    p[runId] = action
+    store.pending = p
+    var runner = controlC.createObject(store, { runId: runId, action: action,
+                                                token: controlState.nextToken, madeFor: store.project })
+    controlState.runners = controlState.runners.concat([runner])
+    store.launchControl(runner, [])
+    return true
+  }
+
+  // The request's run-control.py launch on its own runner: ACTION RUN REPO,
+  // then `extra` (a resume's verify arguments).
+  function launchControl(runner, extra) {
+    runner.script = store.backendDir + "runs/run-control.py"
+    runner.run([runner.action, runner.runId, store.project].concat(extra))
+  }
+
+  // The request this runner was launched for, while it is still the one
+  // pending for its run; null once it was settled, emptied by a project switch
+  // or replaced by a newer request.
+  function requestOf(runner) {
+    if (!store.hasKey(controlState.requests, runner.runId)) return null
+    var req = controlState.requests[runner.runId]
+    return req.token === runner.token ? req : null
+  }
+
+  // The request for runId is over: its pending entry, its still-waiting mark
+  // and its bookkeeping go.
+  function settle(runId) {
+    if (store.hasKey(store.pending, runId)) {
+      var p = store.copyMap(store.pending)
+      delete p[runId]
+      store.pending = p
+    }
+    if (store.hasKey(store.stillWaiting, runId)) {
+      var w = store.copyMap(store.stillWaiting)
+      delete w[runId]
+      store.stillWaiting = w
+    }
+    if (store.hasKey(controlState.requests, runId)) {
+      var r = store.copyMap(controlState.requests)
+      delete r[runId]
+      controlState.requests = r
+    }
+  }
+
+  // A request ended without am taking it: the buttons come back and the
+  // sentence shows under that run.
+  function failControl(runId, sentence) {
+    store.settle(runId)
+    store.lastControlError = sentence
+    store.lastControlErrorRunId = runId
+  }
+
+  function dismissControlError() {
+    store.lastControlError = ""
+    store.lastControlErrorRunId = ""
+  }
+
+  // A runner's request is over: it leaves controlRunners and is destroyed.
+  function dropRunner(runner) {
+    controlState.runners = controlState.runners.filter(function(r) { return r !== runner })
+    runner.destroy()
+  }
+
+  // One run-control.py reply, for the project the request was made in. ok:true
+  // means am has the request: pending stays until a snapshot settles it, and
+  // the requested_at am gave it is remembered. Anything else ends it with a
+  // sentence. Either way the runs are fetched again. A reply for a request that
+  // is no longer the pending one changes nothing.
+  function controlReplied(runner, stdout, exitCode) {
+    var req = store.requestOf(runner)
+    if (req === null) {
+      store.dropRunner(runner)
+      return
+    }
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true) {
+      var data = envelope.data
+      var requestedAt = data !== null && typeof data === "object" && typeof data.requested_at === "string" ? data.requested_at : ""
+      var requests = store.copyMap(controlState.requests)
+      requests[runner.runId] = { token: req.token, action: req.action, baseline: req.baseline,
+                                 launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
+      controlState.requests = requests
+    } else if (envelope !== null && envelope.ok === false) {
+      store.failControl(runner.runId, Runs.controlError(envelope))
+    } else {
+      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").")
+    }
+    store.dropRunner(runner)
+    store.refresh()
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -468,6 +607,37 @@ Scope {
     id: watchState
     property var proc: null
     property bool watching: false
+  }
+
+  // The control requests' own state; kept apart so consumers cannot write it.
+  // `requests` is {runId: {token, action, baseline, launchedMs, acknowledged,
+  // requestedAt}}: the run's state when the request started, when it started,
+  // whether am acknowledged it, and the requested_at am gave it.
+  QtObject {
+    id: controlState
+    property var runners: []
+    property var requests: ({})
+    property int nextToken: 0
+  }
+
+  // One HelperRunner per control request, so requests for different runs never
+  // stop each other. Guarded by the project like the others: a reply for a
+  // project the user has left is dropped, and its runner goes when its process
+  // exits (the runner clears `busy` on that exit but emits no `finished`). No
+  // onGuardChanged: the snapshot runner's already runs projectSwitched().
+  Component {
+    id: controlC
+
+    HelperRunner {
+      id: cr
+      property string runId: ""
+      property string action: ""
+      property int token: 0
+      property string madeFor: ""         // the project the request was made in
+      guard: store.project
+      onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
+      onBusyChanged: if (!cr.busy && cr.guard !== cr.madeFor) store.dropRunner(cr)
+    }
   }
 
   // One Process per watch launch, so each carries what it was launched with.
