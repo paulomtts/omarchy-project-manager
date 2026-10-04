@@ -133,6 +133,21 @@ TestCase {
     compare(p.app.nav.dropdownOpen, false); compare(p.app.nav.dropdownQuery, "")
   }
 
+  // App's panel-open flag is how the run store knows to watch: it must follow
+  // the real panel both ways.
+  function test_the_panel_open_flag_reaches_the_run_store() {
+    var p = make(); if (!p) return
+    verify(p.app.runs, "App composes the run store")
+    compare(p.opened, true)
+    compare(p.app.panelOpen, true)
+    compare(p.app.runs.active, true)
+    p.opened = false
+    compare(p.app.panelOpen, false)
+    compare(p.app.runs.active, false)
+    p.opened = true
+    compare(p.app.runs.active, true)
+  }
+
   function test_focus_item_follows_state() {
     var p = make(); if (!p) return
     compare(p.focusItem.objectName, "keyCatcher")
