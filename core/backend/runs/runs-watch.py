@@ -28,12 +28,14 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
 USAGE = "usage: runs-watch.py <project_root> [run_id ...]"
 IDLE_POLL = 1.0  # seconds; the longest the main loop blocks with nothing pending
+WINDOW = 0.25  # seconds; at most one {"changed": [...]} line per window
 EOF = object()
 # The schema-1 journal events. Any other `event` value is ignored.
 EVENTS = frozenset({"run_upsert", "story_upsert", "subtask_upsert", "phase_upsert",
@@ -118,11 +120,17 @@ def stop(proc):
 
 
 def stream(lines, watched, started):
-    """Collect the run ids of kept lines until am's stream ends, then print them."""
-    batch = []
+    """Turn am's stream into debounced {"changed": [...]} lines until it ends.
+    Trailing edge: the first kept run id into an empty batch opens a WINDOW;
+    when it closes the batch is printed once and cleared."""
+    batch, deadline = [], None
     while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            say({"changed": batch})
+            batch, deadline = [], None
+        wait = IDLE_POLL if deadline is None else max(0.0, deadline - time.monotonic())
         try:
-            raw = lines.get(timeout=IDLE_POLL)
+            raw = lines.get(timeout=wait)
         except queue.Empty:
             continue
         if raw is EOF:
@@ -136,6 +144,8 @@ def stream(lines, watched, started):
         run_id = keep(line, watched, started)
         if run_id is not None and run_id not in batch:
             batch.append(run_id)
+            if deadline is None:
+                deadline = time.monotonic() + WINDOW
 
 
 def main(argv):

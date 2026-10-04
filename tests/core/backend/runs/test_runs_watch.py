@@ -246,3 +246,37 @@ def test_missing_or_unparseable_ts_is_kept(world):
     code, lines, _ = run_helper(world, [str(world["proj"]), "r1", "r2"])
     assert code == 0
     assert changed(lines) == [["r1", "r2"]]
+
+
+# --- debounce -------------------------------------------------------------------
+
+def test_debounce_batches_and_dedupes(world):
+    set_script(world, [hello(), ev("r1"), ev("r2"), ev("r1"), ev("r2", "attempt_upsert"),
+                       ev("r1", "subtask_upsert"), pause(0.6)])
+    code, lines, _ = run_helper(world, [str(world["proj"]), "r1", "r2"])
+    assert code == 0
+    assert changed(lines) == [["r1", "r2"]]
+
+
+def test_debounce_separate_windows(world):
+    set_script(world, [hello(), ev("r1"), pause(0.6), ev("r1"), pause(0.6)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert changed(lines) == [["r1"], ["r1"]]
+
+
+def test_debounce_continuous_stream_is_rate_limited(world):
+    # An event every 50 ms for over a second: the window must still close on
+    # time (more than one line), and lines never come faster than one per 250 ms.
+    steps = [hello()]
+    for _ in range(20):
+        steps += [ev("r1"), pause(0.05)]
+    set_script(world, steps)
+    began = time.monotonic()
+    code, lines, _ = run_helper(world)
+    elapsed = time.monotonic() - began
+    assert code == 0
+    got = changed(lines)
+    assert all(ids == ["r1"] for ids in got)
+    assert len(got) >= 2, got
+    assert len(got) <= int(elapsed / 0.25) + 1, (len(got), elapsed)
