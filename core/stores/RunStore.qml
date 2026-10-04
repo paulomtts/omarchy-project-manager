@@ -28,6 +28,7 @@ Scope {
   // runs itself), and a watch that ended is not restarted until the next
   // activation or project switch.
   property bool watchTried: false
+  property int watchSeq: 0            // bumped on every watch start and stop: the launch guard
 
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
@@ -84,6 +85,7 @@ Scope {
   }
 
   function stopWatch() {
+    store.watchSeq += 1
     if (watchState.proc) watchState.proc.running = false
     watchState.watching = false
   }
@@ -91,22 +93,31 @@ Scope {
   // runs-watch.py for this project and the runs the snapshot just listed, in
   // its order. Long-lived, so a plain Process rather than the HelperRunner.
   function startWatch() {
+    store.watchSeq += 1
     store.watchTried = true
     var ids = []
     for (var i = 0; i < store.runs.length; i++) {
       var id = store.runs[i].id
       if (typeof id === "string" && id !== "") ids.push(id)
     }
-    var proc = watchC.createObject(store)
+    var proc = watchC.createObject(store, { launchSeq: store.watchSeq, launchProject: store.project })
     proc.command = ["python3", store.backendDir + "runs/runs-watch.py", store.project].concat(ids)
     watchState.proc = proc
     watchState.watching = true
     proc.running = true
   }
 
+  // A line or exit counts only from the newest launch, for the project it was
+  // launched for: a watch that was stopped (project switch, panel closed) may
+  // still print or exit late.
+  function isCurrentWatch(proc) {
+    return proc.launchSeq === store.watchSeq && proc.launchProject === store.project
+  }
+
   // One stdout line of the watch. {"changed": [...]} (re)starts the debounce;
   // anything else -- blank, not JSON, not an object -- is ignored. Never throws.
   function watchLine(proc, data) {
+    if (!store.isCurrentWatch(proc)) return
     var text = String(data || "").trim()
     if (text === "") return
     var value = null
@@ -118,6 +129,9 @@ Scope {
   // A different project: nothing the old one left behind may show, and its
   // runs are fetched straight away.
   function projectSwitched() {
+    store.stopWatch()
+    store.watchTried = false
+    debounceTimer.stop()
     store.restartStale()
     store.runs = []
     store.selectedRunId = ""
@@ -254,6 +268,8 @@ Scope {
     Process {
       id: wp
       objectName: "watchProc"
+      property int launchSeq: 0
+      property string launchProject: ""
       stdout: SplitParser { onRead: function(data) { store.watchLine(wp, data) } }
       stderr: StdioCollector { waitForEnd: true }
     }

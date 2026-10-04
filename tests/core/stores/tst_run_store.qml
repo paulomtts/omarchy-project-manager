@@ -621,4 +621,72 @@ TestCase {
     compare(store.staleTimer.running, false)
     compare(store.livenessTimer.running, false)
   }
+
+  // ---- project switch and the launch guard
+
+  function test_project_switch_stops_watch_and_clears_runs() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var old = store.watchProc
+    sendLine(old, { changed: ["a"] })
+    compare(store.debounceTimer.running, true)
+    store.project = rootB
+    compare(old.running, false, "the old project's watch is stopped")
+    compare(store.watching, false)
+    compare(store.debounceTimer.running, false, "its pending refresh is dropped")
+    compare(store.runs.length, 0)
+    compare(store.snapshotRunner.current.command[2], "/home/u/b", "B's snapshot is requested")
+  }
+
+  function test_new_project_watch_starts_after_its_snapshot() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var old = store.watchProc
+    store.project = rootB
+    reply(store.snapshotRunner.current, okReply([entry("b1", "started", true)]), 0)
+    var w = store.watchProc
+    verify(w !== old, "B gets its own watch")
+    compare(w.command.length, 4)
+    compare(w.command[2], "/home/u/b")
+    compare(w.command[3], "b1")
+    compare(w.running, true)
+    compare(store.watching, true)
+  }
+
+  function test_old_watch_lines_ignored_after_switch() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var old = store.watchProc
+    store.project = rootB
+    sendLine(old, { changed: ["a"] })
+    compare(store.debounceTimer.running, false, "the old watch's late line is dropped")
+    reply(store.snapshotRunner.current, okReply([entry("b1", "started", true)]), 0)
+    sendLine(old, { changed: ["a"] })
+    compare(store.debounceTimer.running, false, "even once B's watch runs")
+    sendLine(store.watchProc, { changed: ["b1"] })
+    compare(store.debounceTimer.running, true, "B's own lines still count")
+  }
+
+  function test_killed_watch_lines_ignored_after_deactivation() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var old = store.watchProc
+    store.active = false
+    sendLine(old, { changed: ["a"] })
+    compare(store.debounceTimer.running, false, "a killed watch's late line is dropped")
+    store.active = true
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
+    verify(store.watchProc !== old)
+    sendLine(old, { changed: ["a"] })
+    compare(store.debounceTimer.running, false, "same project, but an older launch")
+  }
+
+  function test_clearing_the_project_while_active_stops_everything() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var old = store.watchProc
+    var seq = store.snapshotRunner.seq
+    store.project = ""
+    compare(old.running, false, "the watch is stopped")
+    compare(store.watching, false)
+    compare(store.staleTimer.running, false, "nothing to be stale about")
+    compare(store.livenessTimer.running, false, "no runs, no liveness")
+    compare(store.runs.length, 0)
+    compare(store.snapshotRunner.seq, seq, "no snapshot without a project")
+  }
 }
