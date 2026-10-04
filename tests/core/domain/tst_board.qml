@@ -119,6 +119,19 @@ TestCase {
     compare(Board.statusColor("canceled", "#111111"), "#d9534f")
   }
 
+  function test_status_color_archived_is_neutral_grey() {
+    compare(Board.statusColor("archived", "#111111"), "#8a8f98")
+  }
+
+  function test_subtree_counts_skip_archived_like_canceled() {
+    var root = makeCard("r", "todo", [
+      makeCard("a", "done"), makeCard("b", "archived"),
+      makeCard("c", "canceled"), makeCard("d", "todo")])
+    var counts = Board.subtreeCounts(root)
+    compare(counts.done, 1)
+    compare(counts.total, 2)
+  }
+
   function test_subtree_counts_treat_merged_as_done_and_skip_canceled() {
     var root = makeCard("r", "todo", [
       makeCard("a", "done"), makeCard("b", "merged"),
