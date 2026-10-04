@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 import "../../core/domain/board.js" as Board
+import "../../core/domain/runs.js" as Runs
 import "../components" as UI
 import "../theme" as T
 
@@ -21,6 +22,16 @@ Column {
 
   visible: screen.app.nav.viewMode === "board" && !!screen.app.projects.selectedProject
   spacing: Style.space(10)
+
+  // ---- am run marks (5.3): read from the run store through `app`, never from
+  // brd status. A merged or canceled card (or archived, should brd ever report
+  // it) draws none -- a visibility rule only -- and no card draws any while am
+  // is not installed.
+  readonly property bool amMissing: screen.app.runs.amStatus === "missing"
+
+  function hidesRunMarks(card) {
+    return screen.amMissing || !card || Board.isClosedStatus(card.status)
+  }
 
   UI.ThemedText {
     variant: "dim"
@@ -65,6 +76,8 @@ Column {
           status: modelData.status
           issueLabel: Board.openIssueLabel(modelData, screen.app.board.issueMap)
           progress: Board.subtreeCounts(modelData)
+          runState: screen.hidesRunMarks(modelData) ? null : Runs.cardRunState(screen.app.runs.runs, modelData.id)
+          runRollup: screen.hidesRunMarks(modelData) ? null : Runs.rollup(screen.app.runs.runs, { id: modelData.id })
           onActivated: screen.navigator.openCard(modelData.id)
         }
       }
@@ -78,6 +91,13 @@ Column {
     property string status: "todo"
     property string issueLabel: ""
     property var progress: ({ done: 0, total: 0 })
+    // Runs.cardRunState / Runs.rollup for this card, or null for no mark.
+    property var runState: null
+    property var runRollup: null
+    // Glyph + phase rather than counts: a card its winning run lists as a
+    // subtask. The Board shows roots only (depth 0), so depth never decides it.
+    readonly property bool subtaskRun: !!boardCard.runState
+      && typeof boardCard.runState.phase === "string" && boardCard.runState.phase !== ""
     signal activated()
 
     hasCursor: cardIndex >= 0 && screen.app.nav.cursorIndex === cardIndex
@@ -103,11 +123,35 @@ Column {
       anchors.leftMargin: Style.space(14)
       spacing: Style.space(4)
 
-      UI.ThemedText {
-        theme: screen.theme
+      RowLayout {
         Layout.fillWidth: true
-        text: boardCard.title
-        wrapMode: Text.WordWrap
+        spacing: Style.space(6)
+
+        UI.ThemedText {
+          theme: screen.theme
+          Layout.fillWidth: true
+          text: boardCard.title
+          wrapMode: Text.WordWrap
+        }
+
+        UI.RunMark {
+          id: boardRunMark
+          Layout.alignment: Qt.AlignTop | Qt.AlignRight
+          theme: screen.theme
+          runState: boardCard.runState
+          rollup: boardCard.runRollup
+          subtask: boardCard.subtaskRun
+          stale: screen.app.runs.stale
+        }
+      }
+
+      // A milestone's or story's am run rollup, under its title; hides itself
+      // without one, and a subtask has none.
+      UI.RunRollupBar {
+        Layout.fillWidth: true
+        theme: screen.theme
+        rollup: boardCard.subtaskRun ? null : boardCard.runRollup
+        opacity: boardRunMark.dimmed ? 0.5 : 1
       }
 
       Row {

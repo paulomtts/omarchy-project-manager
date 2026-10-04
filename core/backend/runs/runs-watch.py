@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Signal which watched am runs changed, from `am watch --all --follow`.
+
+    runs-watch.py <project_root> [run_id ...]
+
+Long-lived. Spawns `am watch --all --follow` (an argv list, never a shell) and
+prints one JSON line per output event, flushed at once:
+  {"changed": ["<run id>", ...]}  at most once per 250 ms, never empty, run ids
+                                  only (event contents are never forwarded)
+  {"ok": false, "error": {"type", "message"}}  then exit 1, with type
+                                  SchemaMismatch, CorruptJournal, HelperError or
+                                  AmMissing (Usage exits 2); an am refusal
+                                  envelope with an exit other than 3 is
+                                  re-emitted unchanged.
+The hello line is dropped (its schema must be 1). Journal lines written before
+the helper started (the backlog) are dropped. A journal line is kept when its
+event is one of the five schema-1 events and its run id is watched: the argv run
+ids, plus every run whose run_upsert payload.repo_dir is this project root.
+Unknown events, unknown keys and non-JSON lines are ignored. am exiting 0,
+SIGINT, SIGTERM or a closed stdout end the helper with exit 0. Only the `am`
+command is used; am's database and on-disk layout are never read.
+"""
+import datetime
+import json
+import os
+import queue
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from common.json_line import emit  # noqa: E402
+
+USAGE = "usage: runs-watch.py <project_root> [run_id ...]"
+IDLE_POLL = 1.0  # seconds; the longest the main loop blocks with nothing pending
+WINDOW = 0.25  # seconds; at most one {"changed": [...]} line per window
+EOF = object()
+# The schema-1 journal events. Any other `event` value is ignored.
+EVENTS = frozenset({"run_upsert", "story_upsert", "subtask_upsert", "phase_upsert",
+                    "attempt_upsert"})
+
+
+class SchemaMismatch(Exception):
+    """The hello line announced a journal schema other than 1."""
+
+
+class Stop(Exception):
+    """SIGINT or SIGTERM: the store (or a user) is done with this watch."""
+
+
+def on_signal(signum, frame):
+    raise Stop()
+
+
+def say(payload, code=0):
+    """emit() one line and flush it now: stdout is a pipe, so it is block-buffered."""
+    emit(payload)
+    sys.stdout.flush()
+    return code
+
+
+def failure(kind, message, code=1):
+    return say({"ok": False, "error": {"type": kind, "message": message}}, code)
+
+
+def parse_ts(value):
+    """A journal `ts` (ISO 8601, UTC, usually ending in Z) as an aware datetime,
+    or None when it is missing or unparseable."""
+    if not isinstance(value, str):
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        ts = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.timezone.utc)
+    return ts
+
+
+# --- Backlog drop (S4 workaround) ------------------------------------------------
+# `am watch --follow` replays every journal line before going live. Until
+# `am watch --from-now` exists (S4), lines written before this helper started
+# are dropped here. When S4 lands: pass --from-now in spawn(), delete this
+# function, and delete its one call in keep().
+def is_backlog(line, started):
+    ts = parse_ts(line.get("ts"))
+    return ts is not None and ts < started
+
+
+def same_dir(a, b):
+    """True when two paths name the same directory (normalized, absolute)."""
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def keep(line, watched, root, started):
+    """The run id a parsed stream line signals, or None to ignore the line. A
+    live run_upsert whose payload.repo_dir is the project root adds its run to
+    `watched` for good."""
+    if not isinstance(line, dict):
+        return None
+    run_id = line.get("run_id")
+    if not (isinstance(run_id, str) and run_id) or line.get("event") not in EVENTS:
+        return None
+    if is_backlog(line, started):
+        return None
+    if run_id in watched:
+        return run_id
+    payload = line.get("payload")
+    if (line["event"] == "run_upsert" and isinstance(payload, dict)
+            and isinstance(payload.get("repo_dir"), str)
+            and same_dir(payload["repo_dir"], root)):
+        watched.add(run_id)
+        return run_id
+    return None
+
+
+def check_schema(hello):
+    schema = hello.get("schema")
+    if not (type(schema) is int and schema == 1):
+        raise SchemaMismatch("am watch speaks journal schema " + json.dumps(schema)
+                             + "; this helper reads schema 1.")
+
+
+def spawn(am):
+    return subprocess.Popen([am, "watch", "--all", "--follow"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace")
+
+
+def pump(stream, sink):
+    """Reader thread: every line am prints, then EOF."""
+    for raw in stream:
+        sink.put(raw)
+    sink.put(EOF)
+
+
+def collect(stream, parts):
+    """Reader thread: am's whole stderr, so a chatty am never blocks on a full pipe."""
+    parts.append(stream.read())
+
+
+def stop(proc):
+    """Terminate am if it is still running, and reap it."""
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def stream(lines, watched, root, started):
+    """Turn am's stream into debounced {"changed": [...]} lines until it ends.
+    Trailing edge: the first kept run id into an empty batch opens a WINDOW;
+    when it closes the batch is printed once and cleared. A pending batch is
+    printed when the stream ends. Returns am's refusal envelope (the only line
+    with an "ok" key) if it printed one, else None. Raises SchemaMismatch."""
+    batch, deadline, refusal = [], None, None
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            say({"changed": batch})
+            batch, deadline = [], None
+        wait = IDLE_POLL if deadline is None else max(0.0, deadline - time.monotonic())
+        try:
+            raw = lines.get(timeout=wait)
+        except queue.Empty:
+            continue
+        if raw is EOF:
+            if batch:
+                say({"changed": batch})
+            return refusal
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(line, dict) and "ok" in line:
+            refusal = line
+            continue
+        if isinstance(line, dict) and line.get("event") == "watch":
+            check_schema(line)
+            continue
+        run_id = keep(line, watched, root, started)
+        if run_id is not None and run_id not in batch:
+            batch.append(run_id)
+            if deadline is None:
+                deadline = time.monotonic() + WINDOW
+
+
+def finish(code, refusal, stderr):
+    """Print the last line, if any, for how am ended; return the helper's exit code."""
+    if refusal is not None:
+        if code != 3:
+            return say(refusal, 1)
+        error = refusal.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        if not (isinstance(message, str) and message):
+            message = stderr or "am watch refused with exit 3."
+        return failure("CorruptJournal", message)
+    if code == 0:
+        return 0
+    if code == 3:
+        return failure("CorruptJournal", stderr or "am watch exited 3.")
+    return failure("HelperError", stderr or "am watch exited " + str(code) + ".")
+
+
+def main(argv):
+    if not argv:
+        return failure("Usage", USAGE, 2)
+    root, watched = argv[0], set(argv[1:])
+    am = shutil.which("am")
+    if am is None:
+        return failure("AmMissing", "am is not installed.")
+    started = datetime.datetime.now(datetime.timezone.utc)  # before am starts
+    proc = spawn(am)
+    lines, err = queue.Queue(), []
+    threading.Thread(target=pump, args=(proc.stdout, lines), daemon=True).start()
+    err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
+    err_reader.start()
+    try:
+        try:
+            refusal = stream(lines, watched, root, started)
+        except SchemaMismatch as e:
+            return failure("SchemaMismatch", str(e))
+        code = proc.wait()
+        err_reader.join(timeout=2)
+    finally:
+        stop(proc)  # no-op once am has exited; terminates it on every other path
+    return finish(code, refusal, "".join(err).strip())
+
+
+def quiet_exit():
+    """Ended by a signal or a closed stdout: exit 0 without a traceback. stdout
+    is pointed at /dev/null so the interpreter's final flush cannot raise."""
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except OSError:
+        pass
+    return 0
+
+
+def guarded(argv):
+    """SIGINT, SIGTERM and a closed stdout end the helper quietly with exit 0
+    (main's finally has already stopped am). Any other unexpected exception
+    still ends with one HelperError line."""
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)  # explicit: SIGINT may be inherited as ignored
+    try:
+        return main(argv)
+    except (Stop, KeyboardInterrupt, BrokenPipeError):
+        return quiet_exit()
+    except SystemExit:
+        raise
+    except BaseException as e:  # noqa: BLE001 - deliberate catch-all
+        reason = str(e) or e.__class__.__name__
+        try:
+            return failure("HelperError", "The runs watch failed: " + reason)
+        except BrokenPipeError:
+            return quiet_exit()
+
+
+if __name__ == "__main__":
+    sys.exit(guarded(sys.argv[1:]))

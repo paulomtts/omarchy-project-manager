@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
+import "runGlyphs.js" as RunGlyphs
 import "../components" as UI
 import "../theme" as T
 
@@ -20,6 +21,12 @@ Item {
   property int dropdownCursor: 0
   property bool canDelete: false
   property bool documentsEnabled: true
+  // How many runs need attention (escalated plus dead), computed by the
+  // owner. Rendered as `‼N` by runsAttentionText, which the Runs row shows as
+  // its count.
+  property int runsAttention: 0
+  readonly property string runsAttentionText: sidebar.runsAttention > 0
+    ? RunGlyphs.glyphOf("escalated") + sidebar.runsAttention : ""
   // The one input for every colour and font: Panel passes its Theme down,
   // and a standalone instance renders with the shell defaults.
   property var theme: T.Theme {}
@@ -99,6 +106,9 @@ Item {
     // Appended after Memories, so the digit chords keep their meaning and
     // Issues is Ctrl+5. Its glyph is the Nerd Font bug (U+F188).
     NavRow { objectName: "navIssues"; label: "Issues"; iconText: "\uf188"; section: "issues"; enabled: sidebar.hasProject }
+    // Appended after Issues, so Runs is Ctrl+6. Its glyph is the Nerd Font
+    // play symbol (U+F04B); its count is the runs that need attention.
+    NavRow { objectName: "navRuns"; label: "Runs"; iconText: "\uf04b"; section: "runs"; enabled: sidebar.hasProject; countText: sidebar.runsAttentionText }
 
     Item { Layout.fillHeight: true }
 
@@ -200,6 +210,9 @@ Item {
     property string label: ""
     property string section: ""
     property string iconText: ""
+    // An optional count after the label, such as the Runs row's `‼N`; "" (the
+    // default) shows nothing, so a row that does not set it is unchanged.
+    property string countText: ""
 
     Layout.fillWidth: true
     implicitHeight: navRowContent.implicitHeight + Style.spacing.rowPaddingX * 2
@@ -228,9 +241,22 @@ Item {
 
       UI.ThemedText {
         id: navLabel
+        // navLabelBoard, navLabelGraph, ...
+        objectName: "navLabel" + navRow.section.charAt(0).toUpperCase() + navRow.section.slice(1)
         theme: sidebar.theme
         text: navRow.label
         font.bold: navRow.current
+      }
+
+      UI.ThemedText {
+        // navCountBoard, navCountGraph, ... -- hidden unless the row has a count.
+        objectName: "navCount" + navRow.section.charAt(0).toUpperCase() + navRow.section.slice(1)
+        theme: sidebar.theme
+        anchors.verticalCenter: navLabel.verticalCenter
+        visible: navRow.countText !== ""
+        text: navRow.countText
+        color: sidebar.theme.urgent
+        font.bold: true
       }
     }
 

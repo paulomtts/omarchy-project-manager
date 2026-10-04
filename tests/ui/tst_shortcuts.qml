@@ -306,6 +306,48 @@ TestCase {
     compare(tc.calls.indexOf("close"), -1)
   }
 
+  // ---- Runs (5.1)
+
+  function inRuns() {
+    var s = make(); if (!s) return null
+    // The snapshot the project selection launched cannot run here.
+    s.app.runs.snapshotRunner.cancel()
+    s.app.runs.runs = [{ id: "run-0000000000a1", repo_dir: "/home/u/a", milestone_id: "alpha", status: "escalated",
+                         started_at: "", lease: null, rows: [], tree: { stories: [], subtasks: [] } }]
+    s.navigator.showSection("runs")
+    return s
+  }
+
+  function test_ctrl_6_opens_the_runs_section_after_the_first_five() {
+    var s = make(); if (!s) return
+    var wanted = ["board", "graph", "documents", "memories", "issues", "runs"]
+    var digits = [Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5, Qt.Key_6]
+    for (var i = 0; i < digits.length; i++) {
+      compare(s.handleGlobalKey(ctrl(digits[i])), true, wanted[i])
+      compare(s.app.nav.section, wanted[i])
+    }
+    compare(s.app.nav.viewMode, "runs")
+  }
+
+  function test_ctrl_6_is_ignored_while_a_delete_is_being_confirmed() {
+    var s = make(); if (!s) return
+    s.app.deleter.openDelete(s.app.projects.selectedProject)
+    compare(s.handleGlobalKey(ctrl(Qt.Key_6)), false)
+    compare(s.app.nav.viewMode, "board")
+  }
+
+  function test_escape_and_the_left_arrow_go_back_from_an_open_run() {
+    var s = inRuns(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.app.nav.viewMode, "run")
+    s.closeRequested()
+    compare(s.app.nav.viewMode, "runs")
+    compare(tc.calls.indexOf("close"), -1, "Escape went back instead of closing the panel")
+    s.navigator.openRun("run-0000000000a1")
+    s.handleMove(-1, 0)
+    compare(s.app.nav.viewMode, "runs")
+  }
+
   // ---- The search field
 
   function test_escape_in_the_search_field_clears_the_query_before_closing_the_panel() {

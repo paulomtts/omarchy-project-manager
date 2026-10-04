@@ -24,6 +24,13 @@ Row {
   // nothing.
   property bool active: true
 
+  // Pip ids to ring: the subtasks an am run is working on right now (GraphView
+  // hands them down from GraphScreen). The ring is the pip's own border, so a
+  // run never reads by colour alone and no second circle is drawn. Anything but
+  // an array rings nothing.
+  property var ringedIds: []
+  readonly property var ringedList: Array.isArray(pips.ringedIds) ? pips.ringedIds : []
+
   readonly property var palette: pips.theme || pipsTheme
 
   readonly property bool hasInProgress: (pips.model || []).some(function(pip) {
@@ -31,20 +38,17 @@ Row {
   })
   readonly property bool pulsing: pulse.running
 
-  // What an in-progress pip's opacity follows. 1 whenever nothing is running,
-  // so a stopped animation never leaves a pip faded.
-  property real pulseOpacity: 1
+  // What an in-progress pip's opacity follows: the shared Pulse's level, which
+  // is 1 whenever nothing is running, so a stopped animation never leaves a
+  // pip faded.
+  readonly property real pulseOpacity: pulse.level
 
   spacing: Style.space(4)
   visible: (pips.model || []).length > 0 || pips.more > 0
 
-  SequentialAnimation {
+  Pulse {
     id: pulse
     running: pips.active && pips.visible && pips.hasInProgress
-    loops: Animation.Infinite
-    NumberAnimation { target: pips; property: "pulseOpacity"; from: 1; to: 0.3; duration: 800; easing.type: Easing.InOutSine }
-    NumberAnimation { target: pips; property: "pulseOpacity"; from: 0.3; to: 1; duration: 800; easing.type: Easing.InOutSine }
-    onRunningChanged: if (!running) pips.pulseOpacity = 1
   }
 
   Repeater {
@@ -54,10 +58,14 @@ Row {
       id: pip
       required property var modelData
 
+      readonly property bool ringed: !!pip.modelData && pips.ringedList.indexOf(pip.modelData.id) >= 0
+
       objectName: "statusPip" + (pip.modelData ? pip.modelData.id : "")
       width: Style.space(8)
       height: width
       radius: height / 2
+      border.width: pip.ringed ? 2 : 0
+      border.color: pips.palette ? pips.palette.foreground : Color.foreground
       anchors.verticalCenter: parent ? parent.verticalCenter : undefined
       color: Board.statusColor(pip.modelData ? pip.modelData.status : "",
                                pips.palette ? pips.palette.dim : Color.foreground)

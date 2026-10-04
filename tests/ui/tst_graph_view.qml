@@ -398,4 +398,99 @@ TestCase {
     compare(find(v, "graphEmpty").visible, true)
     compare(find(v, "graphEmpty").text, "No stories in this project.")
   }
+
+  // ---- 5.3: am run marks, handed in by GraphScreen.
+
+  function runMark(state, dimmed) { return { state: state, runId: "r1", dimmed: dimmed === true, phase: "", attempt: 0 } }
+
+  function test_run_marks_draw_a_badge_and_a_rollup_bar_on_a_milestone_node() {
+    var v = createTemporaryObject(viewC, tc)
+    v.nodes = nodes
+    v.edges = edges
+    v.runMarks = { m1: runMark("running") }
+    v.runRollups = { m1: { running: 1, parked: 0, escalated: 0, done: 1, pending: 2, total: 4 } }
+    wait(100)
+    var first = find(v, "graphNodem1")
+    var mark = find(first, "runMark")
+    verify(mark, "the node carries a run mark")
+    compare(mark.visible, true)
+    compare(find(first, "runBadge").text, "⟳ 1 ✔ 1")
+    var bar = find(first, "runRollupBar")
+    compare(bar.visible, true)
+    compare(find(bar, "runRollupPending").text, "2 pending")
+    compare(find(first, "graphNodeTitle").text, "First", "the title stays")
+    compare(find(first, "graphNodeProgress").text, "1/2 done", "and so does the brd progress")
+    var second = find(v, "graphNodem2")
+    compare(find(second, "runMark").visible, false, "a node with no entry draws no mark")
+    compare(find(second, "runRollupBar").visible, false)
+  }
+
+  function test_without_run_props_no_node_draws_a_run_mark() {
+    var v = createTemporaryObject(viewC, tc)
+    v.nodes = nodes
+    v.edges = edges
+    wait(100)
+    compare(find(find(v, "graphNodem1"), "runMark").visible, false)
+    compare(find(find(v, "graphNodem1"), "runRollupBar").visible, false)
+    var s = story()
+    compare(find(find(s, "graphNodes1"), "runMark").visible, false)
+    compare(find(find(s, "graphNodes1"), "statusPipt2").ringed, false)
+  }
+
+  function test_run_marks_draw_on_story_nodes_and_ring_the_running_pip() {
+    var v = story()
+    v.runMarks = { s1: runMark("escalated", true) }
+    v.runRollups = { s1: { running: 0, parked: 0, escalated: 1, done: 0, pending: 0, total: 1 } }
+    v.runRinged = ["t2"]
+    wait(50)
+    var first = find(v, "graphNodes1")
+    var mark = find(first, "runMark")
+    compare(mark.visible, true)
+    compare(find(first, "runBadge").text, "‼ 1")
+    verify(mark.opacity < 1, "a dimmed winner is drawn dimmed")
+    compare(find(first, "runRollupBar").visible, true)
+    verify(find(first, "runRollupBar").opacity < 1, "and so is its bar")
+    var pips = find(first, "graphNodePips")
+    compare(find(pips, "statusPipt2").ringed, true)
+    compare(find(pips, "statusPipt1").ringed, false)
+    compare(find(find(v, "graphNodes2"), "runMark").visible, false)
+  }
+
+  function test_stale_run_data_dims_the_node_marks() {
+    var v = createTemporaryObject(viewC, tc)
+    v.nodes = nodes
+    v.edges = edges
+    v.runMarks = { m1: runMark("running") }
+    wait(100)
+    var mark = find(find(v, "graphNodem1"), "runMark")
+    compare(mark.opacity, 1)
+    compare(find(mark, "runBadge").text, "⟳")
+    compare(find(mark, "runBadge").pulsing, true)
+    v.runStale = true
+    wait(30)
+    compare(mark.opacity, 0.5)
+    compare(find(mark, "runBadge").pulsing, false)
+  }
+
+  function test_run_props_of_the_wrong_shape_draw_nothing() {
+    var v = story()
+    var withOdd = storyNodes.map(function(n) { return Object.assign({}, n) })
+    withOdd[1].id = "constructor"
+    v.nodes = withOdd
+    wait(50)
+    var bad = [null, "s1", ["s1"], 5]
+    for (var i = 0; i < bad.length; i++) {
+      v.runMarks = bad[i]
+      v.runRollups = bad[i]
+      v.runRinged = bad[i]
+      wait(20)
+      compare(find(find(v, "graphNodes1"), "runMark").visible, false, "bad " + i)
+      compare(find(find(v, "graphNodes1"), "statusPipt2").ringed, false, "bad " + i)
+    }
+    v.runMarks = ({})
+    v.runRollups = ({})
+    wait(20)
+    compare(find(find(v, "graphNodeconstructor"), "runMark").visible, false, "an inherited name is not an entry")
+    compare(find(find(v, "graphNodeconstructor"), "runRollupBar").visible, false)
+  }
 }

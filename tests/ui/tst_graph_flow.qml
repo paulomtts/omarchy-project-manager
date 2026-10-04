@@ -1,9 +1,11 @@
 import QtQuick
 import QtTest
+import "../helpers/find.js" as H
 TestCase {
   id: tc
   name: "GraphFlow"
   when: windowShown
+  visible: true
   width: 400; height: 700
   Component { id: hostC; Item { width: 400; height: 700 } }
 
@@ -180,5 +182,40 @@ TestCase {
     var p = make(); if (!p) return
     var panel = named(p, "mainPanel")
     verify(panel.contentWidth >= 0.8 * panel.screenW - 1, "width " + panel.contentWidth)
+  }
+
+  // ---- am run marks (5.3)
+
+  function mkRun(id, status, live, milestone, tree, rows) {
+    return { id: id, repo_dir: "/home/u/a", milestone_id: milestone, status: status, started_at: "",
+             base_branch: "", branch_prefix: "",
+             lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
+             rows: rows || [], tree: tree || { stories: [], subtasks: [] } }
+  }
+
+  function test_a_story_node_shows_the_run_badge_the_rollup_and_the_ringed_pip() {
+    var p = make(); if (!p) return
+    p.app.runs.snapshotRunner.cancel()
+    p.app.board.applyTreeData([card("m1", "in_progress",
+      [card("s1", "in_progress", [card("t1", "in_progress"), card("t2", "todo")])])])
+    p.app.runs.runs = [mkRun("run-0000000000a1", "started", true, "m1",
+      { stories: [{ card_id: "s1", subtasks: ["t1", "t2"] }],
+        subtasks: [{ card_id: "t1", phases: [{ name: "implement", status: "started" }] },
+                   { card_id: "t2", phases: [] }] },
+      [{ card_id: "t1", status: "running" }, { card_id: "t2", status: "pending" }])]
+    p.navigator.showSection("graph")
+    find(p, "graphViewChips").chosen("story")
+    wait(200)
+    var gv = H.find(p, "graphView")
+    compare(gv.runRinged.join(","), "t1", "only the subtask am is working on is ringed")
+    var node = H.find(p, "graphNodes1")
+    verify(node, "the story node is drawn")
+    compare(H.find(node, "runMark").visible, true)
+    compare(H.find(node, "runBadge").text, "⟳ 1")
+    var bar = H.find(node, "runRollupBar")
+    compare(bar.visible, true)
+    compare(H.find(bar, "runRollupPending").text, "1 pending")
+    compare(H.find(node, "statusPipt1").ringed, true)
+    compare(H.find(node, "statusPipt2").ringed, false)
   }
 }

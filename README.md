@@ -5,7 +5,7 @@ An [Omarchy](https://omarchy.org/) shell plugin for working across your
 project in the sidebar, then browse its kanban **Board**, its milestone
 **Graph**, its Markdown **Documents** (with typed badges you can assign), the
 **Memories** Claude Code keeps for it, which you can read, edit, create and
-delete, and its brd **Issues**. Cards and issues are read-only; the plugin's
+delete, its brd **Issues**, and the **Runs** the `am` orchestrator makes on it (watched, never controlled). Cards and issues are read-only; the plugin's
 writes are limited to a document's frontmatter `tag:`, a project's Claude memory
 notes, the **New milestone** run (a coding agent writes cards to brd on your
 behalf) and removing a whole project from brd (each described below, each with a
@@ -30,7 +30,7 @@ until it is next saved, and existing snapshots and backups are left in their
   `~/.local/state/omarchy-project-manager/state.json` (`$XDG_STATE_HOME` is respected). If
   that project is no longer registered, the first one is shown.
 - **Sections** - **Board** (**Ctrl+1**), **Graph** (**Ctrl+2**), **Documents**
-  (**Ctrl+3**), **Memories** (**Ctrl+4**) and **Issues** (**Ctrl+5**), also
+  (**Ctrl+3**), **Memories** (**Ctrl+4**), **Issues** (**Ctrl+5**) and **Runs** (**Ctrl+6**), also
   reachable from the sidebar with the mouse, where each one carries its own
   icon. The digits follow the order the sidebar lists the sections in.
 - **Board** - top-level cards in three status sections (Todo / In Progress /
@@ -139,7 +139,7 @@ until it is next saved, and existing snapshots and backups are left in their
   (closed ones dimmed) and opens in the Issues section. A blocked card also
   carries an "N open issues" badge next to Blocked. Below everything, the card's
   brd comments (author, relative time, body, oldest first), or "No comments."
-  They are read-only: the panel never writes a comment.
+  They are read-only: the panel never writes a comment. When am runs touch the card, a **RUNS** section lists them (newest first: state glyph, short id, title, phase, age); a click opens Run detail, and Back returns to the card.
 - **Issues** (Ctrl+5) - brd's issues, open first and then closed, each group
   newest-updated first. A row shows a status badge, the title, how many cards
   the issue blocks and how many comments it has. **Open**/**Closed** filter
@@ -151,6 +151,7 @@ until it is next saved, and existing snapshots and backups are left in their
   comments. Only references written with brd's `--ref` are listed: `brd export`
   does not carry the ones a `[[wikilink]]` in a body creates. Read-only: the
   panel never opens, closes or comments on an issue.
+- **Runs** (Ctrl+6) - the runs the `am` orchestrator has made on the open project only (`am runs --repo-dir <project>`), watched, never controlled: the plugin has no pause, resume, cancel or start. Each row shows the run's state glyph, short id, title (its milestone id), done/total subtasks, current phase and age; a dead run says `dead - lease lost <age> ago`, and an escalated one says why. **Needs attention** (escalated or dead), **Live** (running), **Parked** and **All** chips carry their counts, clicking the active one shows All again, and the search box matches a run's id, title, current phase and state. The footer reads `am · schema 1 · watching` (or `not watching`). Enter or a click opens **Run detail**: state, milestone, branch prefix, base and lease; the story > subtask > phase > attempt tree (plus the orchestrator's own Integrate / Bases / Base rows); and an output pane holding one attempt's `am logs` snapshot, labelled `snapshot <age> ago` and `· last 200 lines` when it was cut. It is never a live tail: **Refresh** fetches it again, and a failed fetch says why and keeps the last text. Run state is its own channel, never brd's status: a glyph in a ring -- running ⟳, parked ⏸, escalated ‼, dead ✖, cancelled ⊘, done ✔ -- never colour alone. The same marks appear on **Board** cards, **Graph** nodes (a story node's pips are ringed for the subtasks a run is working on now) and in a card's RUNS section. A finished run speaking for a card, or run data with no good snapshot for 30 s, is drawn dimmed, and merged, canceled and archived cards get no live mark. The sidebar's Runs row shows `‼N` while N runs are escalated or dead. Nothing polls while the panel is closed. Requirements and failure modes are under Install.
 - **Documents** - lists every `.md` file under `docs/` (at most 500; a note says
   when the list was cut off). Each document has one type: Architecture, Specs,
   Standards, Audits, or Other. Set it with a `tag:` line in the file's YAML
@@ -188,11 +189,11 @@ until it is next saved, and existing snapshots and backups are left in their
   `Board`, or `Board › Milestone › Story › Subtask` inside a card (`Graph ›` …
   when the card was opened from the graph, `Issues ›` when it was opened from an
   issue), `Documents › <title>`, `Memories › <note>` and
-  `Issues › <issue title>`. Click the section crumb to go back the way the old
+  `Issues › <issue title>` and `Runs › …<last 8 characters of the run id>`. Click the section crumb to go back the way the old
   "Back" did, or an ancestor crumb to open that card; the last crumb is where
   you are.
 - **Keyboard navigation** - Up/Down moves the highlight (the panel scrolls to
-  keep it visible) through Board cards, documents or issues and, inside a card
+  keep it visible) through Board cards, documents, issues or runs and, inside a card
   or an issue, its links (a card's parent/blocked-by/children, an issue's
   blocked cards/references/referenced-by); Enter or Right-at-end opens the
   highlighted item. A card, document or issue without links scrolls with
@@ -230,7 +231,7 @@ comments, no issue details and no brd badges), plus small helpers in its
 helper `milestones/run-setup-milestone.py` (the unattended agent run, plus
 `--describe` for which agent the dialog will use), which builds its prompt from
 `milestones/setup-milestone.md` and resolves the agent's argv through
-`milestones/agents.py`.
+`milestones/agents.py`. For the run monitor it runs only `am` (`am runs`, `am status`, `am watch --all --follow` and `am logs`) through the helpers in `core/backend/runs/` (`runs/runs-snapshot.py`, `runs/runs-watch.py`, `runs/runs-logs.py`), and never reads am's SQLite database. am finds its journals under its own data dir, so the `XDG_DATA_HOME` the shell passes on to it matters.
 
 ## Install
 
@@ -253,6 +254,8 @@ of copying it, so `git pull` updates the plugin (then run
 `omarchy-restart-shell`).
 
 Requires `brd` on `PATH` to show anything. See <https://github.com/paulomtts/brd>.
+
+The run monitor also needs `am` on `PATH`. It is optional: without it the Runs screen says "am is not installed or not on PATH" and no run marks appear anywhere. `am` must speak journal schema 1; otherwise the Runs screen shows a schema-mismatch banner and the runs are polled every 5 s instead of watched. A corrupt journal shows a warning line and falls back to the same poll. If no good snapshot arrives for 30 s while the panel is open, the Runs screen says "Run data is out of date" and every run mark is dimmed.
 
 ## Keybinding (optional)
 
@@ -296,7 +299,7 @@ never the reverse.
 ```bash
 bash tests/run.sh [filter]   # pytest, then every QML test (optional path filter)
 ./run-tests.sh               # thin delegate to tests/run.sh
-python3 -m pytest tests/contract -q   # brd's JSON shapes, against the installed brd
+python3 -m pytest tests/contract -q   # brd's and am's JSON shapes, against the installed CLIs
 bash tests/live-check.sh     # restarts the real shell; needs the desktop session
 ```
 
@@ -304,6 +307,7 @@ bash tests/live-check.sh     # restarts the real shell; needs the desktop sessio
 `HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME`, so your real boards are never touched;
 it fails when brd's JSON drifts from what the plugin parses, and is skipped when
 `brd` is not installed. `tests/run.sh` already includes it.
+`tests/contract/test_am_shapes.py` does the same for `am`: hand-written schema 1 journals under a throwaway `XDG_DATA_HOME` pin the `am runs`, `am status` and `am watch` shapes the run helpers parse, and it is skipped when `am` is not installed.
 
 See `docs/architecture.md` and the specs in `docs/superpowers/specs/`
 (board viewer, sidebar and documents, core/ui architecture) for the design.

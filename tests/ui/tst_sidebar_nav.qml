@@ -1,9 +1,11 @@
 import QtQuick
 import QtTest
+import "../helpers/find.js" as H
 TestCase {
   id: tc
   name: "SidebarNav"
   when: windowShown
+  visible: true
   width: 400; height: 700
   Component { id: hostC; Item { width: 400; height: 700 } }
 
@@ -133,6 +135,21 @@ TestCase {
     compare(p.app.nav.dropdownOpen, false); compare(p.app.nav.dropdownQuery, "")
   }
 
+  // App's panel-open flag is how the run store knows to watch: it must follow
+  // the real panel both ways.
+  function test_the_panel_open_flag_reaches_the_run_store() {
+    var p = make(); if (!p) return
+    verify(p.app.runs, "App composes the run store")
+    compare(p.opened, true)
+    compare(p.app.panelOpen, true)
+    compare(p.app.runs.active, true)
+    p.opened = false
+    compare(p.app.panelOpen, false)
+    compare(p.app.runs.active, false)
+    p.opened = true
+    compare(p.app.runs.active, true)
+  }
+
   function test_focus_item_follows_state() {
     var p = make(); if (!p) return
     compare(p.focusItem.objectName, "keyCatcher")
@@ -178,5 +195,18 @@ TestCase {
     verify(!insideFlick(findIn(kc, "projectHeading")), "heading is not inside the flickable")
     verify(insideFlick(findIn(kc, "documentsView")), "content is inside the flickable")
     verify(flick.y >= toolbar.y + toolbar.height, "content starts below the toolbar")
+  }
+
+  function test_clicking_the_runs_row_opens_the_runs_section() {
+    var p = make(); if (!p) return
+    p.app.projects.applyProjectsList([pA])
+    // The snapshot the project selection launched cannot run here.
+    p.app.runs.snapshotRunner.cancel()
+    wait(50)
+    var row = H.find(p, "navRuns")
+    verify(row, "the Runs nav row")
+    mouseClick(row, row.width / 2, row.height / 2)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.nav.section, "runs")
   }
 }

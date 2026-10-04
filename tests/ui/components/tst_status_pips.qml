@@ -107,4 +107,44 @@ TestCase {
     wait(30)
     compare(pips.pulsing, true)
   }
+
+  // ---- 5.3: a ring on the pip of a subtask an am run is working on.
+
+  function test_no_pip_is_ringed_by_default() {
+    var pips = make([{ id: "t1", status: "done" }, { id: "t2", status: "in_progress" }])
+    compare(pips.ringedIds.length, 0, "the input defaults to []")
+    compare(H.find(pips, "statusPipt1").ringed, false)
+    compare(H.find(pips, "statusPipt1").border.width, 0)
+    compare(H.find(pips, "statusPipt2").border.width, 0, "the output is unchanged without it")
+  }
+
+  function test_ringed_ids_ring_only_the_listed_pips_with_the_pips_own_border() {
+    var pips = make([{ id: "t1", status: "done" }, { id: "t2", status: "in_progress" }, { id: "t3", status: "todo" }])
+    pips.ringedIds = ["t2", "zz"]
+    wait(30)
+    var t2 = H.find(pips, "statusPipt2")
+    compare(t2.ringed, true)
+    verify(t2.border.width > 0, "the ring is the pip's own border")
+    verify(Qt.colorEqual(t2.border.color, pips.palette.foreground))
+    compare(t2.radius, t2.height / 2, "still the same circle")
+    compare(H.find(pips, "statusPipt1").ringed, false)
+    compare(H.find(pips, "statusPipt1").border.width, 0)
+    compare(H.find(pips, "statusPipt3").border.width, 0)
+    compare(pips.pulsing, true, "the ring adds no animation of its own")
+    pips.ringedIds = []
+    wait(30)
+    compare(H.find(pips, "statusPipt2").ringed, false)
+    compare(H.find(pips, "statusPipt2").border.width, 0)
+  }
+
+  function test_a_ringed_ids_value_that_is_not_an_array_rings_nothing() {
+    var pips = make([{ id: "t1", status: "in_progress" }])
+    var bad = [null, undefined, "t1", 5, { t1: true }]
+    for (var i = 0; i < bad.length; i++) {
+      pips.ringedIds = bad[i]
+      wait(10)
+      compare(H.find(pips, "statusPipt1").ringed, false, "bad " + i)
+      compare(H.find(pips, "statusPipt1").border.width, 0, "bad " + i)
+    }
+  }
 }

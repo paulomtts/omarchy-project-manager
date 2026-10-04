@@ -6,16 +6,17 @@ import QtQml
 QtObject {
   id: nav
 
-  property string viewMode: "board"   // "board" | "entry" | "documents" | "document" | "graph" | "memories" | "memory" | "issues" | "issue"
+  property string viewMode: "board"   // "board" | "entry" | "documents" | "document" | "graph" | "memories" | "memory" | "issues" | "issue" | "runs" | "run"
 
   readonly property string section: (viewMode === "documents" || viewMode === "document") ? "documents"
     : (viewMode === "memories" || viewMode === "memory") ? "memories"
     : (viewMode === "issues" || viewMode === "issue") ? "issues"
+    : (viewMode === "runs" || viewMode === "run") ? "runs"
     : viewMode === "graph" ? "graph"
     : (viewMode === "entry" && nav.returnMode === "graph") ? "graph"
     : (viewMode === "entry" && nav.returnMode === "issues") ? "issues" : "board"
   readonly property string sectionTitle: section === "documents" ? "Documents" : section === "graph" ? "Graph"
-    : section === "memories" ? "Memories" : section === "issues" ? "Issues" : "Board"
+    : section === "memories" ? "Memories" : section === "issues" ? "Issues" : section === "runs" ? "Runs" : "Board"
 
   property string searchQuery: ""
   property int cursorIndex: 0
@@ -34,6 +35,11 @@ QtObject {
   // the card's own way back -- is left untouched, so Back from the card still
   // works afterwards.
   property string issueReturnMode: "issues"   // "issues" | "entry"
+
+  // Where an open run goes back to. A run reached from a card's RUNS row
+  // returns to that card, and the single return slot above -- which holds the
+  // card's own way back -- is left untouched, as for an issue.
+  property string runReturnMode: "runs"   // "runs" | "entry"
 
   property bool dropdownOpen: false
   property string dropdownQuery: ""

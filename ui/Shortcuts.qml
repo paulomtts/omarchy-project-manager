@@ -18,7 +18,7 @@ QtObject {
   // Shortcuts that work wherever the caret is. Returns true when it handled the
   // key. Ignored while a delete confirmation is open so a stray Ctrl+P cannot
   // move things underneath it. The digit chords follow the order the sidebar
-  // lists its sections in (Board, Graph, Documents, Memories, Issues) --
+  // lists its sections in (Board, Graph, Documents, Memories, Issues, Runs) --
   // renumbering one means renumbering the sidebar too.
   function handleGlobalKey(event) {
     if (!(event.modifiers & Qt.ControlModifier) || keys.app.deleter.deleteTarget || keys.app.memories.memoryDeleteOpen || keys.app.memories.newMemoryOpen || keys.app.milestones.dialogOpen || keys.app.board.archiveOpen) return false
@@ -28,6 +28,7 @@ QtObject {
     if (event.key === Qt.Key_3) { keys.navigator.showSection("documents"); return true }
     if (event.key === Qt.Key_4) { keys.navigator.showSection("memories"); return true }
     if (event.key === Qt.Key_5) { keys.navigator.showSection("issues"); return true }
+    if (event.key === Qt.Key_6) { keys.navigator.showSection("runs"); return true }
     if (event.key === Qt.Key_N && keys.app.nav.viewMode === "memories") { keys.app.memories.openNewMemory(); return true }
     if (event.key === Qt.Key_E && keys.app.nav.viewMode === "memory") { keys.app.memories.startMemoryEdit(); return true }
     return false
@@ -35,7 +36,7 @@ QtObject {
 
   // Escape (and the key catcher's close gesture): innermost thing first.
   function closeRequested() {
-    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue") ? keys.navigator.goBack() : keys.actions.close()))
+    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
   }
 
   function handleMove(dx, dy) {
@@ -44,7 +45,7 @@ QtObject {
       else if (dy !== 0) keys.navigator.moveGraph(dy < 0 ? "up" : "down")
       return
     }
-    if (dx < 0 && (keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue")) { keys.navigator.goBack(); return }
+    if (dx < 0 && (keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run")) { keys.navigator.goBack(); return }
     if (keys.app.nav.viewMode !== "entry" && keys.app.nav.viewMode !== "document" && keys.app.nav.viewMode !== "memory" && keys.app.nav.viewMode !== "issue") return
     if (dx > 0) { if (keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "issue") keys.navigator.activateCursor(); return }
     if (dy === 0) return

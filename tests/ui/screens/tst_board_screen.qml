@@ -153,4 +153,131 @@ TestCase {
     compare(s.app.nav.cursorIndex, 1)
     compare(list[1].hasCursor, true)
   }
+
+  // ---- 5.3: am run marks on the board's cards.
+
+  // A normalised run (runs.js normalizeRun's shape), built directly. live === null: no lease.
+  function mkRun(id, status, live, milestone, tree, rows) {
+    return { id: id, repo_dir: "/home/u/a", milestone_id: milestone, status: status, started_at: "",
+             base_branch: "", branch_prefix: "",
+             lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
+             rows: rows || [], tree: tree || { stories: [], subtasks: [] } }
+  }
+
+  // The roots and the runs that touch them:
+  //   m1 milestone of a live run with one running subtask row -> counts + bar
+  //   m2 a root am runs as a subtask, phase `review`          -> glyph + phase
+  //   m3 touched by nothing                                    -> nothing
+  //   m4 merged, yet the milestone of a live run               -> nothing (brd-status gate)
+  //   m5 milestone of a parked run                             -> dimmed counts
+  function withRuns() {
+    var s = make(); if (!s) return null
+    s.app.runs.snapshotRunner.cancel()
+    s.app.board.applyTreeData([
+      card("m1", "Milestone one", "in_progress", [card("s1", "Story", "in_progress", [card("t1", "Sub", "in_progress")])]),
+      card("m2", "Solo task", "todo"),
+      card("m3", "Untouched", "todo"),
+      card("m4", "Merged one", "merged"),
+      card("m5", "Parked one", "in_progress")])
+    s.app.runs.runs = [
+      mkRun("run-a1", "started", true, "m1",
+        { stories: [{ card_id: "s1", subtasks: ["t1"] }],
+          subtasks: [{ card_id: "t1", phases: [{ name: "implement", status: "started" }] }] },
+        [{ card_id: "t1", status: "running" }]),
+      mkRun("run-b2", "started", true, "mX",
+        { stories: [], subtasks: [{ card_id: "m2", phases: [{ name: "review", status: "started" }] }] },
+        [{ card_id: "m2", status: "running" }]),
+      mkRun("run-c3", "started", true, "m4",
+        { stories: [], subtasks: [{ card_id: "t4", phases: [] }] }, [{ card_id: "t4", status: "running" }]),
+      mkRun("run-d4", "stopped", null, "m5",
+        { stories: [], subtasks: [{ card_id: "t5", phases: [] }] }, [{ card_id: "t5", status: "stopped" }])]
+    wait(50)
+    return s
+  }
+  function cardTitled(s, title) { return cards(s).filter(function(c) { return c.title === title })[0] }
+  function badgeText(c) { var b = H.find(c, "runBadgeText"); return b ? b.text : "" }
+
+  function test_a_card_am_runs_as_a_subtask_shows_its_glyph_and_phase() {
+    var s = withRuns(); if (!s) return
+    var c = cardTitled(s, "Solo task")
+    var mark = H.find(c, "runMark")
+    verify(mark, "the card carries a run mark")
+    compare(mark.visible, true)
+    compare(badgeText(c), "⟳ review")
+    compare(H.find(c, "runBadge").pulsing, true, "a live running subtask pulses")
+    compare(H.find(c, "runRollupBar").visible, false, "a subtask has no rollup bar")
+  }
+
+  function test_a_milestone_card_shows_counts_and_a_rollup_bar() {
+    var s = withRuns(); if (!s) return
+    var c = cardTitled(s, "Milestone one")
+    compare(H.find(c, "runMark").visible, true)
+    compare(badgeText(c), "⟳ 1")
+    compare(H.find(c, "runBadge").pulsing, false, "the counts form never pulses")
+    compare(H.find(c, "runMark").opacity, 1)
+    var bar = H.find(c, "runRollupBar")
+    compare(bar.visible, true)
+    compare(H.find(bar, "runRollupRunning").text, "⟳ 1")
+  }
+
+  function test_an_untouched_card_shows_no_run_mark() {
+    var s = withRuns(); if (!s) return
+    var c = cardTitled(s, "Untouched")
+    compare(H.find(c, "runMark").visible, false)
+    compare(H.find(c, "runRollupBar").visible, false)
+  }
+
+  function test_a_merged_or_canceled_card_shows_no_run_mark_even_when_a_run_touches_it() {
+    var s = withRuns(); if (!s) return
+    var c = cardTitled(s, "Merged one")
+    verify(c, "the merged card is on the board")
+    compare(H.find(c, "runMark").visible, false)
+    compare(H.find(c, "runRollupBar").visible, false)
+    s.app.board.applyTreeData([card("m4", "Merged one", "canceled")])
+    wait(50)
+    compare(H.find(cardTitled(s, "Merged one"), "runMark").visible, false, "canceled too")
+    s.app.board.applyTreeData([card("m4", "Merged one", "in_progress")])
+    wait(50)
+    compare(H.find(cardTitled(s, "Merged one"), "runMark").visible, true,
+            "the gate is visibility only: the same run shows once the card is live again")
+  }
+
+  function test_a_dimmed_winner_is_drawn_dimmed_and_does_not_pulse() {
+    var s = withRuns(); if (!s) return
+    var c = cardTitled(s, "Parked one")
+    var mark = H.find(c, "runMark")
+    compare(mark.visible, true)
+    compare(badgeText(c), "⏸ 1")
+    verify(mark.opacity < 1, "a finished run speaking for the card is dimmed")
+    compare(H.find(c, "runBadge").active, false)
+    compare(H.find(c, "runBadge").pulsing, false)
+    verify(H.find(c, "runRollupBar").opacity < 1, "its rollup bar is dimmed with it")
+  }
+
+  function test_am_missing_hides_every_run_mark() {
+    var s = withRuns(); if (!s) return
+    s.app.runs.amStatus = "missing"
+    wait(50)
+    var all = cards(s)
+    compare(all.length, 5)
+    for (var i = 0; i < all.length; i++) {
+      compare(H.find(all[i], "runMark").visible, false, all[i].title)
+      compare(H.find(all[i], "runRollupBar").visible, false, all[i].title)
+    }
+    verify(texts(s).indexOf("Milestone one") >= 0, "the board still renders")
+  }
+
+  function test_stale_run_data_dims_the_marks() {
+    var s = withRuns(); if (!s) return
+    s.app.runs.stale = true
+    wait(50)
+    var solo = cardTitled(s, "Solo task")
+    verify(H.find(solo, "runMark").opacity < 1)
+    compare(H.find(solo, "runBadge").pulsing, false, "stale data does not pulse")
+    verify(H.find(cardTitled(s, "Milestone one"), "runMark").opacity < 1)
+    s.app.runs.stale = false
+    wait(50)
+    compare(H.find(solo, "runMark").opacity, 1)
+    compare(H.find(solo, "runBadge").pulsing, true)
+  }
 }

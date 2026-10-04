@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import "../../ui/components"
+import "../../ui/components/runGlyphs.js" as RG
 TestCase {
   id: tc
   name: "Sidebar"
@@ -180,5 +181,94 @@ TestCase {
     click(row)
     compare(sectionSpy.count, 1)
     compare(sectionSpy.signalArguments[0][0], "issues")
+  }
+
+  function test_runs_attention_defaults_to_nothing() {
+    var sb = make()
+    compare(sb.runsAttention, 0)
+    compare(sb.runsAttentionText, "")
+  }
+
+  function test_runs_attention_text_follows_the_count() {
+    var sb = make()
+    sb.runsAttention = 3
+    compare(sb.runsAttentionText, RG.glyphOf("escalated") + "3")
+    compare(sb.runsAttentionText, "‼3", "the shared escalated glyph, no space")
+    sb.runsAttention = 0
+    compare(sb.runsAttentionText, "")
+    sb.runsAttention = -2
+    compare(sb.runsAttentionText, "", "a negative count shows nothing")
+  }
+
+  function test_existing_rows_show_no_count() {
+    var sb = make()
+    sb.runsAttention = 5
+    wait(20)
+    var names = ["navCountBoard", "navCountGraph", "navCountDocuments", "navCountMemories", "navCountIssues"]
+    for (var i = 0; i < names.length; i++) {
+      var count = find(sb, names[i])
+      verify(count, names[i] + " slot exists")
+      compare(count.visible, false, names[i] + " stays hidden: no existing row sets countText")
+    }
+  }
+
+  function test_a_row_given_a_count_shows_it_after_its_label_in_urgent() {
+    var sb = make()
+    var row = find(sb, "navBoard")
+    row.countText = "‼2"
+    wait(20)
+    var count = find(sb, "navCountBoard")
+    compare(count.visible, true)
+    compare(String(count.text), "‼2")
+    verify(Qt.colorEqual(count.color, sb.theme.urgent), "the count reads in urgent")
+    var label = find(sb, "navLabelBoard")
+    verify(label, "navLabelBoard exists")
+    verify(count.mapToItem(row, 0, 0).x > find(sb, "navIconBoard").mapToItem(row, 0, 0).x,
+      "the count follows the icon")
+    verify(count.mapToItem(row, 0, 0).x >= label.mapToItem(row, 0, 0).x + label.width,
+      "the count follows the label")
+    row.countText = ""
+    wait(20)
+    compare(count.visible, false)
+  }
+
+  // ---- the Runs row (5.1)
+
+  function test_the_runs_row_comes_after_issues_with_its_own_icon() {
+    var sb = make()
+    var row = find(sb, "navRuns")
+    verify(row, "the Runs nav row")
+    compare(String(find(sb, "navLabelRuns").text), "Runs")
+    compare(String(find(sb, "navIconRuns").text), "\uf04b")
+    verify(row.y > find(sb, "navIssues").y, "Runs comes after Issues, so it is Ctrl+6")
+    var others = ["navIconBoard", "navIconGraph", "navIconDocuments", "navIconMemories", "navIconIssues"]
+    for (var i = 0; i < others.length; i++)
+      verify(String(find(sb, others[i]).text) !== "\uf04b", others[i] + " draws a different glyph")
+    compare(find(sb, "navIconRuns").font.pixelSize, find(sb, "navIconBoard").font.pixelSize)
+    click(row)
+    compare(sectionSpy.count, 1)
+    compare(sectionSpy.signalArguments[0][0], "runs")
+  }
+
+  function test_the_runs_row_is_disabled_without_a_project() {
+    var sb = make()
+    sb.selectedProject = null
+    compare(find(sb, "navRuns").enabled, false)
+    click(find(sb, "navRuns"))
+    compare(sectionSpy.count, 0)
+  }
+
+  function test_the_runs_row_shows_the_attention_count() {
+    var sb = make()
+    var count = find(sb, "navCountRuns")
+    verify(count, "the Runs count slot")
+    compare(count.visible, false, "no count at 0")
+    sb.runsAttention = 2
+    wait(20)
+    compare(count.visible, true)
+    compare(String(count.text), "‼2")
+    sb.runsAttention = 0
+    wait(20)
+    compare(count.visible, false)
   }
 }
