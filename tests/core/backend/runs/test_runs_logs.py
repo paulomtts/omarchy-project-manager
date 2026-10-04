@@ -222,3 +222,97 @@ def test_am_does_not_inherit_stdin(world):
     assert code == 0
     assert len(lines) == 1
     assert json.loads(lines[0]) == {"ok": True, "data": {"stdout": ""}}
+
+
+
+
+# --- bad output, am missing, usage, catch-all ---------------------------------
+
+@pytest.mark.parametrize("text,exit_code", [
+    ("not json\n", 0),
+    ("", 1),
+    ("Traceback (most recent call last):\n  boom\n", 1),
+], ids=["plain-text", "crash-empty", "traceback"])
+def test_non_json_output_is_am_bad_output(world, text, exit_code):
+    set_raw(world, text, exit_code)
+    code, out = run(world)  # run() asserts exactly one JSON line
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert "am logs" in out["error"]["message"]
+
+
+@pytest.mark.parametrize("text", [
+    "[1, 2]\n",
+    "null\n",
+    '"ok"\n',
+    '{"data": {"stdout": ""}}\n',
+    '{"ok": "true", "data": {}}\n',
+    '{"ok": 1, "data": {}}\n',
+    '{"ok": null, "data": {}}\n',
+], ids=["list", "null", "string", "no-ok", "ok-string", "ok-int", "ok-null"])
+def test_non_object_or_no_ok_is_am_bad_output(world, text):
+    set_raw(world, text, 0)
+    code, out = run(world)
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert "am logs" in out["error"]["message"]
+
+
+def test_am_missing(world):
+    empty = world["tmp"] / "empty-bin"
+    empty.mkdir()
+    code, out = run(world, PATH=str(empty))
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmMissing"
+    assert out["error"]["message"]
+
+
+@pytest.mark.parametrize("args", [["r1", "c1", "implement"],
+                                  ["r1", "c1", "implement", "2", "extra"]],
+                         ids=["three", "five"])
+def test_usage_wrong_argc(world, args):
+    code, out = run(world, args)
+    assert code == 2
+    assert out == {"ok": False, "error": {"type": "Usage",
+                                          "message": "usage: runs-logs.py RUN CARD PHASE ATTEMPT"}}
+    assert calls(world) == []
+
+
+def test_am_cannot_start_is_helper_error(world):
+    # Executable (so shutil.which finds it) but unstartable: subprocess raises
+    # OSError and guarded() must still print exactly one JSON line.
+    write_exec(world["bin"] / "am", "#!/nonexistent/interpreter\n")
+    code, out = run(world)
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"]
+
+
+def load_helper():
+    """The script as a module (its name has a hyphen, so no plain import)."""
+    spec = importlib.util.spec_from_file_location("runs_logs", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_am_timeout_is_helper_error(world, monkeypatch, capsys):
+    # An am that hangs is cut off after AM_TIMEOUT and reported as HelperError
+    # (shortened here so the test does not wait the real 60 s).
+    write_exec(world["bin"] / "am", "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n")
+    helper = load_helper()
+    assert helper.AM_TIMEOUT == 60
+    monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
+    for key, value in env_for(world).items():
+        monkeypatch.setenv(key, value)
+    code = helper.guarded(list(ARGS))
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    assert len(lines) == 1, lines
+    out = json.loads(lines[0])
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
