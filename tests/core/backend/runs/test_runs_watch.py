@@ -193,3 +193,56 @@ def test_am_missing(world):
     assert lines[0]["ok"] is False
     assert lines[0]["error"]["type"] == "AmMissing"
     assert lines[0]["error"]["message"]
+
+
+# --- backlog, filter, unknown input ------------------------------------------
+
+def test_drops_hello_and_backlog(world):
+    # r1's lines were written an hour before the helper started: backlog, dropped.
+    # r2's line is live and proves the helper is reading at all.
+    set_script(world, [hello(), ev("r1", ts="PAST"), ev("r1", "subtask_upsert", ts="PAST"),
+                       ev("r2")])
+    code, lines, _ = run_helper(world, [str(world["proj"]), "r1", "r2"])
+    assert code == 0
+    assert changed(lines) == [["r2"]]
+
+
+def test_live_event_for_watched_run_emits_changed(world):
+    set_script(world, [hello(), ev("r1")])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    # Exactly this object: run ids only, no event contents.
+    assert lines == [{"changed": ["r1"]}]
+
+
+def test_filters_unwatched_runs(world):
+    set_script(world, [hello(), ev("r9"), ev("r8", "attempt_upsert"),
+                       upsert("r7", "/somewhere/else")])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == []
+
+
+def test_ignores_unknown_events_and_keys(world):
+    set_script(world, [
+        hello(),
+        raw("not json"),
+        raw("[1, 2]"),
+        raw(""),
+        ev("r2", "future_upsert"),                     # unknown event: ignored
+        {"line": {"event": "phase_upsert", "ts": "NOW"}},  # no run_id: ignored
+        ev("r1", payload={"name": "implement", "status": "done", "shiny": {"new": 1}},
+           brand_new_key=[1, 2, 3]),                   # extra keys: kept
+    ])
+    code, lines, err = run_helper(world, [str(world["proj"]), "r1", "r2"])
+    assert code == 0
+    assert "Traceback" not in err
+    assert changed(lines) == [["r1"]]
+
+
+def test_missing_or_unparseable_ts_is_kept(world):
+    # Not provably backlog, so kept.
+    set_script(world, [hello(), ev("r1", ts=None), ev("r2", ts="yesterday-ish")])
+    code, lines, _ = run_helper(world, [str(world["proj"]), "r1", "r2"])
+    assert code == 0
+    assert changed(lines) == [["r1", "r2"]]

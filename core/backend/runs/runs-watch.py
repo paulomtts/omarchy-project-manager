@@ -20,6 +20,8 @@ Unknown events, unknown keys and non-JSON lines are ignored. am exiting 0,
 SIGINT, SIGTERM or a closed stdout end the helper with exit 0. Only the `am`
 command is used; am's database and on-disk layout are never read.
 """
+import datetime
+import json
 import os
 import queue
 import shutil
@@ -33,6 +35,9 @@ from common.json_line import emit  # noqa: E402
 USAGE = "usage: runs-watch.py <project_root> [run_id ...]"
 IDLE_POLL = 1.0  # seconds; the longest the main loop blocks with nothing pending
 EOF = object()
+# The schema-1 journal events. Any other `event` value is ignored.
+EVENTS = frozenset({"run_upsert", "story_upsert", "subtask_upsert", "phase_upsert",
+                    "attempt_upsert"})
 
 
 def say(payload, code=0):
@@ -44,6 +49,43 @@ def say(payload, code=0):
 
 def failure(kind, message, code=1):
     return say({"ok": False, "error": {"type": kind, "message": message}}, code)
+
+
+def parse_ts(value):
+    """A journal `ts` (ISO 8601, UTC, usually ending in Z) as an aware datetime,
+    or None when it is missing or unparseable."""
+    if not isinstance(value, str):
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        ts = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.timezone.utc)
+    return ts
+
+
+# --- Backlog drop (S4 workaround) ------------------------------------------------
+# `am watch --follow` replays every journal line before going live. Until
+# `am watch --from-now` exists (S4), lines written before this helper started
+# are dropped here. When S4 lands: pass --from-now in spawn(), delete this
+# function, and delete its one call in keep().
+def is_backlog(line, started):
+    ts = parse_ts(line.get("ts"))
+    return ts is not None and ts < started
+
+
+def keep(line, watched, started):
+    """The run id a parsed stream line signals, or None to ignore the line."""
+    if not isinstance(line, dict):
+        return None
+    run_id = line.get("run_id")
+    if not (isinstance(run_id, str) and run_id) or line.get("event") not in EVENTS:
+        return None
+    if is_backlog(line, started):
+        return None
+    return run_id if run_id in watched else None
 
 
 def spawn(am):
@@ -75,30 +117,42 @@ def stop(proc):
             proc.wait()
 
 
-def stream(lines):
-    """Drain am's stream until it ends."""
+def stream(lines, watched, started):
+    """Collect the run ids of kept lines until am's stream ends, then print them."""
+    batch = []
     while True:
         try:
             raw = lines.get(timeout=IDLE_POLL)
         except queue.Empty:
             continue
         if raw is EOF:
+            if batch:
+                say({"changed": batch})
             return
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            continue
+        run_id = keep(line, watched, started)
+        if run_id is not None and run_id not in batch:
+            batch.append(run_id)
 
 
 def main(argv):
     if not argv:
         return failure("Usage", USAGE, 2)
+    watched = set(argv[1:])
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
+    started = datetime.datetime.now(datetime.timezone.utc)  # before am starts
     proc = spawn(am)
     lines, err = queue.Queue(), []
     threading.Thread(target=pump, args=(proc.stdout, lines), daemon=True).start()
     err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
     err_reader.start()
     try:
-        stream(lines)
+        stream(lines, watched, started)
         code = proc.wait()
         err_reader.join(timeout=2)
     finally:
