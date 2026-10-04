@@ -189,4 +189,95 @@ TestCase {
     compare(marker.text, "\uF024 1 open issue")
     compare(find(find(s, "graphNodem1"), "graphNodeIssues").visible, false)
   }
+
+  // ---- 5.3: the am run marks the screen hands the view.
+
+  function mkRun(id, status, live, milestone, tree, rows) {
+    return { id: id, repo_dir: "/home/u/a", milestone_id: milestone, status: status, started_at: "",
+             base_branch: "", branch_prefix: "",
+             lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
+             rows: rows || [], tree: tree || { stories: [], subtasks: [] } }
+  }
+
+  // m1 heads a live run working on t1 (t2 still pending); m2 is merged but a
+  // live run still names it; m3 is untouched.
+  function withRuns(s) {
+    s.app.runs.snapshotRunner.cancel()
+    s.app.board.applyTreeData([
+      card("m1", "First", "in_progress", [card("s1", "Story one", "in_progress",
+        [card("t1", "Sub one", "in_progress"), card("t2", "Sub two", "todo")])]),
+      card("m2", "Second", "merged", [card("s2", "Story two", "merged")]),
+      card("m3", "Third", "todo", [card("s3", "Story three", "todo")])])
+    s.app.runs.runs = [
+      mkRun("run-a1", "started", true, "m1",
+        { stories: [{ card_id: "s1", subtasks: ["t1", "t2"] }],
+          subtasks: [{ card_id: "t1", phases: [{ name: "implement", status: "started" }] },
+                     { card_id: "t2", phases: [] }] },
+        [{ card_id: "t1", status: "running" }, { card_id: "t2", status: "pending" }]),
+      mkRun("run-b2", "started", true, "m2", { stories: [{ card_id: "s2", subtasks: [] }], subtasks: [] }, [])]
+    return s
+  }
+
+  function test_the_graph_view_gets_the_run_marks_from_the_run_store() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.showSection("graph")
+    wait(100)
+    var gv = find(s, "graphView")
+    compare(gv.runMarks.m1.state, "running")
+    compare(gv.runMarks.m1.runId, "run-a1")
+    compare(gv.runRollups.m1.running, 1)
+    compare(gv.runRollups.m1.pending, 1)
+    compare(gv.runRollups.m1.total, 2)
+    compare(gv.runMarks.m3.state, "none", "an untouched node is passed as none")
+    compare(gv.runRinged.length, 0, "milestone nodes carry no pips")
+    var badge = find(find(s, "graphNodem1"), "runBadge")
+    verify(badge && badge.visible, "the milestone node draws the badge")
+    compare(badge.text, "⟳ 1")
+    compare(gv.runStale, false)
+    s.app.runs.stale = true
+    compare(gv.runStale, true, "stale reaches the view")
+  }
+
+  function test_a_merged_node_gets_no_run_mark_even_when_a_run_touches_it() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.showSection("graph")
+    wait(100)
+    var gv = find(s, "graphView")
+    compare(gv.runMarks.m2, undefined, "the brd-status gate decides visibility")
+    compare(gv.runRollups.m2, undefined)
+    compare(find(find(s, "graphNodem2"), "runMark").visible, false)
+  }
+
+  function test_the_story_view_rings_only_the_subtask_a_live_run_is_working_on() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.showSection("graph")
+    s.app.graph.setGraphView("story")
+    wait(100)
+    var gv = find(s, "graphView")
+    compare(gv.runRinged.join(","), "t1", "t2 is in the run but its own row is pending")
+    var pips = find(find(s, "graphNodes1"), "graphNodePips")
+    compare(find(pips, "statusPipt1").ringed, true)
+    compare(find(pips, "statusPipt2").ringed, false)
+    compare(gv.runMarks.s1.state, "running")
+    compare(gv.runRollups.s1.total, 2)
+    compare(gv.runMarks.s2, undefined, "a merged story is gated too")
+  }
+
+  function test_am_missing_passes_no_run_marks() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.showSection("graph")
+    s.app.graph.setGraphView("story")
+    s.app.runs.amStatus = "missing"
+    wait(100)
+    var gv = find(s, "graphView")
+    compare(Object.keys(gv.runMarks).length, 0)
+    compare(Object.keys(gv.runRollups).length, 0)
+    compare(gv.runRinged.length, 0)
+    verify(find(s, "graphNodes1"), "the graph still renders")
+    compare(find(find(s, "graphNodes1"), "runMark").visible, false)
+  }
 }
