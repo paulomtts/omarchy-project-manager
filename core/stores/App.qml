@@ -104,6 +104,11 @@ QtObject {
     backendDir: app.backendDir
     project: app.projects.selectedProject ? app.projects.selectedProject.root_path : ""
     active: app.panelOpen
+    searchQuery: app.nav.searchQuery
+    onRunFilterToggled: {
+      app.nav.cursorIndex = 0
+      app.nav.scrollOnCursor = false
+    }
   }
 
   readonly property GraphStore graph: GraphStore {

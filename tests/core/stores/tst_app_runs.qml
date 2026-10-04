@@ -123,4 +123,23 @@ TestCase {
     compare(app.runs.watching, false)
     compare(watch.running, false, "closing the panel stops the watch")
   }
+
+  // ---- the Runs screen's search and filter (5.1)
+
+  function test_the_search_query_follows_the_navigation_store() {
+    var app = makeBare(); if (!app) return
+    app.nav.searchQuery = "gamma"
+    compare(app.runs.searchQuery, "gamma")
+    app.nav.searchQuery = ""
+    compare(app.runs.searchQuery, "")
+  }
+
+  function test_a_filter_change_puts_the_cursor_home() {
+    var app = makeBare(); if (!app) return
+    app.nav.cursorIndex = 3
+    app.nav.scrollOnCursor = true
+    app.runs.toggleRunFilter("live")
+    compare(app.nav.cursorIndex, 0)
+    compare(app.nav.scrollOnCursor, false)
+  }
 }

@@ -13,6 +13,8 @@ TestCase {
   property string rootA: "/home/u/my proj"
   property string rootB: "/home/u/b"
 
+  Component { id: spyC; SignalSpy {} }
+
   function make() {
     var comp = Qt.createComponent("../../../core/stores/RunStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
@@ -852,5 +854,55 @@ TestCase {
     reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
     compare(store.watching, true, "B's watch is tried")
     compare(store.watchProc.command[2], "/home/u/b")
+  }
+
+  // ---- the Runs screen's filter and search (5.1)
+
+  function ids(list) { return list.map(function(r) { return r.id }).join(",") }
+
+  function screenEntries() {
+    return [entry("live1", "started", true), entry("esc1", "escalated", false),
+            entry("dead1", "started", false), entry("park1", "stopped", false)]
+  }
+
+  function test_filtered_runs_follow_the_filter_and_the_search() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply(screenEntries()), 0)
+    compare(store.runFilter, "")
+    compare(store.searchQuery, "")
+    compare(ids(store.filteredRuns), "live1,esc1,dead1,park1")
+    store.runFilter = "attention"
+    compare(ids(store.filteredRuns), "esc1,dead1")
+    store.searchQuery = "DEAD"
+    compare(ids(store.filteredRuns), "dead1", "the search composes with the filter")
+    store.runFilter = ""
+    compare(ids(store.filteredRuns), "dead1")
+    store.searchQuery = ""
+    compare(ids(store.filteredRuns), "live1,esc1,dead1,park1")
+  }
+
+  function test_toggle_run_filter_and_back_to_all() {
+    var store = make(); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runFilterToggled" })
+    store.toggleRunFilter("live")
+    compare(store.runFilter, "live")
+    compare(spy.count, 1)
+    store.toggleRunFilter("parked")
+    compare(store.runFilter, "parked", "another chip replaces the filter")
+    store.toggleRunFilter("parked")
+    compare(store.runFilter, "", "the active chip again is All")
+    store.toggleRunFilter("attention")
+    store.toggleRunFilter("all")
+    compare(store.runFilter, "", "the All chip is All")
+    compare(spy.count, 5)
+  }
+
+  function test_a_project_switch_resets_the_filter() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply(screenEntries()), 0)
+    store.toggleRunFilter("attention")
+    store.project = rootB
+    compare(store.runFilter, "")
+    compare(store.filteredRuns.length, 0)
   }
 }

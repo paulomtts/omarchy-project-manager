@@ -24,6 +24,16 @@ Scope {
   property bool stale: false          // the last good snapshot is over 30 s old while active
   property string watchWarning: ""    // the corrupt-journal chip; "" when there is none
 
+  // The Runs screen's chip ("" means All, else "attention" | "live" | "parked")
+  // and search text. App binds searchQuery to the navigation store; the chip
+  // survives a section switch and is reset by a project switch.
+  property string runFilter: ""
+  property string searchQuery: ""
+  // The chip changed: a different list, so the cursor goes home (App's job).
+  signal runFilterToggled()
+  // The one filtered list: the screen's rows and the navigator's cursor list.
+  readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery)
+
   // A watch has been started since the last activation or project switch:
   // later snapshots never start another (the helper picks up the project's new
   // runs itself), and a watch that ended is not restarted until the next
@@ -55,6 +65,12 @@ Scope {
   function refresh() {
     if (store.project === "") return
     snapshotRunner.run([store.project])
+  }
+
+  // A chip was chosen: the All chip, or the active one again, means All.
+  function toggleRunFilter(id) {
+    store.runFilter = id === "all" || id === store.runFilter ? "" : String(id || "")
+    store.runFilterToggled()
   }
 
   onActiveChanged: {
@@ -178,6 +194,7 @@ Scope {
     store.restartStale()
     store.runs = []
     store.selectedRunId = ""
+    store.runFilter = ""
     store.lastError = ""
     store.amStatus = "ok"
     if (store.project !== "") store.refresh()
