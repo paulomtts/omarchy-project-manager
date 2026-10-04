@@ -1481,4 +1481,131 @@ TestCase {
     reply(store.controlRunners[0].current, settingsReply(["a", 5], true), 0)
     compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r2|/home/u/my proj|--allow-no-verification")
   }
+
+  // One am control request row.
+  function amRequest(command, requestedAt, handledAt) {
+    return { command: command, requested_at: requestedAt, handled_at: handledAt }
+  }
+
+  // A pause of `id` that am acknowledged; requestedAt "" leaves it out of the reply.
+  function pauseAcked(store, id, requestedAt) {
+    compare(store.control("pause", id), true)
+    var data = { run_id: id, command: "pause" }
+    if (requestedAt !== "") data.requested_at = requestedAt
+    reply(store.controlRunners[store.controlRunners.length - 1].current, ctlOk(data), 0)
+  }
+
+  function test_a_pause_settles_when_its_request_is_handled() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    pauseAcked(store, "r1", "t1")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone", [amRequest("pause", "t1", null)])])
+    compare(store.pending.r1, "pause", "not handled yet")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+                              [amRequest("pause", "t0", "t0h"), amRequest("pause", "t1", "")])])
+    compare(store.pending.r1, "pause", "an older handled pause is another request")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+                              [amRequest("pause", "t0", "t0h"), amRequest("pause", "t1", "t1h")])])
+    compare(store.pending.r1, undefined, "handled")
+  }
+
+  function test_without_requested_at_the_last_request_of_that_command_decides() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    pauseAcked(store, "r1", "")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+      [amRequest("pause", "t0", "t0h"), amRequest("cancel", "t1", "t1h"), amRequest("pause", "t2", null)])])
+    compare(store.pending.r1, "pause", "the last pause is not handled; a handled cancel is another request")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+      [amRequest("pause", "t0", "t0h"), amRequest("pause", "t2", "t2h")])])
+    compare(store.pending.r1, undefined)
+  }
+
+  // Review Focus 2.
+  function test_a_resume_settles_when_the_run_state_changes() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    reply(store.controlRunners[0].current, settingsReply(["make test"], false), 0)
+    reply(store.controlRunners[0].current, ctlOk({ action: "resume", run_id: "r1", detached: true }), 0)
+    compare(store.pending.r1, "resume", "a detached resume is acknowledged, not failed")
+    compare(store.lastControlError, "")
+    snapshot(store, [ctlEntry("r1", "started", false, "milestone", [amRequest("resume", "t1", "t1h")])])
+    compare(store.pending.r1, "resume", "still dead; resume never reads a request row")
+    snapshot(store, [running("r1")])
+    compare(store.pending.r1, undefined, "dead -> running")
+  }
+
+  function test_a_request_settles_when_its_run_vanishes() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    pauseAcked(store, "r1", "t1")
+    snapshot(store, [running("r2")])
+    compare(store.pending.r1, undefined)
+  }
+
+  // D5.
+  function test_a_snapshot_never_settles_a_request_in_flight() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    var runner = store.controlRunners[0]
+    snapshot(store, [ctlEntry("r1", "stopped", false)])
+    compare(store.pending.r1, "pause", "the reply has not come back yet")
+    snapshot(store, [])
+    compare(store.pending.r1, "pause", "not even when the run vanished")
+    reply(runner.current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.pending.r1, "pause")
+    snapshot(store, [ctlEntry("r1", "stopped", false)])
+    compare(store.pending.r1, undefined, "settled once acknowledged")
+  }
+
+  function test_a_failed_snapshot_settles_nothing() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    pauseAcked(store, "r1", "t1")
+    store.refresh()
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "AmFailed", message: "boom" } }) + "\n", 0)
+    compare(store.pending.r1, "pause")
+    store.refresh()
+    reply(store.snapshotRunner.current, "garbage\n", 1)
+    compare(store.pending.r1, "pause")
+  }
+
+  function test_a_project_switch_empties_the_control_state_and_drops_the_old_reply() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("pause", "r1")
+    store.control("cancel", "r2")
+    var proc = store.controlRunners[0].current
+    reply(store.controlRunners[1].current, ctlFail("NotRunningError", "x"), 0)
+    compare(store.lastControlErrorRunId, "r2")
+    store.stillWaiting = { r1: true }
+    store.project = rootB
+    compare(Object.keys(store.pending).length, 0)
+    compare(Object.keys(store.stillWaiting).length, 0)
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.controlRunners.length, 1, "the launched request is not stopped")
+    var seq = store.snapshotRunner.seq
+    reply(proc, ctlFail("NotAcceptingError", "x"), 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.lastControlError, "", "the old reply changes nothing")
+    compare(store.snapshotRunner.seq, seq, "no extra snapshot for B")
+    compare(store.controlRunners.length, 0)
+  }
+
+  // Review Focus 1: A -> B -> A before the old reply lands.
+  function test_an_old_reply_after_returning_to_the_project_changes_nothing() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    var oldProc = store.controlRunners[0].current
+    store.project = rootB
+    store.project = rootA
+    reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
+    compare(store.control("pause", "r1"), true, "pending was emptied, so the run can be asked again")
+    compare(store.controlRunners.length, 2)
+    var seq = store.snapshotRunner.seq
+    reply(oldProc, ctlFail("NotAcceptingError", "x"), 0)
+    compare(store.pending.r1, "pause", "the old reply does not settle the new request")
+    compare(store.lastControlError, "")
+    compare(store.snapshotRunner.seq, seq, "and does not re-snapshot")
+    compare(store.controlRunners.length, 1)
+    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t2" }), 0)
+    compare(store.pending.r1, "pause")
+    compare(store.controlRunners.length, 0)
+  }
 }

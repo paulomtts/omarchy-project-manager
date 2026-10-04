@@ -226,6 +226,12 @@ Scope {
     store.runFilter = ""
     store.lastError = ""
     store.amStatus = "ok"
+    // Control requests already launched still complete in am; their replies
+    // are dropped by their runners' guard. Nothing of the old project's stays.
+    store.pending = {}
+    store.stillWaiting = {}
+    controlState.requests = {}
+    store.dismissControlError()
     if (store.project !== "") store.refresh()
   }
 
@@ -383,6 +389,7 @@ Scope {
         out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
       }
       store.runs = out
+      store.settleAfterSnapshot()
       store.logsAfterSnapshot()
       if (pollTimer.running && store.watchSchemaError !== "") {
         // The watch's schema banner outlives the polling snapshots.
@@ -580,6 +587,35 @@ Scope {
       store.failControl(runner.runId, "Resume needs verify commands: none are stored for this project, and running without verification was not chosen.")
       store.dropRunner(runner)
     }
+  }
+
+  // After every good snapshot: an acknowledged request is settled when its run
+  // is gone, when the run's state moved since the request started, or (pause,
+  // cancel) when am marks its request handled. A request still in flight is
+  // never settled by a snapshot: its buttons stay off until the reply.
+  function settleAfterSnapshot() {
+    var ids = Object.keys(store.pending)
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i]
+      if (!store.hasKey(controlState.requests, id)) continue
+      var req = controlState.requests[id]
+      if (!req.acknowledged) continue
+      var run = store.runById(id)
+      if (run === null || Runs.runState(run) !== req.baseline
+          || (req.action !== "resume" && store.isHandled(run, req))) store.settle(id)
+    }
+  }
+
+  // The run's am request row for this request has a handled_at: the row with
+  // the requested_at am's reply gave, else the last row of the same command.
+  function isHandled(run, req) {
+    var list = Array.isArray(run.requests) ? run.requests : []
+    var match = null
+    for (var i = 0; i < list.length; i++) {
+      var row = list[i]
+      if (req.requestedAt !== "" ? row.requested_at === req.requestedAt : row.command === req.action) match = row
+    }
+    return match !== null && match.handled_at !== ""
   }
 
   // The guard is the project root, so a snapshot launched for a project the
