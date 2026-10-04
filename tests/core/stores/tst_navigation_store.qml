@@ -39,6 +39,16 @@ TestCase {
     compare(nav.sectionTitle, "Issues")
   }
 
+  function test_the_runs_view_modes_share_one_section() {
+    var nav = make(); if (!nav) return
+    nav.viewMode = "runs"
+    compare(nav.section, "runs")
+    compare(nav.sectionTitle, "Runs")
+    nav.viewMode = "run"
+    compare(nav.section, "runs")
+    compare(nav.sectionTitle, "Runs")
+  }
+
   // A card opened from an issue is still the Issues section, so the sidebar
   // keeps Issues lit and the trail keeps saying "Issues".
   function test_a_card_opened_from_an_issue_keeps_the_issues_section() {
