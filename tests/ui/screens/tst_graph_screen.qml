@@ -280,4 +280,31 @@ TestCase {
     verify(find(s, "graphNodes1"), "the graph still renders")
     compare(find(find(s, "graphNodes1"), "runMark").visible, false)
   }
+
+  function test_a_canceled_or_archived_node_gets_no_run_mark_either() {
+    var s = make(); if (!s) return
+    s.app.runs.snapshotRunner.cancel()
+    s.app.board.applyTreeData([
+      card("m1", "First", "canceled", [card("s1", "Story one", "canceled")]),
+      card("m2", "Second", "archived", [card("s2", "Story two", "archived")]),
+      card("m3", "Third", "in_progress", [card("s3", "Story three", "in_progress")])])
+    s.app.runs.runs = [
+      mkRun("run-a1", "started", true, "m1", { stories: [{ card_id: "s1", subtasks: [] }], subtasks: [] }, []),
+      mkRun("run-b2", "started", true, "m2", { stories: [{ card_id: "s2", subtasks: [] }], subtasks: [] }, []),
+      mkRun("run-c3", "started", true, "m3", { stories: [{ card_id: "s3", subtasks: [] }], subtasks: [] }, [])]
+    s.navigator.showSection("graph")
+    wait(100)
+    var gv = find(s, "graphView")
+    compare(gv.runMarks.m1, undefined, "canceled")
+    compare(gv.runMarks.m2, undefined, "archived")
+    compare(gv.runMarks.m3.state, "running", "a live node keeps its mark")
+    compare(find(find(s, "graphNodem1"), "runMark").visible, false)
+    compare(find(find(s, "graphNodem2"), "runMark").visible, false)
+    compare(find(find(s, "graphNodem3"), "runMark").visible, true)
+    s.app.graph.setGraphView("story")
+    wait(100)
+    compare(gv.runMarks.s1, undefined, "a canceled story")
+    compare(gv.runMarks.s2, undefined, "an archived story")
+    compare(gv.runMarks.s3.state, "running")
+  }
 }
