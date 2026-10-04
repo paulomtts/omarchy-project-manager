@@ -120,6 +120,7 @@ process group on cancel or timeout, and logs to
 (dir `0700`, file `0600`). Only `claude` runs restricted (read plus
 `Bash(brd *)`); every other agent runs with full auto-approval, which the
 dialog states before the run starts.
+`core/backend/runs/` is the run-monitor backend: `runs-snapshot.py` runs `am runs`, then `am status` for every non-terminal run and the latest 10 terminal ones, and prints one JSON line (`{ok, runs, data_dir}` or an error).
 
 When a thing is needed a second time it becomes shared **before** the second
 use is written. The architecture test fails on a second copy of: the modal

@@ -267,3 +267,57 @@ def test_repo_dir_passed(world):
     assert len(made) == 3
     for argv in made:
         assert argv[-2:] == ["--repo-dir", str(world["proj"])]
+
+
+# --- am errors and bad output --------------------------------------------------
+
+@pytest.mark.parametrize("envelope,exit_code", [(UNKNOWN_RUN, 3), (REPO_DIR_ERROR, 0)])
+def test_am_error_envelope_passthrough_runs(world, envelope, exit_code):
+    # The envelope's `ok` decides, not am's exit code: real `am runs` exits 0 with
+    # ok:false for a RepoDirError.
+    set_raw(world, "runs", json.dumps(envelope) + "\n", exit_code)
+    code, out = run(world)
+    assert code == 1
+    assert out == envelope
+    assert "data_dir" not in out
+    assert calls(world) == [["runs", "--repo-dir", str(world["proj"])]]
+
+
+def test_am_error_envelope_passthrough_status(world):
+    # r2 has no status fixture, so the fake am answers UnknownRunError, exit 3. The
+    # whole snapshot fails; no partial result is printed.
+    set_runs(world, [summary("r1", "started"), summary("r2", "started")])
+    set_status(world, "r1", "started")
+    code, out = run(world)
+    assert code == 1
+    assert out == UNKNOWN_RUN
+    assert "data_dir" not in out
+    assert calls(world)[-1] == ["status", "r2", "--repo-dir", str(world["proj"])]
+
+
+@pytest.mark.parametrize("target,text,exit_code", [
+    ("runs", "not json\n", 0),
+    ("runs", "[1, 2]\n", 0),
+    ("runs", "", 5),
+    ("runs", '{"data": {"runs": []}}\n', 0),
+    ("runs", '{"ok": true, "data": {"runs": "x"}}\n', 0),
+    ("runs", '{"ok": true, "data": []}\n', 0),
+    ("runs", '{"ok": true, "data": {"runs": [{"workflow": "m", "status": "done"}]}}\n', 0),
+    ("runs", '{"ok": true, "data": {"runs": [{"id": "r1"}]}}\n', 0),
+    ("runs", '{"ok": true, "data": {"runs": ["r1"]}}\n', 0),
+    ("status", '{"ok": true, "data": [1]}\n', 0),
+    ("status", "Traceback (most recent call last):\n  boom\n", 1),
+], ids=["not-json", "not-object", "crash-empty", "no-ok", "runs-not-list",
+        "data-not-object", "run-without-id", "run-without-status", "run-not-object",
+        "status-data-not-object", "status-traceback"])
+def test_am_bad_output(world, target, text, exit_code):
+    if target == "runs":
+        set_raw(world, "runs", text, exit_code)
+    else:
+        set_runs(world, [summary("r1", "started")])
+        set_raw(world, "status-r1", text, exit_code)
+    code, out = run(world)  # run() asserts exactly one JSON line
+    assert code == 1
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert out["error"]["message"]
