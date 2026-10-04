@@ -28,6 +28,21 @@ Item {
   // of the story view, empty in the milestone view.
   property var groupEdges: []
   property string cursorId: ""
+  // ---- am run marks (5.3), handed in by GraphScreen, which reads the run
+  // store: this view has no `app`. By card id -- runMarks: Runs.cardRunState,
+  // runRollups: Runs.rollup -- plus the subtask pips to ring and whether the run
+  // data is stale (drawn dimmed). A missing or inherited id draws nothing.
+  property var runMarks: ({})
+  property var runRollups: ({})
+  property var runRinged: []
+  property bool runStale: false
+
+  function _ownValue(map, id) {
+    return map !== null && map !== undefined && typeof map === "object" && !Array.isArray(map)
+      && typeof id === "string" && id !== "" && Object.prototype.hasOwnProperty.call(map, id) ? map[id] : null
+  }
+  function runMarkOf(id) { return view._ownValue(view.runMarks, id) }
+  function runRollupOf(id) { return view._ownValue(view.runRollups, id) }
   // The one input for every colour and font: Panel passes its Theme down,
   // and a standalone instance renders with the shell defaults.
   property var theme: T.Theme {}
@@ -460,13 +475,33 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         spacing: 4
 
-        UI.ThemedText {
-          objectName: "graphNodeTitle"
-          theme: view.theme
+        Item {
           width: parent.width
-          text: node.entry.title
-          font.bold: true
-          elide: Text.ElideRight
+          height: Math.max(nodeTitle.implicitHeight, nodeRunMark.shown ? nodeRunMark.height : 0)
+
+          UI.ThemedText {
+            id: nodeTitle
+            objectName: "graphNodeTitle"
+            theme: view.theme
+            anchors.left: parent.left
+            anchors.right: nodeRunMark.shown ? nodeRunMark.left : parent.right
+            anchors.rightMargin: nodeRunMark.shown ? 6 : 0
+            anchors.verticalCenter: parent.verticalCenter
+            text: node.entry.title
+            font.bold: true
+            elide: Text.ElideRight
+          }
+
+          UI.RunMark {
+            id: nodeRunMark
+            theme: view.theme
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            runState: view.runMarkOf(node.entry.id)
+            rollup: view.runRollupOf(node.entry.id)
+            stale: view.runStale
+            active: view.visible
+          }
         }
 
         Item {
@@ -496,6 +531,13 @@ Item {
             text: "\uF024 " + Graph.openIssueLabel(node.entry.openIssues || 0)
             color: Board.statusColor("blocked", view.theme.dim)
           }
+        }
+
+        // The milestone's am run rollup; hides itself without one.
+        UI.RunRollupBar {
+          theme: view.theme
+          rollup: view.runRollupOf(node.entry.id)
+          opacity: nodeRunMark.dimmed ? 0.5 : 1
         }
       }
     }
@@ -538,13 +580,33 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         spacing: 6
 
-        UI.ThemedText {
-          objectName: "graphNodeTitle"
-          theme: view.theme
+        Item {
           width: parent.width
-          text: storyNode.entry.title
-          font.bold: true
-          elide: Text.ElideRight
+          height: Math.max(storyTitle.implicitHeight, storyRunMark.shown ? storyRunMark.height : 0)
+
+          UI.ThemedText {
+            id: storyTitle
+            objectName: "graphNodeTitle"
+            theme: view.theme
+            anchors.left: parent.left
+            anchors.right: storyRunMark.shown ? storyRunMark.left : parent.right
+            anchors.rightMargin: storyRunMark.shown ? 6 : 0
+            anchors.verticalCenter: parent.verticalCenter
+            text: storyNode.entry.title
+            font.bold: true
+            elide: Text.ElideRight
+          }
+
+          UI.RunMark {
+            id: storyRunMark
+            theme: view.theme
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            runState: view.runMarkOf(storyNode.entry.id)
+            rollup: view.runRollupOf(storyNode.entry.id)
+            stale: view.runStale
+            active: view.visible
+          }
         }
 
         Item {
@@ -559,6 +621,8 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             model: storyNode.entry.pips || []
             more: storyNode.entry.morePips || 0
+            // The subtasks an am run is working on right now.
+            ringedIds: view.runRinged
             // The section hides the whole view; a delegate inside the canvas is
             // not always told, so the verdict is handed down explicitly and the
             // pulse never runs for a graph nobody is looking at.
@@ -576,6 +640,13 @@ Item {
             text: "\uF024 " + Graph.openIssueLabel(storyNode.entry.openIssues || 0)
             color: Board.statusColor("blocked", view.theme.dim)
           }
+        }
+
+        // The story's am run rollup; hides itself without one.
+        UI.RunRollupBar {
+          theme: view.theme
+          rollup: view.runRollupOf(storyNode.entry.id)
+          opacity: storyRunMark.dimmed ? 0.5 : 1
         }
       }
     }
