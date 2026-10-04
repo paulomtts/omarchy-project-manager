@@ -359,3 +359,68 @@ def test_refusal_other_exit_is_reemitted(world):
     code, lines, _ = run_helper(world)
     assert code != 0
     assert lines == [envelope]
+
+
+# --- stopping: signals and a closed stdout ---------------------------------------
+
+def start_helper(world, args=None):
+    argv = [str(world["proj"]), "r1"] if args is None else args
+    return subprocess.Popen([sys.executable, SCRIPT, *argv], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            env=env_for(world))
+
+
+def am_pid(world):
+    return int((world["am"] / "pid").read_text())
+
+
+def assert_gone(pid, within=5.0):
+    """The fake am process no longer exists (no orphaned `am watch`)."""
+    end = time.monotonic() + within
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.kill(pid, signal.SIGKILL)
+    pytest.fail("am watch was left running after the helper exited")
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT], ids=["SIGTERM", "SIGINT"])
+def test_signal_stops_am_and_exits_zero(world, sig):
+    set_script(world, [hello(), ev("r1"), pause(30)])
+    p = start_helper(world)
+    try:
+        first = p.stdout.readline()  # sync point: am is running, helper is streaming
+        assert json.loads(first) == {"changed": ["r1"]}
+        p.send_signal(sig)
+        code = p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    err = p.stderr.read()
+    p.stdout.close()
+    p.stderr.close()
+    assert code == 0, err
+    assert "Traceback" not in err
+    assert_gone(am_pid(world))
+
+
+def test_closed_stdout_exits_zero(world):
+    set_script(world, [hello(), ev("r1"), pause(0.6), ev("r1"), pause(30)])
+    p = start_helper(world)
+    p.stdout.close()  # the reader goes away before the first changed line
+    try:
+        code = p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    err = p.stderr.read()
+    p.stderr.close()
+    assert code == 0, err
+    assert "Traceback" not in err
+    assert "BrokenPipeError" not in err
+    assert_gone(am_pid(world))

@@ -25,6 +25,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -44,6 +45,14 @@ EVENTS = frozenset({"run_upsert", "story_upsert", "subtask_upsert", "phase_upser
 
 class SchemaMismatch(Exception):
     """The hello line announced a journal schema other than 1."""
+
+
+class Stop(Exception):
+    """SIGINT or SIGTERM: the store (or a user) is done with this watch."""
+
+
+def on_signal(signum, frame):
+    raise Stop()
 
 
 def say(payload, code=0):
@@ -224,15 +233,34 @@ def main(argv):
     return finish(code, refusal, "".join(err).strip())
 
 
+def quiet_exit():
+    """Ended by a signal or a closed stdout: exit 0 without a traceback. stdout
+    is pointed at /dev/null so the interpreter's final flush cannot raise."""
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except OSError:
+        pass
+    return 0
+
+
 def guarded(argv):
-    """No unexpected exception may end the helper without a JSON line."""
+    """SIGINT, SIGTERM and a closed stdout end the helper quietly with exit 0
+    (main's finally has already stopped am). Any other unexpected exception
+    still ends with one HelperError line."""
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)  # explicit: SIGINT may be inherited as ignored
     try:
         return main(argv)
+    except (Stop, KeyboardInterrupt, BrokenPipeError):
+        return quiet_exit()
     except SystemExit:
         raise
     except BaseException as e:  # noqa: BLE001 - deliberate catch-all
         reason = str(e) or e.__class__.__name__
-        return failure("HelperError", "The runs watch failed: " + reason)
+        try:
+            return failure("HelperError", "The runs watch failed: " + reason)
+        except BrokenPipeError:
+            return quiet_exit()
 
 
 if __name__ == "__main__":
