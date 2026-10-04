@@ -284,6 +284,8 @@ TestCase {
   function test_a_canceled_or_archived_node_gets_no_run_mark_either() {
     var s = make(); if (!s) return
     s.app.runs.snapshotRunner.cancel()
+    // Archived nodes are hidden in the Graph unless Show archived is on.
+    s.app.graph.setShowArchived(true)
     s.app.board.applyTreeData([
       card("m1", "First", "canceled", [card("s1", "Story one", "canceled")]),
       card("m2", "Second", "archived", [card("s2", "Story two", "archived")]),
