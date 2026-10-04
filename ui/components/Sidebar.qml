@@ -238,6 +238,8 @@ Item {
 
       UI.ThemedText {
         id: navLabel
+        // navLabelBoard, navLabelGraph, ...
+        objectName: "navLabel" + navRow.section.charAt(0).toUpperCase() + navRow.section.slice(1)
         theme: sidebar.theme
         text: navRow.label
         font.bold: navRow.current

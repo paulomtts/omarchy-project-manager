@@ -221,8 +221,12 @@ TestCase {
     compare(count.visible, true)
     compare(String(count.text), "‼2")
     verify(Qt.colorEqual(count.color, sb.theme.urgent), "the count reads in urgent")
+    var label = find(sb, "navLabelBoard")
+    verify(label, "navLabelBoard exists")
     verify(count.mapToItem(row, 0, 0).x > find(sb, "navIconBoard").mapToItem(row, 0, 0).x,
-      "the count follows the icon and label")
+      "the count follows the icon")
+    verify(count.mapToItem(row, 0, 0).x >= label.mapToItem(row, 0, 0).x + label.width,
+      "the count follows the label")
     row.countText = ""
     wait(20)
     compare(count.visible, false)
