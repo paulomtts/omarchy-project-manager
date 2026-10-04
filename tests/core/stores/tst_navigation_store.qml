@@ -167,4 +167,12 @@ TestCase {
     n.moveDropdown(1, 0)
     compare(n.dropdownCursor, 0)
   }
+
+  // An open run goes back to the Runs list unless a card's RUNS row opened it.
+  function test_a_run_returns_to_the_runs_list_by_default() {
+    var n = make(); if (!n) return
+    compare(n.runReturnMode, "runs")
+    n.runReturnMode = "entry"
+    compare(n.runReturnMode, "entry")
+  }
 }

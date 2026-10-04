@@ -324,14 +324,19 @@ QtObject {
 
   // ---- Runs: the runs themselves live in RunStore; the navigation and focus
   // work around them is here. The run view's body is card 5.2's.
-  function openRun(id) {
+  // `from` is "entry" when a card's RUNS row opens the run: the card stays open
+  // behind it and its return slot must survive, so only the Runs list pushes
+  // one. Every open says where Back goes, so a Runs-list open always resets it.
+  function openRun(id, from) {
     if (typeof id !== "string" || id === "") return
     var runs = navi.app.runs.runs
     var found = false
     for (var i = 0; i < runs.length && !found; i++) found = !!runs[i] && runs[i].id === id
     if (!found) return
+    var fromCard = from === "entry"
+    navi.app.nav.runReturnMode = fromCard ? "entry" : "runs"
     navi.app.runs.selectedRunId = id
-    navi.app.nav.pushReturn(navi.flick ? navi.flick.contentY : 0)
+    if (!fromCard) navi.app.nav.pushReturn(navi.flick ? navi.flick.contentY : 0)
     navi.app.nav.viewMode = "run"
     navi.app.nav.scrollOnCursor = false
     navi.app.nav.cursorIndex = 0
@@ -349,6 +354,21 @@ QtObject {
     navi.actions.focusForView()
   }
 
+  // Leaving a run that was opened from a card: back to that card, at its top.
+  // The card's own return slot was never touched, so Back from the card still
+  // reaches its list. A card the board dropped meanwhile cannot be shown, so
+  // Back goes on to that list instead of a blank card.
+  function restoreCardFromRun() {
+    navi.app.runs.selectedRunId = ""
+    navi.app.nav.runReturnMode = "runs"
+    if (!navi.app.board.cardMap[navi.app.board.selectedCardId]) { navi.restoreListView(); return }
+    navi.app.nav.viewMode = "entry"
+    navi.app.nav.scrollOnCursor = false
+    navi.app.nav.cursorIndex = 0
+    Qt.callLater(navi.actions.scrollToTop)
+    navi.actions.focusForView()
+  }
+
   function goBack() {
     if (navi.app.nav.viewMode === "issue") {
       if (navi.app.nav.issueReturnMode === "entry") navi.restoreCardFromIssue()
@@ -358,6 +378,10 @@ QtObject {
     if (navi.app.nav.viewMode === "memory") { if (navi.app.memories.memoryEditing) navi.app.memories.memoryEscape(); else navi.restoreMemoriesList(); return }
     if (navi.app.nav.viewMode === "entry") { navi.restoreListView(); return }
     if (navi.app.nav.viewMode === "document") { navi.restoreDocumentsList(); return }
-    if (navi.app.nav.viewMode === "run") { navi.restoreRunsList(); return }
+    if (navi.app.nav.viewMode === "run") {
+      if (navi.app.nav.runReturnMode === "entry") navi.restoreCardFromRun()
+      else navi.restoreRunsList()
+      return
+    }
   }
 }

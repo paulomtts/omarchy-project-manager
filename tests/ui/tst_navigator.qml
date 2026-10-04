@@ -276,4 +276,89 @@ TestCase {
     compare(n.app.runs.searchQuery, "")
     compare(n.app.runs.runFilter, "attention")
   }
+
+  // ---- Runs opened from a card (5.3)
+
+  function cardRuns() {
+    var n = make(); if (!n) return null
+    n.app.runs.snapshotRunner.cancel()
+    n.app.board.applyTreeData([card("m1", "Milestone", "todo"), card("m2", "Other", "todo")])
+    n.app.runs.runs = [runOf("run-0000000000a1", "started", true, "m2")]
+    wait(50)
+    return n
+  }
+
+  function test_a_run_opened_from_a_card_comes_back_to_that_card() {
+    var n = cardRuns(); if (!n) return
+    n.app.nav.cursorIndex = 1
+    tc.flick.contentY = 80
+    n.openCard("m2")
+    wait(0)
+    compare(n.app.nav.viewMode, "entry")
+    n.openRun("run-0000000000a1", "entry")
+    wait(0)
+    compare(n.app.nav.viewMode, "run")
+    compare(n.app.runs.selectedRunId, "run-0000000000a1")
+    compare(n.app.nav.runReturnMode, "entry")
+    compare(n.app.nav.returnMode, "board", "the card's own way back is untouched")
+    compare(n.app.nav.returnCursor, 1)
+    compare(n.app.nav.returnScrollY, 80)
+    compare(crumbLabels(n.crumbs), "Runs > …000000a1", "accepted: the run view still reads Runs")
+    n.goBack()
+    wait(0)
+    compare(n.app.nav.viewMode, "entry")
+    compare(n.app.board.selectedCardId, "m2")
+    compare(n.app.runs.selectedRunId, "")
+    compare(n.app.nav.runReturnMode, "runs")
+    compare(n.app.nav.cursorIndex, 0)
+    n.goBack()
+    compare(n.app.nav.viewMode, "board", "Back from the card still reaches its list")
+    compare(n.app.nav.cursorIndex, 1)
+    wait(0)
+    compare(tc.flick.contentY, 80)
+  }
+
+  function test_the_section_crumb_of_a_run_opened_from_a_card_also_lands_on_the_card() {
+    var n = cardRuns(); if (!n) return
+    n.openCard("m2")
+    n.openRun("run-0000000000a1", "entry")
+    n.activateCrumb(0)
+    compare(n.app.nav.viewMode, "entry")
+    compare(n.app.board.selectedCardId, "m2")
+  }
+
+  function test_a_plain_open_resets_the_return_to_the_runs_list() {
+    var n = cardRuns(); if (!n) return
+    n.openCard("m2")
+    n.openRun("run-0000000000a1", "entry")
+    compare(n.app.nav.runReturnMode, "entry")
+    n.openRun("run-0000000000a1")
+    compare(n.app.nav.runReturnMode, "runs", "every open says where Back goes")
+    n.goBack()
+    compare(n.app.nav.viewMode, "runs")
+  }
+
+  function test_back_from_a_card_run_whose_card_is_gone_returns_to_the_list() {
+    var n = cardRuns(); if (!n) return
+    n.openCard("m2")
+    n.openRun("run-0000000000a1", "entry")
+    n.app.board.applyTreeData([card("m1", "Milestone", "todo")])
+    compare(n.app.nav.viewMode, "run", "the run view does not follow the board")
+    n.goBack()
+    compare(n.app.nav.viewMode, "board", "no blank card: Back goes on to the card's list")
+    compare(n.app.nav.runReturnMode, "runs")
+    compare(n.app.runs.selectedRunId, "")
+  }
+
+  function test_an_unknown_run_from_a_card_opens_nothing() {
+    var n = cardRuns(); if (!n) return
+    n.openCard("m1")
+    var bad = ["", "gone", null, undefined, 5]
+    for (var i = 0; i < bad.length; i++) {
+      n.openRun(bad[i], "entry")
+      compare(n.app.nav.viewMode, "entry", "id " + i)
+      compare(n.app.nav.runReturnMode, "runs", "id " + i)
+      compare(n.app.runs.selectedRunId, "", "id " + i)
+    }
+  }
 }

@@ -36,6 +36,11 @@ QtObject {
   // works afterwards.
   property string issueReturnMode: "issues"   // "issues" | "entry"
 
+  // Where an open run goes back to. A run reached from a card's RUNS row
+  // returns to that card, and the single return slot above -- which holds the
+  // card's own way back -- is left untouched, as for an issue.
+  property string runReturnMode: "runs"   // "runs" | "entry"
+
   property bool dropdownOpen: false
   property string dropdownQuery: ""
   property int dropdownCursor: 0
