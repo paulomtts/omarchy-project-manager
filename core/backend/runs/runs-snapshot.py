@@ -27,6 +27,10 @@ from common.json_line import emit  # noqa: E402
 
 USAGE = "usage: runs-snapshot.py <project_root>"
 AM_TIMEOUT = 60
+# The monitor spec's finished list. `stopped` is "parked" (resumable) in the domain
+# table, but for the snapshot it is terminal and counts toward the cap.
+TERMINAL = frozenset({"done", "escalated", "stopped", "cancelled"})
+TERMINAL_LIMIT = 10
 
 
 def failure(kind, message, code=1):
@@ -49,6 +53,29 @@ def call_am(am, args):
     return json.loads(proc.stdout)["data"]
 
 
+def select_runs(runs):
+    """Every non-terminal run plus the first TERMINAL_LIMIT terminal ones, in am's
+    (newest-first) order."""
+    picked, terminal = [], 0
+    for run in runs:
+        if run["status"] in TERMINAL:
+            if terminal >= TERMINAL_LIMIT:
+                continue
+            terminal += 1
+        picked.append(run)
+    return picked
+
+
+def snapshot(am, root, runs):
+    """Each selected run's summary with `status` replaced by its `am status` data."""
+    out = []
+    for run in select_runs(runs):
+        entry = dict(run)
+        entry["status"] = call_am(am, ["status", run["id"], "--repo-dir", root])
+        out.append(entry)
+    return out
+
+
 def main(argv):
     if len(argv) != 1:
         return failure("Usage", USAGE, 2)
@@ -57,7 +84,7 @@ def main(argv):
     if am is None:
         return failure("AmMissing", "am is not installed.")
     runs = call_am(am, ["runs", "--repo-dir", root])["runs"]
-    return emit({"ok": True, "runs": runs, "data_dir": data_dir()})
+    return emit({"ok": True, "runs": snapshot(am, root, runs), "data_dir": data_dir()})
 
 
 def guarded(argv):

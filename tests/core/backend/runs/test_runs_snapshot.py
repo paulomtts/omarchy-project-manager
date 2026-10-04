@@ -203,3 +203,67 @@ def test_unexpected_failure_is_helper_error(world):
     assert out["ok"] is False
     assert out["error"]["type"] == "HelperError"
     assert out["error"]["message"]
+
+
+# --- shape and fan-out -------------------------------------------------------
+
+def test_snapshot_shape(world):
+    runs = [summary("r2", "started", "2026-10-02T09:00:00Z"),
+            summary("r1", "done", "2026-10-01T09:00:00Z")]
+    seed(world, runs)
+    code, out = run(world)  # run() asserts stdout is exactly one JSON line
+    assert code == 0
+    assert out == {
+        "ok": True,
+        "runs": [expected(runs[0], status_data("r2", "started")),
+                 expected(runs[1], status_data("r1", "done"))],
+        "data_dir": str(world["data"]),
+    }
+    for entry in out["runs"]:
+        assert set(entry) == SUMMARY_FIELDS
+        assert isinstance(entry["status"], dict)
+
+
+def test_status_fanout_selection(world):
+    # Newest first: non-terminal runs interleaved with 12 terminal ones, and one
+    # non-terminal run older than every terminal one.
+    runs = ([summary("n1", "started")]
+            + [summary("t%d" % i, "done") for i in range(1, 6)]
+            + [summary("n2", "started")]
+            + [summary("t%d" % i, ["escalated", "cancelled", "stopped"][i % 3])
+               for i in range(6, 13)]
+            + [summary("n3", "started")])
+    seed(world, runs)
+    code, out = run(world)
+    want = ["n1", "t1", "t2", "t3", "t4", "t5", "n2",
+            "t6", "t7", "t8", "t9", "t10", "n3"]
+    assert code == 0
+    assert [r["id"] for r in out["runs"]] == want
+    root = str(world["proj"])
+    assert calls(world) == ([["runs", "--repo-dir", root]]
+                            + [["status", i, "--repo-dir", root] for i in want])
+
+
+@pytest.mark.parametrize("status,kept", [
+    ("done", 10), ("escalated", 10), ("stopped", 10), ("cancelled", 10),
+    ("started", 12), ("paused", 12), ("something-new", 12),
+])
+def test_terminal_set_pinned(world, status, kept):
+    # `stopped` is "parked" in the domain table but terminal here: it counts
+    # toward the cap of 10. Any status outside the four is non-terminal.
+    runs = [summary("x%02d" % i, status) for i in range(12)]
+    seed(world, runs)
+    code, out = run(world)
+    assert code == 0
+    assert [r["id"] for r in out["runs"]] == ["x%02d" % i for i in range(kept)]
+
+
+def test_repo_dir_passed(world):
+    # The project dir is named "my proj; echo x": it must arrive as one argv element.
+    seed(world, [summary("r2", "started"), summary("r1", "done")])
+    code, _ = run(world)
+    assert code == 0
+    made = calls(world)
+    assert len(made) == 3
+    for argv in made:
+        assert argv[-2:] == ["--repo-dir", str(world["proj"])]
