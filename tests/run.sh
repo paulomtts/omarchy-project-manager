@@ -8,7 +8,13 @@ repo="$(cd "$here/.." && pwd)"
 cd "$repo"
 filter="${1:-}"
 
-python3 -m pytest tests -q
+# python3 may be a uv-managed interpreter, which refuses installs and so has no
+# pytest. Fall back to uv's throwaway environment rather than failing.
+if python3 -c 'import pytest' 2>/dev/null; then
+  python3 -m pytest tests -q
+else
+  uv run --with pytest python3 -m pytest tests -q
+fi
 
 runner=$(command -v /usr/lib/qt6/bin/qmltestrunner || command -v qmltestrunner)
 work="$(mktemp -d)"
