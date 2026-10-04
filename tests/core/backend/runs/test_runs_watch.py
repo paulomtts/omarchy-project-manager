@@ -300,3 +300,62 @@ def test_new_run_upsert_in_project_is_adopted(world, form):
     code, lines, _ = run_helper(world, [root])  # zero run ids on argv is valid
     assert code == 0
     assert changed(lines) == [["n1"], ["n1"]]
+
+
+# --- error paths -----------------------------------------------------------------
+
+@pytest.mark.parametrize("schema", [2, "1", MISSING], ids=["two", "string-one", "missing"])
+def test_schema_mismatch(world, schema):
+    # am would keep streaming for 8 s; the helper must stop it and leave at once.
+    set_script(world, [hello(schema), ev("r1"), pause(8)])
+    began = time.monotonic()
+    code, lines, _ = run_helper(world)
+    assert time.monotonic() - began < 5
+    assert code != 0
+    assert len(lines) == 1, lines
+    assert lines[0]["ok"] is False
+    assert lines[0]["error"]["type"] == "SchemaMismatch"
+    assert lines[0]["error"]["message"]
+
+
+def test_exit_3_corrupt_journal(world):
+    set_script(world, [hello(), ev("r1")], exit=3,
+               stderr="am watch: journal line 4 of run r1 is not JSON\n")
+    code, lines, _ = run_helper(world)
+    assert code != 0
+    assert len(lines) == 2, lines
+    assert lines[0] == {"changed": ["r1"]}  # the pending batch is flushed first
+    assert lines[1]["ok"] is False
+    assert lines[1]["error"]["type"] == "CorruptJournal"
+    assert "journal line 4 of run r1 is not JSON" in lines[1]["error"]["message"]
+
+
+def test_other_exit_is_helper_error(world):
+    set_script(world, [hello(), ev("r1")], exit=1, stderr="boom\n")
+    code, lines, _ = run_helper(world)
+    assert code != 0
+    assert len(lines) == 2, lines
+    assert lines[0] == {"changed": ["r1"]}
+    assert lines[1]["ok"] is False
+    assert lines[1]["error"]["type"] == "HelperError"
+    assert "boom" in lines[1]["error"]["message"]
+
+
+def test_refusal_exit_3_is_corrupt_journal(world):
+    envelope = {"error": {"message": "run r1: journal line 2 is not JSON",
+                          "type": "CorruptJournalError"}, "ok": False}
+    set_script(world, [{"line": envelope}], exit=3)
+    code, lines, _ = run_helper(world)
+    assert code != 0
+    assert len(lines) == 1, lines
+    assert lines[0]["ok"] is False
+    assert lines[0]["error"]["type"] == "CorruptJournal"
+    assert lines[0]["error"]["message"] == "run r1: journal line 2 is not JSON"
+
+
+def test_refusal_other_exit_is_reemitted(world):
+    envelope = {"error": {"message": "something else", "type": "OddError"}, "ok": False}
+    set_script(world, [{"line": envelope}], exit=0)
+    code, lines, _ = run_helper(world)
+    assert code != 0
+    assert lines == [envelope]

@@ -42,6 +42,10 @@ EVENTS = frozenset({"run_upsert", "story_upsert", "subtask_upsert", "phase_upser
                     "attempt_upsert"})
 
 
+class SchemaMismatch(Exception):
+    """The hello line announced a journal schema other than 1."""
+
+
 def say(payload, code=0):
     """emit() one line and flush it now: stdout is a pipe, so it is block-buffered."""
     emit(payload)
@@ -105,6 +109,13 @@ def keep(line, watched, root, started):
     return None
 
 
+def check_schema(hello):
+    schema = hello.get("schema")
+    if not (type(schema) is int and schema == 1):
+        raise SchemaMismatch("am watch speaks journal schema " + json.dumps(schema)
+                             + "; this helper reads schema 1.")
+
+
 def spawn(am):
     return subprocess.Popen([am, "watch", "--all", "--follow"], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -137,8 +148,10 @@ def stop(proc):
 def stream(lines, watched, root, started):
     """Turn am's stream into debounced {"changed": [...]} lines until it ends.
     Trailing edge: the first kept run id into an empty batch opens a WINDOW;
-    when it closes the batch is printed once and cleared."""
-    batch, deadline = [], None
+    when it closes the batch is printed once and cleared. A pending batch is
+    printed when the stream ends. Returns am's refusal envelope (the only line
+    with an "ok" key) if it printed one, else None. Raises SchemaMismatch."""
+    batch, deadline, refusal = [], None, None
     while True:
         if deadline is not None and time.monotonic() >= deadline:
             say({"changed": batch})
@@ -151,16 +164,39 @@ def stream(lines, watched, root, started):
         if raw is EOF:
             if batch:
                 say({"changed": batch})
-            return
+            return refusal
         try:
             line = json.loads(raw)
         except ValueError:
+            continue
+        if isinstance(line, dict) and "ok" in line:
+            refusal = line
+            continue
+        if isinstance(line, dict) and line.get("event") == "watch":
+            check_schema(line)
             continue
         run_id = keep(line, watched, root, started)
         if run_id is not None and run_id not in batch:
             batch.append(run_id)
             if deadline is None:
                 deadline = time.monotonic() + WINDOW
+
+
+def finish(code, refusal, stderr):
+    """Print the last line, if any, for how am ended; return the helper's exit code."""
+    if refusal is not None:
+        if code != 3:
+            return say(refusal, 1)
+        error = refusal.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        if not (isinstance(message, str) and message):
+            message = stderr or "am watch refused with exit 3."
+        return failure("CorruptJournal", message)
+    if code == 0:
+        return 0
+    if code == 3:
+        return failure("CorruptJournal", stderr or "am watch exited 3.")
+    return failure("HelperError", stderr or "am watch exited " + str(code) + ".")
 
 
 def main(argv):
@@ -177,12 +213,15 @@ def main(argv):
     err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
     err_reader.start()
     try:
-        stream(lines, watched, root, started)
+        try:
+            refusal = stream(lines, watched, root, started)
+        except SchemaMismatch as e:
+            return failure("SchemaMismatch", str(e))
         code = proc.wait()
         err_reader.join(timeout=2)
     finally:
-        stop(proc)
-    return 0 if code == 0 else 1
+        stop(proc)  # no-op once am has exited; terminates it on every other path
+    return finish(code, refusal, "".join(err).strip())
 
 
 def guarded(argv):
