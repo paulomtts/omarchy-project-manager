@@ -703,3 +703,58 @@ function controlError(error) {
   }
   return errorText(error)
 }
+
+
+// ---- Run alerts (S2 1.2) -----------------------------------------------------------------
+//
+// Which runs newly need a human between two snapshots, for the toast and the
+// desktop notification. Pure and never throwing, like the rest of this file.
+// Keeping the previous snapshot (and resetting it to null) is the store's job.
+
+var _REASON_DEAD = "process died"
+
+// A run id a run can be matched by: a non-empty string.
+function _isRunId(id) { return typeof id === "string" && id !== "" }
+
+// runState of the first object run in list with this id, or "" when there is
+// none. Linear === scan, so ids such as `__proto__` match like any other id.
+function _previousState(list, id) {
+  for (var i = 0; i < list.length; i++) {
+    if (_isObject(list[i]) && list[i].id === id) return runState(list[i])
+  }
+  return ""
+}
+
+// Has an alert for this id already been raised in this call?
+function _hasAlert(alerts, id) {
+  for (var i = 0; i < alerts.length; i++) {
+    if (alerts[i].id === id) return true
+  }
+  return false
+}
+
+// One fresh {id, title, state, reason} for each run in nextRuns, in its order,
+// that is now escalated or dead and was not in that same state in prevRuns (a
+// run absent from prevRuns was neither). A non-array prevRuns -- null is the
+// store's "no previous snapshot" -- or nextRuns gives []. At most one alert per
+// id; the first prevRuns occurrence of an id is its previous state. A dead
+// run's reason is always "process died".
+function newAlerts(prevRuns, nextRuns) {
+  if (!Array.isArray(prevRuns) || !Array.isArray(nextRuns)) return []
+  var out = []
+  for (var i = 0; i < nextRuns.length; i++) {
+    var run = nextRuns[i]
+    if (!_isObject(run) || !_isRunId(run.id)) continue
+    var state = runState(run)
+    if (state !== "escalated" && state !== "dead") continue
+    if (_previousState(prevRuns, run.id) === state) continue
+    if (_hasAlert(out, run.id)) continue
+    out.push({
+      id: run.id,
+      title: runTitle(run),
+      state: state,
+      reason: state === "dead" ? _REASON_DEAD : escalationReason(run)
+    })
+  }
+  return out
+}
