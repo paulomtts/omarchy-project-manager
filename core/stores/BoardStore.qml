@@ -15,12 +15,26 @@ Scope {
   property string dbPath: ""          // set by App from ProjectStore.watchedDbPath
   property string viewMode: "board"   // set by App from NavigationStore.viewMode
   property string searchQuery: ""     // set by App from NavigationStore.searchQuery
+  property string backendDir: ""      // <plugin>/core/backend/, set by App
+  // The clock the archive rule reads, in epoch ms; 0 means "the real time".
+  // A test pins it so the rule is deterministic.
+  property real nowMs: 0
 
   property var cardRoots: []   // top-level cards from the last brd tree fetch
   property var cardMap: ({})   // id -> card, from Board.indexTree
   property var issueMap: ({})  // id -> {id, title, status}, from Board.indexIssues
   readonly property var statuses: ["todo", "in_progress", "done", "merged", "canceled", "archived"]
   property string selectedCardId: ""
+
+  // Archive finished: the milestones the rule offers, the confirm dialog and
+  // the one helper run behind it. `archiveCandidates` follows the board and is
+  // recomputed when the dialog opens and again at confirm time, so only what
+  // the CURRENT board says is finished is ever handed to the helper.
+  property var archiveCandidates: []
+  property bool archiveOpen: false
+  property string archiveError: ""
+  readonly property bool archiveBusy: archiveRunner.busy
+  readonly property alias archiveRunner: archiveRunner
 
   readonly property alias treeProc: treeProc
   readonly property alias issueProc: issueProc
@@ -52,7 +66,58 @@ Scope {
     board.cardRoots = roots
     var indexed = Board.indexTree(roots)
     board.cardMap = indexed.cardMap
+    board.refreshArchiveCandidates()
     if (board.viewMode === "entry" && !board.cardMap[board.selectedCardId]) board.listViewRequested()
+  }
+
+  function refreshArchiveCandidates() {
+    board.archiveCandidates = Board.archivable(board.cardRoots, board.nowMs > 0 ? board.nowMs : Date.now())
+  }
+
+  function openArchive() {
+    if (!board.project || board.archiveBusy) return
+    board.refreshArchiveCandidates()
+    if (board.archiveCandidates.length === 0) return
+    board.archiveError = ""
+    board.archiveOpen = true
+  }
+
+  function cancelArchive() {
+    if (board.archiveBusy) return
+    board.archiveOpen = false
+    board.archiveError = ""
+  }
+
+  // A project change: the dialog goes, and so does any answer still on its way.
+  function resetArchive() {
+    if (board.archiveBusy) board.archiveRunner.cancel()
+    board.archiveOpen = false
+    board.archiveError = ""
+  }
+
+  function archiveAll() {
+    if (!board.archiveOpen || board.archiveBusy || !board.project) return
+    board.refreshArchiveCandidates()
+    var ids = board.archiveCandidates.map(function(c) { return c.id })
+    if (ids.length === 0) { board.archiveOpen = false; return }
+    board.archiveError = ""
+    board.archiveRunner.run([board.project.root_path].concat(ids))
+  }
+
+  function applyArchiveResult(stdout, exitCode) {
+    var result = Board.parseArchiveResult(stdout, exitCode)
+    if (result.ok) {
+      board.archiveOpen = false
+      board.archiveError = ""
+      return
+    }
+    var titles = {}
+    board.archiveCandidates.forEach(function(c) { titles[c.id] = c.title })
+    board.archiveError = result.failures.length > 0
+      ? result.failures.map(function(f) {
+          return "Could not archive " + (titles[f.id] || f.id) + ": " + f.error
+        }).join("\n")
+      : result.error
   }
 
   function applyIssueData(issues) {
@@ -119,6 +184,16 @@ Scope {
 
   function resolvedCard(id) {
     return Board.resolvedCard(id, board.cardMap, board.issueMap)
+  }
+
+  // Latest run wins; the guard is the project, so an answer that arrives after
+  // a switch is dropped. The board refetches by itself when brd writes.
+  HelperRunner {
+    id: archiveRunner
+    objectName: "archiveRunner"
+    script: board.backendDir + "boards/archive-milestones.py"
+    guard: board.project ? board.project.root_path : ""
+    onFinished: function(stdout, exitCode) { board.applyArchiveResult(stdout, exitCode) }
   }
 
   FileView {

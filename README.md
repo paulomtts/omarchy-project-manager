@@ -122,6 +122,16 @@ until it is next saved, and existing snapshots and backups are left in their
     the time limit ends it; the log file is how you see what it did. The job keeps running when you switch
     project, but only its own project's Board shows it. Nothing the agent does
     is reviewed by the plugin - it writes cards to `brd` on your behalf.
+- **Archive finished** - in the Board list, **Archive finished (N)** appears
+  when N milestones are done with: not archived yet, at least one card under
+  them, every card at any depth done, merged, canceled or archived, and nothing
+  in the milestone or its cards updated in the last 2 days. Click it to review
+  the list (title, idle days, card count); **Archive all** then runs
+  `brd update <id> --status archived` on each milestone card only - its stories
+  and subtasks are left alone. Cancel, Escape or a click on the backdrop writes
+  nothing. A milestone that fails is named in the dialog, which stays open; the
+  others stay archived. Like New milestone, this is a write the plugin does on
+  your behalf, and only after that click.
 - **Card detail** - kind and status badges (Milestone / Story / Subtask by
   depth; Todo / In progress / Done / Blocked), full description, a parent link
   and clickable blocked-by/children lists, resolving ids to titles. A blocker
@@ -162,7 +172,7 @@ until it is next saved, and existing snapshots and backups are left in their
   "missing on disk" so its backup stays discoverable; opening it shows "This
   document is not on disk." instead of a body. Opening the Documents section
   runs `brd doc list`, which syncs (writes) brd's backups - the one thing in the
-  panel that is not a pure read of brd besides New milestone.
+  panel that is not a pure read of brd besides New milestone and Archive finished.
   Documents over 1 MB (1048576 bytes) are not displayed. A document is
   rendered as Markdown and reloads live when the file changes; links are not
   clickable, and a document that references remote images may cause them to be

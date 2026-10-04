@@ -158,7 +158,7 @@ QtObject {
   }
 
   function showSection(name) {
-    if (!navi.app.projects.selectedProject || navi.app.deleter.deleteTarget || navi.app.memories.memoryDeleteOpen || navi.app.memories.newMemoryOpen || navi.app.milestones.dialogOpen) return
+    if (!navi.app.projects.selectedProject || navi.app.deleter.deleteTarget || navi.app.memories.memoryDeleteOpen || navi.app.memories.newMemoryOpen || navi.app.milestones.dialogOpen || navi.app.board.archiveOpen) return
     if (navi.app.memories.memoryEditing && navi.app.memories.memoryDraft !== navi.app.memories.memoryText) return
     if (name === "documents" && !navi.documentsEnabled) return
     var wasSection = navi.app.nav.section

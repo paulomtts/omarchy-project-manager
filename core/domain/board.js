@@ -1,5 +1,6 @@
 .pragma library
 .import "text.js" as Text
+.import "results.js" as Results
 
 // Card shape, as returned by `brd tree`:
 // {id, title, description, status, blocked_by, created_at, updated_at, children}
@@ -172,4 +173,67 @@ function ancestorIds(id, cardMap) {
     card = cardMap[card.parentId]
   }
   return out
+}
+
+// A card nobody will act on again: finished, merged, or put out of play.
+function isFinishedStatus(status) {
+  return status === "done" || status === "merged" || status === "canceled" || status === "archived"
+}
+
+// Milestones (root cards) that are safe to archive in bulk: not archived yet,
+// at least one descendant, every descendant finished (see isFinishedStatus),
+// and nothing in the whole subtree -- the milestone card included -- updated
+// within the last `minAgeDays` days. `now` is a Date or epoch milliseconds,
+// injected so callers and tests are deterministic. A timestamp that cannot be
+// read disqualifies the milestone: better to leave it than to archive on a guess.
+// Returns [{id, title, idleDays, cardCount}], oldest (most idle) first;
+// cardCount is the number of descendants.
+function archivable(roots, now, minAgeDays) {
+  var nowMs = now instanceof Date ? now.getTime() : Number(now)
+  var minMs = (minAgeDays === undefined ? 2 : minAgeDays) * 86400000
+  var out = []
+
+  ;(roots || []).forEach(function(root) {
+    if (!root || root.status === "archived") return
+    var count = 0
+    var allFinished = true
+    var newest = Date.parse(root.updated_at)
+
+    function visit(card) {
+      ;(card.children || []).forEach(function(child) {
+        count += 1
+        if (!isFinishedStatus(child.status)) allFinished = false
+        var t = Date.parse(child.updated_at)
+        if (isNaN(t) || isNaN(newest)) newest = NaN
+        else if (t > newest) newest = t
+        visit(child)
+      })
+    }
+    visit(root)
+
+    if (count === 0 || !allFinished || isNaN(newest) || isNaN(nowMs)) return
+    var idleMs = nowMs - newest
+    if (idleMs < minMs) return
+    out.push({ id: root.id, title: root.title, idleDays: Math.floor(idleMs / 86400000),
+               cardCount: count, _idleMs: idleMs })
+  })
+
+  out.sort(function(a, b) { return b._idleMs - a._idleMs })
+  out.forEach(function(c) { delete c._idleMs })
+  return out
+}
+
+// archive-milestones.py's answer: one line {ok, results: [{id, ok, error}]},
+// exit 1 when any id failed. Returns {ok, failures: [{id, error}], error}; a
+// helper that could not run at all is one error with no per-id results.
+function parseArchiveResult(stdout, exitCode) {
+  var r = Results.parseJsonLine(stdout, exitCode, "Could not archive the milestones", false)
+  var results = r.data && Array.isArray(r.data.results) ? r.data.results : null
+  if (!results) return { ok: false, failures: [], error: r.error }
+  var failures = results.filter(function(x) { return !x || x.ok !== true }).map(function(x) {
+    return { id: x && x.id ? String(x.id) : "", error: x && typeof x.error === "string" && x.error !== "" ? x.error : "archive failed" }
+  })
+  if (failures.length === 0 && r.ok) return { ok: true, failures: [], error: "" }
+  if (failures.length === 0) return { ok: false, failures: [], error: r.error }
+  return { ok: false, failures: failures, error: "" }
 }
