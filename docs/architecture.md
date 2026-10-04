@@ -106,6 +106,9 @@ keeps `running` true and is back at 1 the moment it stops; `StatusPips` and
 subtask's phase beside it, or a parent's non-zero counts such as `⟳ 2 ⏸ 1`
 instead; escalated in `urgent`, never `Board.statusColor`; it pulses only
 while running, visible and `active`),
+`RunRollupBar` (a milestone's or story's run rollup under its title: one
+caption segment per non-zero count in the same glyphs, then `N pending`;
+escalated in `urgent`; hidden when the rollup is null or its total is 0),
 `Sidebar`, and the views
 `DocumentsView`, `MemoriesView`, `MemoryNoteView`, `GraphView`.
 `Sidebar`'s five nav rows (Board, Graph, Documents, Memories, Issues) each lead with an
