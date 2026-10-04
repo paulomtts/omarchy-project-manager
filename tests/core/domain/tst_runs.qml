@@ -253,4 +253,238 @@ TestCase {
     compare(Runs.runState("x"), "unknown", "string run")
     compare(Runs.runState(Runs.normalizeRun(undefined)), "unknown", "normalised garbage")
   }
+
+  // ---- 1.2: card mapping ------------------------------------------------------------------
+
+  // A normalised run (the shape normalizeRun returns), built directly. live === null means no lease.
+  // opts: { milestone_id (default "m1"), rows, tree, started_at }
+  function mkRun(id, status, live, opts) {
+    var o = opts || {}
+    return {
+      id: id, repo_dir: "/r",
+      milestone_id: o.milestone_id === undefined ? "m1" : o.milestone_id,
+      status: status,
+      lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
+      rows: o.rows || [],
+      tree: o.tree || { stories: [], subtasks: [] },
+      started_at: o.started_at
+    }
+  }
+
+  function sampleTree() {
+    return {
+      stories: [{ card_id: "s1", subtasks: ["t1", { card_id: "t2" }] }, { card_id: "s2", subtasks: [] }],
+      subtasks: [
+        { card_id: "t1", phases: [{ name: "spec", status: "done", attempts: [{}] },
+                                  { name: "implement", status: "running", attempts: [{}, {}] }] },
+        { card_id: "t2", phases: [] },
+        { card_id: "t3", story_id: "s2", phases: [{ name: "plan", attempts: [] }] }
+      ]
+    }
+  }
+
+  function checkNone(r, label) {
+    compare(Object.keys(r).sort().join(","), "attempt,dimmed,phase,runId,state", label)
+    compare(r.state, "none", label)
+    compare(r.runId, "", label)
+    compare(r.dimmed, false, label)
+    compare(r.phase, "", label)
+    compare(r.attempt, 0, label)
+  }
+
+  function test_card_maps_story_subtask_milestone() {
+    var runs = [mkRun("r1", "started", true, { tree: sampleTree() })]
+    var s = Runs.cardRunState(runs, "s1")
+    compare(s.state, "running", "story")
+    compare(s.runId, "r1")
+    compare(s.dimmed, false)
+    compare(Runs.cardRunState(runs, "t3").state, "running", "subtask")
+    compare(Runs.cardRunState(runs, "t3").runId, "r1", "subtask")
+    compare(Runs.cardRunState(runs, "m1").state, "running", "milestone")
+    checkNone(Runs.cardRunState(runs, "zzz"), "unrelated")
+
+    // A card id that appears only in rows, or only as a subtask's story_id, does not touch the run.
+    var rowsOnly = [mkRun("r2", "started", true, {
+      rows: [{ card_id: "x9", status: "running" }],
+      tree: { stories: [], subtasks: [{ card_id: "t9", story_id: "s9" }] }
+    })]
+    checkNone(Runs.cardRunState(rowsOnly, "x9"), "row only")
+    checkNone(Runs.cardRunState(rowsOnly, "s9"), "story_id only")
+  }
+
+  function test_card_synthetic_ids_never_match() {
+    var tree = {
+      stories: [{ card_id: "integrate", subtasks: [] }, { card_id: "bases", subtasks: [] }],
+      subtasks: [{ card_id: "base-x", phases: [] }, { card_id: "integrate", phases: [] }]
+    }
+    var runs = [
+      mkRun("r1", "started", true, { tree: tree, milestone_id: "bases", rows: [{ card_id: "integrate", status: "running" }] }),
+      mkRun("r2", "started", true, { milestone_id: "base-x" })
+    ]
+    var ids = ["integrate", "bases", "base-x", "base-"]
+    for (var i = 0; i < ids.length; i++) checkNone(Runs.cardRunState(runs, ids[i]), ids[i])
+
+    // Look-alikes are real cards.
+    var lookalike = [mkRun("r3", "started", true, {
+      tree: { stories: [], subtasks: [{ card_id: "basex" }, { card_id: "my-base-x" }, { card_id: "integrated" }] }
+    })]
+    compare(Runs.cardRunState(lookalike, "basex").state, "running", "basex")
+    compare(Runs.cardRunState(lookalike, "my-base-x").state, "running", "my-base-x")
+    compare(Runs.cardRunState(lookalike, "integrated").state, "running", "integrated")
+  }
+
+  function test_card_newest_nonterminal_wins() {
+    // Input is newest-first: index 0 is the newest run.
+    var s = Runs.cardRunState([mkRun("new", "done", null), mkRun("old", "started", true)], "m1")
+    compare(s.state, "running")
+    compare(s.runId, "old")
+    compare(s.dimmed, false)
+
+    s = Runs.cardRunState([mkRun("new", "escalated", null), mkRun("old", "started", false)], "m1")
+    compare(s.state, "dead", "dead is non-terminal")
+    compare(s.runId, "old")
+    compare(s.dimmed, false)
+
+    s = Runs.cardRunState([mkRun("p", "stopped", null), mkRun("d", "started", null)], "m1")
+    compare(s.state, "dead", "parked is finished, a lease-less started run is not")
+    compare(s.runId, "d")
+    compare(s.dimmed, false)
+
+    s = Runs.cardRunState([mkRun("a", "started", true), mkRun("b", "started", false)], "m1")
+    compare(s.runId, "a", "two non-terminal: newest wins")
+    compare(s.state, "running")
+  }
+
+  function test_card_all_terminal_newest_dimmed() {
+    var cases = [["stopped", "parked"], ["escalated", "escalated"], ["done", "none"], ["cancelled", "none"]]
+    for (var i = 0; i < cases.length; i++) {
+      var runs = [mkRun("newest", cases[i][0], null), mkRun("older", "escalated", null), mkRun("oldest", "stopped", null)]
+      var s = Runs.cardRunState(runs, "m1")
+      compare(s.state, cases[i][1], cases[i][0])
+      compare(s.runId, "newest", cases[i][0])
+      compare(s.dimmed, true, cases[i][0])
+    }
+    // An unknown status is not non-terminal either.
+    var u = Runs.cardRunState([mkRun("u", "weird", true), mkRun("e", "escalated", null)], "m1")
+    compare(u.state, "none")
+    compare(u.runId, "u")
+    compare(u.dimmed, true)
+  }
+
+  function test_card_newest_by_started_at_then_order() {
+    var a = mkRun("a", "done", null, { started_at: "2026-10-01T10:00:00Z" })
+    var b = mkRun("b", "escalated", null, { started_at: "2026-10-03T10:00:00Z" })
+    compare(Runs.cardRunState([a, b], "m1").runId, "b", "later started_at beats index")
+    compare(Runs.cardRunState([b, a], "m1").runId, "b")
+
+    var live = mkRun("live", "started", true, { started_at: "2026-09-01T00:00:00Z" })
+    compare(Runs.cardRunState([b, live], "m1").runId, "live", "non-terminal beats a newer finished run")
+
+    var l1 = mkRun("l1", "started", true, { started_at: "2026-10-01T00:00:00Z" })
+    var l2 = mkRun("l2", "started", false, { started_at: "2026-10-02T00:00:00Z" })
+    compare(Runs.cardRunState([l1, l2], "m1").runId, "l2", "started_at decides between non-terminal runs")
+
+    var c = mkRun("c", "done", null)
+    compare(Runs.cardRunState([c, b], "m1").runId, "c", "only one has started_at: index decides")
+    compare(Runs.cardRunState([b, c], "m1").runId, "b", "only one has started_at: index decides")
+
+    var d = mkRun("d", "done", null, { started_at: "2026-10-03T10:00:00Z" })
+    compare(Runs.cardRunState([d, b], "m1").runId, "d", "equal started_at: index decides")
+
+    var n = mkRun("n", "done", null, { started_at: 99999999999999 })
+    compare(Runs.cardRunState([a, n], "m1").runId, "a", "non-string started_at is ignored")
+
+    var e = mkRun("e", "done", null, { started_at: "" })
+    compare(Runs.cardRunState([e, b], "m1").runId, "e", "empty started_at is ignored")
+  }
+
+  function test_card_subtask_phase_attempt() {
+    var runs = [mkRun("r1", "started", true, { tree: sampleTree() })]
+    var t1 = Runs.cardRunState(runs, "t1")
+    compare(t1.phase, "implement")
+    compare(t1.attempt, 2)
+    var t2 = Runs.cardRunState(runs, "t2")
+    compare(t2.phase, "", "empty phases")
+    compare(t2.attempt, 0, "empty phases")
+    var t3 = Runs.cardRunState(runs, "t3")
+    compare(t3.phase, "plan")
+    compare(t3.attempt, 0)
+    var s1 = Runs.cardRunState(runs, "s1")
+    compare(s1.phase, "", "story")
+    compare(s1.attempt, 0, "story")
+    var m1 = Runs.cardRunState(runs, "m1")
+    compare(m1.phase, "", "milestone")
+    compare(m1.attempt, 0, "milestone")
+
+    var tree = { stories: [], subtasks: [
+      { card_id: "a", phases: [{ name: "review", attempts: [{ attempt: 1 }, { attempt: 3 }] }] },
+      { card_id: "b", phases: [{ name: "review", attempts: [{ n: 4 }] }] },
+      { card_id: "c", phases: [{ name: "review", attempts: [{ attempt: "7" }] }] },
+      { card_id: "d", phases: "x" },
+      { card_id: "e" },
+      { card_id: "f", phases: [null] },
+      { card_id: "g", phases: [{ name: 5, attempts: "x" }] }
+    ] }
+    var r2 = [mkRun("r2", "started", true, { tree: tree })]
+    var expected = [["a", "review", 3], ["b", "review", 4], ["c", "review", 1],
+                    ["d", "", 0], ["e", "", 0], ["f", "", 0], ["g", "", 0]]
+    for (var i = 0; i < expected.length; i++) {
+      var r = Runs.cardRunState(r2, expected[i][0])
+      compare(r.state, "running", expected[i][0])
+      compare(r.phase, expected[i][1], expected[i][0])
+      compare(r.attempt, expected[i][2], expected[i][0])
+    }
+  }
+
+  function test_card_ignores_brd_status() {
+    var runs = [mkRun("r1", "stopped", null, { tree: {
+      stories: [{ card_id: "s1", status: "done" }],
+      subtasks: [{ card_id: "t1", status: "done", phases: [] }]
+    } })]
+    compare(Runs.cardRunState(runs, "s1").state, "parked", "story status field ignored")
+    compare(Runs.cardRunState(runs, "t1").state, "parked", "subtask status field ignored")
+    // A brd card object is not a card id.
+    checkNone(Runs.cardRunState(runs, { id: "s1", status: "in_progress" }), "card object as id")
+  }
+
+  function test_card_proto_ids() {
+    var plain = [mkRun("r1", "started", true, { tree: sampleTree() })]
+    var ids = ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"]
+    for (var i = 0; i < ids.length; i++) checkNone(Runs.cardRunState(plain, ids[i]), "absent " + ids[i])
+
+    var tree = {
+      stories: [{ card_id: "constructor", subtasks: ["toString"] }],
+      subtasks: [{ card_id: "toString", phases: [{ name: "spec", attempts: [{}] }] }, { card_id: "__proto__", phases: [] }]
+    }
+    var real = [mkRun("r2", "stopped", null, { tree: tree, milestone_id: "valueOf" })]
+    var present = ["__proto__", "constructor", "toString", "valueOf"]
+    for (var j = 0; j < present.length; j++) {
+      compare(Runs.cardRunState(real, present[j]).state, "parked", "present " + present[j])
+      compare(Runs.cardRunState(real, present[j]).runId, "r2", "present " + present[j])
+    }
+    compare(Runs.cardRunState(real, "toString").phase, "spec")
+    compare(Runs.cardRunState(real, "toString").attempt, 1)
+    checkNone(Runs.cardRunState(real, "hasOwnProperty"), "still absent")
+  }
+
+  function test_card_garbage() {
+    var good = mkRun("r1", "started", true, { tree: sampleTree() })
+    var inputs = [undefined, null, "x", 5, {}, { length: 1, 0: good }]
+    for (var i = 0; i < inputs.length; i++) checkNone(Runs.cardRunState(inputs[i], "m1"), "runs " + i)
+
+    compare(Runs.cardRunState([null, "x", 5, [], good], "m1").runId, "r1", "junk entries skipped")
+
+    var junk = [
+      { id: "j", status: "started", lease: { live: true }, tree: "x", rows: 5 },
+      { id: "k", status: "started", lease: { live: true }, milestone_id: "m1",
+        tree: { stories: [null, 5, { card_id: null }], subtasks: "y" } }
+    ]
+    compare(Runs.cardRunState(junk, "m1").runId, "k")
+    checkNone(Runs.cardRunState(junk, "j"), "run id is not a card id")
+
+    var withBlank = [good, mkRun("blank", "started", true, { milestone_id: "" }),
+                     Runs.normalizeRun({ row: { id: "z", status: "started" } })]
+    var ids = [null, undefined, "", 0, 5, {}, []]
+    for (var k = 0; k < ids.length; k++) checkNone(Runs.cardRunState(withBlank, ids[k]), "cardId " + k)
+  }
 }
