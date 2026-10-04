@@ -280,3 +280,23 @@ def test_debounce_continuous_stream_is_rate_limited(world):
     assert all(ids == ["r1"] for ids in got)
     assert len(got) >= 2, got
     assert len(got) <= int(elapsed / 0.25) + 1, (len(got), elapsed)
+
+
+# --- adoption of new runs in this project -------------------------------------
+
+@pytest.mark.parametrize("form", ["exact", "trailing-slash", "dot-segment"])
+def test_new_run_upsert_in_project_is_adopted(world, form):
+    root = str(world["proj"])
+    repo_dir = {"exact": root, "trailing-slash": root + "/", "dot-segment": root + "/./"}[form]
+    set_script(world, [
+        hello(),
+        upsert("n1", repo_dir),                  # this project: adopted and signalled
+        upsert("n2", "/somewhere/else"),         # other repo: ignored
+        ev("n2"),                                # still not watched
+        pause(0.6),
+        ev("n1"),                                # adopted: kept from now on
+        pause(0.6),
+    ])
+    code, lines, _ = run_helper(world, [root])  # zero run ids on argv is valid
+    assert code == 0
+    assert changed(lines) == [["n1"], ["n1"]]

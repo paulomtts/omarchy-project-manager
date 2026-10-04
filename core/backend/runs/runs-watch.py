@@ -78,8 +78,15 @@ def is_backlog(line, started):
     return ts is not None and ts < started
 
 
-def keep(line, watched, started):
-    """The run id a parsed stream line signals, or None to ignore the line."""
+def same_dir(a, b):
+    """True when two paths name the same directory (normalized, absolute)."""
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def keep(line, watched, root, started):
+    """The run id a parsed stream line signals, or None to ignore the line. A
+    live run_upsert whose payload.repo_dir is the project root adds its run to
+    `watched` for good."""
     if not isinstance(line, dict):
         return None
     run_id = line.get("run_id")
@@ -87,7 +94,15 @@ def keep(line, watched, started):
         return None
     if is_backlog(line, started):
         return None
-    return run_id if run_id in watched else None
+    if run_id in watched:
+        return run_id
+    payload = line.get("payload")
+    if (line["event"] == "run_upsert" and isinstance(payload, dict)
+            and isinstance(payload.get("repo_dir"), str)
+            and same_dir(payload["repo_dir"], root)):
+        watched.add(run_id)
+        return run_id
+    return None
 
 
 def spawn(am):
@@ -119,7 +134,7 @@ def stop(proc):
             proc.wait()
 
 
-def stream(lines, watched, started):
+def stream(lines, watched, root, started):
     """Turn am's stream into debounced {"changed": [...]} lines until it ends.
     Trailing edge: the first kept run id into an empty batch opens a WINDOW;
     when it closes the batch is printed once and cleared."""
@@ -141,7 +156,7 @@ def stream(lines, watched, started):
             line = json.loads(raw)
         except ValueError:
             continue
-        run_id = keep(line, watched, started)
+        run_id = keep(line, watched, root, started)
         if run_id is not None and run_id not in batch:
             batch.append(run_id)
             if deadline is None:
@@ -151,7 +166,7 @@ def stream(lines, watched, started):
 def main(argv):
     if not argv:
         return failure("Usage", USAGE, 2)
-    watched = set(argv[1:])
+    root, watched = argv[0], set(argv[1:])
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
@@ -162,7 +177,7 @@ def main(argv):
     err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
     err_reader.start()
     try:
-        stream(lines, watched, started)
+        stream(lines, watched, root, started)
         code = proc.wait()
         err_reader.join(timeout=2)
     finally:
