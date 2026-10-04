@@ -1134,11 +1134,12 @@ TestCase {
       var o = store.data[i]
       if (o && typeof o.interval === "number" && typeof o.repeat === "boolean") timers.push(o.objectName)
     }
-    compare(timers.sort().join(","), "debounceTimer,livenessTimer,pollTimer,staleTimer", "the logs add no timer")
+    compare(timers.sort().join(","), "debounceTimer,livenessTimer,pendingTimer,pollTimer,staleTimer", "the logs add no timer")
     compare(store.debounceTimer.running, false)
     compare(store.livenessTimer.running, false)
     compare(store.staleTimer.running, false)
     compare(store.pollTimer.running, false)
+    compare(store.pendingTimer.running, false)
   }
 
   // The next snapshot of project A lists `entries`.
