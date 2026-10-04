@@ -12,6 +12,7 @@ TestCase {
 
   property string rootA: "/home/u/my proj"
   property string rootB: "/home/u/b"
+  property string logsCmd: "python3|/plugin/core/backend/runs/runs-logs.py|"
 
   Component { id: spyC; SignalSpy {} }
 
@@ -904,5 +905,238 @@ TestCase {
     store.project = rootB
     compare(store.runFilter, "")
     compare(store.filteredRuns.length, 0)
+  }
+
+  // ---- attempt logs (5.2)
+
+  // A snapshot entry whose run has story s1 with subtask t1: spec is done,
+  // implement is started and on its second attempt, whose status is `status`.
+  function treeEntry(id, status) {
+    var e = entry(id, "started", true)
+    e.status.stories = [{ card_id: "s1", subtasks: ["t1"] }]
+    e.status.subtasks = [{ card_id: "t1", phases: [
+      { name: "spec", status: "done", attempts: [{ n: 1, status: "done" }] },
+      { name: "implement", status: "started", attempts: [{ n: 1, status: "failed" }, { n: 2, status: status }] }] }]
+    return e
+  }
+
+  function logsReply(stdout, stderr) {
+    return JSON.stringify({ ok: true, data: { stdout: stdout, stderr: stderr || "" } }) + "\n"
+  }
+
+  function argv(proc) { return proc.command.join("|") }
+
+  // Project A's snapshot listed r1 (treeEntry) and r1 is the selected run, so
+  // its default attempt's logs are in flight.
+  function opened(status) {
+    var store = makeWithProject(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", status || "started")]), 0)
+    store.selectedRunId = "r1"
+    return store
+  }
+
+  function test_logs_defaults() {
+    var store = make(); if (!store) return
+    compare(store.selectedAttempt, null)
+    compare(store.logsText, "")
+    compare(store.logsTruncated, false)
+    compare(store.logsFetchedMs, 0)
+    compare(store.logsLoading, false)
+    compare(store.logsError, "")
+    compare(store.logsStatus, "")
+    verify(!store.logsRunner.current, "no logs fetch at start")
+  }
+
+  function test_selecting_a_run_fetches_its_default_attempt() {
+    var store = opened(); if (!store) return
+    var proc = store.logsRunner.current
+    verify(proc, "the default attempt's logs were asked for")
+    compare(argv(proc), tc.logsCmd + "r1|t1|implement|2")
+    compare(proc.launchGuard, "/home/u/my proj", "guarded by the project")
+    compare(store.selectedAttempt.card_id, "t1")
+    compare(store.selectedAttempt.phase, "implement")
+    compare(store.selectedAttempt.attempt, 2)
+    compare(store.logsStatus, "started", "the status the fetch was launched for")
+    compare(store.logsLoading, true)
+  }
+
+  function test_select_attempt_and_refresh_launch_the_exact_argv() {
+    var store = opened(); if (!store) return
+    store.selectAttempt("t1", "spec", 1)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|spec|1")
+    compare(store.logsStatus, "done")
+    var first = store.logsRunner.current
+    var seq = store.logsRunner.seq
+    store.refreshLogs()
+    compare(store.logsRunner.seq, seq + 1, "Refresh fetches again")
+    verify(store.logsRunner.current !== first)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|spec|1")
+  }
+
+  function test_no_logs_launch_without_project_run_or_selection() {
+    var bare = make(); if (!bare) return
+    bare.selectAttempt("t1", "spec", 1)
+    verify(!bare.logsRunner.current, "no project")
+    compare(bare.selectedAttempt, null)
+    bare.refreshLogs()
+    verify(!bare.logsRunner.current)
+
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started"), entry("r2", "started", true)]), 0)
+    store.selectAttempt("t1", "spec", 1)
+    verify(!store.logsRunner.current, "no run selected")
+    compare(store.selectedAttempt, null)
+    store.selectedRunId = "r2"
+    verify(!store.logsRunner.current, "a run with no attempt selects nothing")
+    compare(store.selectedAttempt, null)
+    store.refreshLogs()
+    verify(!store.logsRunner.current, "no selection")
+    store.selectAttempt("t1", "spec", 0)
+    store.selectAttempt("t1", "", 1)
+    store.selectAttempt("", "spec", 1)
+    store.selectAttempt("t1", "spec", "1")
+    verify(!store.logsRunner.current, "not a real attempt")
+  }
+
+  function test_an_ok_logs_reply_sets_text_truncation_and_time() {
+    var store = opened(); if (!store) return
+    var before = Date.now()
+    reply(store.logsRunner.current, logsReply("collecting...\n3 passed\n"), 0)
+    var after = Date.now()
+    compare(store.logsText, "collecting...\n3 passed")
+    compare(store.logsTruncated, false)
+    compare(store.logsLoading, false)
+    compare(store.logsError, "")
+    verify(store.logsFetchedMs >= before && store.logsFetchedMs <= after, "fetched now: " + store.logsFetchedMs)
+    var lines = []
+    for (var i = 0; i < 250; i++) lines.push("line " + i)
+    store.refreshLogs()
+    reply(store.logsRunner.current, logsReply(lines.join("\n") + "\n", "boom\n"), 0)
+    var shown = store.logsText.split("\n")
+    compare(shown.length, 201, "the last 200 stdout lines, then stderr")
+    compare(shown[0], "line 50")
+    compare(shown[199], "line 249")
+    compare(shown[200], "boom")
+    compare(store.logsTruncated, true)
+  }
+
+  function test_logs_failures_keep_the_text_and_never_touch_am_status() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("kept\n"), 0)
+    var types = ["AmMissing", "AmBadOutput", "HelperError", "Usage", "UnknownRunError"]
+    for (var i = 0; i < types.length; i++) {
+      store.refreshLogs()
+      reply(store.logsRunner.current, JSON.stringify({ ok: false, error: { type: types[i], message: "m" } }) + "\n",
+            types[i] === "Usage" ? 2 : 0)
+      compare(store.logsError, types[i] + ": m", types[i])
+      compare(store.logsText, "kept", types[i] + " keeps the last text")
+      compare(store.logsLoading, false)
+      compare(store.amStatus, "ok", types[i] + " is not a snapshot failure")
+      compare(store.lastError, "")
+      compare(store.runs.length, 1)
+    }
+    store.refreshLogs()
+    reply(store.logsRunner.current, "Traceback (most recent call last):\n  oops {not json", 1)
+    compare(store.logsError, "The logs snapshot gave no usable result (exit 1).")
+    store.refreshLogs()
+    reply(store.logsRunner.current, "", 0)
+    compare(store.logsError, "The logs snapshot gave no usable result (exit 0).")
+    store.refreshLogs()
+    reply(store.logsRunner.current, "[]", 0)
+    compare(store.logsError, "The logs snapshot gave no usable result (exit 0).")
+    compare(store.logsText, "kept")
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    store.refreshLogs()
+    reply(store.logsRunner.current, logsReply("new\n"), 0)
+    compare(store.logsError, "", "a good reply clears the error")
+    compare(store.logsText, "new")
+  }
+
+  function test_only_the_latest_logs_fetch_is_applied() {
+    var store = opened(); if (!store) return
+    var first = store.logsRunner.current
+    store.selectAttempt("t1", "spec", 1)
+    var second = store.logsRunner.current
+    compare(first.running, false, "the older fetch is stopped")
+    reply(second, logsReply("spec text\n"), 0)
+    compare(store.logsText, "spec text")
+    reply(first, logsReply("implement text\n"), 0)
+    compare(store.logsText, "spec text", "a late reply for an older selection changes nothing")
+  }
+
+  // Review Focus 1.
+  function test_selecting_another_attempt_clears_the_old_text_but_refresh_keeps_it() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("first\n"), 0)
+    store.refreshLogs()
+    compare(store.logsText, "first", "a refresh keeps the text until its reply")
+    compare(store.logsLoading, true)
+    store.selectAttempt("t1", "spec", 1)
+    compare(store.logsText, "", "another attempt's text is never shown under this heading")
+    compare(store.logsFetchedMs, 0)
+    compare(store.logsError, "")
+    compare(store.logsTruncated, false)
+    compare(store.logsLoading, true)
+  }
+
+  function test_changing_the_selected_run_resets_to_its_default_attempt() {
+    var store = makeWithProject(rootA); if (!store) return
+    var r2 = treeEntry("r2", "started")
+    r2.status.stories = [{ card_id: "s9", subtasks: ["t9"] }]
+    r2.status.subtasks = [{ card_id: "t9", phases: [{ name: "review", status: "started", attempts: [{ n: 3, status: "started" }] }] }]
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started"), r2]), 0)
+    store.selectedRunId = "r1"
+    reply(store.logsRunner.current, logsReply("r1 text\n"), 0)
+    store.selectAttempt("t1", "spec", 1)
+    store.selectedRunId = "r2"
+    compare(store.selectedAttempt.card_id, "t9")
+    compare(store.selectedAttempt.phase, "review")
+    compare(store.selectedAttempt.attempt, 3)
+    compare(store.logsText, "")
+    compare(store.logsFetchedMs, 0)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r2|t9|review|3")
+    var pending = store.logsRunner.current
+    store.selectedRunId = ""
+    compare(store.selectedAttempt, null, "clearing the run clears the selection")
+    compare(store.logsText, "")
+    compare(store.logsLoading, false)
+    compare(store.logsStatus, "")
+    compare(pending.running, false, "the pending fetch is stopped")
+    reply(pending, logsReply("late\n"), 0)
+    compare(store.logsText, "", "and its late reply is dropped")
+  }
+
+  function test_a_project_switch_clears_the_logs_and_drops_the_late_reply() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    store.refreshLogs()
+    var pending = store.logsRunner.current
+    store.project = rootB
+    compare(store.selectedAttempt, null)
+    compare(store.logsText, "")
+    compare(store.logsTruncated, false)
+    compare(store.logsFetchedMs, 0)
+    compare(store.logsLoading, false)
+    compare(store.logsError, "")
+    compare(store.logsStatus, "")
+    compare(store.logsRunner.guard, "/home/u/b")
+    reply(pending, logsReply("late\n"), 0)
+    compare(store.logsText, "", "A's late logs reply changes nothing")
+  }
+
+  function test_logs_add_no_timer_and_none_runs_while_idle() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var timers = []
+    for (var i = 0; i < store.data.length; i++) {
+      var o = store.data[i]
+      if (o && typeof o.interval === "number" && typeof o.repeat === "boolean") timers.push(o.objectName)
+    }
+    compare(timers.sort().join(","), "debounceTimer,livenessTimer,pollTimer,staleTimer", "the logs add no timer")
+    compare(store.debounceTimer.running, false)
+    compare(store.livenessTimer.running, false)
+    compare(store.staleTimer.running, false)
+    compare(store.pollTimer.running, false)
   }
 }

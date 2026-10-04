@@ -4,12 +4,16 @@ import Quickshell.Io
 import "../domain/runs.js" as Runs
 
 // The am run monitor's data: one snapshot of the selected project's runs
-// (runs-snapshot.py), normalized by the run domain model, plus the selected run
-// and whether `am` could be asked at all. While `active` (the panel is open) a
-// long-lived runs-watch.py says which runs changed, and each burst of changes
-// costs one debounced snapshot. The project root and the backend directory are
-// handed to it from outside -- it never reaches for another store. App
-// composes it as `app.runs` and binds `active` to the panel being open.
+// (runs-snapshot.py), normalized by the run domain model, plus the selected run,
+// the attempt the Run detail pane shows and that attempt's `am logs` snapshot
+// (runs-logs.py), and whether `am` could be asked at all. Two HelperRunners
+// (snapshot, attempt logs) plus, while `active` (the panel is open), a
+// long-lived runs-watch.py that says which runs changed; each burst of changes
+// costs one debounced snapshot. Logs are fetched on a selection, on Refresh and
+// when a snapshot changes the selected attempt's status -- never on a timer.
+// The project root and the backend directory are handed to it from outside --
+// it never reaches for another store. App composes it as `app.runs` and binds
+// `active` to the panel being open.
 Scope {
   id: store
 
@@ -42,6 +46,16 @@ Scope {
   property int watchSeq: 0            // bumped on every watch start and stop: the launch guard
   property string watchSchemaError: "" // the schema banner text while its fallback poll runs
 
+  // The Run detail pane (5.2): which attempt of the selected run it shows and
+  // that attempt's last `am logs` snapshot. Never a live tail.
+  property var selectedAttempt: null  // { card_id, phase, attempt } or null
+  property string logsText: ""        // Runs.logTail of the last good reply
+  property bool logsTruncated: false  // lines were cut from it
+  property real logsFetchedMs: 0      // Date.now() when that reply landed; 0 before any
+  property bool logsLoading: false    // a fetch is in flight
+  property string logsError: ""       // why the last fetch failed; "" after a good one
+  property string logsStatus: ""      // the attempt's status when its fetch was launched
+
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
@@ -49,6 +63,7 @@ Scope {
   readonly property alias livenessTimer: livenessTimer
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
+  readonly property alias logsRunner: logsRunner
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -194,10 +209,102 @@ Scope {
     store.restartStale()
     store.runs = []
     store.selectedRunId = ""
+    store.clearLogs()
     store.runFilter = ""
     store.lastError = ""
     store.amStatus = "ok"
     if (store.project !== "") store.refresh()
+  }
+
+  // ---- attempt logs (5.2)
+
+  // The run with this id in the snapshot, or null.
+  function runById(id) {
+    var list = store.runs
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === id) return list[i]
+    }
+    return null
+  }
+
+  // Shows (and fetches) one attempt of the selected run. Another attempt than
+  // the one shown starts from an empty pane -- its predecessor's text is never
+  // shown under its heading. Nothing happens without a project, a selected run
+  // or a real attempt (a non-empty card and phase, a number above 0).
+  function selectAttempt(cardId, phase, attempt) {
+    if (store.project === "" || store.selectedRunId === "") return
+    if (typeof cardId !== "string" || cardId === "" || typeof phase !== "string" || phase === "") return
+    if (typeof attempt !== "number" || !isFinite(attempt) || attempt <= 0) return
+    var old = store.selectedAttempt
+    if (!old || old.card_id !== cardId || old.phase !== phase || old.attempt !== attempt) {
+      store.logsText = ""
+      store.logsTruncated = false
+      store.logsFetchedMs = 0
+      store.logsError = ""
+    }
+    store.selectedAttempt = { card_id: cardId, phase: phase, attempt: attempt }
+    store.fetchLogs()
+  }
+
+  // The Refresh button: the same attempt again; the text stays until the reply.
+  function refreshLogs() {
+    store.fetchLogs()
+  }
+
+  // One runs-logs.py launch for the current selection, remembering the status
+  // it was launched for (a snapshot that changes it fetches again).
+  function fetchLogs() {
+    var sel = store.selectedAttempt
+    if (store.project === "" || store.selectedRunId === "" || !sel) return
+    store.logsStatus = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    store.logsLoading = true
+    logsRunner.run([store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
+  }
+
+  // No selection and no logs; a fetch in flight is stopped and its reply dropped.
+  function clearLogs() {
+    logsRunner.cancel()
+    store.selectedAttempt = null
+    store.logsText = ""
+    store.logsTruncated = false
+    store.logsFetchedMs = 0
+    store.logsLoading = false
+    store.logsError = ""
+    store.logsStatus = ""
+  }
+
+  // The selected run's default attempt, when it has one.
+  function openDefaultAttempt() {
+    var d = Runs.defaultAttempt(store.runById(store.selectedRunId))
+    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt)
+  }
+
+  // Another run (or none): the pane starts over on that run's default attempt.
+  onSelectedRunIdChanged: {
+    store.clearLogs()
+    if (store.selectedRunId !== "") store.openDefaultAttempt()
+  }
+
+  // One logs reply. ok:true replaces the text with its last 200 lines; any
+  // failure keeps the text and only says why. Never touches amStatus, runs or
+  // lastError: those belong to the snapshot. A reply for a project the user
+  // has left, or for an older fetch, never gets here (the runner's guards).
+  function applyLogs(stdout, exitCode) {
+    store.logsLoading = false
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true) {
+      var tail = Runs.logTail(envelope.data, 200)
+      store.logsText = tail.text
+      store.logsTruncated = tail.truncated
+      store.logsFetchedMs = Date.now()
+      store.logsError = ""
+      return
+    }
+    if (envelope !== null && envelope.ok === false) {
+      store.logsError = Runs.errorText(envelope)
+      return
+    }
+    store.logsError = "The logs snapshot gave no usable result (exit " + exitCode + ")."
   }
 
   // The helper prints exactly one JSON line; anything before it (a warning) and
@@ -290,6 +397,17 @@ Scope {
     guard: store.project
     onGuardChanged: store.projectSwitched()
     onFinished: function(stdout, exitCode) { store.applySnapshot(stdout, exitCode) }
+  }
+
+  // The attempt-logs helper. Guarded by the project like the snapshot, so a
+  // reply for a project the user has left is dropped; a newer fetch (another
+  // attempt, a Refresh) wins over an older one. No onGuardChanged here: the
+  // snapshot runner's already runs projectSwitched() once per switch.
+  HelperRunner {
+    id: logsRunner
+    script: store.backendDir + "runs/runs-logs.py"
+    guard: store.project
+    onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
   }
 
   // A burst of changed lines costs one snapshot.
