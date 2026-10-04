@@ -204,6 +204,24 @@ TestCase {
     compare(s.runs.selected, null, "a subtask with no attempt selects nothing")
   }
 
+  function test_failed_and_escalated_tree_rows_are_drawn_urgent() {
+    var tree = { stories: [{ card_id: "s1", status: "escalated", subtasks: ["t1", "t2"] }],
+                 subtasks: [
+                   { card_id: "t1", status: "failed", phases: [{ name: "implement", status: "started",
+                     attempts: [{ n: 1, status: "failed" }, { n: 2, status: "started" }] }] },
+                   { card_id: "t2", status: "done", phases: [] },
+                   { card_id: "integrate", status: "dead" }] }
+    var s = make([run("run-20261004-19efcddc", "started", true, { tree: tree })], undefined, sel("t1", "implement", 2)); if (!s) return
+    var urgent = s.screen.theme.urgent, fg = s.screen.theme.foreground
+    verify(!Qt.colorEqual(urgent, fg), "the theme tells the two apart")
+    verify(Qt.colorEqual(H.find(s.screen, "runStory0").color, urgent), "an escalated story")
+    verify(Qt.colorEqual(H.find(s.screen, "runSubtaskLabel0_0").color, urgent), "a failed subtask")
+    verify(Qt.colorEqual(H.find(s.screen, "runSubtaskLabel0_1").color, fg), "a done subtask is not urgent")
+    verify(Qt.colorEqual(H.find(s.screen, "runAttemptLabel0_0_0").color, urgent), "a failed attempt")
+    verify(Qt.colorEqual(H.find(s.screen, "runAttemptLabel0_0_1").color, fg), "a started attempt is not urgent")
+    verify(Qt.colorEqual(H.find(s.screen, "runSynthetic0").color, urgent), "a dead bookkeeping row")
+  }
+
   // Review Focus 3.
   function test_an_unnumbered_attempt_is_listed_but_not_clickable() {
     var tree = { stories: [], subtasks: [{ card_id: "t1", phases: [
