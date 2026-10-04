@@ -23,7 +23,7 @@ manifest entry point.
 - `App.qml` composes the stores below and wires them by explicit properties.
 - `HelperRunner.qml` runs one helper script: latest run wins, stale-exit guard; emits raw stdout, stores parse it.
 - `FilterState.qml` one active filter with toggle and cursor reset.
-- `NavigationStore.qml` view mode, section, push/pop return positions, cursor, search, dropdown.
+- `NavigationStore.qml` view mode, section, push/pop return positions, cursor, search, dropdown; `runReturnMode` (`"runs"` | `"entry"`) says where Back from an open run goes.
 - `ProjectStore.qml` registry, selection, remembered project, DB watch path.
 - `ProjectDeleteStore.qml` delete-project confirm/snapshot flow.
 - `BoardStore.qml` cards, index, selection, board order, the issue map (`brd issue list`; an old brd without issues is just an empty map); owns the DB `FileView` and the 250ms `watchTimer` that debounces it, so a burst of writes costs one tree+issue+export fetch (`fetchBoard()` itself -- Refresh, a project switch -- stays immediate).
@@ -89,8 +89,11 @@ manifest entry point.
   for another store: `App` hands it `project` (the selected project's root
   path, `""` when none), `backendDir` and `active` (App's `panelOpen`, which
   the panel binds to its `opened`).
+  `amStatus` is `ok`, `missing` (an `AmMissing` snapshot: `runs` is emptied, so no run marks show), `schema` (the watch ended with `SchemaMismatch`: `watchSchemaError` holds the banner text, which stays up through the polling snapshots) or `error` (any other failed snapshot: the last good `runs` stay), with `lastError` saying why. A watch that ends with `CorruptJournal` sets `watchWarning` (the Runs screen's warning line) and starts the same 5 s poll.
+  The Runs list is `filteredRuns`, `Runs.searchRuns(Runs.filterRuns(runs, runFilter), searchQuery)`: `runFilter` is `""` (All) or `attention` / `live` / `parked`, set by `toggleRunFilter(id)` (the All chip, or the active chip again, means All), which emits `runFilterToggled()` so the cursor and the scroll go home; `App` binds `searchQuery` to the navigation store's, and a project switch resets the chip.
+  Run detail's output pane is a second `HelperRunner`, `logsRunner` (`runs-logs.py`, guarded by the project like the snapshot): `selectedAttempt` (`{ card_id, phase, attempt }` or null), `logsText` (`Runs.logTail` of the last good reply, at most 200 lines), `logsTruncated`, `logsFetchedMs`, `logsLoading`, `logsError` and `logsStatus` (the attempt's status when its fetch was launched). Logs are fetched on demand only -- `selectAttempt(...)`, `openDefaultAttempt()` when a run is selected, `refreshLogs()` (the Refresh button), and after a snapshot that moved the selected attempt's status -- never on a timer and never as a live tail. A failed fetch sets `logsError` and keeps the last good text; another attempt starts from an empty pane.
 
-Other `ui/` pieces: `Navigator.qml` (screen switching), `Shortcuts.qml` (key
+Other `ui/` pieces: `Navigator.qml` (screen switching; `openRun(id, from)` opens Run detail and records where Back goes in `runReturnMode`: from a card's RUNS row (`from` `"entry"`) the card stays open behind it and Back returns to it through `restoreCardFromRun()`, from the Runs list Back restores the list through `restoreRunsList()`), `Shortcuts.qml` (key
 events to store calls; Ctrl+1..6 follow the sidebar's order: Board, Graph,
 Documents, Memories, Issues, Runs), `theme/Theme.qml` (colours and fonts from the shell).
 
