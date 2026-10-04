@@ -98,6 +98,29 @@ TestCase {
     compare(p.app.runs.selectedRunId, "")
   }
 
+  // A different chip is a different list: the panel scrolls back to its top.
+  // The list stays taller than the panel either way, so nothing but that
+  // scroll can bring the content back up.
+  function test_a_chip_scrolls_the_panel_back_to_the_top() {
+    var p = make(); if (!p) return
+    var many = []
+    for (var i = 0; i < 40; i++) many.push(run("run-live-" + (1000 + i), "started", true, "m" + i))
+    many.push(run("run-0000000000d4", "stopped", null, "delta"))
+    p.app.runs.runs = many
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    var flick = H.find(p, "panelFlick")
+    verify(flick, "the panel's flickable")
+    verify(flick.contentHeight > flick.height + 40, "the list overflows the panel")
+    flick.contentY = 40
+    wait(50)
+    compare(flick.contentY, 40)
+    H.find(p, "runChiplive").clicked()
+    wait(50)
+    verify(flick.contentHeight > flick.height + 40, "the filtered list still overflows")
+    compare(flick.contentY, 0)
+  }
+
   function test_the_left_arrow_and_the_crumb_also_leave_a_run() {
     var p = make(); if (!p) return
     p.navigator.showSection("runs")
