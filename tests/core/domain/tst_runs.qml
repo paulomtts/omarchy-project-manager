@@ -133,6 +133,15 @@ TestCase {
     compare(e.host, "")
     compare(e.heartbeat_at, "")
 
+    var nulls = fullRaw()
+    nulls.status.control.lease = { pid: null, host: null, heartbeat_at: null, live: null, accepting: null }
+    var n = Runs.normalizeRun(nulls).lease
+    compare(n.pid, "", "null pid")
+    compare(n.host, "", "null host")
+    compare(n.heartbeat_at, "", "null heartbeat_at")
+    compare(n.live, false, "null live")
+    compare(n.accepting, false, "null accepting")
+
     var stringy = fullRaw()
     stringy.status.control.lease = { live: "true", accepting: "true" }
     compare(Runs.normalizeRun(stringy).lease.live, false)
@@ -196,6 +205,13 @@ TestCase {
     var stringy = fullRaw()
     stringy.status.control.lease.live = "true"
     compare(Runs.runState(Runs.normalizeRun(stringy)), "dead")
+
+    // runState itself demands live === true, even on a run not built by normalizeRun.
+    var truthy = ["true", 1, {}, "yes"]
+    for (var i = 0; i < truthy.length; i++) {
+      compare(Runs.runState({ status: "started", lease: { live: truthy[i] } }), "dead", "live " + JSON.stringify(truthy[i]))
+    }
+    compare(Runs.runState({ status: "started", lease: "live" }), "dead", "string lease")
   }
 
   function test_state_dead_missing_lease() {
