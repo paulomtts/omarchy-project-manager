@@ -39,6 +39,16 @@ TestCase {
     compare(nav.sectionTitle, "Issues")
   }
 
+  function test_the_runs_view_modes_share_one_section() {
+    var nav = make(); if (!nav) return
+    nav.viewMode = "runs"
+    compare(nav.section, "runs")
+    compare(nav.sectionTitle, "Runs")
+    nav.viewMode = "run"
+    compare(nav.section, "runs")
+    compare(nav.sectionTitle, "Runs")
+  }
+
   // A card opened from an issue is still the Issues section, so the sidebar
   // keeps Issues lit and the trail keeps saying "Issues".
   function test_a_card_opened_from_an_issue_keeps_the_issues_section() {
@@ -156,5 +166,12 @@ TestCase {
     compare(n.dropdownCursor, 0)
     n.moveDropdown(1, 0)
     compare(n.dropdownCursor, 0)
+  }
+
+  // An open run goes back to the Runs list unless a card's RUNS row opened it
+  // (Navigator sets "entry" then; tst_navigator.qml covers that path).
+  function test_a_run_returns_to_the_runs_list_by_default() {
+    var n = make(); if (!n) return
+    compare(n.runReturnMode, "runs")
   }
 }

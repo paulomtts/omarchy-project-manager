@@ -23,7 +23,7 @@ manifest entry point.
 - `App.qml` composes the stores below and wires them by explicit properties.
 - `HelperRunner.qml` runs one helper script: latest run wins, stale-exit guard; emits raw stdout, stores parse it.
 - `FilterState.qml` one active filter with toggle and cursor reset.
-- `NavigationStore.qml` view mode, section, push/pop return positions, cursor, search, dropdown.
+- `NavigationStore.qml` view mode, section, push/pop return positions, cursor, search, dropdown; `runReturnMode` (`"runs"` | `"entry"`) says where Back from an open run goes.
 - `ProjectStore.qml` registry, selection, remembered project, DB watch path.
 - `ProjectDeleteStore.qml` delete-project confirm/snapshot flow.
 - `BoardStore.qml` cards, index, selection, board order, the issue map (`brd issue list`; an old brd without issues is just an empty map); owns the DB `FileView` and the 250ms `watchTimer` that debounces it, so a burst of writes costs one tree+issue+export fetch (`fetchBoard()` itself -- Refresh, a project switch -- stays immediate).
@@ -89,10 +89,13 @@ manifest entry point.
   for another store: `App` hands it `project` (the selected project's root
   path, `""` when none), `backendDir` and `active` (App's `panelOpen`, which
   the panel binds to its `opened`).
+  `amStatus` is `ok`, `missing` (an `AmMissing` snapshot: `runs` is emptied, so no run marks show), `schema` (the watch ended with `SchemaMismatch`: `watchSchemaError` holds the banner text, which stays up through the polling snapshots) or `error` (any other failed snapshot: the last good `runs` stay), with `lastError` saying why. A watch that ends with `CorruptJournal` sets `watchWarning` (the Runs screen's warning line) and starts the same 5 s poll.
+  The Runs list is `filteredRuns`, `Runs.searchRuns(Runs.filterRuns(runs, runFilter), searchQuery)`: `runFilter` is `""` (All) or `attention` / `live` / `parked`, set by `toggleRunFilter(id)` (the All chip, or the active chip again, means All), which emits `runFilterToggled()` so the cursor and the scroll go home; `App` binds `searchQuery` to the navigation store's, and a project switch resets the chip.
+  Run detail's output pane is a second `HelperRunner`, `logsRunner` (`runs-logs.py`, guarded by the project like the snapshot): `selectedAttempt` (`{ card_id, phase, attempt }` or null), `logsText` (`Runs.logTail` of the last good reply, at most 200 lines), `logsTruncated`, `logsFetchedMs`, `logsLoading`, `logsError` and `logsStatus` (the attempt's status when its fetch was launched). Logs are fetched on demand only -- `selectAttempt(...)`, `openDefaultAttempt()` when a run is selected, `refreshLogs()` (the Refresh button), and after a snapshot that moved the selected attempt's status -- never on a timer and never as a live tail. A failed fetch sets `logsError` and keeps the last good text; another attempt starts from an empty pane.
 
-Other `ui/` pieces: `Navigator.qml` (screen switching), `Shortcuts.qml` (key
-events to store calls; Ctrl+1..5 follow the sidebar's order: Board, Graph,
-Documents, Memories, Issues), `theme/Theme.qml` (colours and fonts from the shell).
+Other `ui/` pieces: `Navigator.qml` (screen switching; `openRun(id, from)` opens Run detail and records where Back goes in `runReturnMode`: from a card's RUNS row (`from` `"entry"`) the card stays open behind it and Back returns to it through `restoreCardFromRun()`, from the Runs list Back restores the list through `restoreRunsList()`), `Shortcuts.qml` (key
+events to store calls; Ctrl+1..6 follow the sidebar's order: Board, Graph,
+Documents, Memories, Issues, Runs), `theme/Theme.qml` (colours and fonts from the shell).
 
 Not every process goes through `HelperRunner`: `listProc` (`brd projects`), `treeProc` (`brd tree`), `issueProc` (`brd issue list`), `exportProc` (`brd export`), `brdDocsProc` (`brd doc list`), `saveStateProc`, `resolveDbPathProc` and `deleteProc` stay plain `Process` objects because they run the `brd` CLI or are fire-and-forget/single-owner with their own exit handling. `HelperRunner.run()` SIGTERMs a previous run of the same helper instead of letting it finish and dropping its reply (reachable for list-docs/list-memories refetches, and a set-doc-tag started in another project mid-flight); helpers write atomically, so at worst a stray `docs/.tmp-*` remains.
 
@@ -112,7 +115,7 @@ of one entity, used by the card detail and the issue detail),
 **Archive finished (N)** button), `MilestoneJobIndicator` (the toolbar strip while a milestone job runs, and its
 result), `StatusPips` (one status circle per subtask on a story node, the
 overflow as a `+N`; its single pulse animation runs only while the row is
-visible AND holds an in-progress pip, so an idle graph animates nothing),
+visible AND holds an in-progress pip, so an idle graph animates nothing; `ringedIds` rings, with the pip's own border, the subtasks an am run is working on now -- `GraphScreen` picks each pip whose winning run is running and whose own am row is in the running bucket, and `GraphView` hands the list down),
 `Pulse` (that one fade, shared: `level` swings 1 -> 0.3 -> 1 while the owner
 keeps `running` true and is back at 1 the moment it stops; `StatusPips` and
 `RunBadge` bind their opacity to it instead of declaring a second animation),
@@ -125,25 +128,33 @@ while running, visible and `active`),
 caption segment per non-zero count in the same glyphs, then `N pending`;
 escalated in `urgent`; hidden when the rollup is null or its total is 0),
 `PhaseTimeline` (one subtask's phases as a single static line such as `spec✔ → plan✔ → implement⟳ → verify· → review·`: done ✔, started ⟳ and failed ✖ from `runGlyphs.js`, pending a local ·; an unknown status shows the bare name, bad entries are skipped and missing or empty `phases` hide it; no colour-only state, no animation),
-`RunIndicator` (the toolbar's run strip beside `MilestoneJobIndicator`: one `ActionButton` per non-zero `running` / `parked` / `attention` prop, written glyph-then-count with no space such as `⟳2 ⏸1 ‼1`, glyphs from `runGlyphs.js` and counts clamped by its `countOf`; attention in `urgent`; hidden when all three are 0; static, no animation; presentation only -- the owner computes the counts, and a click emits `filterRequested(filter)` with `"live"`, `"parked"` or `"attention"` from the Runs filter set `attention` / `live` / `parked` / `all`, `all` being emitted by no segment),
+`RunIndicator` (a toolbar run strip built to sit beside `MilestoneJobIndicator`, not yet mounted -- `Panel`'s toolbar carries only `MilestoneJobIndicator`: one `ActionButton` per non-zero `running` / `parked` / `attention` prop, written glyph-then-count with no space such as `⟳2 ⏸1 ‼1`, glyphs from `runGlyphs.js` and counts clamped by its `countOf`; attention in `urgent`; hidden when all three are 0; static, no animation; presentation only -- the owner computes the counts, and a click emits `filterRequested(filter)` with `"live"`, `"parked"` or `"attention"` from the Runs filter set `attention` / `live` / `parked` / `all`, `all` being emitted by no segment),
+`RunMark` (one card's run mark on the Board and the Graph: a `RunBadge` inside the wrapper that owns the dimming -- a dimmed winner (a finished run speaking for the card) or stale run data is drawn at half opacity and never pulses; the owner hands it `cardRunState` and `rollup`, or null for no mark, and never brd status),
 `Sidebar`, and the views
 `DocumentsView`, `MemoriesView`, `MemoryNoteView`, `GraphView`.
-`Sidebar`'s five nav rows (Board, Graph, Documents, Memories, Issues) each lead with an
+`Sidebar`'s six nav rows (Board, Graph, Documents, Memories, Issues, Runs) each lead with an
 icon glyph drawn in the theme's font; `tests/architecture/test_icon_glyphs.py`
 checks every glyph literal in `ui/` and `vendor/` against the installed Nerd
 Fonts, because a glyph the font does not have renders as an empty box.
-`Sidebar.runsAttention` (int, default 0; the owner's escalated-plus-dead run count) derives `runsAttentionText` (`‼N` from `runGlyphs.js` when N > 0, otherwise empty), and `NavRow.countText` draws such a count after a row's label in `urgent` as `navCount<Section>`; no current row sets it, and the Runs row (story 5.x) binds `countText: sidebar.runsAttentionText`.
+`Sidebar.runsAttention` (int, default 0; the owner's escalated-plus-dead run count) derives `runsAttentionText` (`‼N` from `runGlyphs.js` when N > 0, otherwise empty), and `NavRow.countText` draws such a count after a row's label in `urgent` as `navCount<Section>`; the Runs row binds `countText: sidebar.runsAttentionText`, and `Panel` feeds `runsAttention` from `Runs.attention(runs).length`, so the Runs row reads `‼N` while N runs are escalated or dead.
 `ui/screens/DocumentsToolbar.qml` is the Documents half of the panel's fixed
 toolbar - the category chips of the list, and the path and type picker of an
 open document - so only the document body scrolls.
+
+The run screens read `app.runs` and never import `core/stores`. `ui/screens/RunsScreen.qml` (Ctrl+6) lists `filteredRuns`, one row each (state glyph, short id, title, done/total, current phase, age; a dead run's age is since its last heartbeat, and an escalated run adds `escalationReason`), under the Needs attention / Live / Parked / All chips with their `runFilterCounts`. Above the list it shows the schema banner, `Run data is out of date` while `stale`, and the `watchWarning` line. Below it the footer reads `am · schema 1 · watching` (or `not watching`), shows `lastError` instead when `amStatus` is `error`, and is hidden when am is missing or the schema banner shows. With am missing the list shows `am is not installed or not on PATH`. `ui/screens/RunDetailScreen.qml` (view mode `run`) shows the header (state, milestone, branch prefix, base, lease), the `runTree` story > subtask > phase > attempt tree plus the Integrate / Bases / Base rows (cards brd has closed are dimmed, never hidden), and the output pane: one attempt's `logsText`, labelled `snapshot <age> ago` plus `· last 200 lines` when it was cut, never a live tail, with a Refresh button and `logsError` in `urgent`. `CardDetailScreen` adds a RUNS section: every run `runsTouching` the card, newest first, with glyph, short id, title, phase and age, dimmed while stale. A click opens Run detail with `from` `"entry"`; a merged or canceled card still lists its runs, and nothing is listed while am is missing. `BoardScreen` and `GraphScreen` draw a `RunMark` per card (plus `RunRollupBar` under a Board card's title) from `cardRunState` / `rollup`, except on cards `Board.isClosedStatus` reports closed (merged, canceled, archived) and while am is missing -- a visibility rule in the screens, never a run state. Every age on these screens is read against the clock once per snapshot (or logs reply): there is no timer.
+
+Run state is a separate channel from brd status: a glyph plus a ring (`RunBadge`'s `Badge`, or a `StatusPips` ring), never colour alone. `ui/components/runGlyphs.js` is the one glyph source -- running ⟳, parked ⏸, escalated ‼, dead ✖, cancelled ⊘, done ✔ -- read by `RunBadge`, `RunRollupBar`, `PhaseTimeline`, `RunIndicator`, `RunMark`, `Sidebar` and the run screens. Escalated is drawn in the `urgent` token; merged purple and canceled red (`Board.statusColor`) are never used for a run state.
+
+Refresh model: no timers while idle. `RunStore`'s watch, its debounce, the liveness re-read (only while a run is running) and the fallback poll run only while the panel is open (`active`); closing it stops the watch process and every timer and starts nothing new (a one-shot snapshot or logs fetch already in flight runs to its end). Logs are fetched on demand, and `Pulse` animates a run badge only while it is running, visible and `active`.
+
 Domain helpers: `taxonomy.js` (typed labels), `results.js` (one JSON line +
 exit code), `text.js` (`matchesQuery`), `milestones.js` (the two helper
 parsers, `agentMessage`, `formatElapsed`, the spec-list ordering and filter),
 `brd-extras.js` (the `brd export` and `brd doc list` parsers, the issue
 ordering/filtering and its wording, and `relativeTime` for a comment's age; the
 export's `documents[]` carry every registered file's full content and are
-dropped unread), and `documents.js`'s `mergeRegistered` / `brdStateLabel` for
-brd's registrations;
+dropped unread), `documents.js`'s `mergeRegistered` / `brdStateLabel` for
+brd's registrations, and `runs.js`, the am run model: pure JS, never throws, and every input comes from `am`, never from a brd card. Normalizing: `normalizeRun` (an `am runs` row plus its `am status` data). State: `runState` (running = `started` with a live lease, dead = `started` without one, parked = `stopped`, plus escalated, cancelled and done; anything else is `unknown`), `cardRunState` (the newest non-terminal run touching a card speaks for it, else the newest touching run, dimmed; its `state` is running / dead / parked / escalated / none) and `glyphStateOf` (an am story, subtask, phase, attempt or row status as a `runGlyphs.js` key). Card mapping: `runsTouching` and `runTree`, through `run.milestone_id`, `stories[].card_id` and `subtasks[].card_id`, never through rows alone; the synthetic ids `integrate`, `bases` and `base-<story-id>` never match a card (Run detail shows them as rows of their own). Rollups and attention: `rollup` (counts from the winning run's am rows), `attention` (escalated or dead: "Needs attention") and `escalationReason`. Filter and search: `runFilterCounts`, `filterRuns`, `searchRuns`. Display text: `shortId`, `runTitle`, `runProgress`, `currentPhase`, `ageText`, `runAgeText`, `snapshotAgeText`, `errorText`. Logs: `logTail`, `defaultAttempt`, `attemptStatus`. Run state is never derived from brd status: `cardRunState` reads no brd status at all, and it is the screens that skip the cards `Board.isClosedStatus` reports closed (merged, canceled, archived);
 Python: `core/backend/common`
 (`json_line`, `safe_paths`, `atomic_write`, `frontmatter`).
 `core/backend/milestones/` is the New-milestone backend:
@@ -158,7 +169,7 @@ process group on cancel or timeout, and logs to
 (dir `0700`, file `0600`). Only `claude` runs restricted (read plus
 `Bash(brd *)`); every other agent runs with full auto-approval, which the
 dialog states before the run starts.
-`core/backend/runs/` is the run-monitor backend: `runs-snapshot.py` runs `am runs`, then `am status` for every non-terminal run and the latest 10 terminal ones, and prints one JSON line (`{ok, runs, data_dir}` or an error).
+`core/backend/runs/` is the run-monitor backend, scoped to the open project. `runs-snapshot.py <project_root>` runs `am runs --repo-dir R`, then `am status <id> --repo-dir R` for every non-terminal run and the latest 10 terminal ones, and prints one JSON line (`{ok, runs, data_dir}` or an error; nothing in the UI shows `data_dir`). `runs-watch.py <project_root> [run_id ...]` is long-lived: it runs `am watch --all --follow`, checks that the hello line's schema is 1, drops journal lines written before it started (an S4 workaround until `am watch --from-now` exists), keeps the watched runs plus any run whose `run_upsert` names this project root, prints at most one debounced `{"changed": [...]}` line per 250 ms, and ends with an `AmMissing`, `SchemaMismatch`, `CorruptJournal` or `HelperError` envelope (exit 0 when it was stopped). `RunStore` runs it as a plain `Process`, not through `HelperRunner`. `runs-logs.py RUN CARD PHASE ATTEMPT` is a one-shot `am logs RUN CARD --phase P --attempt N` passthrough: no `--repo-dir` (am resolves the run by id), a 60 s timeout, exactly one JSON line. All three use only documented `am` commands, as argv lists, and never read am's SQLite database or its on-disk layout; am finds its journals under its own data dir, so the `XDG_DATA_HOME` it inherits matters.
 
 When a thing is needed a second time it becomes shared **before** the second
 use is written. The architecture test fails on a second copy of: the modal

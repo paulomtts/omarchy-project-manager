@@ -174,4 +174,191 @@ TestCase {
     n.toggleDropdown()
     compare(n.app.nav.dropdownOpen, false)
   }
+
+  // ---- Runs (5.1)
+
+  function runOf(id, status, live, milestone) {
+    return { id: id, repo_dir: "/home/u/a", milestone_id: milestone, status: status, started_at: "",
+             lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
+             rows: [], tree: { stories: [], subtasks: [] } }
+  }
+
+  // The navigator in the Runs section with three runs. Selecting the project
+  // launched a snapshot of a helper that does not exist here; it is cancelled
+  // so its late exit can never touch the runs set below.
+  function withRuns() {
+    var n = make(); if (!n) return null
+    n.app.runs.snapshotRunner.cancel()
+    n.app.runs.runs = [runOf("run-0000000000a1", "started", true, "alpha"),
+                       runOf("run-0000000000b2", "escalated", null, "beta"),
+                       runOf("run-0000000000c3", "stopped", null, "gamma")]
+    n.showSection("runs")
+    wait(0)
+    return n
+  }
+  function runIds(list) { return list.map(function(r) { return r ? r.id : "null" }).join(",") }
+  function crumbLabels(crumbs) { return crumbs.map(function(c) { return c.label }).join(" > ") }
+
+  function test_the_runs_section_lists_the_filtered_runs() {
+    var n = withRuns(); if (!n) return
+    compare(n.app.nav.viewMode, "runs")
+    compare(runIds(n.currentList()), runIds(n.app.runs.filteredRuns))
+    compare(n.currentList().length, 3)
+    n.app.runs.toggleRunFilter("parked")
+    compare(runIds(n.currentList()), "run-0000000000c3", "the list is the store's filtered one")
+    compare(crumbLabels(n.crumbs), "Runs")
+    compare(n.crumbs[0].clickable, false)
+  }
+
+  function test_enter_opens_a_run_and_back_restores_the_cursor_and_scroll() {
+    var n = withRuns(); if (!n) return
+    n.app.nav.cursorIndex = 1
+    tc.flick.contentY = 120
+    n.activateCursor()
+    compare(n.app.runs.selectedRunId, "run-0000000000b2")
+    compare(n.app.nav.viewMode, "run")
+    compare(n.app.nav.section, "runs")
+    compare(n.app.nav.cursorIndex, 0)
+    compare(crumbLabels(n.crumbs), "Runs > …000000b2")
+    compare(n.crumbs[0].clickable, true)
+    compare(n.currentList().length, 0, "the run view has no cursor list yet")
+    wait(0)
+    compare(tc.flick.contentY, 0)
+    n.goBack()
+    compare(n.app.nav.viewMode, "runs")
+    compare(n.app.nav.cursorIndex, 1)
+    compare(n.app.runs.selectedRunId, "")
+    wait(0)
+    compare(tc.flick.contentY, 120)
+  }
+
+  function test_the_section_crumb_of_an_open_run_goes_back() {
+    var n = withRuns(); if (!n) return
+    n.openRun("run-0000000000a1")
+    compare(n.app.nav.viewMode, "run")
+    n.activateCrumb(0)
+    compare(n.app.nav.viewMode, "runs")
+  }
+
+  function test_enter_on_an_empty_or_junk_runs_list_does_nothing() {
+    var n = withRuns(); if (!n) return
+    n.app.runs.runs = []
+    n.activateCursor()
+    compare(n.app.nav.viewMode, "runs")
+    compare(n.app.runs.selectedRunId, "")
+    n.app.runs.runs = [{}, null]
+    n.app.nav.cursorIndex = 0
+    n.activateCursor()
+    n.app.nav.cursorIndex = 1
+    n.activateCursor()
+    compare(n.app.nav.viewMode, "runs", "a run without an id opens nothing")
+    compare(n.app.runs.selectedRunId, "")
+  }
+
+  function test_open_run_ignores_an_unknown_or_blank_id() {
+    var n = withRuns(); if (!n) return
+    var bad = ["", "nope", null, undefined, 5]
+    for (var i = 0; i < bad.length; i++) {
+      n.openRun(bad[i])
+      compare(n.app.nav.viewMode, "runs", "id " + i)
+      compare(n.app.runs.selectedRunId, "", "id " + i)
+    }
+  }
+
+  function test_a_section_switch_resets_the_search_but_keeps_the_chip() {
+    var n = withRuns(); if (!n) return
+    n.app.runs.toggleRunFilter("attention")
+    n.app.nav.searchQuery = "beta"
+    n.showSection("board")
+    n.showSection("runs")
+    compare(n.app.nav.viewMode, "runs")
+    compare(n.app.nav.searchQuery, "")
+    compare(n.app.runs.searchQuery, "")
+    compare(n.app.runs.runFilter, "attention")
+  }
+
+  // ---- Runs opened from a card (5.3)
+
+  function cardRuns() {
+    var n = make(); if (!n) return null
+    n.app.runs.snapshotRunner.cancel()
+    n.app.board.applyTreeData([card("m1", "Milestone", "todo"), card("m2", "Other", "todo")])
+    n.app.runs.runs = [runOf("run-0000000000a1", "started", true, "m2")]
+    wait(50)
+    return n
+  }
+
+  function test_a_run_opened_from_a_card_comes_back_to_that_card() {
+    var n = cardRuns(); if (!n) return
+    n.app.nav.cursorIndex = 1
+    tc.flick.contentY = 80
+    n.openCard("m2")
+    wait(0)
+    compare(n.app.nav.viewMode, "entry")
+    n.openRun("run-0000000000a1", "entry")
+    wait(0)
+    compare(n.app.nav.viewMode, "run")
+    compare(n.app.runs.selectedRunId, "run-0000000000a1")
+    compare(n.app.nav.runReturnMode, "entry")
+    compare(n.app.nav.returnMode, "board", "the card's own way back is untouched")
+    compare(n.app.nav.returnCursor, 1)
+    compare(n.app.nav.returnScrollY, 80)
+    compare(crumbLabels(n.crumbs), "Runs > …000000a1", "accepted: the run view still reads Runs")
+    n.goBack()
+    wait(0)
+    compare(n.app.nav.viewMode, "entry")
+    compare(n.app.board.selectedCardId, "m2")
+    compare(n.app.runs.selectedRunId, "")
+    compare(n.app.nav.runReturnMode, "runs")
+    compare(n.app.nav.cursorIndex, 0)
+    n.goBack()
+    compare(n.app.nav.viewMode, "board", "Back from the card still reaches its list")
+    compare(n.app.nav.cursorIndex, 1)
+    wait(0)
+    compare(tc.flick.contentY, 80)
+  }
+
+  function test_the_section_crumb_of_a_run_opened_from_a_card_also_lands_on_the_card() {
+    var n = cardRuns(); if (!n) return
+    n.openCard("m2")
+    n.openRun("run-0000000000a1", "entry")
+    n.activateCrumb(0)
+    compare(n.app.nav.viewMode, "entry")
+    compare(n.app.board.selectedCardId, "m2")
+  }
+
+  function test_a_plain_open_resets_the_return_to_the_runs_list() {
+    var n = cardRuns(); if (!n) return
+    n.openCard("m2")
+    n.openRun("run-0000000000a1", "entry")
+    compare(n.app.nav.runReturnMode, "entry")
+    n.openRun("run-0000000000a1")
+    compare(n.app.nav.runReturnMode, "runs", "every open says where Back goes")
+    n.goBack()
+    compare(n.app.nav.viewMode, "runs")
+  }
+
+  function test_back_from_a_card_run_whose_card_is_gone_returns_to_the_list() {
+    var n = cardRuns(); if (!n) return
+    n.openCard("m2")
+    n.openRun("run-0000000000a1", "entry")
+    n.app.board.applyTreeData([card("m1", "Milestone", "todo")])
+    compare(n.app.nav.viewMode, "run", "the run view does not follow the board")
+    n.goBack()
+    compare(n.app.nav.viewMode, "board", "no blank card: Back goes on to the card's list")
+    compare(n.app.nav.runReturnMode, "runs")
+    compare(n.app.runs.selectedRunId, "")
+  }
+
+  function test_an_unknown_run_from_a_card_opens_nothing() {
+    var n = cardRuns(); if (!n) return
+    n.openCard("m1")
+    var bad = ["", "gone", null, undefined, 5]
+    for (var i = 0; i < bad.length; i++) {
+      n.openRun(bad[i], "entry")
+      compare(n.app.nav.viewMode, "entry", "id " + i)
+      compare(n.app.nav.runReturnMode, "runs", "id " + i)
+      compare(n.app.runs.selectedRunId, "", "id " + i)
+    }
+  }
 }

@@ -1,0 +1,317 @@
+// tests/ui/screens/tst_run_detail_screen.qml
+// ui/screens/RunDetailScreen.qml on its own: the header, the story > subtask >
+// attempt tree with its bookkeeping rows, the output pane and the missing-run
+// line. A stub app: a REAL NavigationStore, a plain object carrying the
+// RunStore properties the screen reads (with recorders for selectAttempt and
+// refreshLogs), and a board whose cardMap lends titles and brd statuses.
+import QtQuick
+import QtTest
+import "../../helpers/find.js" as H
+import "../../../ui/components/runGlyphs.js" as RG
+
+TestCase {
+  id: tc
+  name: "RunDetailScreen"
+  when: windowShown
+  visible: true
+  width: 500; height: 900
+
+  Component { id: hostC; Item { width: 500; height: 900 } }
+
+  Component {
+    id: runsC
+    QtObject {
+      id: rs
+      property var runs: []
+      property string selectedRunId: ""
+      property var selectedAttempt: null
+      property string logsText: ""
+      property bool logsTruncated: false
+      property real logsFetchedMs: 0
+      property bool logsLoading: false
+      property string logsError: ""
+      property string amStatus: "ok"
+      property var selected: null
+      property int refreshed: 0
+      function selectAttempt(cardId, phase, attempt) {
+        rs.selected = [cardId, phase, attempt]
+        rs.selectedAttempt = { card_id: cardId, phase: phase, attempt: attempt }
+      }
+      function refreshLogs() { rs.refreshed += 1 }
+    }
+  }
+
+  Component {
+    id: appC
+    QtObject {
+      property var nav: null
+      property var runs: null
+      property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" } })
+      property var board: ({ cardMap: {
+        s1: { id: "s1", title: "Runs screens", status: "in_progress" },
+        t1: { id: "t1", title: "RunDetailScreen", status: "in_progress" },
+        t2: { id: "t2", title: "Old work", status: "merged" },
+        s2: { id: "s2", title: "Dropped story", status: "canceled" },
+        t3: { id: "t3", title: "Shelved", status: "archived" }
+      } })
+    }
+  }
+
+  function make(list, selectedId, attempt) {
+    var host = createTemporaryObject(hostC, tc)
+    var navComp = Qt.createComponent("../../../core/stores/NavigationStore.qml")
+    if (navComp.status !== Component.Ready) { fail(navComp.errorString()); return null }
+    var nav = navComp.createObject(host)
+    var runs = runsC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs })
+    var sC = Qt.createComponent("../../../ui/screens/RunDetailScreen.qml")
+    if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
+    var screen = sC.createObject(host, { width: 500, app: app, navigator: null })
+    nav.viewMode = "run"
+    runs.runs = list || []
+    runs.selectedRunId = selectedId === undefined ? "run-20261004-19efcddc" : selectedId
+    runs.selectedAttempt = attempt === undefined ? null : attempt
+    wait(20)
+    return { app: app, runs: runs, nav: nav, screen: screen }
+  }
+
+  // Two clicks inside the double-click interval make the second a double-click.
+  function tap(item) {
+    wait(450)
+    mouseClick(item)
+  }
+
+  // A normalised run, as RunStore holds them. live === null means no lease.
+  function run(id, status, live, opts) {
+    var o = opts || {}
+    return { id: id, repo_dir: "/home/u/a", milestone_id: o.milestone === undefined ? "M3" : o.milestone,
+             base_branch: o.base === undefined ? "master" : o.base,
+             branch_prefix: o.prefix === undefined ? "m3" : o.prefix,
+             status: status, started_at: "",
+             lease: live === null ? null : { pid: 4121, host: "h", heartbeat_at: "", accepting: true, live: live },
+             rows: o.rows || [], tree: o.tree || { stories: [], subtasks: [] } }
+  }
+
+  function detailTree() {
+    return { stories: [{ card_id: "s1", status: "started", subtasks: ["t1", "t2"] },
+                       { card_id: "s2", status: "cancelled", subtasks: ["t3"] }],
+             subtasks: [
+               { card_id: "t1", status: "started", phases: [
+                 { name: "spec", status: "done", attempts: [{ n: 1, status: "done" }] },
+                 { name: "implement", status: "started", attempts: [{ n: 1, status: "failed" }, { n: 2, status: "started" }] }] },
+               { card_id: "t2", status: "done", phases: [{ name: "spec", status: "done", attempts: [{ n: 1, status: "done" }] }] },
+               { card_id: "t3", phases: [] }] }
+  }
+
+  function detail() { return [run("run-20261004-19efcddc", "started", true, { tree: detailTree() })] }
+  function sel(card, phase, n) { return { card_id: card, phase: phase, attempt: n } }
+
+  // ---- header
+
+  function test_the_header_names_the_run_its_state_and_its_branches() {
+    var s = make(detail()); if (!s) return
+    compare(H.find(s.screen, "runDetailTitle").text, "Run …19efcddc")
+    compare(H.find(s.screen, "runDetailState").text, RG.glyphOf("running") + " running")
+    compare(H.find(s.screen, "runDetailMeta").text, "Milestone M3 · prefix m3 · base master · lease pid 4121 live")
+    compare(H.find(s.screen, "runDetailReason").visible, false, "only an escalated run has a reason")
+  }
+
+  function test_a_dead_lease_and_no_lease() {
+    var s = make([run("run-x-dead0001", "started", false, {})], "run-x-dead0001"); if (!s) return
+    compare(H.find(s.screen, "runDetailMeta").text, "Milestone M3 · prefix m3 · base master · lease pid 4121 not live")
+    compare(H.find(s.screen, "runDetailState").text, RG.glyphOf("dead") + " dead")
+    verify(Qt.colorEqual(H.find(s.screen, "runDetailState").color, s.screen.theme.urgent), "dead is urgent")
+    s.runs.runs = [run("run-x-dead0001", "stopped", null, { milestone: "", prefix: "", base: "" })]
+    compare(H.find(s.screen, "runDetailMeta").text, "no lease", "empty parts are left out")
+    compare(H.find(s.screen, "runDetailState").text, RG.glyphOf("parked") + " parked")
+  }
+
+  function test_an_escalated_run_shows_its_reason_in_urgent() {
+    var s = make([run("run-x-escl0002", "escalated", null, { tree: { stories: [], subtasks: [
+      { card_id: "t1", phases: [{ name: "review", status: "failed", detail: "tests red after 3 attempts" }] }] } })],
+      "run-x-escl0002"); if (!s) return
+    compare(H.find(s.screen, "runDetailState").text, RG.glyphOf("escalated") + " escalated")
+    verify(Qt.colorEqual(H.find(s.screen, "runDetailState").color, s.screen.theme.urgent))
+    var reason = H.find(s.screen, "runDetailReason")
+    compare(reason.visible, true)
+    compare(reason.text, "tests red after 3 attempts")
+    verify(Qt.colorEqual(reason.color, s.screen.theme.urgent))
+  }
+
+  // ---- tree
+
+  function test_story_and_subtask_rows_carry_glyph_title_status_and_phase() {
+    var s = make(detail()); if (!s) return
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " s1 Runs screens · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " t1 RunDetailScreen · started · implement.2")
+    compare(H.find(s.screen, "runSubtaskLabel0_1").text, RG.glyphOf("done") + " t2 Old work · done · spec.1")
+    compare(H.find(s.screen, "runStory1").text, RG.glyphOf("cancelled") + " s2 Dropped story · cancelled")
+    compare(H.find(s.screen, "runSubtaskLabel1_0").text, "t3 Shelved", "no status, no phase: just the card")
+  }
+
+  function test_terminal_brd_cards_are_dimmed_not_hidden() {
+    var s = make(detail()); if (!s) return
+    compare(H.find(s.screen, "runSubtask0_0").opacity, 1)
+    compare(H.find(s.screen, "runSubtask0_1").visible, true, "merged is listed")
+    compare(H.find(s.screen, "runSubtask0_1").opacity, 0.5)
+    compare(H.find(s.screen, "runStory1").visible, true, "canceled is listed")
+    compare(H.find(s.screen, "runStory1").opacity, 0.5)
+    compare(H.find(s.screen, "runSubtask1_0").opacity, 0.5, "archived too")
+    compare(H.find(s.screen, "runStory0").opacity, 1)
+  }
+
+  function test_the_timeline_and_attempts_show_under_the_selected_subtask_only() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    var tl = H.find(s.screen, "runTimeline0_0")
+    compare(tl.visible, true)
+    compare(tl.text, "spec" + RG.GLYPHS.done + " → implement" + RG.GLYPHS.running)
+    compare(H.find(s.screen, "runTimeline0_1").visible, false)
+    compare(H.find(s.screen, "runAttemptLabel0_0_0").text, "  " + RG.glyphOf("done") + " spec.1 done")
+    compare(H.find(s.screen, "runAttemptLabel0_0_1").text, "  " + RG.glyphOf("dead") + " implement.1 failed")
+    var chosen = H.find(s.screen, "runAttemptLabel0_0_2")
+    compare(chosen.text, "› " + RG.glyphOf("running") + " implement.2 started", "a marker, not colour alone")
+    compare(chosen.font.bold, true)
+    compare(H.find(s.screen, "runAttemptLabel0_0_1").font.bold, false)
+    compare(H.find(s.screen, "runAttempt0_1_0"), null, "another subtask's attempts stay folded")
+  }
+
+  function test_no_selection_shows_no_attempt_rows() {
+    var s = make(detail()); if (!s) return
+    compare(H.find(s.screen, "runAttempt0_0_0"), null)
+    compare(H.find(s.screen, "runTimeline0_0").visible, false)
+    compare(H.find(s.screen, "runOutputNone").visible, true)
+    compare(H.find(s.screen, "runOutputNone").text, "No attempt selected")
+    compare(H.find(s.screen, "runOutputRefresh").visible, false)
+  }
+
+  function test_clicking_an_attempt_selects_it() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    tap(H.find(s.screen, "runAttempt0_0_0"))
+    compare(s.runs.selected.join("|"), "t1|spec|1")
+    compare(H.find(s.screen, "runAttemptLabel0_0_0").text.indexOf("› "), 0, "the clicked row is marked")
+    compare(H.find(s.screen, "runAttemptLabel0_0_2").text.indexOf("  "), 0)
+  }
+
+  // Review Focus 4.
+  function test_clicking_a_subtask_selects_its_current_attempt() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    tap(H.find(s.screen, "runSubtask0_1"))
+    compare(s.runs.selected.join("|"), "t2|spec|1")
+    verify(H.find(s.screen, "runAttempt0_1_0"), "its attempts unfold")
+    compare(H.find(s.screen, "runAttempt0_0_0"), null, "the other subtask folds")
+    s.runs.selected = null
+    tap(H.find(s.screen, "runSubtask1_0"))
+    compare(s.runs.selected, null, "a subtask with no attempt selects nothing")
+  }
+
+  function test_failed_and_escalated_tree_rows_are_drawn_urgent() {
+    var tree = { stories: [{ card_id: "s1", status: "escalated", subtasks: ["t1", "t2"] }],
+                 subtasks: [
+                   { card_id: "t1", status: "failed", phases: [{ name: "implement", status: "started",
+                     attempts: [{ n: 1, status: "failed" }, { n: 2, status: "started" }] }] },
+                   { card_id: "t2", status: "done", phases: [] },
+                   { card_id: "integrate", status: "dead" }] }
+    var s = make([run("run-20261004-19efcddc", "started", true, { tree: tree })], undefined, sel("t1", "implement", 2)); if (!s) return
+    var urgent = s.screen.theme.urgent, fg = s.screen.theme.foreground
+    verify(!Qt.colorEqual(urgent, fg), "the theme tells the two apart")
+    verify(Qt.colorEqual(H.find(s.screen, "runStory0").color, urgent), "an escalated story")
+    verify(Qt.colorEqual(H.find(s.screen, "runSubtaskLabel0_0").color, urgent), "a failed subtask")
+    verify(Qt.colorEqual(H.find(s.screen, "runSubtaskLabel0_1").color, fg), "a done subtask is not urgent")
+    verify(Qt.colorEqual(H.find(s.screen, "runAttemptLabel0_0_0").color, urgent), "a failed attempt")
+    verify(Qt.colorEqual(H.find(s.screen, "runAttemptLabel0_0_1").color, fg), "a started attempt is not urgent")
+    verify(Qt.colorEqual(H.find(s.screen, "runSynthetic0").color, urgent), "a dead bookkeeping row")
+  }
+
+  // Review Focus 3.
+  function test_an_unnumbered_attempt_is_listed_but_not_clickable() {
+    var tree = { stories: [], subtasks: [{ card_id: "t1", phases: [
+      { name: "implement", status: "started", attempts: [{ status: "started" }, { n: 1, status: "failed" }] }] }] }
+    var s = make([run("run-20261004-19efcddc", "started", true, { tree: tree })], undefined, sel("t1", "implement", 1)); if (!s) return
+    compare(H.find(s.screen, "runAttemptLabel0_0_0").text, "  " + RG.glyphOf("running") + " implement.? started")
+    s.runs.selected = null
+    tap(H.find(s.screen, "runAttempt0_0_0"))
+    compare(s.runs.selected, null)
+  }
+
+  function test_bookkeeping_rows_only_when_present() {
+    var s = make(detail()); if (!s) return
+    compare(H.find(s.screen, "runSynthetic0"), null)
+    var tree = detailTree()
+    tree.stories.push({ card_id: "base-s1", status: "done" })
+    s.runs.runs = [run("run-20261004-19efcddc", "started", true,
+                       { tree: tree, rows: [{ card_id: "integrate", phase: "integrate", status: "" }] })]
+    compare(H.find(s.screen, "runSynthetic0").text, RG.glyphOf("done") + " Base s1 done")
+    compare(H.find(s.screen, "runSynthetic1").text, "Integrate not started")
+    compare(H.find(s.screen, "runStory2"), null, "a bookkeeping id is never a story row")
+  }
+
+  // ---- output pane
+
+  function test_the_output_pane_is_a_labelled_snapshot_never_live() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsText = "collecting...\n3 passed"
+    s.runs.logsFetchedMs = Date.now() - 14000
+    var heading = H.find(s.screen, "runOutputHeading")
+    var age = H.find(s.screen, "runOutputAge")
+    compare(heading.text, "Output · t1 implement.2")
+    compare(age.text, "snapshot 14s ago")
+    compare(H.find(s.screen, "runOutputText").text, "collecting...\n3 passed")
+    s.runs.logsTruncated = true
+    compare(age.text, "snapshot 14s ago · last 200 lines")
+    compare(heading.text.indexOf("live"), -1)
+    compare(age.text.indexOf("live"), -1)
+    compare(H.find(s.screen, "runOutputRefresh").text, "Refresh")
+  }
+
+  function test_loading_then_an_error_that_keeps_the_text() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsLoading = true
+    compare(H.find(s.screen, "runOutputAge").text, "loading…")
+    s.runs.logsLoading = false
+    s.runs.logsText = "old text"
+    s.runs.logsError = "AmMissing: am is not installed."
+    var err = H.find(s.screen, "runOutputError")
+    compare(err.visible, true)
+    compare(err.text, "AmMissing: am is not installed.")
+    verify(Qt.colorEqual(err.color, s.screen.theme.urgent))
+    compare(H.find(s.screen, "runOutputText").visible, true, "the last text stays")
+    compare(H.find(s.screen, "runOutputText").text, "old text")
+    compare(H.find(s.screen, "runStory0").visible, true, "the tree stays as the snapshot left it")
+  }
+
+  function test_refresh_asks_the_store_again() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    tap(H.find(s.screen, "runOutputRefresh"))
+    compare(s.runs.refreshed, 1)
+  }
+
+  // ---- missing, malformed, visibility
+
+  function test_a_run_no_longer_in_the_snapshot() {
+    var s = make(detail(), "run-gone"); if (!s) return
+    var msg = H.find(s.screen, "runDetailMissing")
+    compare(msg.visible, true)
+    compare(msg.text, "This run is no longer in the snapshot")
+    compare(H.find(s.screen, "runDetailBody").visible, false)
+  }
+
+  function test_a_malformed_run_renders_without_throwing() {
+    var odd = { id: "run-20261004-19efcddc", status: 7, lease: "x", rows: "y",
+                tree: { stories: "x", subtasks: [null, 5, { card_id: 7 }, { card_id: "t9", phases: "x" }] } }
+    var s = make([odd]); if (!s) return
+    compare(H.find(s.screen, "runDetailMissing").visible, false)
+    compare(H.find(s.screen, "runStory0").text, "Other")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, "t9")
+    compare(H.find(s.screen, "runOutputNone").visible, true)
+  }
+
+  function test_the_screen_is_hidden_outside_the_run_view() {
+    var s = make(detail()); if (!s) return
+    compare(s.screen.visible, true)
+    s.nav.viewMode = "runs"
+    compare(s.screen.visible, false)
+    s.nav.viewMode = "run"
+    s.app.projects = { selectedProject: null }
+    compare(s.screen.visible, false)
+  }
+}

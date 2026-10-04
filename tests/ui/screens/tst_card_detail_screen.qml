@@ -241,4 +241,144 @@ TestCase {
     s.app.board.openCard("m1")
     compare(H.find(s, "commentsEmpty").visible, true)
   }
+  // ---- RUNS (5.3)
+
+  function mkRun(id, status, live, milestone, tree, startedAt) {
+    return { id: id, repo_dir: "/home/u/a", milestone_id: milestone, status: status, started_at: startedAt || "",
+             base_branch: "", branch_prefix: "",
+             lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
+             rows: [], tree: tree || { stories: [], subtasks: [] } }
+  }
+  function hoursAgo(h) { return new Date(Date.now() - h * 3600000).toISOString() }
+
+  // am's order, newest first:
+  //   …a1 live, milestone m1, story s1 with subtask t1 in `implement`, 2 h old
+  //   …b2 escalated, milestone x1 only
+  //   …c3 done, milestone m1, story s1, 30 h old
+  function withRuns(s) {
+    s.app.runs.snapshotRunner.cancel()
+    s.app.runs.runs = [
+      mkRun("run-0000000000a1", "started", true, "m1",
+            { stories: [{ card_id: "s1", subtasks: ["t1"] }],
+              subtasks: [{ card_id: "t1", phases: [{ name: "implement", status: "started" }] }] }, hoursAgo(2)),
+      mkRun("run-0000000000b2", "escalated", null, "x1", null, hoursAgo(5)),
+      mkRun("run-0000000000c3", "done", null, "m1",
+            { stories: [{ card_id: "s1", subtasks: [] }], subtasks: [] }, hoursAgo(30))]
+    return s
+  }
+
+  function test_the_runs_section_lists_the_runs_that_touch_the_card() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    var header = H.find(s, "cardRunsHeader")
+    verify(header, "the RUNS header")
+    compare(header.visible, true)
+    compare(header.text, "RUNS")
+    var first = H.find(s, "cardRunRow0")
+    verify(first, "a row per touching run, newest first")
+    compare(H.find(first, "runBadge").text, "⟳")
+    compare(H.find(first, "cardRunId0").text, "…000000a1")
+    compare(H.find(first, "cardRunTitle0").text, "m1")
+    compare(H.find(first, "cardRunPhase0").text, "implement")
+    compare(H.find(first, "cardRunAge0").text, "2h")
+    var second = H.find(s, "cardRunRow1")
+    verify(second, "the finished run is history and still listed")
+    compare(H.find(second, "runBadge").text, "✔")
+    compare(H.find(second, "cardRunId1").text, "…000000c3")
+    compare(H.find(second, "cardRunPhase1").visible, false, "no phase is started")
+    compare(H.find(second, "cardRunAge1").text, "1d")
+    verify(!H.find(s, "cardRunRow2"), "the escalated run of x1 does not touch s1")
+    compare(first.index, -1, "a RUNS row is not in the keyboard's link list")
+  }
+
+  function test_an_escalated_run_row_reads_urgent() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("x1")
+    wait(50)
+    var row = H.find(s, "cardRunRow0")
+    verify(row)
+    compare(H.find(row, "runBadge").text, "‼")
+    verify(Qt.colorEqual(H.find(row, "runBadge").tint, s.theme.urgent))
+    verify(!H.find(s, "cardRunRow1"))
+  }
+
+  function test_the_runs_section_follows_a_new_snapshot() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    compare(H.find(s, "cardRunsHeader").visible, true)
+    s.app.runs.runs = [s.app.runs.runs[1]]
+    wait(50)
+    compare(H.find(s, "cardRunsHeader").visible, false, "no run touches s1 any more")
+    compare(s.touchingRuns.length, 0)
+    verify(texts(s).indexOf("Story one") >= 0, "the card itself still renders")
+  }
+
+  function test_the_runs_section_is_hidden_when_no_run_touches_the_card() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("t1")
+    wait(50)
+    compare(H.find(s, "cardRunsHeader").visible, true, "t1 is a subtask of the live run")
+    s.app.board.applyTreeData([card("z1", "Lonely", "todo", "z desc")])
+    s.navigator.openCard("z1")
+    wait(50)
+    compare(H.find(s, "cardRunsHeader").visible, false)
+    verify(!H.find(s, "cardRunRow0"))
+  }
+
+  function test_the_runs_section_is_hidden_while_am_is_missing() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    s.app.runs.amStatus = "missing"
+    wait(50)
+    compare(H.find(s, "cardRunsHeader").visible, false)
+    compare(s.touchingRuns.length, 0)
+    verify(texts(s).indexOf("Story one") >= 0, "the card still renders")
+  }
+
+  function test_stale_run_data_dims_the_rows_and_stops_the_pulse() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    var row = H.find(s, "cardRunRow0")
+    compare(row.opacity, 1)
+    compare(H.find(row, "runBadge").pulsing, true)
+    s.app.runs.stale = true
+    wait(50)
+    verify(row.opacity < 1)
+    compare(H.find(row, "runBadge").pulsing, false)
+  }
+
+  function test_a_merged_card_still_lists_its_runs() {
+    var s = make(); if (!s) return
+    s.app.board.applyTreeData([card("m1", "Milestone one", "merged", "m desc")])
+    withRuns(s)
+    s.navigator.openCard("m1")
+    wait(50)
+    compare(H.find(s, "cardRunsHeader").visible, true, "history: the brd-status gate is the Board's and the Graph's only")
+    compare(s.touchingRuns.length, 2)
+  }
+
+  function test_clicking_a_run_row_opens_run_detail_and_back_returns_to_the_card() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    mouseClick(H.find(s, "cardRunRow1"))
+    compare(s.app.nav.viewMode, "run")
+    compare(s.app.runs.selectedRunId, "run-0000000000c3")
+    compare(s.app.nav.runReturnMode, "entry", "opened as openRun(id, \"entry\")")
+    s.navigator.goBack()
+    compare(s.app.nav.viewMode, "entry")
+    compare(s.app.board.selectedCardId, "s1")
+    compare(s.app.runs.selectedRunId, "")
+  }
 }

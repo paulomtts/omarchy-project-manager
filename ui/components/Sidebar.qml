@@ -22,8 +22,8 @@ Item {
   property bool canDelete: false
   property bool documentsEnabled: true
   // How many runs need attention (escalated plus dead), computed by the
-  // owner. Rendered as `‼N` by runsAttentionText; card 5.1's Runs row binds
-  // `countText: sidebar.runsAttentionText`. No row shows it yet.
+  // owner. Rendered as `‼N` by runsAttentionText, which the Runs row shows as
+  // its count.
   property int runsAttention: 0
   readonly property string runsAttentionText: sidebar.runsAttention > 0
     ? RunGlyphs.glyphOf("escalated") + sidebar.runsAttention : ""
@@ -106,6 +106,9 @@ Item {
     // Appended after Memories, so the digit chords keep their meaning and
     // Issues is Ctrl+5. Its glyph is the Nerd Font bug (U+F188).
     NavRow { objectName: "navIssues"; label: "Issues"; iconText: "\uf188"; section: "issues"; enabled: sidebar.hasProject }
+    // Appended after Issues, so Runs is Ctrl+6. Its glyph is the Nerd Font
+    // play symbol (U+F04B); its count is the runs that need attention.
+    NavRow { objectName: "navRuns"; label: "Runs"; iconText: "\uf04b"; section: "runs"; enabled: sidebar.hasProject; countText: sidebar.runsAttentionText }
 
     Item { Layout.fillHeight: true }
 

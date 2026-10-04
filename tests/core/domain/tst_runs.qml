@@ -30,11 +30,14 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "id,lease,milestone_id,repo_dir,rows,status,tree", label)
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,rows,started_at,status,tree", label)
+    compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
     compare(r.milestone_id, "", label)
     compare(r.status, "", label)
+    compare(r.base_branch, "", label)
+    compare(r.branch_prefix, "", label)
     compare(r.lease, null, label)
     compare(Array.isArray(r.rows), true, label)
     compare(r.rows.length, 0, label)
@@ -46,7 +49,8 @@ TestCase {
 
   function test_normalize_full() {
     var r = Runs.normalizeRun(fullRaw())
-    compare(Object.keys(r).sort().join(","), "id,lease,milestone_id,repo_dir,rows,status,tree")
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,rows,started_at,status,tree")
+    compare(r.started_at, "2026-10-03T10:00:00Z")
     compare(r.id, "r1")
     compare(r.repo_dir, "/home/u/repo")
     compare(r.milestone_id, "m-4bf4")
@@ -692,5 +696,410 @@ TestCase {
 
     var weird = Object.create(null)
     compare(Runs.errorText({ ok: false, error: { type: weird, message: "m" } }), "m", "unconvertible type does not throw")
+  }
+
+  // ---- 5.1: the Runs screen's helpers -----------------------------------------------------
+
+  function test_normalize_keeps_started_at() {
+    compare(Runs.normalizeRun(fullRaw()).started_at, "2026-10-03T10:00:00Z", "from the am runs row")
+    compare(Runs.normalizeRun({ status: { run: { started_at: "2026-10-01T00:00:00Z" } } }).started_at,
+            "2026-10-01T00:00:00Z", "falls back to am status")
+    compare(Runs.normalizeRun({ row: { id: "r1" } }).started_at, "", "absent")
+    compare(Runs.normalizeRun({ row: { started_at: null } }).started_at, "", "null")
+  }
+
+  function test_short_id() {
+    compare(Runs.shortId({ id: "run-20261003-abcdef12" }), "…abcdef12", "the last 8 characters")
+    compare(Runs.shortId({ id: "abc" }), "…abc", "a short id keeps what it has")
+    compare(Runs.shortId({ id: "" }), "…", "empty id")
+    var bad = [undefined, null, "x", 5, [], {}, { id: 7 }, { id: null }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.shortId(bad[i]), "…", "garbage " + i)
+  }
+
+  function test_run_title() {
+    compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "4bf4fb2f" })), "4bf4fb2f")
+    compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "" })), "…abcd1234",
+            "falls back to the short id")
+    compare(Runs.runTitle({ id: "r1", milestone_id: 5 }), "…r1", "a non-string milestone is no title")
+    var bad = [undefined, null, "x", 5, []]
+    for (var i = 0; i < bad.length; i++) compare(Runs.runTitle(bad[i]), "…", "garbage " + i)
+  }
+
+  function progressTree() {
+    return { stories: [], subtasks: [
+      { card_id: "t1", phases: [{ name: "spec", status: "done" }, { name: "plan", status: "done" }] },
+      { card_id: "t2", phases: [{ name: "spec", status: "done" }, { name: "implement", status: "started" }] },
+      { card_id: "t3", phases: [] },
+      { card_id: "t4" },
+      { card_id: "t5", phases: [{ name: "spec", status: "done" }, null] }
+    ] }
+  }
+
+  function test_run_progress() {
+    var p = Runs.runProgress(mkRun("r", "started", true, { tree: progressTree() }))
+    compare(Object.keys(p).sort().join(","), "done,total")
+    compare(p.done, 1, "only t1 has every phase done")
+    compare(p.total, 5)
+    var none = Runs.runProgress(mkRun("r", "started", true))
+    compare(none.done + "/" + none.total, "0/0")
+    var junk = Runs.runProgress({ tree: { subtasks: [null, "x", 5, { phases: "x" }] } })
+    compare(junk.done, 0, "junk subtasks are never done")
+    compare(junk.total, 1, "only object subtasks count")
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" }, { tree: { subtasks: "y" } }]
+    for (var i = 0; i < bad.length; i++) {
+      var r = Runs.runProgress(bad[i])
+      compare(r.done + "/" + r.total, "0/0", "garbage " + i)
+    }
+  }
+
+  function test_current_phase() {
+    compare(Runs.currentPhase(mkRun("r", "started", true, { tree: progressTree() })), "implement")
+    var two = { stories: [], subtasks: [
+      { card_id: "a", phases: [{ name: "spec", status: "done" }] },
+      { card_id: "b", phases: [{ name: "review", status: "started" }] },
+      { card_id: "c", phases: [{ name: "verify", status: "started" }] }
+    ] }
+    compare(Runs.currentPhase(mkRun("r", "started", true, { tree: two })), "review", "the first started phase in subtask order")
+    compare(Runs.currentPhase(mkRun("r", "done", null, { tree: { stories: [], subtasks: [
+      { phases: [{ name: "x", status: "done" }] }] } })), "", "none started")
+    compare(Runs.currentPhase(mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { phases: [{ status: "started" }, { name: "plan", status: "started" }] }] } })), "plan", "a nameless started phase is skipped")
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" },
+               { tree: { subtasks: [null, { phases: "x" }, { phases: [null, 5] }] } }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.currentPhase(bad[i]), "", "garbage " + i)
+  }
+
+  function test_age_text() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    compare(Runs.ageText("2026-10-04T11:59:30Z", now), "just now")
+    compare(Runs.ageText("2026-10-04T12:00:00Z", now), "just now", "zero seconds")
+    compare(Runs.ageText("2026-10-04T11:59:00Z", now), "1m")
+    compare(Runs.ageText("2026-10-04T11:01:00Z", now), "59m")
+    compare(Runs.ageText("2026-10-04T11:00:00Z", now), "1h")
+    compare(Runs.ageText("2026-10-03T12:00:01Z", now), "23h")
+    compare(Runs.ageText("2026-10-03T12:00:00Z", now), "1d")
+    compare(Runs.ageText("2026-09-24T12:00:00Z", now), "10d")
+    compare(Runs.ageText("2026-10-04T12:00:01Z", now), "", "the future")
+    var bad = ["", "not a date", null, undefined, 5, {}, []]
+    for (var i = 0; i < bad.length; i++) compare(Runs.ageText(bad[i], now), "", "garbage iso " + i)
+    var badNow = [undefined, null, "x", NaN, Infinity]
+    for (var j = 0; j < badNow.length; j++) compare(Runs.ageText("2026-10-04T11:00:00Z", badNow[j]), "", "garbage now " + j)
+  }
+
+  function test_run_age_text() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    compare(Runs.runAgeText(mkRun("r", "started", true, { started_at: "2026-10-04T10:00:00Z" }), now), "2h",
+            "started_at for a live run")
+    var dead = mkRun("d", "started", false, { started_at: "2026-10-01T00:00:00Z" })
+    dead.lease.heartbeat_at = "2026-10-04T11:55:00Z"
+    compare(Runs.runAgeText(dead, now), "5m", "the last heartbeat for a dead run")
+    compare(Runs.runAgeText(mkRun("n", "started", null, { started_at: "2026-10-01T00:00:00Z" }), now), "",
+            "a dead run with no lease has no age")
+    compare(Runs.runAgeText(mkRun("p", "stopped", null, { started_at: "2026-10-03T12:00:00Z" }), now), "1d", "parked")
+    compare(Runs.runAgeText(mkRun("e", "escalated", null), now), "", "no started_at")
+    var bad = [undefined, null, "x", 5, [], {}, { status: "started", lease: { live: false, heartbeat_at: 5 } }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.runAgeText(bad[i], now), "", "garbage " + i)
+  }
+
+  function screenRuns() {
+    return [
+      mkRun("run-live-0001", "started", true, { milestone_id: "alpha", tree: { stories: [], subtasks: [
+        { card_id: "t1", phases: [{ name: "implement", status: "started" }] }] } }),
+      mkRun("run-esc-00002", "escalated", null, { milestone_id: "beta" }),
+      mkRun("run-dead-0003", "started", false, { milestone_id: "gamma" }),
+      mkRun("run-park-0004", "stopped", null, { milestone_id: "delta" }),
+      mkRun("run-done-0005", "done", null, { milestone_id: "epsilon" })
+    ]
+  }
+
+  function ids(list) { return list.map(function(r) { return r.id }).join(",") }
+
+  function test_run_filter_counts() {
+    var c = Runs.runFilterCounts(screenRuns())
+    compare(Object.keys(c).sort().join(","), "all,attention,live,parked")
+    compare([c.attention, c.live, c.parked, c.all].join(","), "2,1,1,5")
+    var bad = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < bad.length; i++) {
+      var b = Runs.runFilterCounts(bad[i])
+      compare([b.attention, b.live, b.parked, b.all].join(","), "0,0,0,0", "garbage " + i)
+    }
+  }
+
+  function test_filter_runs() {
+    var list = screenRuns()
+    compare(ids(Runs.filterRuns(list, "attention")), "run-esc-00002,run-dead-0003")
+    compare(ids(Runs.filterRuns(list, "live")), "run-live-0001")
+    compare(ids(Runs.filterRuns(list, "parked")), "run-park-0004")
+    var all = ids(list)
+    compare(ids(Runs.filterRuns(list, "all")), all)
+    compare(ids(Runs.filterRuns(list, "")), all)
+    compare(ids(Runs.filterRuns(list, "bogus")), all, "an unknown id is All")
+    compare(ids(Runs.filterRuns(list, undefined)), all)
+    compare(ids(Runs.filterRuns(list, "constructor")), all)
+    compare(Runs.filterRuns(list, "live")[0] === list[0], true, "the same objects")
+    var bad = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.filterRuns(bad[i], "live").length, 0, "garbage " + i)
+  }
+
+  function test_search_runs() {
+    var list = screenRuns()
+    compare(Runs.searchRuns(list, "") === list, true, "no query returns the input itself")
+    compare(Runs.searchRuns(list, "   ") === list, true, "a query of spaces hides nothing")
+    compare(ids(Runs.searchRuns(list, "GAMMA")), "run-dead-0003", "title, any case")
+    compare(ids(Runs.searchRuns(list, "esc-0")), "run-esc-00002", "id")
+    compare(ids(Runs.searchRuns(list, "implem")), "run-live-0001", "current phase")
+    compare(ids(Runs.searchRuns(list, "parked")), "run-park-0004", "state name")
+    compare(ids(Runs.searchRuns(list, "dead")), "run-dead-0003", "dead is a state name too")
+    compare(Runs.searchRuns(list, "zzz").length, 0)
+    compare(ids(Runs.searchRuns([null, 5, list[1]], "beta")), "run-esc-00002", "junk entries never match")
+    var bad = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.searchRuns(bad[i], "a").length, 0, "garbage " + i)
+  }
+
+  // ---- Run detail (5.2)
+
+  function test_normalize_branch_fields() {
+    var r = Runs.normalizeRun(fullRaw())
+    compare(r.base_branch, "main")
+    compare(r.branch_prefix, "mon/")
+    var fromRun = Runs.normalizeRun({ status: { run: { base_branch: "master", branch_prefix: "m3" } } })
+    compare(fromRun.base_branch, "master", "status.run is the fallback")
+    compare(fromRun.branch_prefix, "m3")
+    var rowWins = Runs.normalizeRun({ row: { base_branch: "a", branch_prefix: "p" },
+                                      status: { run: { base_branch: "b", branch_prefix: "q" } } })
+    compare(rowWins.base_branch, "a", "the am runs row comes first")
+    compare(rowWins.branch_prefix, "p")
+    var blankRow = Runs.normalizeRun({ row: { base_branch: "", branch_prefix: null },
+                                       status: { run: { base_branch: "b", branch_prefix: "q" } } })
+    compare(blankRow.base_branch, "b", "an empty row value falls back")
+    compare(blankRow.branch_prefix, "q")
+    compare(Runs.normalizeRun({}).base_branch, "")
+    compare(Runs.normalizeRun({}).branch_prefix, "")
+  }
+
+  function numbered(n, from) {
+    var out = []
+    for (var i = 0; i < n; i++) out.push("line " + ((from || 0) + i))
+    return out.join("\n") + "\n"
+  }
+
+  function test_log_tail() {
+    var under = Runs.logTail({ stdout: "collecting...\n3 passed\n", stderr: "" }, 200)
+    compare(under.text, "collecting...\n3 passed")
+    compare(under.truncated, false)
+
+    var exact = Runs.logTail({ stdout: numbered(200) }, 200)
+    compare(exact.text.split("\n").length, 200)
+    compare(exact.truncated, false, "exactly 200 lines is not cut")
+
+    var big = Runs.logTail({ stdout: numbered(5000), stderr: "" }, 200)
+    var lines = big.text.split("\n")
+    compare(lines.length, 200)
+    compare(lines[0], "line 4800")
+    compare(lines[199], "line 4999")
+    compare(big.truncated, true)
+
+    var withErr = Runs.logTail({ stdout: "out\n", stderr: "err1\nerr2\n" }, 200)
+    compare(withErr.text, "out\nerr1\nerr2", "stderr follows stdout")
+    compare(withErr.truncated, false)
+
+    var errOnly = Runs.logTail({ stdout: "", stderr: "boom" }, 200)
+    compare(errOnly.text, "boom")
+
+    // A huge stderr is bounded too (Review Focus 5).
+    var hugeErr = Runs.logTail({ stdout: "out\n", stderr: numbered(300) }, 200)
+    var errLines = hugeErr.text.split("\n")
+    compare(errLines.length, 201, "stdout, then the last 200 stderr lines")
+    compare(errLines[0], "out")
+    compare(errLines[1], "line 100")
+    compare(hugeErr.truncated, true)
+
+    compare(Runs.logTail({ stdout: numbered(250) }, undefined).text.split("\n").length, 200, "a bad maxLines is 200")
+
+    var bad = [undefined, null, "x", 5, [], {}, { stdout: 5, stderr: {} }]
+    for (var i = 0; i < bad.length; i++) {
+      var t = Runs.logTail(bad[i], 200)
+      compare(t.text, "", "garbage " + i)
+      compare(t.truncated, false, "garbage " + i)
+    }
+  }
+
+  function test_snapshot_age_text() {
+    var now = 1790000000000
+    compare(Runs.snapshotAgeText(now, now), "0s")
+    compare(Runs.snapshotAgeText(now - 14000, now), "14s")
+    compare(Runs.snapshotAgeText(now - 59999, now), "59s")
+    compare(Runs.snapshotAgeText(now - 60000, now), "1m")
+    compare(Runs.snapshotAgeText(now - 3599999, now), "59m")
+    compare(Runs.snapshotAgeText(now - 3600000, now), "1h")
+    compare(Runs.snapshotAgeText(now - 86399999, now), "23h")
+    compare(Runs.snapshotAgeText(now - 86400000, now), "1d")
+    compare(Runs.snapshotAgeText(now + 1, now), "", "the future")
+    var bad = [0, -5, NaN, Infinity, null, undefined, "x", {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.snapshotAgeText(bad[i], now), "", "missing fetch " + i)
+    var badNow = [NaN, Infinity, null, undefined, "x"]
+    for (var j = 0; j < badNow.length; j++) compare(Runs.snapshotAgeText(now, badNow[j]), "", "garbage now " + j)
+  }
+
+  // s1 owns t1 (via its list) and t2 (via a {card_id} entry); s2 lists t1 too
+  // (already s1's) and owns t3 via story_id; t4 belongs to no story. base-s1,
+  // bases and integrate are bookkeeping ids from the stories, subtasks and rows.
+  function detailRun() {
+    return mkRun("r", "started", true, {
+      rows: [{ card_id: "t1", phase: "implement", attempt: 2, status: "started" },
+             { card_id: "integrate", phase: "integrate", attempt: 1, status: "pending" }],
+      tree: {
+        stories: [{ card_id: "s1", status: "started", subtasks: ["t1", { card_id: "t2" }] },
+                  { card_id: "s2", subtasks: ["t1"] },
+                  { card_id: "base-s1", status: "done" }],
+        subtasks: [
+          { card_id: "t1", phases: [
+            { name: "spec", status: "done", attempts: [{ n: 1, status: "done" }] },
+            { name: "implement", status: "started", attempts: [{ n: 1, status: "failed" }, { attempt: 2, status: "started" }] }] },
+          { card_id: "t2", status: "pending", phases: [{ name: "spec", status: "pending", attempts: [] }] },
+          { card_id: "t3", story_id: "s2", phases: [] },
+          { card_id: "t4", phases: [{ name: "review", status: "done", attempts: [{ status: "done" }] }] },
+          { card_id: "bases", status: "done" }
+        ]
+      }
+    })
+  }
+
+  function cardIds(list) { return list.map(function(x) { return x.card_id }).join(",") }
+
+  function test_glyph_state_of() {
+    var cases = [["started", "running"], ["running", "running"], ["stopped", "parked"], ["parked", "parked"],
+                 ["escalated", "escalated"], ["failed", "dead"], ["dead", "dead"], ["cancelled", "cancelled"],
+                 ["done", "done"], ["pending", ""], ["", ""], [undefined, ""], [null, ""], [5, ""], ["constructor", ""]]
+    for (var i = 0; i < cases.length; i++) compare(Runs.glyphStateOf(cases[i][0]), cases[i][1], String(cases[i][0]))
+  }
+
+  function test_run_tree() {
+    var t = Runs.runTree(detailRun())
+    compare(t.stories.map(function(s) { return s.label }).join(","), "s1,s2,Other")
+    compare(cardIds(t.stories[0].subtasks), "t1,t2", "story_id-less membership through the story's list")
+    compare(cardIds(t.stories[1].subtasks), "t3", "story_id membership; t1 stays with the first story only")
+    compare(cardIds(t.stories[2].subtasks), "t4", "a subtask of no story is kept under Other")
+    compare(t.stories[0].card_id, "s1")
+    compare(t.stories[0].status, "started")
+    compare(t.stories[0].other, false)
+    compare(t.stories[1].status, "")
+    compare(t.stories[2].card_id, "")
+    compare(t.stories[2].other, true)
+
+    var t1 = t.stories[0].subtasks[0]
+    compare(t1.status, "started", "no own status: the last am row for the card")
+    compare(t1.phases.map(function(p) { return p.name + ":" + p.status }).join(","), "spec:done,implement:started")
+    compare(t1.attempts.map(function(a) { return a.phase + "." + a.attempt + ":" + a.status }).join(","),
+            "spec.1:done,implement.1:failed,implement.2:started")
+    compare(t1.currentPhase, "implement")
+    compare(t1.currentAttempt, 2)
+
+    var t2 = t.stories[0].subtasks[1]
+    compare(t2.status, "pending", "its own status wins")
+    compare(t2.currentPhase, "spec", "no started phase: the last named one")
+    compare(t2.currentAttempt, 0)
+    compare(t2.attempts.length, 0)
+
+    // Review Focus 3: an unnumbered attempt is listed with attempt 0.
+    var t4 = t.stories[2].subtasks[0]
+    compare(t4.attempts.length, 1)
+    compare(t4.attempts[0].attempt, 0)
+    compare(t4.attempts[0].status, "done")
+    compare(t4.currentAttempt, 0)
+
+    compare(t.synthetic.map(function(s) { return s.id }).join(","), "base-s1,bases,integrate")
+    compare(t.synthetic.map(function(s) { return s.label }).join(","), "Base s1,Bases,Integrate")
+    compare(t.synthetic.map(function(s) { return s.status }).join(","), "done,done,pending")
+  }
+
+  function test_run_tree_without_synthetic_rows_or_orphans() {
+    var t = Runs.runTree(mkRun("r", "started", true, { tree: { stories: [{ card_id: "s1", subtasks: [] }], subtasks: [] } }))
+    compare(t.synthetic.length, 0, "no bookkeeping rows unless present")
+    compare(t.stories.length, 1, "no Other group without orphans")
+    compare(t.stories[0].subtasks.length, 0)
+    compare(Runs.runTree(mkRun("r", "started", true)).stories.length, 0)
+  }
+
+  function test_run_tree_garbage() {
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" },
+               { tree: { stories: "x", subtasks: [null, 5, { card_id: 7 }, { card_id: "" }] } }]
+    for (var i = 0; i < bad.length; i++) {
+      var t = Runs.runTree(bad[i])
+      compare(t.stories.length, 0, "garbage " + i)
+      compare(t.synthetic.length, 0, "garbage " + i)
+    }
+    var odd = Runs.runTree({ rows: "y", tree: { stories: [null, { card_id: "s1", subtasks: "x" }],
+      subtasks: [{ card_id: "t1", phases: [null, { name: "" }, { name: "spec", attempts: "x" }] }] } })
+    compare(odd.stories.map(function(s) { return s.label }).join(","), "s1,Other")
+    compare(cardIds(odd.stories[1].subtasks), "t1")
+    compare(odd.stories[1].subtasks[0].phases.length, 1)
+    compare(odd.stories[1].subtasks[0].attempts.length, 0)
+  }
+
+  function at(d) { return d === null ? "null" : d.card_id + "/" + d.phase + "/" + d.attempt }
+
+  function test_default_attempt() {
+    compare(at(Runs.defaultAttempt(detailRun())), "t1/implement/2")
+    compare(at(Runs.defaultAttempt(mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "a", phases: [{ name: "review", status: "started", attempts: [] }] },
+      { card_id: "b", phases: [{ name: "plan", status: "started", attempts: [{ n: 3, status: "started" }, { n: 1, status: "failed" }] }] }
+    ] } }))), "b/plan/3", "a started phase without attempts is skipped; the highest number wins")
+    compare(at(Runs.defaultAttempt(mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "integrate", phases: [{ name: "integrate", status: "started", attempts: [{ n: 1 }] }] }] } }))),
+      "null", "a bookkeeping id is never a card")
+    compare(at(Runs.defaultAttempt(mkRun("r", "done", null, {
+      rows: [{ card_id: "t1", phase: "spec", attempt: 1, status: "done" }, { card_id: "integrate", phase: "integrate", attempt: 1 }],
+      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "spec", status: "done", attempts: [{ n: 1 }, { n: 2 }] }] }] }
+    }))), "t1/spec/2", "no started phase: the newest attempt of the last real row")
+    compare(at(Runs.defaultAttempt(mkRun("r", "done", null, { rows: [{ card_id: "t5", phase: "plan", n: 4 }] }))),
+            "t5/plan/4", "a row's own n")
+    compare(at(Runs.defaultAttempt(mkRun("r", "done", null, { rows: [{ card_id: "t5", phase: "plan", status: "done" }] }))),
+            "null", "a row with no number and no tree attempt")
+    compare(at(Runs.defaultAttempt(mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "t1", phases: [{ name: "implement", status: "started", attempts: [{ status: "started" }] }] }] } }))),
+      "null", "unnumbered attempts cannot be fetched")
+    compare(at(Runs.defaultAttempt(mkRun("r", "started", true))), "null", "an empty tree")
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x", rows: "y" }, { rows: [null, 5, { card_id: 7, phase: "x", n: 1 }] }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.defaultAttempt(bad[i]), null, "garbage " + i)
+  }
+
+  function test_attempt_status() {
+    var run = detailRun()
+    compare(Runs.attemptStatus(run, "t1", "implement", 2), "started")
+    compare(Runs.attemptStatus(run, "t1", "implement", 1), "failed")
+    compare(Runs.attemptStatus(run, "t1", "spec", 1), "done")
+    compare(Runs.attemptStatus(run, "t1", "spec", 9), "")
+    compare(Runs.attemptStatus(run, "t1", "verify", 1), "")
+    compare(Runs.attemptStatus(run, "zz", "spec", 1), "")
+    compare(Runs.attemptStatus(run, "t4", "review", 0), "", "0 is not an attempt number")
+    var bad = [undefined, null, "x", 5, [], {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.attemptStatus(bad[i], "t1", "spec", 1), "", "garbage " + i)
+    compare(Runs.attemptStatus(run, null, "spec", 1), "")
+    compare(Runs.attemptStatus(run, "t1", null, 1), "")
+    compare(Runs.attemptStatus(run, "t1", "spec", "1"), "", "a string attempt is not a number")
+  }
+
+  // ---- 5.3: the runs that touch one card (card detail's RUNS list) --------------------------
+
+  function test_runs_touching() {
+    var a = mkRun("ra", "started", true, { tree: sampleTree() })                 // m1; s1, s2; t1, t2, t3
+    var b = mkRun("rb", "done", null, { milestone_id: "m2", rows: [{ card_id: "t1", status: "done" }] })
+    var c = mkRun("rc", "stopped", null, { milestone_id: "m1" })
+    var runs = [a, b, c]
+    compare(ids(Runs.runsTouching(runs, "m1")), "ra,rc", "milestone, input order kept")
+    compare(ids(Runs.runsTouching(runs, "s2")), "ra", "story")
+    compare(ids(Runs.runsTouching(runs, "t3")), "ra", "subtask")
+    compare(ids(Runs.runsTouching(runs, "m2")), "rb")
+    compare(ids(Runs.runsTouching(runs, "t1")), "ra", "rb names t1 only in its rows: not a touch")
+    verify(Runs.runsTouching(runs, "m1")[0] === a, "the same run objects, not copies")
+    compare(Runs.runsTouching(runs, "zzz").length, 0, "unrelated")
+
+    var badIds = ["", null, undefined, 5, {}, "integrate", "bases", "base-x"]
+    for (var i = 0; i < badIds.length; i++)
+      compare(Runs.runsTouching(runs, badIds[i]).length, 0, "bad id " + i)
+    var badRuns = [undefined, null, "x", 5, {}, [null, 3, "s", []]]
+    for (var j = 0; j < badRuns.length; j++)
+      compare(Runs.runsTouching(badRuns[j], "m1").length, 0, "bad runs " + j)
   }
 }
