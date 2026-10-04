@@ -19,7 +19,7 @@ Scope {
   property var cardRoots: []   // top-level cards from the last brd tree fetch
   property var cardMap: ({})   // id -> card, from Board.indexTree
   property var issueMap: ({})  // id -> {id, title, status}, from Board.indexIssues
-  readonly property var statuses: ["todo", "in_progress", "done", "merged", "canceled"]
+  readonly property var statuses: ["todo", "in_progress", "done", "merged", "canceled", "archived"]
   property string selectedCardId: ""
 
   readonly property alias treeProc: treeProc
@@ -95,6 +95,7 @@ Scope {
     if (status === "done") return "Done"
     if (status === "merged") return "Merged"
     if (status === "canceled") return "Canceled"
+    if (status === "archived") return "Archived"
     if (status === "blocked") return "Blocked"
     return String(status || "")
   }
@@ -104,6 +105,7 @@ Scope {
     if (status === "in_progress") return "In Progress"
     if (status === "merged") return "Merged"
     if (status === "canceled") return "Canceled"
+    if (status === "archived") return "Archived"
     return "Done"
   }
 
