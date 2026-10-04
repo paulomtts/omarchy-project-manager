@@ -103,4 +103,12 @@ TestCase {
     compare(seg(strict, "runRollupPending").text, "1 pending")
   }
 
+  function test_segment_tints() {
+    var bar = make({ running: 1, parked: 1, escalated: 1, done: 1, pending: 1, total: 5 }, testTheme)
+    verify(Qt.colorEqual(seg(bar, "runRollupRunning").color, testTheme.foreground), "running reads in foreground")
+    verify(Qt.colorEqual(seg(bar, "runRollupParked").color, testTheme.foreground), "parked reads in foreground")
+    verify(Qt.colorEqual(seg(bar, "runRollupEscalated").color, testTheme.urgent), "escalated reads in urgent")
+    verify(Qt.colorEqual(seg(bar, "runRollupDone").color, testTheme.dim), "done recedes to dim")
+    verify(Qt.colorEqual(seg(bar, "runRollupPending").color, testTheme.dim), "pending recedes to dim")
+  }
 }
