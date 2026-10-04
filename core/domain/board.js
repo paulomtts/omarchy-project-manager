@@ -63,7 +63,7 @@ function statusColor(status, fallback) {
   if (status === "in_progress") return "#5fa8d3"
   if (status === "merged") return "#9b72cf"
   if (status === "canceled") return "#d9534f"
-  if (status === "archived") return "#8a8f98"
+  if (status === "archived") return "#3fb59a"
   return fallback
 }
 

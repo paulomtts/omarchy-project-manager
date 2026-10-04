@@ -152,6 +152,37 @@ TestCase {
     compare(p.app.graph.graphView, "milestone")
   }
 
+  // ---- the Graph's Show archived toggle
+
+  function test_the_show_archived_toggle_lives_in_the_graph_toolbar_off_by_default() {
+    var p = make(); if (!p) return
+    var chip = H.find(p, "graphArchivedChip")
+    verify(chip, "the toggle")
+    compare(chip.visible, false, "not in the board")
+    p.navigator.showSection("graph")
+    wait(50)
+    compare(chip.visible, true)
+    verify(isUnder(chip, "panelToolbar"), "inside the fixed toolbar")
+    compare(chip.active, false, "archived cards are hidden by default")
+    compare(p.app.graph.showArchived, false)
+  }
+
+  function test_clicking_the_show_archived_toggle_flips_the_graph_setting() {
+    var p = make(); if (!p) return
+    // The test Panel is 380 wide, narrower than the toolbar with this chip.
+    var panel = H.find(p, "mainPanel")
+    panel.width = 840; panel.height = 600
+    p.navigator.showSection("graph")
+    wait(50)
+    var chip = H.find(p, "graphArchivedChip")
+    mouseClick(chip, chip.width / 2, chip.height / 2)
+    compare(p.app.graph.showArchived, true)
+    compare(chip.active, true)
+    mouseClick(chip, chip.width / 2, chip.height / 2)
+    compare(p.app.graph.showArchived, false)
+    compare(chip.active, false)
+  }
+
   // ---- the Documents pieces the toolbar owns
 
   function test_the_document_category_chips_live_in_the_toolbar() {

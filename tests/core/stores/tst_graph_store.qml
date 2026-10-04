@@ -170,4 +170,48 @@ TestCase {
     compare(app.graph.graph.nodes[0].openIssues, 1)
     compare(app.graph.graph.nodes[1].openIssues, 0)
   }
+
+  function archivedBoard() {
+    return [card("m1", "done", [card("s1", "done"), card("s2", "archived")]),
+            card("m2", "archived", [card("s3", "done")]),
+            card("m3", "todo", [card("s4", "todo")], ["m1"])]
+  }
+
+  function test_archived_cards_are_hidden_by_default_in_both_views() {
+    var app = make(); if (!app) return
+    app.board.applyTreeData(archivedBoard())
+    compare(app.graph.showArchived, false, "off by default")
+    compare(app.graph.graph.nodes.map(function(n) { return n.id }).join(","), "m1,m3")
+    app.graph.setGraphView("story")
+    compare(app.graph.currentNodes.map(function(n) { return n.id }).sort().join(","), "s1,s4",
+            "no archived story, and none under an archived milestone")
+  }
+
+  function test_showing_archived_brings_them_back_and_hiding_removes_them_again() {
+    var app = make(); if (!app) return
+    app.board.applyTreeData(archivedBoard())
+    app.graph.setShowArchived(true)
+    compare(app.graph.graph.nodes.length, 3)
+    app.graph.setGraphView("story")
+    compare(app.graph.currentNodes.length, 4, "s1, s2, s3, s4")
+    app.graph.setShowArchived(false)
+    compare(app.graph.currentNodes.length, 2)
+  }
+
+  function test_hiding_archived_moves_a_selection_that_disappeared() {
+    var app = make(); if (!app) return
+    app.board.applyTreeData(archivedBoard())
+    app.graph.setShowArchived(true)
+    app.graph.graphCursor = "m2"
+    app.graph.setShowArchived(false)
+    verify(app.graph.graphCursor !== "m2", "the cursor left the hidden node")
+    compare(app.graph.graphCursor, "m1", "it lands on the first visible node")
+  }
+
+  function test_the_archived_choice_is_remembered_across_a_board_refresh() {
+    var app = make(); if (!app) return
+    app.graph.setShowArchived(true)
+    app.board.applyTreeData(archivedBoard())
+    compare(app.graph.showArchived, true)
+  }
 }

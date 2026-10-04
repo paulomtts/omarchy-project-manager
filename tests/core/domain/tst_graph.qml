@@ -410,4 +410,39 @@ TestCase {
     compare(Graph.storyGraphModel(undefined).nodes.length, 0)
     compare(Graph.storyGraphModel([makeCard("m1", "todo", [])]).groups.length, 0)
   }
+
+  function archivedRoots() {
+    return [
+      makeCard("m1", "done", [makeCard("s1", "done", [makeCard("t1", "done", [])]),
+                              makeCard("s2", "archived", [makeCard("t2", "done", [])])]),
+      makeCard("m2", "archived", [makeCard("s3", "done", [])], []),
+      makeCard("m3", "todo", [makeCard("s4", "todo", [])], ["m2", "m1"])
+    ]
+  }
+
+  function test_without_archived_drops_archived_cards_at_every_depth() {
+    var kept = Graph.withoutArchived(archivedRoots())
+    compare(kept.map(function(c) { return c.id }).join(","), "m1,m3", "an archived milestone goes, with its children")
+    compare(kept[0].children.map(function(c) { return c.id }).join(","), "s1", "an archived story goes, with its subtasks")
+    compare(kept[0].children[0].children.length, 1, "live subtasks stay")
+  }
+
+  function test_without_archived_does_not_mutate_its_input() {
+    var roots = archivedRoots()
+    Graph.withoutArchived(roots)
+    compare(roots.length, 3)
+    compare(roots[0].children.length, 2)
+  }
+
+  function test_without_archived_handles_nothing_and_all_archived() {
+    compare(Graph.withoutArchived(null).length, 0)
+    compare(Graph.withoutArchived([makeCard("a", "archived", [])]).length, 0)
+  }
+
+  function test_the_graph_has_no_edge_to_a_hidden_archived_milestone() {
+    var shown = Graph.graphModel(archivedRoots())
+    verify(shown.edges.some(function(e) { return e.from === "m2" }), "visible when archived are shown")
+    var hidden = Graph.graphModel(Graph.withoutArchived(archivedRoots()))
+    compare(hidden.edges.map(function(e) { return e.id }).join(","), "m1>m3", "only the live blocker's edge is left")
+  }
 }

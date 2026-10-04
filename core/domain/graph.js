@@ -55,6 +55,22 @@ function dependencyEdges(cards, known) {
   return edges
 }
 
+// The cards without any archived one, at every depth: an archived card goes with
+// its whole subtree, and nothing else changes. The input is not touched (cards
+// are copied only where a child was dropped), so the board's own tree keeps its
+// archived cards for the toggle to bring back.
+function withoutArchived(cards) {
+  return (cards || []).filter(function(card) { return card.status !== "archived" }).map(function(card) {
+    var children = card.children || []
+    var kept = withoutArchived(children)
+    if (kept.length === children.length) return card
+    var copy = {}
+    Object.keys(card).forEach(function(key) { copy[key] = card[key] })
+    copy.children = kept
+    return copy
+  })
+}
+
 function graphModel(roots, issueMap) {
   var cards = roots || []
   var known = {}

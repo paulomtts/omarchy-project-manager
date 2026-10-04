@@ -119,8 +119,14 @@ TestCase {
     compare(Board.statusColor("canceled", "#111111"), "#d9534f")
   }
 
-  function test_status_color_archived_is_neutral_grey() {
-    compare(Board.statusColor("archived", "#111111"), "#8a8f98")
+  function test_status_color_archived_has_a_color_of_its_own() {
+    var fallback = "#8a8f98"
+    var archived = Board.statusColor("archived", fallback)
+    compare(archived, "#3fb59a")
+    verify(archived !== fallback, "not the neutral grey todo falls back to")
+    ;["todo", "done", "blocked", "in_progress", "merged", "canceled"].forEach(function(status) {
+      verify(Board.statusColor(status, fallback).toLowerCase() !== archived, "differs from " + status)
+    })
   }
 
   function test_subtree_counts_skip_archived_like_canceled() {
