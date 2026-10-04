@@ -4,11 +4,13 @@ Hermetic: a temp bin dir is the WHOLE PATH (no /usr/bin, no /bin), so the real
 notify-send can never run. The stub notify-send there logs its argv to
 FAKE_NOTIFY_DIR/calls.log and behaves as the fixtures in FAKE_NOTIFY_DIR say.
 """
+import importlib.util
 import json
 import os
 import stat
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -160,3 +162,101 @@ def test_usage(world, args):
 
 def test_usage_wins_over_missing_notify_send(world):
     assert run(world, []) == (2, USAGE)
+
+
+# --- notify-send failed -------------------------------------------------------
+
+def notify_failed(message):
+    return {"ok": False, "error": {"type": "NotifyFailed", "message": message}}
+
+
+def test_failed_carries_stderr(world):
+    install_stub(world)
+    set_fixture(world, "err", "boom\n")
+    set_fixture(world, "code", "1")
+    assert run(world, ["Run r1", "b"]) == (0, notify_failed("notify-send exited 1: boom"))
+    assert calls(world) == [["--", "Run r1", "b"]]
+
+
+def test_failed_without_stderr(world):
+    install_stub(world)
+    set_fixture(world, "code", "3")
+    assert run(world, ["Run r1", "b"]) == (0, notify_failed("notify-send exited 3 with no output."))
+
+
+def test_failed_with_whitespace_only_stderr(world):
+    install_stub(world)
+    set_fixture(world, "err", "  \n\n\t\n")
+    set_fixture(world, "code", "2")
+    assert run(world, ["Run r1", "b"]) == (0, notify_failed("notify-send exited 2 with no output."))
+
+
+def test_failed_tail_drops_trailing_blank_lines(world):
+    install_stub(world)
+    set_fixture(world, "err", "first\nboom\n\n  \n")
+    set_fixture(world, "code", "1")
+    assert run(world, ["Run r1", "b"]) == (0, notify_failed("notify-send exited 1: first\nboom"))
+
+
+def test_failed_message_keeps_the_last_20_lines(world):
+    install_stub(world)
+    set_fixture(world, "err", "".join("line %02d\n" % i for i in range(1, 51)))
+    set_fixture(world, "code", "1")
+    tail = "\n".join("line %02d" % i for i in range(31, 51))
+    assert run(world, ["Run r1", "b"]) == (0, notify_failed("notify-send exited 1: " + tail))
+
+
+def test_failed_message_is_capped_at_2000_chars(world):
+    install_stub(world)
+    lines = ["%02d " % i + "x" * 150 for i in range(1, 51)]
+    set_fixture(world, "err", "\n".join(lines) + "\n")
+    set_fixture(world, "code", "1")
+    tail = "\n".join(lines[-20:])[-2000:]
+    assert len(tail) == 2000
+    code, payload = run(world, ["Run r1", "b"])
+    assert (code, payload) == (0, notify_failed("notify-send exited 1: " + tail))
+
+
+def test_failed_with_invalid_utf8_stderr(world):
+    install_stub(world)
+    set_fixture(world, "err", b"bad \xff\xfe bytes\n")
+    set_fixture(world, "code", "1")
+    assert run(world, ["Run r1", "b"]) == (
+        0, notify_failed("notify-send exited 1: bad \ufffd\ufffd bytes"))
+
+
+# --- helper errors --------------------------------------------------------------
+
+def load_helper():
+    """The script as a module, loaded by path like the other helpers' tests."""
+    spec = importlib.util.spec_from_file_location("notify", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_timeout_is_a_helper_error(world, monkeypatch, capsys):
+    install_stub(world)
+    set_fixture(world, "sleep", "5")
+    for key, value in env_for(world).items():
+        monkeypatch.setenv(key, value)
+    module = load_helper()
+    monkeypatch.setattr(module, "NOTIFY_TIMEOUT", 0.3)
+    start = time.monotonic()
+    assert module.guarded(["Run r1", "b"]) == 0
+    assert time.monotonic() - start < 4
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, lines
+    payload = json.loads(lines[0])
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "HelperError"
+    assert payload["error"]["message"].startswith("The notification failed:")
+
+
+def test_notify_send_that_cannot_start_is_a_helper_error(world):
+    install_stub(world, "#!/nonexistent/interpreter\n")
+    code, payload = run(world, ["Run r1", "b"])
+    assert code == 0
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "HelperError"
+    assert payload["error"]["message"].startswith("The notification failed:")
