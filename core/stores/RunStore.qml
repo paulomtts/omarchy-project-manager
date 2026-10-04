@@ -69,20 +69,40 @@ Scope {
     return row
   }
 
+  // One snapshot reply. ok:true replaces the runs (none at all is fine).
+  // AmMissing empties them: no badges while am is not there. Any other failure
+  // -- an ok:false envelope or output that is not one -- keeps what the last
+  // good snapshot said and only reports why this one failed. Never throws.
   function applySnapshot(stdout, exitCode, launchedGuard) {
     if (launchedGuard !== store.project) return
     var envelope = store.parseEnvelope(stdout)
-    if (envelope === null || envelope.ok !== true) return
-    var list = Array.isArray(envelope.runs) ? envelope.runs : []
-    var out = []
-    for (var i = 0; i < list.length; i++) {
-      var e = list[i]
-      if (e === null || typeof e !== "object" || Array.isArray(e)) continue
-      out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
+    if (envelope !== null && envelope.ok === true) {
+      var list = Array.isArray(envelope.runs) ? envelope.runs : []
+      var out = []
+      for (var i = 0; i < list.length; i++) {
+        var e = list[i]
+        if (e === null || typeof e !== "object" || Array.isArray(e)) continue
+        out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
+      }
+      store.runs = out
+      store.amStatus = "ok"
+      store.lastError = ""
+      return
     }
-    store.runs = out
-    store.amStatus = "ok"
-    store.lastError = ""
+    if (envelope !== null && envelope.ok === false) {
+      var err = envelope.error
+      var type = err !== null && typeof err === "object" ? err.type : ""
+      store.lastError = Runs.errorText(envelope)
+      if (type === "AmMissing") {
+        store.runs = []
+        store.amStatus = "missing"
+      } else {
+        store.amStatus = "error"
+      }
+      return
+    }
+    store.amStatus = "error"
+    store.lastError = "The runs snapshot gave no usable result (exit " + exitCode + ")."
   }
 
   // The guard is the project root, so a snapshot launched for a project the

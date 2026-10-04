@@ -222,4 +222,87 @@ TestCase {
     compare(store.runs.length, 0, "a runs value that is not an array is empty")
     compare(store.amStatus, "ok")
   }
+
+  // ---- errors
+
+  // A store whose first snapshot loaded r1, ready for the next reply.
+  function loaded() {
+    var store = makeWithProject(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply([entry("r1", "started", true)]), 0)
+    compare(store.runs.length, 1)
+    store.refresh()
+    return store
+  }
+
+  function test_am_missing_sets_missing_and_clears_the_runs() {
+    var store = loaded(); if (!store) return
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "AmMissing", "message": "am is not installed."}}\n', 1)
+    compare(store.amStatus, "missing")
+    compare(store.runs.length, 0, "no badges while am is missing")
+    compare(store.lastError, "AmMissing: am is not installed.")
+  }
+
+  function test_another_ok_false_keeps_the_previous_runs() {
+    var store = loaded(); if (!store) return
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "AmBadOutput", "message": "am status did not print JSON (exit 3)."}}\n', 1)
+    compare(store.amStatus, "error")
+    compare(store.runs.length, 1, "the previous runs stay")
+    compare(store.runs[0].id, "r1")
+    compare(store.lastError, "AmBadOutput: am status did not print JSON (exit 3).")
+  }
+
+  function test_garbage_stdout_keeps_the_previous_runs_and_names_the_exit_code() {
+    var store = loaded(); if (!store) return
+    reply(store.snapshotRunner.current, "Traceback (most recent call last):\n  oops {not json", 1)
+    compare(store.amStatus, "error")
+    compare(store.runs.length, 1)
+    compare(store.runs[0].id, "r1")
+    verify(store.lastError !== "", "the reason is shown")
+    verify(store.lastError.indexOf("exit 1") >= 0, "the exit code is named: " + store.lastError)
+    store.refresh()
+    reply(store.snapshotRunner.current, "", 7)
+    compare(store.amStatus, "error", "empty stdout is an error too")
+    compare(store.runs.length, 1)
+    verify(store.lastError.indexOf("exit 7") >= 0, "the exit code is named: " + store.lastError)
+  }
+
+  function test_json_that_is_not_an_envelope_is_an_error() {
+    var store = loaded(); if (!store) return
+    var shapes = ["[]", '"x"', "null", "{}", '{"ok": "yes"}']
+    for (var i = 0; i < shapes.length; i++) {
+      reply(store.snapshotRunner.current, shapes[i], 0)
+      compare(store.amStatus, "error", shapes[i] + " is not a usable reply")
+      compare(store.runs.length, 1, shapes[i] + " keeps the previous runs")
+      verify(store.lastError.indexOf("exit 0") >= 0, "the exit code is named: " + store.lastError)
+      store.refresh()
+    }
+  }
+
+  function test_ok_false_without_an_error_object_is_unknown_error() {
+    var store = loaded(); if (!store) return
+    reply(store.snapshotRunner.current, '{"ok": false}', 1)
+    compare(store.amStatus, "error")
+    compare(store.runs.length, 1)
+    compare(store.lastError, "unknown error")
+  }
+
+  function test_a_good_reply_after_an_error_restores_ok() {
+    var store = loaded(); if (!store) return
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "HelperError", "message": "The runs snapshot failed: boom"}}', 1)
+    compare(store.amStatus, "error")
+    verify(store.lastError !== "")
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([entry("r2", "done", false)]), 0)
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    compare(store.runs.length, 1)
+    compare(store.runs[0].id, "r2")
+    store.refresh()
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "AmMissing", "message": "am is not installed."}}', 1)
+    compare(store.amStatus, "missing")
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([]), 0)
+    compare(store.amStatus, "ok", "missing recovers too")
+    compare(store.lastError, "")
+  }
 }
