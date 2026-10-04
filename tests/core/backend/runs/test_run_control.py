@@ -416,7 +416,7 @@ def test_am_failed_with_invalid_utf8_stderr(world):
     set_raw(world, "cancel", b"", code=1, stderr=b"bad \xff byte\n")
     code, out = run(world, ["cancel", "r1", "/p"])
     assert code == 0
-    assert out["error"] == {"type": "AmFailed", "message": "bad � byte"}
+    assert out["error"] == {"type": "AmFailed", "message": "bad \ufffd byte"}
 
 
 # --- resume ---------------------------------------------------------------------
@@ -549,4 +549,4 @@ def test_resume_invalid_utf8_stderr(world):
     set_raw(world, "resume", b"", code=1, stderr=b"bad \xff byte\n")
     code, out = run(world, ["resume", "r1", "/p"])
     assert code == 0
-    assert out["error"] == {"type": "AmFailed", "message": "bad � byte"}
+    assert out["error"] == {"type": "AmFailed", "message": "bad \ufffd byte"}
