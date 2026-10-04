@@ -6,6 +6,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "../core/domain/milestones.js" as Milestones
+import "../core/domain/runs.js" as Runs
 import "../core/stores" as Core
 import "components"
 import "components" as UI
@@ -87,6 +88,13 @@ Panel {
     function onStatusToggled() { Qt.callLater(root.scrollToTop) }
   }
 
+  // A different Runs chip means a different list: the cursor reset is App's,
+  // the scroll is the panel's.
+  Connections {
+    target: appStores.runs
+    function onRunFilterToggled() { Qt.callLater(root.scrollToTop) }
+  }
+
   // The dialog picks one of the project's Markdown documents, so the documents
   // listing has to exist by the time the list is drawn. The store never reaches
   // for another store: the panel does the fetching when the dialog opens, once
@@ -161,7 +169,7 @@ Panel {
     : appStores.milestones.dialogOpen ? newMilestoneDialog.focusItem
     : (appStores.nav.viewMode === "memory" && appStores.memories.memoryEditing) ? memoryNoteScreen.editorItem
     : appStores.nav.dropdownOpen ? sidebar.filterItem
-    : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "graph" || !appStores.projects.selectedProject) ? keyCatcher
+    : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "run" || appStores.nav.viewMode === "graph" || !appStores.projects.selectedProject) ? keyCatcher
     : searchField
 
   function focusForView() {
@@ -280,6 +288,7 @@ Panel {
         dropdownCursor: appStores.nav.dropdownCursor
         canDelete: !!appStores.projects.selectedProject && !appStores.deleter.deleting && !appStores.deleter.deleteTarget
         documentsEnabled: root.documentsEnabled
+        runsAttention: Runs.attention(appStores.runs.runs).length
         theme: panelTheme
         onDropdownToggled: navi.toggleDropdown()
         onProjectChosen: function(project) { navi.chooseProject(project) }
@@ -394,10 +403,10 @@ Panel {
         TextField {
           id: searchField
           objectName: "searchField"
-          visible: !!appStores.projects.selectedProject && (appStores.nav.viewMode === "board" || appStores.nav.viewMode === "documents" || appStores.nav.viewMode === "memories" || appStores.nav.viewMode === "issues")
+          visible: !!appStores.projects.selectedProject && (appStores.nav.viewMode === "board" || appStores.nav.viewMode === "documents" || appStores.nav.viewMode === "memories" || appStores.nav.viewMode === "issues" || appStores.nav.viewMode === "runs")
           width: parent.width
           foreground: root.foreground
-          placeholderText: appStores.nav.viewMode === "documents" ? "Search documents…" : appStores.nav.viewMode === "memories" ? "Search memories…" : appStores.nav.viewMode === "issues" ? "Search issues…" : "Search cards…"
+          placeholderText: appStores.nav.viewMode === "documents" ? "Search documents…" : appStores.nav.viewMode === "memories" ? "Search memories…" : appStores.nav.viewMode === "issues" ? "Search issues…" : appStores.nav.viewMode === "runs" ? "Search runs…" : "Search cards…"
           text: appStores.nav.searchQuery
           Keys.forwardTo: [globalKeys]
 
@@ -532,6 +541,16 @@ Panel {
           }
 
           IssueDetailScreen {
+            width: parent.width
+            app: appStores
+            navigator: navi
+            theme: panelTheme
+            onRevealRequested: function(item) { root.scrollItemIntoView(item) }
+          }
+
+          // The "run" view's body is card 5.2's; until then the run mode
+          // shows nothing here.
+          RunsScreen {
             width: parent.width
             app: appStores
             navigator: navi
