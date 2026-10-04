@@ -316,6 +316,7 @@ def test_schema_mismatch(world, schema):
     assert lines[0]["ok"] is False
     assert lines[0]["error"]["type"] == "SchemaMismatch"
     assert lines[0]["error"]["message"]
+    assert_gone(am_pid(world))  # am was terminated, not left streaming
 
 
 def test_exit_3_corrupt_journal(world):
