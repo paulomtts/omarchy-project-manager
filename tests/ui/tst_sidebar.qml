@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import "../../ui/components"
+import "../../ui/components/runGlyphs.js" as RG
 TestCase {
   id: tc
   name: "Sidebar"
@@ -180,5 +181,50 @@ TestCase {
     click(row)
     compare(sectionSpy.count, 1)
     compare(sectionSpy.signalArguments[0][0], "issues")
+  }
+
+  function test_runs_attention_defaults_to_nothing() {
+    var sb = make()
+    compare(sb.runsAttention, 0)
+    compare(sb.runsAttentionText, "")
+  }
+
+  function test_runs_attention_text_follows_the_count() {
+    var sb = make()
+    sb.runsAttention = 3
+    compare(sb.runsAttentionText, RG.glyphOf("escalated") + "3")
+    compare(sb.runsAttentionText, "‼3", "the shared escalated glyph, no space")
+    sb.runsAttention = 0
+    compare(sb.runsAttentionText, "")
+    sb.runsAttention = -2
+    compare(sb.runsAttentionText, "", "a negative count shows nothing")
+  }
+
+  function test_existing_rows_show_no_count() {
+    var sb = make()
+    sb.runsAttention = 5
+    wait(20)
+    var names = ["navCountBoard", "navCountGraph", "navCountDocuments", "navCountMemories", "navCountIssues"]
+    for (var i = 0; i < names.length; i++) {
+      var count = find(sb, names[i])
+      verify(count, names[i] + " slot exists")
+      compare(count.visible, false, names[i] + " stays hidden: no existing row sets countText")
+    }
+  }
+
+  function test_a_row_given_a_count_shows_it_after_its_label_in_urgent() {
+    var sb = make()
+    var row = find(sb, "navBoard")
+    row.countText = "‼2"
+    wait(20)
+    var count = find(sb, "navCountBoard")
+    compare(count.visible, true)
+    compare(String(count.text), "‼2")
+    verify(Qt.colorEqual(count.color, sb.theme.urgent), "the count reads in urgent")
+    verify(count.mapToItem(row, 0, 0).x > find(sb, "navIconBoard").mapToItem(row, 0, 0).x,
+      "the count follows the icon and label")
+    row.countText = ""
+    wait(20)
+    compare(count.visible, false)
   }
 }

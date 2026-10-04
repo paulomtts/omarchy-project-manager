@@ -117,6 +117,7 @@ escalated in `urgent`; hidden when the rollup is null or its total is 0),
 icon glyph drawn in the theme's font; `tests/architecture/test_icon_glyphs.py`
 checks every glyph literal in `ui/` and `vendor/` against the installed Nerd
 Fonts, because a glyph the font does not have renders as an empty box.
+`Sidebar.runsAttention` (int, default 0; the owner's escalated-plus-dead run count) derives `runsAttentionText` (`‼N` from `runGlyphs.js` when N > 0, otherwise empty), and `NavRow.countText` draws such a count after a row's label in `urgent` as `navCount<Section>`; no current row sets it, and the Runs row (story 5.x) binds `countText: sidebar.runsAttentionText`.
 `ui/screens/DocumentsToolbar.qml` is the Documents half of the panel's fixed
 toolbar - the category chips of the list, and the path and type picker of an
 open document - so only the document body scrolls.
