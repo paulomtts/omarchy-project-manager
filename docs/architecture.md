@@ -46,8 +46,12 @@ manifest entry point.
   Enter -- work on; `setGraphView` refuses anything else, so one of the two
   chips is always active, and keeps the selection on a node of the new view.
   Nothing resets it, so the choice is remembered for the session and survives a
-  project switch (the cursor still clears with the project). Plus the graph
-  cursor and its movement.
+  project switch (the cursor still clears with the project). `showArchived`
+  (off by default, set by the toolbar's Show archived chip through
+  `setShowArchived`) decides whether both models are built from every card root
+  or from `Graph.withoutArchived(cardRoots)`, which drops an archived card with
+  its whole subtree; a selection that disappears moves to the first node. Plus
+  the graph cursor and its movement.
 - `DocumentsStore.qml` listing, category filter, open document, tagging, plus
   brd's registered documents (`brd doc list`, fetched only when the section
   opens because it syncs -- writes -- every backup; re-entering the section you

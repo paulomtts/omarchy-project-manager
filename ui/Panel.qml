@@ -339,6 +339,16 @@ Panel {
             onChosen: function(id) { appStores.graph.setGraphView(id) }
           }
 
+          // Archived cards are hidden in the Graph unless this is on.
+          UI.Chip {
+            objectName: "graphArchivedChip"
+            theme: panelTheme
+            text: "Show archived"
+            visible: appStores.nav.viewMode === "graph" && !!appStores.projects.selectedProject
+            active: appStores.graph.showArchived
+            onClicked: appStores.graph.setShowArchived(!appStores.graph.showArchived)
+          }
+
           // Icon-only refresh, square and as tall as the New button beside it.
           UI.ActionButton {
             objectName: "refreshButton"

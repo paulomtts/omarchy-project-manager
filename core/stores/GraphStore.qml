@@ -10,10 +10,15 @@ QtObject {
   property var cardRoots: []   // set by App from BoardStore.cardRoots
   property var issueMap: ({})  // set by App from BoardStore.issueMap
 
-  readonly property var graph: Graph.graphModel(graphStore.cardRoots, graphStore.issueMap)
+  // Archived cards are out of play, so the Graph hides them (with everything under
+  // them) unless this is on. Remembered for the session, like the view.
+  property bool showArchived: false
+  readonly property var visibleRoots: graphStore.showArchived ? graphStore.cardRoots : Graph.withoutArchived(graphStore.cardRoots)
+
+  readonly property var graph: Graph.graphModel(graphStore.visibleRoots, graphStore.issueMap)
 
   // The second view: every milestone's stories at once, boxed per milestone.
-  readonly property var storyGraph: Graph.storyGraphModel(graphStore.cardRoots, graphStore.issueMap)
+  readonly property var storyGraph: Graph.storyGraphModel(graphStore.visibleRoots, graphStore.issueMap)
 
   // Which of the two the section is showing. Remembered for the session --
   // nothing resets it, a project switch included -- and never empty: one of the
@@ -35,6 +40,16 @@ QtObject {
   function setGraphView(name) {
     if (name !== "milestone" && name !== "story") return
     graphStore.graphView = name
+    var nodes = graphStore.currentNodes
+    var found = false
+    nodes.forEach(function(node) { if (node.id === graphStore.graphCursor) found = true })
+    if (!found) graphStore.graphCursor = nodes.length > 0 ? nodes[0].id : ""
+  }
+
+  // Shows or hides the archived cards. A selection the graph no longer has
+  // moves to the first node, as when the view changes.
+  function setShowArchived(show) {
+    graphStore.showArchived = !!show
     var nodes = graphStore.currentNodes
     var found = false
     nodes.forEach(function(node) { if (node.id === graphStore.graphCursor) found = true })
