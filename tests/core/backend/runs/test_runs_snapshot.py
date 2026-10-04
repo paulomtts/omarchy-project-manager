@@ -4,6 +4,7 @@ Hermetic: a fake `am` lives on a temp PATH and serves hand-written fixtures from
 FAKE_AM_DIR, appending each call's argv to calls.log; HOME and XDG_DATA_HOME are
 temp. The real `am` and real data are never touched.
 """
+import importlib.util
 import json
 import os
 import stat
@@ -203,6 +204,55 @@ def test_unexpected_failure_is_helper_error(world):
     assert out["ok"] is False
     assert out["error"]["type"] == "HelperError"
     assert out["error"]["message"]
+
+
+def load_helper():
+    """The script as a module (its name has a hyphen, so no plain import)."""
+    spec = importlib.util.spec_from_file_location("runs_snapshot", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_am_timeout_is_helper_error(world, monkeypatch, capsys):
+    # An am that hangs is cut off after AM_TIMEOUT and reported as HelperError
+    # (shortened here so the test does not wait the real 60 s).
+    write_exec(world["bin"] / "am", "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n")
+    helper = load_helper()
+    monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
+    for key, value in env_for(world).items():
+        monkeypatch.setenv(key, value)
+    code = helper.guarded([str(world["proj"])])
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 1
+    assert len(lines) == 1, lines
+    out = json.loads(lines[0])
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+
+
+def test_am_does_not_inherit_stdin(world):
+    # The helper's stdin is an open pipe that never sends EOF. An am that reads
+    # stdin must get EOF at once (stdin is /dev/null), not block on that pipe.
+    write_exec(world["bin"] / "am",
+               "#!/usr/bin/env python3\nimport json, sys\nsys.stdin.read()\n"
+               "print(json.dumps({'ok': True, 'data': {'runs': []}}))\n")
+    p = subprocess.Popen([sys.executable, SCRIPT, str(world["proj"])], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         env=env_for(world))
+    try:
+        code = p.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        pytest.fail("am blocked reading the helper's stdin")
+    finally:
+        p.stdin.close()
+    lines = p.stdout.read().splitlines()
+    p.stdout.close()
+    p.stderr.close()
+    assert code == 0
+    assert lines == [json.dumps({"ok": True, "runs": [], "data_dir": str(world["data"])})]
 
 
 # --- shape and fan-out -------------------------------------------------------
