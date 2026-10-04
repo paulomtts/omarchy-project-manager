@@ -1228,4 +1228,75 @@ TestCase {
                   "", ctlResumeRunning, "", "accepting true")
     checkControls(Runs.controls(Runs.normalizeRun(raw(null))), ctlPauseNotRunning, "", "", "no lease: dead")
   }
+
+  // [type, sentence] for every am control error controlError knows.
+  function controlErrorTable() {
+    return [
+      ["UnknownRunError", "The run no longer exists"],
+      ["NotRunningError", "The run is not running"],
+      ["DeadRunError", "The run's process has died; resume it instead"],
+      ["NotAcceptingError", ctlIntegrate],
+      ["RunIsLiveError", "The run is still live; only a dead run can be resumed"],
+      ["NotResumableError", "The run cannot be resumed"],
+      ["ClaimedError", "Another run has already claimed this work"],
+      ["LockTimeoutError", "am is busy; try again in a moment"]
+    ]
+  }
+
+  function test_control_error_table() {
+    var table = controlErrorTable()
+    compare(table.length, 8)
+    for (var i = 0; i < table.length; i++)
+      compare(Runs.controlError({ ok: false, error: { type: table[i][0], message: "am said so" } }), table[i][1],
+              table[i][0])
+    compare(Runs.controlError({ ok: false, error: { type: "NotAcceptingError", message: "m" } }),
+            "Integrate is running; it cannot be paused or cancelled", "same text as the Integrate reason")
+  }
+
+  function test_control_error_shapes() {
+    var table = controlErrorTable()
+    for (var i = 0; i < table.length; i++) {
+      compare(Runs.controlError({ type: table[i][0], message: "x" }), table[i][1], "bare " + table[i][0])
+      compare(Runs.controlError({ type: table[i][0] }), table[i][1], "bare, no message " + table[i][0])
+    }
+    compare(Runs.controlError({ ok: false, error: { type: "  ClaimedError  ", message: "m" } }),
+            "Another run has already claimed this work", "type is trimmed")
+    compare(Runs.controlError({ type: "\tLockTimeoutError\n" }), "am is busy; try again in a moment", "trimmed, bare")
+    compare(Runs.controlError({ ok: false, error: { type: "DeadRunError", message: "pid 42 is gone" } }),
+            "The run's process has died; resume it instead", "the message is not shown for a known type")
+    compare(Runs.controlError({ ok: false, error: { type: "claimederror", message: "m" } }), "claimederror: m",
+            "case-sensitive")
+    compare(Runs.controlError({ type: "CLAIMEDERROR" }), "CLAIMEDERROR", "case-sensitive, bare")
+    compare(Runs.controlError({ ok: false, type: "ClaimedError", error: { type: "Foo", message: "bar" } }), "Foo: bar",
+            "the envelope's error wins over a stray outer type, as in errorText")
+    var bare = Object.create(null)
+    bare.type = "ClaimedError"
+    compare(Runs.controlError(bare), "Another run has already claimed this work", "prototype-less bare error")
+  }
+
+  function test_control_error_fallback() {
+    compare(Runs.controlError({ ok: false, error: { type: "Foo", message: "bar" } }), "Foo: bar", "unknown type")
+    compare(Runs.controlError({ ok: false, error: { type: "Foo" } }), "Foo", "type only")
+    compare(Runs.controlError({ ok: false, error: { message: "bar" } }), "bar", "message only")
+    compare(Runs.controlError({ ok: true, error: { type: "ClaimedError", message: "m" } }), "", "ok:true with an error")
+    compare(Runs.controlError({ ok: true }), "", "ok:true")
+
+    var garbage = [undefined, null, "boom", 5, true, [], { ok: false }, {}, { ok: false, error: "ClaimedError" },
+                   { ok: false, error: { type: "", message: "  " } }, Object.create(null)]
+    for (var i = 0; i < garbage.length; i++)
+      compare(Runs.controlError(garbage[i]), "unknown error", "garbage " + i)
+
+    var protoNames = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]
+    for (var k = 0; k < protoNames.length; k++) {
+      var name = protoNames[k]
+      compare(Runs.controlError({ ok: false, error: { type: name, message: "m" } }), name + ": m", "envelope " + name)
+      compare(Runs.controlError({ type: name }), name, "bare " + name)
+      compare(typeof Runs.controlError({ type: name }), "string", "a string for " + name)
+    }
+
+    var noProto = Object.create(null)
+    compare(Runs.controlError({ ok: false, error: { type: noProto, message: "m" } }), "m",
+            "a prototype-less type object reads as no type")
+    compare(Runs.controlError({ type: noProto }), "unknown error", "a prototype-less type object alone")
+  }
 }

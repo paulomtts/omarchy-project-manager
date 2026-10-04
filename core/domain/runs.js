@@ -676,3 +676,30 @@ function controls(run) {
   }
   return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel) }
 }
+
+// [type, sentence] for each am control error, matched with === by linear scan so
+// a type such as `constructor` or `__proto__` is just an unknown type.
+var _CONTROL_ERRORS = [
+  ["UnknownRunError", "The run no longer exists"],
+  ["NotRunningError", "The run is not running"],
+  ["DeadRunError", "The run's process has died; resume it instead"],
+  ["NotAcceptingError", _REASON_INTEGRATE],
+  ["RunIsLiveError", "The run is still live; only a dead run can be resumed"],
+  ["NotResumableError", "The run cannot be resumed"],
+  ["ClaimedError", "Another run has already claimed this work"],
+  ["LockTimeoutError", "am is busy; try again in a moment"]
+]
+
+// The sentence for a failed pause / resume / cancel. Reads the type the way
+// errorText does (envelope or bare, trimmed, case-sensitive); a known type gives
+// its sentence without am's message, anything else gives errorText(error).
+function controlError(error) {
+  if (_isObject(error) && error.ok !== true) {
+    var e = _isObject(error.error) ? error.error : error
+    var type = _textOf(e.type)
+    for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
+      if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
+    }
+  }
+  return errorText(error)
+}
