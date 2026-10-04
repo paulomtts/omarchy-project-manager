@@ -46,6 +46,8 @@ function normalizeRun(raw) {
     milestone_id: firstText(run.milestone_id, row.milestone_id),
     status: firstText(run.status, row.status),
     started_at: firstText(row.started_at, run.started_at),
+    base_branch: firstText(row.base_branch, run.base_branch),
+    branch_prefix: firstText(row.branch_prefix, run.branch_prefix),
     lease: lease,
     rows: arrayOr(st.rows),
     tree: { stories: arrayOr(st.stories), subtasks: arrayOr(st.subtasks) }
@@ -385,4 +387,46 @@ function searchRuns(runs, q) {
     if (hay.indexOf(needle) >= 0) out.push(run)
   }
   return out
+}
+
+// ---- Run detail (5.2) --------------------------------------------------------------------
+//
+// The Run detail screen's tree, the attempt its output pane opens on, one
+// attempt's status, the tail of an `am logs` snapshot and that snapshot's age.
+// Pure and never throwing, like the rest of this file. The tree is read in the
+// shape the functions above read: flat tree.stories[] and tree.subtasks[], each
+// keyed by card_id; phases are { name, status, detail?, attempts[] } and
+// attempts { n | attempt, status }.
+
+// A text's lines without the one trailing newline; [] for "" or a non-string.
+function _linesOf(text) {
+  if (typeof text !== "string" || text === "") return []
+  var t = text.charAt(text.length - 1) === "\n" ? text.slice(0, -1) : text
+  return t === "" ? [] : t.split("\n")
+}
+
+// The last `maxLines` lines of an `am logs` data object's stdout, then the last
+// `maxLines` of its stderr, as one string. `truncated` says lines were cut, so
+// the pane can say "last 200 lines". A bad maxLines is 200.
+function logTail(data, maxLines) {
+  var max = _isFiniteNumber(maxLines) && maxLines >= 1 ? Math.floor(maxLines) : 200
+  var out = _isObject(data) ? _linesOf(data.stdout) : []
+  var err = _isObject(data) ? _linesOf(data.stderr) : []
+  var truncated = out.length > max || err.length > max
+  if (out.length > max) out = out.slice(out.length - max)
+  if (err.length > max) err = err.slice(err.length - max)
+  return { text: out.concat(err).join("\n"), truncated: truncated }
+}
+
+// How old a logs snapshot is, without "ago": "Ns" under a minute, then "Nm",
+// "Nh" or "Nd". "" for a fetch time that is missing (0 or less), not finite or
+// in the future, or a clock that is not a finite number.
+function snapshotAgeText(fetchedMs, nowMs) {
+  if (!_isFiniteNumber(fetchedMs) || fetchedMs <= 0 || !_isFiniteNumber(nowMs)) return ""
+  var diff = nowMs - fetchedMs
+  if (diff < 0) return ""
+  if (diff < 60000) return Math.floor(diff / 1000) + "s"
+  if (diff < 3600000) return Math.floor(diff / 60000) + "m"
+  if (diff < 86400000) return Math.floor(diff / 3600000) + "h"
+  return Math.floor(diff / 86400000) + "d"
 }

@@ -30,12 +30,14 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "id,lease,milestone_id,repo_dir,rows,started_at,status,tree", label)
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,rows,started_at,status,tree", label)
     compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
     compare(r.milestone_id, "", label)
     compare(r.status, "", label)
+    compare(r.base_branch, "", label)
+    compare(r.branch_prefix, "", label)
     compare(r.lease, null, label)
     compare(Array.isArray(r.rows), true, label)
     compare(r.rows.length, 0, label)
@@ -47,7 +49,7 @@ TestCase {
 
   function test_normalize_full() {
     var r = Runs.normalizeRun(fullRaw())
-    compare(Object.keys(r).sort().join(","), "id,lease,milestone_id,repo_dir,rows,started_at,status,tree")
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,rows,started_at,status,tree")
     compare(r.started_at, "2026-10-03T10:00:00Z")
     compare(r.id, "r1")
     compare(r.repo_dir, "/home/u/repo")
@@ -852,5 +854,90 @@ TestCase {
     compare(ids(Runs.searchRuns([null, 5, list[1]], "beta")), "run-esc-00002", "junk entries never match")
     var bad = [undefined, null, "x", 5, {}]
     for (var i = 0; i < bad.length; i++) compare(Runs.searchRuns(bad[i], "a").length, 0, "garbage " + i)
+  }
+
+  // ---- Run detail (5.2)
+
+  function test_normalize_branch_fields() {
+    var r = Runs.normalizeRun(fullRaw())
+    compare(r.base_branch, "main")
+    compare(r.branch_prefix, "mon/")
+    var fromRun = Runs.normalizeRun({ status: { run: { base_branch: "master", branch_prefix: "m3" } } })
+    compare(fromRun.base_branch, "master", "status.run is the fallback")
+    compare(fromRun.branch_prefix, "m3")
+    var rowWins = Runs.normalizeRun({ row: { base_branch: "a", branch_prefix: "p" },
+                                      status: { run: { base_branch: "b", branch_prefix: "q" } } })
+    compare(rowWins.base_branch, "a", "the am runs row comes first")
+    compare(rowWins.branch_prefix, "p")
+    var blankRow = Runs.normalizeRun({ row: { base_branch: "", branch_prefix: null },
+                                       status: { run: { base_branch: "b", branch_prefix: "q" } } })
+    compare(blankRow.base_branch, "b", "an empty row value falls back")
+    compare(blankRow.branch_prefix, "q")
+    compare(Runs.normalizeRun({}).base_branch, "")
+    compare(Runs.normalizeRun({}).branch_prefix, "")
+  }
+
+  function numbered(n, from) {
+    var out = []
+    for (var i = 0; i < n; i++) out.push("line " + ((from || 0) + i))
+    return out.join("\n") + "\n"
+  }
+
+  function test_log_tail() {
+    var under = Runs.logTail({ stdout: "collecting...\n3 passed\n", stderr: "" }, 200)
+    compare(under.text, "collecting...\n3 passed")
+    compare(under.truncated, false)
+
+    var exact = Runs.logTail({ stdout: numbered(200) }, 200)
+    compare(exact.text.split("\n").length, 200)
+    compare(exact.truncated, false, "exactly 200 lines is not cut")
+
+    var big = Runs.logTail({ stdout: numbered(5000), stderr: "" }, 200)
+    var lines = big.text.split("\n")
+    compare(lines.length, 200)
+    compare(lines[0], "line 4800")
+    compare(lines[199], "line 4999")
+    compare(big.truncated, true)
+
+    var withErr = Runs.logTail({ stdout: "out\n", stderr: "err1\nerr2\n" }, 200)
+    compare(withErr.text, "out\nerr1\nerr2", "stderr follows stdout")
+    compare(withErr.truncated, false)
+
+    var errOnly = Runs.logTail({ stdout: "", stderr: "boom" }, 200)
+    compare(errOnly.text, "boom")
+
+    // A huge stderr is bounded too (Review Focus 5).
+    var hugeErr = Runs.logTail({ stdout: "out\n", stderr: numbered(300) }, 200)
+    var errLines = hugeErr.text.split("\n")
+    compare(errLines.length, 201, "stdout, then the last 200 stderr lines")
+    compare(errLines[0], "out")
+    compare(errLines[1], "line 100")
+    compare(hugeErr.truncated, true)
+
+    compare(Runs.logTail({ stdout: numbered(250) }, undefined).text.split("\n").length, 200, "a bad maxLines is 200")
+
+    var bad = [undefined, null, "x", 5, [], {}, { stdout: 5, stderr: {} }]
+    for (var i = 0; i < bad.length; i++) {
+      var t = Runs.logTail(bad[i], 200)
+      compare(t.text, "", "garbage " + i)
+      compare(t.truncated, false, "garbage " + i)
+    }
+  }
+
+  function test_snapshot_age_text() {
+    var now = 1790000000000
+    compare(Runs.snapshotAgeText(now, now), "0s")
+    compare(Runs.snapshotAgeText(now - 14000, now), "14s")
+    compare(Runs.snapshotAgeText(now - 59999, now), "59s")
+    compare(Runs.snapshotAgeText(now - 60000, now), "1m")
+    compare(Runs.snapshotAgeText(now - 3599999, now), "59m")
+    compare(Runs.snapshotAgeText(now - 3600000, now), "1h")
+    compare(Runs.snapshotAgeText(now - 86399999, now), "23h")
+    compare(Runs.snapshotAgeText(now - 86400000, now), "1d")
+    compare(Runs.snapshotAgeText(now + 1, now), "", "the future")
+    var bad = [0, -5, NaN, Infinity, null, undefined, "x", {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.snapshotAgeText(bad[i], now), "", "missing fetch " + i)
+    var badNow = [NaN, Infinity, null, undefined, "x"]
+    for (var j = 0; j < badNow.length; j++) compare(Runs.snapshotAgeText(now, badNow[j]), "", "garbage now " + j)
   }
 }
