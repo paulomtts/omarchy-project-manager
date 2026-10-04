@@ -211,3 +211,14 @@ function rollup(runs, card) {
   }
   return counts
 }
+
+// Runs that need a human: escalated, or started with a dead lease. Same objects, input order.
+function attention(runs) {
+  var list = _arrayOr(runs)
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var s = runState(list[i])
+    if (s === "escalated" || s === "dead") out.push(list[i])
+  }
+  return out
+}

@@ -590,4 +590,32 @@ TestCase {
                   tree: { stories: "x", subtasks: [null, 5] }, rows: [{ card_id: "t1", status: "running" }] }]
     compare(counts(Runs.rollup(junk, { id: "m1" })), "0,0,0,0,0,0", "junk tree")
   }
+
+  // ---- 1.2: attention ---------------------------------------------------------------------
+
+  function test_attention() {
+    var liveRun = mkRun("run", "started", true)
+    var dead = mkRun("dead", "started", false)
+    var noLease = mkRun("nl", "started", null)
+    var parked = mkRun("p", "stopped", null)
+    var esc = mkRun("e", "escalated", null)
+    var done = mkRun("d", "done", null)
+    var canc = mkRun("c", "cancelled", null)
+    var unk = mkRun("u", "weird", true)
+    var list = [liveRun, esc, parked, dead, done, canc, unk, noLease, null, "x"]
+    var out = Runs.attention(list)
+    compare(out.length, 3)
+    compare(out[0] === esc, true, "same object, input order")
+    compare(out[1] === dead, true)
+    compare(out[2] === noLease, true)
+    compare(list.length, 10, "input not modified")
+    compare(Runs.attention([]).length, 0)
+
+    var bad = [undefined, null, "x", 5, {}, { length: 1, 0: esc }]
+    for (var i = 0; i < bad.length; i++) {
+      var r = Runs.attention(bad[i])
+      compare(Array.isArray(r), true, "garbage " + i)
+      compare(r.length, 0, "garbage " + i)
+    }
+  }
 }
