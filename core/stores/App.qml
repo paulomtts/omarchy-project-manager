@@ -18,6 +18,7 @@ QtObject {
       app.nav.resetSearch()
       app.graph.graphCursor = ""
       app.extras.reset()
+      app.board.resetArchive()
       app.board.fetchBoard()
       app.docs.reset()
       app.memories.resetMemories()
@@ -25,6 +26,7 @@ QtObject {
     }
     onCleared: {
       app.nav.viewMode = "board"
+      app.board.resetArchive()
       app.board.applyTreeData([])
       app.board.applyIssueData([])
       app.graph.graphCursor = ""
@@ -42,6 +44,7 @@ QtObject {
   }
 
   readonly property BoardStore board: BoardStore {
+    backendDir: app.backendDir
     project: app.projects.selectedProject
     dbPath: app.projects.watchedDbPath
     viewMode: app.nav.viewMode

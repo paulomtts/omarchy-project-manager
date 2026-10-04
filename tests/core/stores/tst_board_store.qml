@@ -302,4 +302,142 @@ TestCase {
     app.projects.applyProjectsList([])
     compare(Object.keys(app.board.issueMap).length, 0)
   }
+
+  // ---- Archive finished
+
+  property string archNow: "2026-10-10T12:00:00+00:00"
+  function aged(id, status, daysAgo, children) {
+    var c = card(id, id, status, children)
+    c.updated_at = new Date(Date.parse(archNow) - daysAgo * 86400000).toISOString()
+    return c
+  }
+  function archApp(roots) {
+    var app = make(); if (!app) return null
+    app.board.nowMs = Date.parse(archNow)
+    app.board.applyTreeData(roots || [
+      aged("old", "done", 9, [aged("o1", "done", 9)]),
+      aged("older", "done", 20, [aged("o2", "merged", 20, [aged("o3", "canceled", 20)])]),
+      aged("young", "done", 1, [aged("y1", "done", 1)]),
+      aged("open", "todo", 20, [aged("p1", "todo", 20)])
+    ])
+    return app
+  }
+  function archFinish(app, out, code) {
+    var proc = app.board.archiveRunner.current
+    verify(proc, "the helper ran")
+    proc.outText = out
+    proc.exited(code)
+  }
+
+  function test_archive_candidates_follow_the_board_oldest_first() {
+    var app = archApp(); if (!app) return
+    compare(ids(app.board.archiveCandidates), "older,old")
+    app.board.applyTreeData([])
+    compare(app.board.archiveCandidates.length, 0)
+  }
+
+  function test_open_recomputes_from_the_current_board_and_runs_nothing() {
+    var app = archApp(); if (!app) return
+    var b = app.board
+    b.applyTreeData([aged("m", "done", 5, [aged("a", "done", 5)])])
+    b.openArchive()
+    compare(b.archiveOpen, true)
+    compare(ids(b.archiveCandidates), "m")
+    compare(b.archiveRunner.seq, 0, "opening writes nothing")
+    compare(b.archiveBusy, false)
+  }
+
+  function test_open_with_no_candidates_or_no_project_stays_closed() {
+    var app = archApp([aged("young", "done", 1, [aged("y", "done", 1)])]); if (!app) return
+    app.board.openArchive()
+    compare(app.board.archiveOpen, false)
+    var bare = make(); bare.projects.applyProjectsList([])
+    bare.board.openArchive()
+    compare(bare.board.archiveOpen, false)
+  }
+
+  function test_cancel_closes_and_clears_without_running() {
+    var app = archApp(); if (!app) return
+    app.board.openArchive()
+    app.board.archiveError = "x"
+    app.board.cancelArchive()
+    compare(app.board.archiveOpen, false)
+    compare(app.board.archiveError, "")
+    compare(app.board.archiveRunner.seq, 0)
+  }
+
+  function test_confirm_passes_only_the_current_candidates_to_the_helper() {
+    var app = archApp(); if (!app) return
+    var b = app.board
+    b.openArchive()
+    // the board changes while the dialog is open: "old" gets a todo child
+    b.applyTreeData([
+      aged("old", "done", 9, [aged("o1", "done", 9), aged("o9", "todo", 9)]),
+      aged("older", "done", 20, [aged("o2", "done", 20)])])
+    b.archiveAll()
+    compare(b.archiveBusy, true)
+    var cmd = b.archiveRunner.current.command
+    compare(cmd[0], "python3")
+    verify(String(cmd[1]).endsWith("/plugin/core/backend/boards/archive-milestones.py"))
+    compare(cmd[2], "/home/u/a")
+    compare(cmd.slice(3).join(), "older")
+  }
+
+  function test_busy_blocks_cancel_and_a_second_confirm() {
+    var app = archApp(); if (!app) return
+    var b = app.board
+    b.openArchive(); b.archiveAll()
+    var proc = b.archiveRunner.current
+    b.archiveAll(); b.cancelArchive()
+    compare(b.archiveRunner.seq, 1)
+    compare(b.archiveOpen, true)
+    verify(proc === b.archiveRunner.current)
+  }
+
+  function test_success_closes_the_dialog() {
+    var app = archApp(); if (!app) return
+    var b = app.board
+    b.openArchive(); b.archiveAll()
+    archFinish(app, '{"ok": true, "results": [{"id": "older", "ok": true}, {"id": "old", "ok": true}]}', 0)
+    compare(b.archiveBusy, false)
+    compare(b.archiveOpen, false)
+    compare(b.archiveError, "")
+  }
+
+  function test_a_failure_keeps_the_dialog_open_and_names_the_milestone() {
+    var app = archApp(); if (!app) return
+    var b = app.board
+    b.openArchive(); b.archiveAll()
+    archFinish(app, '{"ok": false, "results": [{"id": "older", "ok": true}, {"id": "old", "ok": false, "error": "locked"}]}', 1)
+    compare(b.archiveBusy, false)
+    compare(b.archiveOpen, true)
+    verify(b.archiveError.indexOf("old") >= 0 && b.archiveError.indexOf("locked") >= 0, b.archiveError)
+    verify(b.archiveError.indexOf("older") < 0 || b.archiveError.indexOf("older: ") < 0, "the archived one is not reported as failed")
+    // the board refetch drops the archived one; a retry carries only what is left
+    b.applyTreeData([aged("old", "done", 9, [aged("o1", "done", 9)])])
+    b.archiveAll()
+    compare(b.archiveError, "")
+    compare(b.archiveRunner.current.command.slice(3).join(), "old")
+  }
+
+  function test_a_helper_that_cannot_run_is_an_error_too() {
+    var app = archApp(); if (!app) return
+    app.board.openArchive(); app.board.archiveAll()
+    archFinish(app, "", 127)
+    compare(app.board.archiveOpen, true)
+    verify(app.board.archiveError !== "")
+  }
+
+  function test_switching_project_closes_and_drops_a_late_answer() {
+    var app = archApp(); if (!app) return
+    var b = app.board
+    b.openArchive(); b.archiveAll()
+    var proc = b.archiveRunner.current
+    app.projects.chooseProject(pB)
+    compare(b.archiveOpen, false)
+    proc.outText = '{"ok": false, "results": [{"id": "old", "ok": false, "error": "late"}]}'
+    proc.exited(1)
+    compare(b.archiveError, "")
+    compare(b.archiveBusy, false)
+  }
 }
