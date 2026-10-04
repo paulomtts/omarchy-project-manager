@@ -111,4 +111,63 @@ TestCase {
     compare(timeline.opacity, 1, "no pulse on the timeline")
     compare(H.find(timeline, "phaseTimelineText").opacity, 1, "no pulse on the line")
   }
+
+  function test_empty_and_bad_phases() {
+    var bad = [[], null, undefined, "x", 5, {}]
+    var labels = ["[]", "null", "undefined", "\"x\"", "5", "{}"]
+    for (var i = 0; i < bad.length; i++) {
+      var timeline = make({ theme: testTheme })
+      timeline.phases = bad[i]
+      wait(30)
+      compare(timeline.text, "", labels[i] + " renders nothing")
+      compare(lineOf(timeline), "", labels[i])
+      compare(timeline.visible, false, labels[i] + " hides the timeline")
+    }
+  }
+
+  function test_bad_entries_skipped() {
+    var timeline = make({ theme: testTheme })
+    timeline.phases = [null, 5, { status: "done" }, { name: 7, status: "done" },
+                       { name: "plan", status: "done" }]
+    wait(30)
+    compare(lineOf(timeline), "plan✔", "only the valid entry renders")
+
+    // Empty names, undefined entries and holes are skipped too; extra fields are ignored.
+    var sparse = [undefined, { name: "", status: "done" }, "spec",
+                  { name: "spec", status: "done", started_at: "2026-10-04T10:00:00Z" }]
+    sparse[5] = { name: "verify", status: "pending" }
+    timeline.phases = sparse
+    wait(30)
+    compare(lineOf(timeline), "spec✔ → verify·", "no empty segment, no doubled arrow")
+    compare(timeline.visible, true)
+  }
+
+  function test_unknown_status() {
+    var statuses = ["RUNNING", "Done", undefined, 3, "constructor", "toString", "__proto__", "hasOwnProperty"]
+    for (var i = 0; i < statuses.length; i++) {
+      var entry = { name: "plan" }
+      if (statuses[i] !== undefined) entry.status = statuses[i]
+      var timeline = make({ theme: testTheme })
+      timeline.phases = [entry]
+      wait(30)
+      compare(lineOf(timeline), "plan", "status " + String(statuses[i]) + " shows the bare name")
+      compare(timeline.visible, true)
+    }
+  }
+
+  function test_name_is_plain_text() {
+    var timeline = make({ theme: testTheme, phases: [{ name: "<b>x</b>", status: "done" }] })
+    var line = H.find(timeline, "phaseTimelineText")
+    compare(line.textFormat, Text.PlainText, "a name is never read as markup")
+    compare(line.text, "<b>x</b>✔")
+  }
+
+  function test_theme_reset_to_null() {
+    var timeline = make({ theme: testTheme, phases: [{ name: "spec", status: "done" }] })
+    timeline.theme = null
+    wait(30)
+    verify(timeline.palette, "falls back to its own Theme when the owner's goes away")
+    compare(lineOf(timeline), "spec✔")
+    verify(Qt.colorEqual(H.find(timeline, "phaseTimelineText").color, timeline.palette.foreground))
+  }
 }

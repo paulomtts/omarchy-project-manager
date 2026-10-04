@@ -109,6 +109,7 @@ while running, visible and `active`),
 `RunRollupBar` (a milestone's or story's run rollup under its title: one
 caption segment per non-zero count in the same glyphs, then `N pending`;
 escalated in `urgent`; hidden when the rollup is null or its total is 0),
+`PhaseTimeline` (one subtask's phases as a single static line such as `spec✔ → plan✔ → implement⟳ → verify· → review·`: done ✔, started ⟳ and failed ✖ from `runGlyphs.js`, pending a local ·; an unknown status shows the bare name, bad entries are skipped and missing or empty `phases` hide it; no colour-only state, no animation),
 `Sidebar`, and the views
 `DocumentsView`, `MemoriesView`, `MemoryNoteView`, `GraphView`.
 `Sidebar`'s five nav rows (Board, Graph, Documents, Memories, Issues) each lead with an
