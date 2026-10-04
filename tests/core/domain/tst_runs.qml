@@ -940,4 +940,143 @@ TestCase {
     var badNow = [NaN, Infinity, null, undefined, "x"]
     for (var j = 0; j < badNow.length; j++) compare(Runs.snapshotAgeText(now, badNow[j]), "", "garbage now " + j)
   }
+
+  // s1 owns t1 (via its list) and t2 (via a {card_id} entry); s2 lists t1 too
+  // (already s1's) and owns t3 via story_id; t4 belongs to no story. base-s1,
+  // bases and integrate are bookkeeping ids from the stories, subtasks and rows.
+  function detailRun() {
+    return mkRun("r", "started", true, {
+      rows: [{ card_id: "t1", phase: "implement", attempt: 2, status: "started" },
+             { card_id: "integrate", phase: "integrate", attempt: 1, status: "pending" }],
+      tree: {
+        stories: [{ card_id: "s1", status: "started", subtasks: ["t1", { card_id: "t2" }] },
+                  { card_id: "s2", subtasks: ["t1"] },
+                  { card_id: "base-s1", status: "done" }],
+        subtasks: [
+          { card_id: "t1", phases: [
+            { name: "spec", status: "done", attempts: [{ n: 1, status: "done" }] },
+            { name: "implement", status: "started", attempts: [{ n: 1, status: "failed" }, { attempt: 2, status: "started" }] }] },
+          { card_id: "t2", status: "pending", phases: [{ name: "spec", status: "pending", attempts: [] }] },
+          { card_id: "t3", story_id: "s2", phases: [] },
+          { card_id: "t4", phases: [{ name: "review", status: "done", attempts: [{ status: "done" }] }] },
+          { card_id: "bases", status: "done" }
+        ]
+      }
+    })
+  }
+
+  function cardIds(list) { return list.map(function(x) { return x.card_id }).join(",") }
+
+  function test_glyph_state_of() {
+    var cases = [["started", "running"], ["running", "running"], ["stopped", "parked"], ["parked", "parked"],
+                 ["escalated", "escalated"], ["failed", "dead"], ["dead", "dead"], ["cancelled", "cancelled"],
+                 ["done", "done"], ["pending", ""], ["", ""], [undefined, ""], [null, ""], [5, ""], ["constructor", ""]]
+    for (var i = 0; i < cases.length; i++) compare(Runs.glyphStateOf(cases[i][0]), cases[i][1], String(cases[i][0]))
+  }
+
+  function test_run_tree() {
+    var t = Runs.runTree(detailRun())
+    compare(t.stories.map(function(s) { return s.label }).join(","), "s1,s2,Other")
+    compare(cardIds(t.stories[0].subtasks), "t1,t2", "story_id-less membership through the story's list")
+    compare(cardIds(t.stories[1].subtasks), "t3", "story_id membership; t1 stays with the first story only")
+    compare(cardIds(t.stories[2].subtasks), "t4", "a subtask of no story is kept under Other")
+    compare(t.stories[0].card_id, "s1")
+    compare(t.stories[0].status, "started")
+    compare(t.stories[0].other, false)
+    compare(t.stories[1].status, "")
+    compare(t.stories[2].card_id, "")
+    compare(t.stories[2].other, true)
+
+    var t1 = t.stories[0].subtasks[0]
+    compare(t1.status, "started", "no own status: the last am row for the card")
+    compare(t1.phases.map(function(p) { return p.name + ":" + p.status }).join(","), "spec:done,implement:started")
+    compare(t1.attempts.map(function(a) { return a.phase + "." + a.attempt + ":" + a.status }).join(","),
+            "spec.1:done,implement.1:failed,implement.2:started")
+    compare(t1.currentPhase, "implement")
+    compare(t1.currentAttempt, 2)
+
+    var t2 = t.stories[0].subtasks[1]
+    compare(t2.status, "pending", "its own status wins")
+    compare(t2.currentPhase, "spec", "no started phase: the last named one")
+    compare(t2.currentAttempt, 0)
+    compare(t2.attempts.length, 0)
+
+    // Review Focus 3: an unnumbered attempt is listed with attempt 0.
+    var t4 = t.stories[2].subtasks[0]
+    compare(t4.attempts.length, 1)
+    compare(t4.attempts[0].attempt, 0)
+    compare(t4.attempts[0].status, "done")
+    compare(t4.currentAttempt, 0)
+
+    compare(t.synthetic.map(function(s) { return s.id }).join(","), "base-s1,bases,integrate")
+    compare(t.synthetic.map(function(s) { return s.label }).join(","), "Base s1,Bases,Integrate")
+    compare(t.synthetic.map(function(s) { return s.status }).join(","), "done,done,pending")
+  }
+
+  function test_run_tree_without_synthetic_rows_or_orphans() {
+    var t = Runs.runTree(mkRun("r", "started", true, { tree: { stories: [{ card_id: "s1", subtasks: [] }], subtasks: [] } }))
+    compare(t.synthetic.length, 0, "no bookkeeping rows unless present")
+    compare(t.stories.length, 1, "no Other group without orphans")
+    compare(t.stories[0].subtasks.length, 0)
+    compare(Runs.runTree(mkRun("r", "started", true)).stories.length, 0)
+  }
+
+  function test_run_tree_garbage() {
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" },
+               { tree: { stories: "x", subtasks: [null, 5, { card_id: 7 }, { card_id: "" }] } }]
+    for (var i = 0; i < bad.length; i++) {
+      var t = Runs.runTree(bad[i])
+      compare(t.stories.length, 0, "garbage " + i)
+      compare(t.synthetic.length, 0, "garbage " + i)
+    }
+    var odd = Runs.runTree({ rows: "y", tree: { stories: [null, { card_id: "s1", subtasks: "x" }],
+      subtasks: [{ card_id: "t1", phases: [null, { name: "" }, { name: "spec", attempts: "x" }] }] } })
+    compare(odd.stories.map(function(s) { return s.label }).join(","), "s1,Other")
+    compare(cardIds(odd.stories[1].subtasks), "t1")
+    compare(odd.stories[1].subtasks[0].phases.length, 1)
+    compare(odd.stories[1].subtasks[0].attempts.length, 0)
+  }
+
+  function at(d) { return d === null ? "null" : d.card_id + "/" + d.phase + "/" + d.attempt }
+
+  function test_default_attempt() {
+    compare(at(Runs.defaultAttempt(detailRun())), "t1/implement/2")
+    compare(at(Runs.defaultAttempt(mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "a", phases: [{ name: "review", status: "started", attempts: [] }] },
+      { card_id: "b", phases: [{ name: "plan", status: "started", attempts: [{ n: 3, status: "started" }, { n: 1, status: "failed" }] }] }
+    ] } }))), "b/plan/3", "a started phase without attempts is skipped; the highest number wins")
+    compare(at(Runs.defaultAttempt(mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "integrate", phases: [{ name: "integrate", status: "started", attempts: [{ n: 1 }] }] }] } }))),
+      "null", "a bookkeeping id is never a card")
+    compare(at(Runs.defaultAttempt(mkRun("r", "done", null, {
+      rows: [{ card_id: "t1", phase: "spec", attempt: 1, status: "done" }, { card_id: "integrate", phase: "integrate", attempt: 1 }],
+      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "spec", status: "done", attempts: [{ n: 1 }, { n: 2 }] }] }] }
+    }))), "t1/spec/2", "no started phase: the newest attempt of the last real row")
+    compare(at(Runs.defaultAttempt(mkRun("r", "done", null, { rows: [{ card_id: "t5", phase: "plan", n: 4 }] }))),
+            "t5/plan/4", "a row's own n")
+    compare(at(Runs.defaultAttempt(mkRun("r", "done", null, { rows: [{ card_id: "t5", phase: "plan", status: "done" }] }))),
+            "null", "a row with no number and no tree attempt")
+    compare(at(Runs.defaultAttempt(mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "t1", phases: [{ name: "implement", status: "started", attempts: [{ status: "started" }] }] }] } }))),
+      "null", "unnumbered attempts cannot be fetched")
+    compare(at(Runs.defaultAttempt(mkRun("r", "started", true))), "null", "an empty tree")
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x", rows: "y" }, { rows: [null, 5, { card_id: 7, phase: "x", n: 1 }] }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.defaultAttempt(bad[i]), null, "garbage " + i)
+  }
+
+  function test_attempt_status() {
+    var run = detailRun()
+    compare(Runs.attemptStatus(run, "t1", "implement", 2), "started")
+    compare(Runs.attemptStatus(run, "t1", "implement", 1), "failed")
+    compare(Runs.attemptStatus(run, "t1", "spec", 1), "done")
+    compare(Runs.attemptStatus(run, "t1", "spec", 9), "")
+    compare(Runs.attemptStatus(run, "t1", "verify", 1), "")
+    compare(Runs.attemptStatus(run, "zz", "spec", 1), "")
+    compare(Runs.attemptStatus(run, "t4", "review", 0), "", "0 is not an attempt number")
+    var bad = [undefined, null, "x", 5, [], {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.attemptStatus(bad[i], "t1", "spec", 1), "", "garbage " + i)
+    compare(Runs.attemptStatus(run, null, "spec", 1), "")
+    compare(Runs.attemptStatus(run, "t1", null, 1), "")
+    compare(Runs.attemptStatus(run, "t1", "spec", "1"), "", "a string attempt is not a number")
+  }
 }

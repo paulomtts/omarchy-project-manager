@@ -430,3 +430,181 @@ function snapshotAgeText(fetchedMs, nowMs) {
   if (diff < 86400000) return Math.floor(diff / 3600000) + "h"
   return Math.floor(diff / 86400000) + "d"
 }
+
+// The run-state name (a runGlyphs.js key) an am story, subtask, phase, attempt
+// or row status is drawn with -- the mapping PhaseTimeline uses (started is
+// running, failed is dead). "" for anything else, which shows no glyph.
+function glyphStateOf(status) {
+  if (status === "started" || status === "running") return "running"
+  if (status === "stopped" || status === "parked") return "parked"
+  if (status === "escalated") return "escalated"
+  if (status === "failed" || status === "dead") return "dead"
+  if (status === "cancelled") return "cancelled"
+  if (status === "done") return "done"
+  return ""
+}
+
+// An attempt's number: `attempt`, else `n`, when a finite number above 0; else
+// 0, an attempt `am logs` cannot be asked about.
+function _attemptNumber(a) {
+  if (!_isObject(a)) return 0
+  if (_isFiniteNumber(a.attempt) && a.attempt > 0) return a.attempt
+  if (_isFiniteNumber(a.n) && a.n > 0) return a.n
+  return 0
+}
+
+// The highest attempt number of a phase; 0 when it has no numbered attempt.
+function _newestAttempt(phase) {
+  var attempts = _isObject(phase) ? _arrayOr(phase.attempts) : []
+  var best = 0
+  for (var i = 0; i < attempts.length; i++) best = Math.max(best, _attemptNumber(attempts[i]))
+  return best
+}
+
+// The subtask's first phase with this name, or null.
+function _findPhase(subtask, name) {
+  if (!_isObject(subtask) || typeof name !== "string" || name === "") return null
+  var phases = _arrayOr(subtask.phases)
+  for (var i = 0; i < phases.length; i++) {
+    if (_isObject(phases[i]) && phases[i].name === name) return phases[i]
+  }
+  return null
+}
+
+// The status of the last am row for an id; "" when there is none.
+function _lastRowStatus(run, id) {
+  var rows = _isObject(run) ? _arrayOr(run.rows) : []
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (_isObject(rows[i]) && rows[i].card_id === id) return _stringOr(rows[i].status)
+  }
+  return ""
+}
+
+function _syntheticLabel(id) {
+  if (id === "integrate") return "Integrate"
+  if (id === "bases") return "Bases"
+  return id.length > 5 ? "Base " + id.slice(5) : "Base"
+}
+
+// One subtask as the detail tree shows it. Its own status, else its last am
+// row's; phases with a name only; every attempt object (attempt 0 when it has
+// no number); the current phase is the first started one, else the last.
+function _subtaskNode(run, subtask) {
+  var phases = [], attempts = []
+  var started = null, last = null
+  var list = _arrayOr(subtask.phases)
+  for (var i = 0; i < list.length; i++) {
+    var p = list[i]
+    if (!_isObject(p) || typeof p.name !== "string" || p.name === "") continue
+    phases.push({ name: p.name, status: _stringOr(p.status) })
+    if (started === null && p.status === "started") started = p
+    last = p
+    var tries = _arrayOr(p.attempts)
+    for (var k = 0; k < tries.length; k++) {
+      if (_isObject(tries[k])) attempts.push({ phase: p.name, attempt: _attemptNumber(tries[k]), status: _stringOr(tries[k].status) })
+    }
+  }
+  var current = started !== null ? started : last
+  var own = _stringOr(subtask.status)
+  return {
+    card_id: subtask.card_id,
+    status: own !== "" ? own : _lastRowStatus(run, subtask.card_id),
+    phases: phases,
+    attempts: attempts,
+    currentPhase: current === null ? "" : current.name,
+    currentAttempt: _newestAttempt(current)
+  }
+}
+
+// The Run detail tree: the run's stories in am's order, each with the subtasks
+// it owns (a subtask goes to the first story that owns it), then an "Other"
+// group for subtasks of no story. Bookkeeping ids (integrate, bases, base-*)
+// from the stories, the subtasks or the rows become labelled rows of their own,
+// only when present. Never throws.
+function runTree(run) {
+  var tree = _treeOf(run)
+  var stories = _arrayOr(tree.stories), subtasks = _arrayOr(tree.subtasks)
+  var synthetic = [], seen = []
+  function addSynthetic(id, status) {
+    if (seen.indexOf(id) >= 0) return
+    seen.push(id)
+    var own = _stringOr(status)
+    synthetic.push({ id: id, label: _syntheticLabel(id), status: own !== "" ? own : _lastRowStatus(run, id) })
+  }
+  var realStories = [], realSubtasks = []
+  for (var i = 0; i < stories.length; i++) {
+    var s = stories[i]
+    if (!_isObject(s)) continue
+    if (_isSynthetic(s.card_id)) addSynthetic(s.card_id, s.status)
+    else if (_isCardId(s.card_id)) realStories.push(s)
+  }
+  for (var j = 0; j < subtasks.length; j++) {
+    var t = subtasks[j]
+    if (!_isObject(t)) continue
+    if (_isSynthetic(t.card_id)) addSynthetic(t.card_id, t.status)
+    else if (_isCardId(t.card_id)) realSubtasks.push(t)
+  }
+  var rows = _isObject(run) ? _arrayOr(run.rows) : []
+  for (var r = 0; r < rows.length; r++) {
+    if (_isObject(rows[r]) && _isSynthetic(rows[r].card_id)) addSynthetic(rows[r].card_id, "")
+  }
+  var claimed = [], out = []
+  for (var si = 0; si < realStories.length; si++) {
+    var story = realStories[si]
+    var mine = []
+    for (var ti = 0; ti < realSubtasks.length; ti++) {
+      if (claimed.indexOf(ti) >= 0 || !_storyHas(story, realSubtasks[ti], story.card_id)) continue
+      claimed.push(ti)
+      mine.push(_subtaskNode(run, realSubtasks[ti]))
+    }
+    var ownStatus = _stringOr(story.status)
+    out.push({ card_id: story.card_id, label: story.card_id,
+               status: ownStatus !== "" ? ownStatus : _lastRowStatus(run, story.card_id), other: false, subtasks: mine })
+  }
+  var others = []
+  for (var oi = 0; oi < realSubtasks.length; oi++) {
+    if (claimed.indexOf(oi) < 0) others.push(_subtaskNode(run, realSubtasks[oi]))
+  }
+  if (others.length > 0) out.push({ card_id: "", label: "Other", status: "", other: true, subtasks: others })
+  return { stories: out, synthetic: synthetic }
+}
+
+// The attempt the output pane opens on: the newest numbered attempt of the
+// first started phase (in subtask order) that has one; else, walking the flat
+// rows from the last, the newest attempt of a real card's row phase (the row's
+// own number or the tree's, whichever is higher); else null.
+function defaultAttempt(run) {
+  var subtasks = _subtasksOf(run)
+  for (var i = 0; i < subtasks.length; i++) {
+    var t = subtasks[i]
+    if (!_isObject(t) || !_isCardId(t.card_id)) continue
+    var phases = _arrayOr(t.phases)
+    for (var j = 0; j < phases.length; j++) {
+      var p = phases[j]
+      if (!_isObject(p) || p.status !== "started" || typeof p.name !== "string" || p.name === "") continue
+      var n = _newestAttempt(p)
+      if (n > 0) return { card_id: t.card_id, phase: p.name, attempt: n }
+    }
+  }
+  var rows = _isObject(run) ? _arrayOr(run.rows) : []
+  for (var r = rows.length - 1; r >= 0; r--) {
+    var row = rows[r]
+    if (!_isObject(row) || !_isCardId(row.card_id)) continue
+    var phase = _stringOr(row.phase)
+    if (phase === "") continue
+    var newest = Math.max(_attemptNumber(row), _newestAttempt(_findPhase(_findByCardId(subtasks, row.card_id), phase)))
+    if (newest > 0) return { card_id: row.card_id, phase: phase, attempt: newest }
+  }
+  return null
+}
+
+// One attempt's status from the run's tree; "" when it is not there.
+function attemptStatus(run, cardId, phase, attempt) {
+  if (!_isCardId(cardId) || !_isFiniteNumber(attempt) || attempt <= 0) return ""
+  var p = _findPhase(_findByCardId(_subtasksOf(run), cardId), phase)
+  var tries = _isObject(p) ? _arrayOr(p.attempts) : []
+  for (var i = tries.length - 1; i >= 0; i--) {
+    if (_attemptNumber(tries[i]) === attempt) return _stringOr(tries[i].status)
+  }
+  return ""
+}
