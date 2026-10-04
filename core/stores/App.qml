@@ -7,6 +7,7 @@ QtObject {
   id: app
 
   property string backendDir: ""
+  property bool panelOpen: false   // the panel is open; Panel.qml binds it to its `opened`
 
   readonly property NavigationStore nav: NavigationStore {}
 
@@ -97,6 +98,15 @@ QtObject {
     project: app.projects.selectedProject
     cardCount: Object.keys(app.board.cardMap).length
     onBoardRefreshRequested: app.board.fetchBoard()
+  }
+
+  // The run store never imports the project or board store: App hands it the
+  // selected project's root path (never the project object) and the panel-open
+  // flag that starts and stops its watch.
+  readonly property RunStore runs: RunStore {
+    backendDir: app.backendDir
+    project: app.projects.selectedProject ? app.projects.selectedProject.root_path : ""
+    active: app.panelOpen
   }
 
   readonly property GraphStore graph: GraphStore {

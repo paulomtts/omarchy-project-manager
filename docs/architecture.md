@@ -80,6 +80,15 @@ manifest entry point.
   runner's guard is the project the JOB is for, not the selected one, so a run
   that outlives a project switch is still recorded truthfully; `jobVisible`
   decides whose panel shows it.
+- `RunStore.qml` the am run monitor's data: one snapshot of the selected
+  project's am runs (`runs-snapshot.py`, normalized through `runs.js`), the
+  selected run and `amStatus`. While the panel is open it runs `runs-watch.py`
+  (250 ms debounce per burst of changes, 10 s liveness re-read while a run is
+  running, a `stale` flag 30 s after the last good snapshot, and a 5 s fallback
+  poll when the journal has a schema mismatch or is corrupt). It never reaches
+  for another store: `App` hands it `project` (the selected project's root
+  path, `""` when none), `backendDir` and `active` (App's `panelOpen`, which
+  the panel binds to its `opened`).
 
 Other `ui/` pieces: `Navigator.qml` (screen switching), `Shortcuts.qml` (key
 events to store calls; Ctrl+1..5 follow the sidebar's order: Board, Graph,

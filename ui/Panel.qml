@@ -41,7 +41,7 @@ Panel {
   readonly property string pluginDir: Qt.resolvedUrl("../").toString().replace(/^file:\/\//, "")
 
   // All non-visual state lives in the stores; `app` is how the tests reach it.
-  Core.App { id: appStores; backendDir: root.pluginDir + "core/backend/" }
+  Core.App { id: appStores; backendDir: root.pluginDir + "core/backend/"; panelOpen: root.opened }
   readonly property var app: appStores
 
   readonly property bool documentsEnabled: true
