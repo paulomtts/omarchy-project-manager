@@ -166,6 +166,19 @@ function cardRunState(runs, cardId) {
   return result
 }
 
+// Every run that touches a card (through its milestone, a story or a subtask --
+// never through rows alone), as the same objects in input order: am's order,
+// newest first. [] for anything that is not a real card id, or for garbage runs.
+function runsTouching(runs, cardId) {
+  if (!_isCardId(cardId)) return []
+  var list = _arrayOr(runs)
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    if (_touches(list[i], cardId)) out.push(list[i])
+  }
+  return out
+}
+
 // Which am row status lands in which rollup bucket; anything else is pending.
 function _bucketOf(status) {
   if (status === "running" || status === "started") return "running"

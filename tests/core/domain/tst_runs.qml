@@ -1079,4 +1079,27 @@ TestCase {
     compare(Runs.attemptStatus(run, "t1", null, 1), "")
     compare(Runs.attemptStatus(run, "t1", "spec", "1"), "", "a string attempt is not a number")
   }
+
+  // ---- 5.3: the runs that touch one card (card detail's RUNS list) --------------------------
+
+  function test_runs_touching() {
+    var a = mkRun("ra", "started", true, { tree: sampleTree() })                 // m1; s1, s2; t1, t2, t3
+    var b = mkRun("rb", "done", null, { milestone_id: "m2", rows: [{ card_id: "t1", status: "done" }] })
+    var c = mkRun("rc", "stopped", null, { milestone_id: "m1" })
+    var runs = [a, b, c]
+    compare(ids(Runs.runsTouching(runs, "m1")), "ra,rc", "milestone, input order kept")
+    compare(ids(Runs.runsTouching(runs, "s2")), "ra", "story")
+    compare(ids(Runs.runsTouching(runs, "t3")), "ra", "subtask")
+    compare(ids(Runs.runsTouching(runs, "m2")), "rb")
+    compare(ids(Runs.runsTouching(runs, "t1")), "ra", "rb names t1 only in its rows: not a touch")
+    verify(Runs.runsTouching(runs, "m1")[0] === a, "the same run objects, not copies")
+    compare(Runs.runsTouching(runs, "zzz").length, 0, "unrelated")
+
+    var badIds = ["", null, undefined, 5, {}, "integrate", "bases", "base-x"]
+    for (var i = 0; i < badIds.length; i++)
+      compare(Runs.runsTouching(runs, badIds[i]).length, 0, "bad id " + i)
+    var badRuns = [undefined, null, "x", 5, {}, [null, 3, "s", []]]
+    for (var j = 0; j < badRuns.length; j++)
+      compare(Runs.runsTouching(badRuns[j], "m1").length, 0, "bad runs " + j)
+  }
 }
