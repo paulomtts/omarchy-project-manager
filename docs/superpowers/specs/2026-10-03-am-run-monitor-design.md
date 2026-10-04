@@ -128,6 +128,14 @@ ids `integrate`, `bases`, `base-<story-id>` never match a card; they appear as
 labelled rows in Run detail only. When a card is in several runs, the newest
 non-terminal run wins, else the newest run, shown dimmed.
 
+**Terminal brd statuses.** A card whose brd status is `merged` (finished and
+landed), `canceled` or `archived` (out of play; `archived` is treated exactly
+like `canceled`) is never shown with a live run mark: a run that touched it
+still lists it in Run detail, dimmed, but `cardRunState` returns `none` for it
+and badges/rollups on the board skip it. `am` itself honours these statuses (it
+treats `merged` as finished and ignores `canceled`/`archived` cards), so a
+running run never contains one except as history.
+
 **Card run state** (separate from brd status): `running`, `parked`, `escalated`,
 `dead`, or `none`, plus the current phase and attempt number for a subtask.
 
