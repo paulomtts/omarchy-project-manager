@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 import "../../core/domain/board.js" as Board
+import "../../core/domain/runs.js" as Runs
 import "../components" as UI
 import "../theme" as T
 
@@ -25,6 +26,14 @@ Column {
   spacing: Style.space(10)
 
   readonly property var card: detailCard.app.board.cardMap[detailCard.app.board.selectedCardId]
+
+  // The am runs that touch this card (5.3), in am's order: newest first. A
+  // card's runs are its history, so a merged or canceled card still lists them;
+  // nothing is listed while am is not installed.
+  readonly property var touchingRuns: !detailCard.card || detailCard.app.runs.amStatus === "missing"
+    ? [] : Runs.runsTouching(detailCard.app.runs.runs, detailCard.card.id)
+  // Ages are read against the clock once per run snapshot: there is no timer.
+  readonly property real nowMs: detailCard.touchingRuns ? Date.now() : 0
 
   DetailLink {
     visible: !!(detailCard.card && detailCard.card.parentId)
@@ -117,6 +126,22 @@ Column {
     }
   }
 
+  PanelSectionHeader {
+    objectName: "cardRunsHeader"
+    visible: detailCard.touchingRuns.length > 0
+    text: "RUNS"
+    foreground: detailCard.theme.foreground
+    fontFamily: detailCard.theme.fontFamily
+  }
+
+  Repeater {
+    model: detailCard.touchingRuns.length
+
+    CardRunRow {
+      width: parent.width
+    }
+  }
+
   // The card's comments, from the export the extras store holds. Read-only,
   // like everything else on this screen.
   UI.CommentList {
@@ -152,6 +177,66 @@ Column {
       text: badge.text
       color: badge.tone
       font.bold: true
+    }
+  }
+
+  // One run that touches the card: its state glyph, short id, title, current
+  // phase and age. Mouse-activated only (`index` stays -1): the keyboard's link
+  // list is the card's brd links. A click opens Run detail, whose Back comes
+  // back here; a run that vanished meanwhile opens nothing.
+  component CardRunRow: UI.ListRow {
+    id: runRow
+    // The model is a count, so this is the run's position in touchingRuns. The
+    // run is read back by position because a Repeater's converted modelData copy
+    // would lose the nested arrays the domain helpers read.
+    required property int modelData
+    readonly property var run: detailCard.touchingRuns[runRow.modelData] || null
+
+    objectName: "cardRunRow" + runRow.modelData
+    theme: detailCard.theme
+    opacity: detailCard.app.runs.stale ? 0.5 : 1
+    contentMargin: Style.space(6)
+    onActivated: detailCard.navigator.openRun(runRow.run ? runRow.run.id : "", "entry")
+
+    Row {
+      width: parent.width
+      spacing: Style.space(8)
+
+      UI.RunBadge {
+        theme: detailCard.theme
+        state: Runs.runState(runRow.run)
+        active: !detailCard.app.runs.stale
+      }
+
+      UI.ThemedText {
+        objectName: "cardRunId" + runRow.modelData
+        variant: "caption"
+        theme: detailCard.theme
+        text: Runs.shortId(runRow.run)
+      }
+
+      UI.ThemedText {
+        objectName: "cardRunTitle" + runRow.modelData
+        variant: "small"
+        theme: detailCard.theme
+        text: Runs.runTitle(runRow.run)
+      }
+
+      UI.ThemedText {
+        objectName: "cardRunPhase" + runRow.modelData
+        variant: "caption"
+        theme: detailCard.theme
+        visible: text !== ""
+        text: Runs.currentPhase(runRow.run)
+      }
+
+      UI.ThemedText {
+        objectName: "cardRunAge" + runRow.modelData
+        variant: "caption"
+        theme: detailCard.theme
+        visible: text !== ""
+        text: Runs.runAgeText(runRow.run, detailCard.nowMs)
+      }
     }
   }
 
