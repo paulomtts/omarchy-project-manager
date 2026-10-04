@@ -1,9 +1,11 @@
 import QtQuick
 import QtTest
+import "../helpers/find.js" as H
 TestCase {
   id: tc
   name: "SidebarNav"
   when: windowShown
+  visible: true
   width: 400; height: 700
   Component { id: hostC; Item { width: 400; height: 700 } }
 
@@ -193,5 +195,18 @@ TestCase {
     verify(!insideFlick(findIn(kc, "projectHeading")), "heading is not inside the flickable")
     verify(insideFlick(findIn(kc, "documentsView")), "content is inside the flickable")
     verify(flick.y >= toolbar.y + toolbar.height, "content starts below the toolbar")
+  }
+
+  function test_clicking_the_runs_row_opens_the_runs_section() {
+    var p = make(); if (!p) return
+    p.app.projects.applyProjectsList([pA])
+    // The snapshot the project selection launched cannot run here.
+    p.app.runs.snapshotRunner.cancel()
+    wait(50)
+    var row = H.find(p, "navRuns")
+    verify(row, "the Runs nav row")
+    mouseClick(row, row.width / 2, row.height / 2)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.nav.section, "runs")
   }
 }

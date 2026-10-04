@@ -231,4 +231,44 @@ TestCase {
     wait(20)
     compare(count.visible, false)
   }
+
+  // ---- the Runs row (5.1)
+
+  function test_the_runs_row_comes_after_issues_with_its_own_icon() {
+    var sb = make()
+    var row = find(sb, "navRuns")
+    verify(row, "the Runs nav row")
+    compare(String(find(sb, "navLabelRuns").text), "Runs")
+    compare(String(find(sb, "navIconRuns").text), "\uf04b")
+    verify(row.y > find(sb, "navIssues").y, "Runs comes after Issues, so it is Ctrl+6")
+    var others = ["navIconBoard", "navIconGraph", "navIconDocuments", "navIconMemories", "navIconIssues"]
+    for (var i = 0; i < others.length; i++)
+      verify(String(find(sb, others[i]).text) !== "\uf04b", others[i] + " draws a different glyph")
+    compare(find(sb, "navIconRuns").font.pixelSize, find(sb, "navIconBoard").font.pixelSize)
+    click(row)
+    compare(sectionSpy.count, 1)
+    compare(sectionSpy.signalArguments[0][0], "runs")
+  }
+
+  function test_the_runs_row_is_disabled_without_a_project() {
+    var sb = make()
+    sb.selectedProject = null
+    compare(find(sb, "navRuns").enabled, false)
+    click(find(sb, "navRuns"))
+    compare(sectionSpy.count, 0)
+  }
+
+  function test_the_runs_row_shows_the_attention_count() {
+    var sb = make()
+    var count = find(sb, "navCountRuns")
+    verify(count, "the Runs count slot")
+    compare(count.visible, false, "no count at 0")
+    sb.runsAttention = 2
+    wait(20)
+    compare(count.visible, true)
+    compare(String(count.text), "‼2")
+    sb.runsAttention = 0
+    wait(20)
+    compare(count.visible, false)
+  }
 }
