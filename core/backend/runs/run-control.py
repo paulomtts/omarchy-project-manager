@@ -4,21 +4,29 @@
     run-control.py <pause|resume|cancel> RUN REPO [--verify CMD]... [--allow-no-verification]
 
 Runs `am ACTION RUN --repo-dir REPO` as an argv list (no shell, stdin
-/dev/null, 60 s timeout). Only resume takes options: every `--verify CMD` pair
-is forwarded in the order given (CMD is the next argument verbatim, even if it
-starts with `-`), then `--allow-no-verification`. --pretty is never sent. RUN,
-REPO and CMD reach am unaltered; am refuses a bad repo or an unknown run itself.
+/dev/null). Only resume takes options: every `--verify CMD` pair is forwarded
+in the order given (CMD is the next argument verbatim, even if it starts with
+`-`), then `--allow-no-verification`. --pretty is never sent. RUN, REPO and CMD
+reach am unaltered; am refuses a bad repo or an unknown run itself.
+
+pause and cancel answer at once and run with a 60 s timeout. An accepted resume
+is the run itself and must outlive this helper, so am is started in its own
+session with its output going to unlinked temp files: the helper waits up to
+RESUME_GRACE seconds and, if am is still going, reports it detached and leaves
+it running (never killed, signalled or waited for).
 
 Prints exactly one JSON line on EVERY path:
 - am's envelope, unchanged, whether {"ok": true, "data": ...} or
   {"ok": false, "error": ...}. The envelope's `ok` decides, not am's exit code;
+- {"ok": true, "data": {"action": "resume", "run_id": RUN, "detached": true}}
+  when resume is still running after RESUME_GRACE;
 - {"ok": false, "error": {"type": "AmFailed", ...}} when am exited non-zero
   without an envelope; the message is the tail of am's stderr;
 - {"ok": false, "error": {"type": "AmBadOutput", ...}} when am exited 0
   without an envelope;
 - {"ok": false, "error": {"type": "AmMissing", ...}} when am is not on PATH;
 - {"ok": false, "error": {"type": "HelperError", ...}} on any unexpected
-  failure (a timeout, an am that cannot start);
+  failure (a pause/cancel timeout, an am that cannot start);
 - {"ok": false, "error": {"type": "Usage", ...}} for any other command line.
 Exit 0 whenever a line was printed, refusals and errors included; exit 2 for
 Usage only.
@@ -28,6 +36,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
@@ -36,6 +45,7 @@ USAGE = ("usage: run-control.py <pause|resume|cancel> RUN REPO"
          " [--verify CMD]... [--allow-no-verification]")
 ACTIONS = ("pause", "resume", "cancel")
 AM_TIMEOUT = 60
+RESUME_GRACE = 10
 TAIL_LINES = 20
 TAIL_CHARS = 2000
 
@@ -121,6 +131,25 @@ def run_am(am, argv):
     return proc.stdout, proc.stderr, proc.returncode
 
 
+def start_resume(am, argv):
+    """resume: (stdout, stderr, returncode) if am exits within RESUME_GRACE, else None.
+
+    am gets its own session, so a signal to this helper's process group does not
+    reach it, and unlinked temp files instead of pipes, so it can keep writing
+    after this helper exits. On None am is left running, never killed or waited for."""
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen([am, *argv], stdin=subprocess.DEVNULL, stdout=out,
+                                stderr=err, start_new_session=True)
+        try:
+            returncode = proc.wait(timeout=RESUME_GRACE)
+        except subprocess.TimeoutExpired:
+            return None
+        out.seek(0)
+        err.seek(0)
+        return (out.read().decode("utf-8", "replace"),
+                err.read().decode("utf-8", "replace"), returncode)
+
+
 def main(argv):
     parsed = parse(argv)
     if parsed is None:
@@ -128,7 +157,13 @@ def main(argv):
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
-    return report(parsed[0], *run_am(am, control_argv(*parsed)))
+    action, run = parsed[0], parsed[1]
+    if action != "resume":
+        return report(action, *run_am(am, control_argv(*parsed)))
+    result = start_resume(am, control_argv(*parsed))
+    if result is None:
+        return emit({"ok": True, "data": {"action": "resume", "run_id": run, "detached": True}})
+    return report(action, *result)
 
 
 def guarded(argv):

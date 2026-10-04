@@ -7,9 +7,13 @@ temp. The real `am` and real data are never touched.
 import importlib.util
 import json
 import os
+import select
+import signal
 import stat
 import subprocess
 import sys
+import tempfile
+import time
 
 import pytest
 
@@ -411,5 +415,138 @@ def test_am_failed_with_invalid_utf8_stderr(world):
     # Bytes that are not UTF-8 must not turn into a HelperError.
     set_raw(world, "cancel", b"", code=1, stderr=b"bad \xff byte\n")
     code, out = run(world, ["cancel", "r1", "/p"])
+    assert code == 0
+    assert out["error"] == {"type": "AmFailed", "message": "bad � byte"}
+
+
+# --- resume ---------------------------------------------------------------------
+
+# A resume that am accepted: it logs its argv, keeps driving the run for 3 s,
+# then leaves a marker file (proof it was neither killed nor waited for).
+SLOW_AM = '''#!/usr/bin/env python3
+import json, os, sys, time
+d = os.environ["FAKE_AM_DIR"]
+with open(os.path.join(d, "calls.log"), "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\\n")
+time.sleep(3)
+with open(os.path.join(d, "marker"), "w") as f:
+    f.write("still ran")
+print(json.dumps({"ok": True, "data": {"status": "done"}}))
+'''
+
+
+def wait_for(path, seconds=10):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+DETACHED = {"ok": True, "data": {"action": "resume", "run_id": "r1", "detached": True}}
+
+
+def test_resume_still_running_after_grace_is_detached(world, monkeypatch, capsys):
+    # An accepted resume keeps am alive driving the run: the helper reports it
+    # detached after RESUME_GRACE and leaves it running.
+    write_exec(world["bin"] / "am", SLOW_AM)
+    helper = load_helper()
+    assert helper.RESUME_GRACE == 10
+    monkeypatch.setattr(helper, "RESUME_GRACE", 0.5)
+    use_world(world, monkeypatch)
+    started = time.monotonic()
+    code = helper.guarded(["resume", "r1", "/p"])
+    elapsed = time.monotonic() - started
+    out = one_line(capsys)
+    assert code == 0
+    assert out == DETACHED
+    assert elapsed < 2.5
+    assert not (world["am"] / "marker").exists()  # am was not waited for...
+    assert wait_for(world["am"] / "marker")  # ...and not killed
+    assert calls(world) == [["resume", "r1", "--repo-dir", "/p"]]
+
+
+def test_detached_envelope_echoes_run_verbatim(world, monkeypatch, capsys):
+    write_exec(world["bin"] / "am", SLOW_AM)
+    helper = load_helper()
+    monkeypatch.setattr(helper, "RESUME_GRACE", 0.5)
+    use_world(world, monkeypatch)
+    code = helper.guarded(["resume", "r 1; $(x)", "/p"])
+    assert code == 0
+    assert one_line(capsys) == {"ok": True, "data": {"action": "resume",
+                                                     "run_id": "r 1; $(x)", "detached": True}}
+    assert wait_for(world["am"] / "marker")
+
+
+def test_detached_resume_leaves_no_temp_files(world, monkeypatch, capsys, tmp_path):
+    # am's output goes to anonymous (already unlinked) temp files.
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    write_exec(world["bin"] / "am", SLOW_AM)
+    helper = load_helper()
+    monkeypatch.setattr(helper, "RESUME_GRACE", 0.5)
+    use_world(world, monkeypatch)
+    assert helper.guarded(["resume", "r1", "/p"]) == 0
+    assert one_line(capsys) == DETACHED
+    assert list(scratch.iterdir()) == []
+    assert wait_for(world["am"] / "marker")
+    assert list(scratch.iterdir()) == []
+
+
+def test_detached_resume_survives_the_helper_group_being_killed(world, tmp_path):
+    # HelperRunner stopping the helper, or the panel closing, signals the
+    # helper's process group. am runs in its own session, so it must survive.
+    write_exec(world["bin"] / "am", SLOW_AM)
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        "import importlib.util, sys, time\n"
+        "spec = importlib.util.spec_from_file_location('run_control', %r)\n"
+        "m = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(m)\n"
+        "m.RESUME_GRACE = 0.5\n"
+        "m.guarded(['resume', 'r1', '/p'])\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(30)\n" % SCRIPT)
+    p = subprocess.Popen([sys.executable, str(driver)], stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True, env=env_for(world),
+                         start_new_session=True)
+    try:
+        ready, _, _ = select.select([p.stdout], [], [], 15)
+        assert ready, "the helper printed nothing"
+        assert json.loads(p.stdout.readline()) == DETACHED
+        assert not (world["am"] / "marker").exists()
+    finally:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        p.stdout.close()
+    assert wait_for(world["am"] / "marker")
+
+
+def test_resume_refusal_within_grace_passed_through(world):
+    # A refusal comes back at once: no wait for the (real, 10 s) grace window.
+    refusal = {"ok": False, "error": {"type": "RunIsLiveError", "message": "run r1 is live"}}
+    set_envelope(world, "resume", refusal, code=3)
+    started = time.monotonic()
+    code, out = run(world, ["resume", "r1", "/p"])
+    assert time.monotonic() - started < 5
+    assert code == 0
+    assert out == refusal
+
+
+def test_resume_am_failed_within_grace(world):
+    # Proves the temp-file path reads am's stderr back.
+    set_raw(world, "resume", "", code=1, stderr=TRACEBACK)
+    code, out = run(world, ["resume", "r1", "/p"])
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "AmFailed",
+                                          "message": "Traceback (most recent call last):\n"
+                                                     "ValueError: boom"}}
+
+
+def test_resume_invalid_utf8_stderr(world):
+    set_raw(world, "resume", b"", code=1, stderr=b"bad \xff byte\n")
+    code, out = run(world, ["resume", "r1", "/p"])
     assert code == 0
     assert out["error"] == {"type": "AmFailed", "message": "bad � byte"}
