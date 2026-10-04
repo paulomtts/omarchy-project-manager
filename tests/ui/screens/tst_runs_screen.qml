@@ -126,6 +126,21 @@ TestCase {
     }
   }
 
+  // Escalated and dead runs are the ones that need attention: their glyph, the
+  // dead line and the escalation reason are drawn in `urgent`.
+  function test_runs_that_need_attention_are_drawn_urgent() {
+    var s = make(sample()); if (!s) return
+    var urgent = s.screen.theme.urgent
+    verify(!Qt.colorEqual(urgent, s.screen.theme.foreground), "the theme tells urgent from foreground")
+    verify(Qt.colorEqual(H.find(s.screen, "runRowGlyph1").color, urgent), "escalated glyph")
+    verify(Qt.colorEqual(H.find(s.screen, "runRowGlyph2").color, urgent), "dead glyph")
+    verify(Qt.colorEqual(H.find(s.screen, "runRowGlyph0").color, s.screen.theme.foreground), "running glyph")
+    verify(Qt.colorEqual(H.find(s.screen, "runRowGlyph3").color, s.screen.theme.foreground), "parked glyph")
+    verify(Qt.colorEqual(H.find(s.screen, "runRowState2").color, urgent), "the dead line")
+    verify(!Qt.colorEqual(H.find(s.screen, "runRowState3").color, urgent), "the parked line is not urgent")
+    verify(Qt.colorEqual(H.find(s.screen, "runRowReason1").color, urgent), "the escalation reason")
+  }
+
   function test_a_row_shows_short_id_title_progress_phase_and_age() {
     var s = make(sample()); if (!s) return
     compare(H.find(s.screen, "runRowId0").text, "…live0001")
