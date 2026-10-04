@@ -305,4 +305,108 @@ TestCase {
     compare(store.amStatus, "ok", "missing recovers too")
     compare(store.lastError, "")
   }
+
+  // ---- live refresh (3.2)
+
+  // An active store (the panel is open) with project `root`: its first snapshot
+  // is in flight.
+  function activeStore(root) {
+    var store = make(); if (!store) return null
+    store.active = true
+    store.project = root
+    return store
+  }
+
+  // An active store on project A whose first snapshot listed `entries`, so its
+  // watch is running.
+  function watchedStore(entries) {
+    var store = activeStore(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply(entries), 0)
+    verify(store.watchProc, "the watch was started")
+    return store
+  }
+
+  // ---- activation and watch start
+
+  function test_activation_refreshes_the_project() {
+    var store = makeWithProject(rootA); if (!store) return
+    var seq = store.snapshotRunner.seq
+    store.active = true
+    compare(store.snapshotRunner.seq, seq + 1, "opening the panel fetches a fresh snapshot")
+    compare(store.snapshotRunner.current.command[2], "/home/u/my proj")
+  }
+
+  function test_activation_without_a_project_launches_nothing() {
+    var store = make(); if (!store) return
+    store.active = true
+    verify(!store.snapshotRunner.current, "no snapshot without a project")
+    verify(!store.watchProc, "no watch without a project")
+    compare(store.watching, false)
+  }
+
+  function test_watch_not_started_before_first_snapshot() {
+    var store = activeStore(rootA); if (!store) return
+    verify(store.snapshotRunner.current, "the first snapshot is in flight")
+    verify(!store.watchProc, "no watch before the first snapshot reply")
+    compare(store.watching, false)
+  }
+
+  function test_watch_argv_after_first_snapshot() {
+    var store = activeStore(rootA); if (!store) return
+    var noId = { workflow: "orchestrator" }
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true), noId, entry("b", "done", false)]), 0)
+    compare(store.runs.length, 3)
+    var w = store.watchProc
+    verify(w, "the first good snapshot starts the watch")
+    compare(w.objectName, "watchProc")
+    compare(w.command.length, 5, "a run without an id adds no empty argument")
+    compare(w.command[0], "python3")
+    compare(w.command[1], "/plugin/core/backend/runs/runs-watch.py")
+    compare(w.command[2], "/home/u/my proj", "the path with a space is one argument")
+    compare(w.command[3], "a")
+    compare(w.command[4], "b")
+    compare(w.running, true)
+    compare(store.watching, true)
+  }
+
+  function test_watch_with_no_runs_watches_the_project_alone() {
+    var store = activeStore(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([]), 0)
+    var w = store.watchProc
+    verify(w, "an empty project is watched too: its first run must show up")
+    compare(w.command.length, 3)
+    compare(w.command[2], "/home/u/my proj")
+    compare(w.running, true)
+    compare(store.watching, true)
+  }
+
+  function test_watch_not_started_when_inactive() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
+    compare(store.runs.length, 1)
+    verify(!store.watchProc, "a closed panel never watches")
+    compare(store.watching, false)
+  }
+
+  function test_failed_first_snapshot_does_not_start_watch() {
+    var store = activeStore(rootA); if (!store) return
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}\n', 1)
+    verify(!store.watchProc, "a failed snapshot starts no watch")
+    compare(store.watching, false)
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
+    verify(store.watchProc, "the first GOOD snapshot starts it")
+    compare(store.watchProc.command[3], "a")
+    compare(store.watching, true)
+  }
+
+  function test_second_snapshot_does_not_restart_watch() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var w = store.watchProc
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true), entry("c", "started", true)]), 0)
+    verify(store.watchProc === w, "the running watch is kept")
+    compare(w.running, true)
+    compare(w.command.length, 4, "its argv is not rewritten: the helper picks up new runs itself")
+  }
 }

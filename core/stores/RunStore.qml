@@ -5,20 +5,31 @@ import "../domain/runs.js" as Runs
 
 // The am run monitor's data: one snapshot of the selected project's runs
 // (runs-snapshot.py), normalized by the run domain model, plus the selected run
-// and whether `am` could be asked at all. The project root and the backend
-// directory are handed to it from outside -- it never reaches for another
-// store. The live watch (3.2) and composing it into App (3.3) come later.
+// and whether `am` could be asked at all. While `active` (the panel is open) a
+// long-lived runs-watch.py says which runs changed, and each burst of changes
+// costs one debounced snapshot. The project root and the backend directory are
+// handed to it from outside -- it never reaches for another store. Composing
+// it into App (3.3) comes later.
 Scope {
   id: store
 
   property string project: ""         // project root path
   property string backendDir: ""      // <plugin>/core/backend/
+  property bool active: false         // App binds this to "panel open" (3.3)
 
   property var runs: []               // Runs.normalizeRun output, am's order
   property string selectedRunId: ""   // set by the UI
   property string amStatus: "ok"      // "ok" | "missing" | "schema" | "error"
   property string lastError: ""
 
+  // A watch has been started since the last activation or project switch:
+  // later snapshots never start another (the helper picks up the project's new
+  // runs itself), and a watch that ended is not restarted until the next
+  // activation or project switch.
+  property bool watchTried: false
+
+  readonly property alias watching: watchState.watching   // the footer's "watching"
+  readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
 
   // Asks for a fresh snapshot of the current project. A newer call replaces an
@@ -26,6 +37,32 @@ Scope {
   function refresh() {
     if (store.project === "") return
     snapshotRunner.run([store.project])
+  }
+
+  onActiveChanged: {
+    if (store.active) store.startLive()
+  }
+
+  // The panel opened: fetch now; the first good snapshot starts the watch.
+  function startLive() {
+    store.watchTried = false
+    store.refresh()
+  }
+
+  // runs-watch.py for this project and the runs the snapshot just listed, in
+  // its order. Long-lived, so a plain Process rather than the HelperRunner.
+  function startWatch() {
+    store.watchTried = true
+    var ids = []
+    for (var i = 0; i < store.runs.length; i++) {
+      var id = store.runs[i].id
+      if (typeof id === "string" && id !== "") ids.push(id)
+    }
+    var proc = watchC.createObject(store)
+    proc.command = ["python3", store.backendDir + "runs/runs-watch.py", store.project].concat(ids)
+    watchState.proc = proc
+    watchState.watching = true
+    proc.running = true
   }
 
   // A different project: nothing the old one left behind may show, and its
@@ -88,6 +125,7 @@ Scope {
       store.runs = out
       store.amStatus = "ok"
       store.lastError = ""
+      if (store.active && !store.watchTried) store.startWatch()
       return
     }
     if (envelope !== null && envelope.ok === false) {
@@ -117,5 +155,24 @@ Scope {
     guard: store.project
     onGuardChanged: store.projectSwitched()
     onFinished: function(stdout, exitCode) { store.applySnapshot(stdout, exitCode) }
+  }
+
+  // What the watch Process aliases read; kept apart so consumers cannot write it.
+  QtObject {
+    id: watchState
+    property var proc: null
+    property bool watching: false
+  }
+
+  // One Process per watch launch, so each carries what it was launched with.
+  Component {
+    id: watchC
+
+    Process {
+      id: wp
+      objectName: "watchProc"
+      stdout: SplitParser {}
+      stderr: StdioCollector { waitForEnd: true }
+    }
   }
 }
