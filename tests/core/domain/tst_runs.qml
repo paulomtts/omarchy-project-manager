@@ -30,7 +30,7 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,rows,started_at,status,tree", label)
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow", label)
     compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
@@ -49,7 +49,7 @@ TestCase {
 
   function test_normalize_full() {
     var r = Runs.normalizeRun(fullRaw())
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,rows,started_at,status,tree")
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow")
     compare(r.started_at, "2026-10-03T10:00:00Z")
     compare(r.id, "r1")
     compare(r.repo_dir, "/home/u/repo")
@@ -1535,5 +1535,75 @@ TestCase {
     compare(JSON.stringify(next), nextJson, "nextRuns unchanged")
     compare(prev.length, 2, "prevRuns length")
     compare(next.length, 3, "nextRuns length")
+  }
+
+  // ---- S2 4.1: workflow and control requests ----------------------------------------------
+
+  function test_normalize_workflow() {
+    compare(Runs.normalizeRun(fullRaw()).workflow, "orchestrator", "from the am runs row")
+    var raw = fullRaw()
+    delete raw.row.workflow
+    raw.status.run.workflow = "task"
+    compare(Runs.normalizeRun(raw).workflow, "task", "falls back to the am status run")
+    raw.row.workflow = "milestone"
+    compare(Runs.normalizeRun(raw).workflow, "milestone", "the row wins")
+    raw.row.workflow = ""
+    compare(Runs.normalizeRun(raw).workflow, "task", "an empty row value falls back")
+    delete raw.row.workflow
+    delete raw.status.run.workflow
+    compare(Runs.normalizeRun(raw).workflow, "", "neither gives empty")
+    compare(Runs.normalizeRun({ row: { workflow: null }, status: { run: { workflow: null } } }).workflow, "", "nulls")
+    compare(Runs.normalizeRun(undefined).workflow, "", "garbage")
+  }
+
+  function test_normalize_requests() {
+    var raw = fullRaw()
+    raw.status.control.requests = [
+      { command: "pause", requested_at: "2026-10-03T10:00:00Z", handled_at: "2026-10-03T10:00:05Z" },
+      { command: "resume", requested_at: "2026-10-03T11:00:00Z", handled_at: null },
+      { command: "cancel", requested_at: "2026-10-03T12:00:00Z" }
+    ]
+    var r = Runs.normalizeRun(raw)
+    compare(Array.isArray(r.requests), true)
+    compare(r.requests.length, 3)
+    compare(Object.keys(r.requests[0]).sort().join(","), "command,handled_at,requested_at")
+    compare(r.requests[0].command, "pause")
+    compare(r.requests[0].requested_at, "2026-10-03T10:00:00Z")
+    compare(r.requests[0].handled_at, "2026-10-03T10:00:05Z")
+    compare(r.requests[1].command, "resume", "order is kept")
+    compare(r.requests[1].handled_at, "", "null means not handled")
+    compare(r.requests[2].command, "cancel")
+    compare(r.requests[2].handled_at, "", "missing means not handled")
+    r.requests[0].command = "x"
+    compare(raw.status.control.requests[0].command, "pause", "the elements are fresh objects")
+    compare(Runs.normalizeRun(fullRaw()).requests.length, 0, "no requests key under control")
+  }
+
+  // Review Focus 4.
+  function test_normalize_requests_garbage() {
+    var raw = fullRaw()
+    raw.status.control.requests = [null, "pause", 7, ["pause"], true,
+                                   { command: 5, requested_at: true, handled_at: { a: 1 } }, {}]
+    var r = Runs.normalizeRun(raw)
+    compare(r.requests.length, 2, "non-object elements are skipped")
+    compare(r.requests[0].command, "5")
+    compare(r.requests[0].requested_at, "true")
+    compare(r.requests[0].handled_at, "[object Object]")
+    compare(r.requests[1].command, "")
+    compare(r.requests[1].requested_at, "")
+    compare(r.requests[1].handled_at, "")
+
+    var noControl = fullRaw()
+    delete noControl.status.control
+    compare(Runs.normalizeRun(noControl).requests.length, 0, "no control")
+    var values = ["x", { a: 1 }, null, 5]
+    for (var i = 0; i < values.length; i++) {
+      var bad = fullRaw()
+      bad.status.control.requests = values[i]
+      var out = Runs.normalizeRun(bad)
+      compare(Array.isArray(out.requests), true, "requests " + i)
+      compare(out.requests.length, 0, "requests " + i)
+    }
+    compare(Runs.normalizeRun({ status: { control: "y" } }).requests.length, 0, "control not an object")
   }
 }
