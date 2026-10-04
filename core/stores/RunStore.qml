@@ -73,8 +73,9 @@ Scope {
   // AmMissing empties them: no badges while am is not there. Any other failure
   // -- an ok:false envelope or output that is not one -- keeps what the last
   // good snapshot said and only reports why this one failed. Never throws.
-  function applySnapshot(stdout, exitCode, launchedGuard) {
-    if (launchedGuard !== store.project) return
+  // A reply for a project the user has left never gets here: the runner only
+  // emits `finished` when the launch guard still equals its (project) guard.
+  function applySnapshot(stdout, exitCode) {
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var list = Array.isArray(envelope.runs) ? envelope.runs : []
@@ -115,6 +116,6 @@ Scope {
     script: store.backendDir + "runs/runs-snapshot.py"
     guard: store.project
     onGuardChanged: store.projectSwitched()
-    onFinished: function(stdout, exitCode, launchedGuard) { store.applySnapshot(stdout, exitCode, launchedGuard) }
+    onFinished: function(stdout, exitCode) { store.applySnapshot(stdout, exitCode) }
   }
 }
