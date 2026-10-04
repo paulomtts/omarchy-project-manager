@@ -27,6 +27,16 @@ manifest entry point.
 - `ProjectStore.qml` registry, selection, remembered project, DB watch path.
 - `ProjectDeleteStore.qml` delete-project confirm/snapshot flow.
 - `BoardStore.qml` cards, index, selection, board order, the issue map (`brd issue list`; an old brd without issues is just an empty map); owns the DB `FileView` and the 250ms `watchTimer` that debounces it, so a burst of writes costs one tree+issue+export fetch (`fetchBoard()` itself -- Refresh, a project switch -- stays immediate).
+  Also the Archive finished flow: `archiveCandidates` (`Board.archivable`: a
+  milestone with at least one descendant, all descendants done/merged/canceled/
+  archived, idle at least 2 days; `nowMs` pins the clock in tests),
+  `archiveOpen` / `archiveBusy` / `archiveError`, and `openArchive()` /
+  `archiveAll()` / `cancelArchive()`. The candidates are recomputed when the
+  dialog opens and again at confirm time, and only those ids go to
+  `boards/archive-milestones.py` through an `archiveRunner` `HelperRunner`
+  (guarded by the project), which runs `brd update <id> --status archived` on
+  the milestone card only and reports per id; one failure keeps the dialog open
+  and leaves the others archived. The board refetches through its DB watch.
 - `GraphStore.qml` the two graph models from the board (card roots and issue
   map, for each node's open-issue count): the milestone graph and the story
   graph (`graph.js`'s `graphModel` / `storyGraphModel`). `graphView`
@@ -85,7 +95,8 @@ of one entity, used by the card detail and the issue detail),
 `TypedConfirmDialog`, `ListRow` (hover / keyboard cursor / reveal),
 `ListStatus` (loading/error/empty), `FilterableList`, `TextAreaBox`,
 `TagPicker`, `NewMemoryDialog`, `NewMilestoneDialog` (the from-spec modal),
-`MilestoneJobIndicator` (the toolbar strip while a milestone job runs, and its
+`ArchiveFinishedDialog` (the confirm list behind the Board toolbar's
+**Archive finished (N)** button), `MilestoneJobIndicator` (the toolbar strip while a milestone job runs, and its
 result), `StatusPips` (one status circle per subtask on a story node, the
 overflow as a `+N`; its single pulse animation runs only while the row is
 visible AND holds an in-progress pip, so an idle graph animates nothing),

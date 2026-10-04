@@ -76,6 +76,7 @@ Panel {
   // The open card left the board (a refetch dropped it): back to the list.
   Connections {
     target: appStores.board
+    function onArchiveOpenChanged() { root.focusForView() }
     function onListViewRequested() { navi.restoreListView() }
   }
 
@@ -156,6 +157,7 @@ Panel {
   readonly property var shortcuts: sc
 
   readonly property Item focusItem: appStores.deleter.deleteTarget ? deleteModal.focusItem
+    : appStores.board.archiveOpen ? archiveDialog.focusItem
     : appStores.memories.memoryDeleteOpen ? memoryConfirm.focusItem
     : appStores.memories.newMemoryOpen ? newMemoryDialog.focusItem
     : appStores.milestones.dialogOpen ? newMilestoneDialog.focusItem
@@ -369,6 +371,16 @@ Panel {
             text: "＋ New milestone"
             tooltipText: "New milestone"
             onClicked: appStores.milestones.openDialog()
+          }
+
+          UI.ActionButton {
+            objectName: "archiveFinishedButton"
+            theme: panelTheme
+            visible: appStores.nav.viewMode === "board" && !!appStores.projects.selectedProject
+              && appStores.board.archiveCandidates.length > 0
+            text: "Archive finished (" + appStores.board.archiveCandidates.length + ")"
+            tooltipText: "Archive milestones whose cards are all finished"
+            onClicked: appStores.board.openArchive()
           }
         }
 
@@ -586,6 +598,18 @@ Panel {
         theme: panelTheme
         onCreateRequested: function(name, type, description, body) { appStores.memories.createMemory(name, type, description, body) }
         onCancelRequested: appStores.memories.cancelNewMemory()
+      }
+
+      ArchiveFinishedDialog {
+        id: archiveDialog
+        anchors.fill: parent
+        shown: appStores.board.archiveOpen
+        candidates: appStores.board.archiveCandidates
+        busy: appStores.board.archiveBusy
+        error: appStores.board.archiveError
+        theme: panelTheme
+        onConfirmRequested: appStores.board.archiveAll()
+        onCancelRequested: appStores.board.cancelArchive()
       }
 
       NewMilestoneDialog {

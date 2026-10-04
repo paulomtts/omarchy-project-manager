@@ -21,7 +21,7 @@ QtObject {
   // lists its sections in (Board, Graph, Documents, Memories, Issues) --
   // renumbering one means renumbering the sidebar too.
   function handleGlobalKey(event) {
-    if (!(event.modifiers & Qt.ControlModifier) || keys.app.deleter.deleteTarget || keys.app.memories.memoryDeleteOpen || keys.app.memories.newMemoryOpen || keys.app.milestones.dialogOpen) return false
+    if (!(event.modifiers & Qt.ControlModifier) || keys.app.deleter.deleteTarget || keys.app.memories.memoryDeleteOpen || keys.app.memories.newMemoryOpen || keys.app.milestones.dialogOpen || keys.app.board.archiveOpen) return false
     if (event.key === Qt.Key_P) { keys.navigator.toggleDropdown(); return true }
     if (event.key === Qt.Key_1) { keys.navigator.showSection("board"); return true }
     if (event.key === Qt.Key_2) { keys.navigator.showSection("graph"); return true }
@@ -35,7 +35,7 @@ QtObject {
 
   // Escape (and the key catcher's close gesture): innermost thing first.
   function closeRequested() {
-    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue") ? keys.navigator.goBack() : keys.actions.close()))
+    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue") ? keys.navigator.goBack() : keys.actions.close()))
   }
 
   function handleMove(dx, dy) {

@@ -36,6 +36,9 @@ TestCase {
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
     var p = comp.createObject(host)
     p.opened = true
+    // the stub panel is phone-sized; the real one is at least 840 wide
+    var panel = H.find(p, "mainPanel")
+    panel.width = 840; panel.height = 600
     p.app.projects.stateLoaded = true
     p.app.projects.applyProjectsList([pA])
     p.app.board.nowMs = Date.parse(nowIso)
