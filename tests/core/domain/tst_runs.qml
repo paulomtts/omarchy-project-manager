@@ -30,7 +30,8 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "id,lease,milestone_id,repo_dir,rows,status,tree", label)
+    compare(Object.keys(r).sort().join(","), "id,lease,milestone_id,repo_dir,rows,started_at,status,tree", label)
+    compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
     compare(r.milestone_id, "", label)
@@ -46,7 +47,8 @@ TestCase {
 
   function test_normalize_full() {
     var r = Runs.normalizeRun(fullRaw())
-    compare(Object.keys(r).sort().join(","), "id,lease,milestone_id,repo_dir,rows,status,tree")
+    compare(Object.keys(r).sort().join(","), "id,lease,milestone_id,repo_dir,rows,started_at,status,tree")
+    compare(r.started_at, "2026-10-03T10:00:00Z")
     compare(r.id, "r1")
     compare(r.repo_dir, "/home/u/repo")
     compare(r.milestone_id, "m-4bf4")
@@ -692,5 +694,163 @@ TestCase {
 
     var weird = Object.create(null)
     compare(Runs.errorText({ ok: false, error: { type: weird, message: "m" } }), "m", "unconvertible type does not throw")
+  }
+
+  // ---- 5.1: the Runs screen's helpers -----------------------------------------------------
+
+  function test_normalize_keeps_started_at() {
+    compare(Runs.normalizeRun(fullRaw()).started_at, "2026-10-03T10:00:00Z", "from the am runs row")
+    compare(Runs.normalizeRun({ status: { run: { started_at: "2026-10-01T00:00:00Z" } } }).started_at,
+            "2026-10-01T00:00:00Z", "falls back to am status")
+    compare(Runs.normalizeRun({ row: { id: "r1" } }).started_at, "", "absent")
+    compare(Runs.normalizeRun({ row: { started_at: null } }).started_at, "", "null")
+  }
+
+  function test_short_id() {
+    compare(Runs.shortId({ id: "run-20261003-abcdef12" }), "…abcdef12", "the last 8 characters")
+    compare(Runs.shortId({ id: "abc" }), "…abc", "a short id keeps what it has")
+    compare(Runs.shortId({ id: "" }), "…", "empty id")
+    var bad = [undefined, null, "x", 5, [], {}, { id: 7 }, { id: null }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.shortId(bad[i]), "…", "garbage " + i)
+  }
+
+  function test_run_title() {
+    compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "4bf4fb2f" })), "4bf4fb2f")
+    compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "" })), "…abcd1234",
+            "falls back to the short id")
+    compare(Runs.runTitle({ id: "r1", milestone_id: 5 }), "…r1", "a non-string milestone is no title")
+    var bad = [undefined, null, "x", 5, []]
+    for (var i = 0; i < bad.length; i++) compare(Runs.runTitle(bad[i]), "…", "garbage " + i)
+  }
+
+  function progressTree() {
+    return { stories: [], subtasks: [
+      { card_id: "t1", phases: [{ name: "spec", status: "done" }, { name: "plan", status: "done" }] },
+      { card_id: "t2", phases: [{ name: "spec", status: "done" }, { name: "implement", status: "started" }] },
+      { card_id: "t3", phases: [] },
+      { card_id: "t4" },
+      { card_id: "t5", phases: [{ name: "spec", status: "done" }, null] }
+    ] }
+  }
+
+  function test_run_progress() {
+    var p = Runs.runProgress(mkRun("r", "started", true, { tree: progressTree() }))
+    compare(Object.keys(p).sort().join(","), "done,total")
+    compare(p.done, 1, "only t1 has every phase done")
+    compare(p.total, 5)
+    var none = Runs.runProgress(mkRun("r", "started", true))
+    compare(none.done + "/" + none.total, "0/0")
+    var junk = Runs.runProgress({ tree: { subtasks: [null, "x", 5, { phases: "x" }] } })
+    compare(junk.done, 0, "junk subtasks are never done")
+    compare(junk.total, 1, "only object subtasks count")
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" }, { tree: { subtasks: "y" } }]
+    for (var i = 0; i < bad.length; i++) {
+      var r = Runs.runProgress(bad[i])
+      compare(r.done + "/" + r.total, "0/0", "garbage " + i)
+    }
+  }
+
+  function test_current_phase() {
+    compare(Runs.currentPhase(mkRun("r", "started", true, { tree: progressTree() })), "implement")
+    var two = { stories: [], subtasks: [
+      { card_id: "a", phases: [{ name: "spec", status: "done" }] },
+      { card_id: "b", phases: [{ name: "review", status: "started" }] },
+      { card_id: "c", phases: [{ name: "verify", status: "started" }] }
+    ] }
+    compare(Runs.currentPhase(mkRun("r", "started", true, { tree: two })), "review", "the first started phase in subtask order")
+    compare(Runs.currentPhase(mkRun("r", "done", null, { tree: { stories: [], subtasks: [
+      { phases: [{ name: "x", status: "done" }] }] } })), "", "none started")
+    compare(Runs.currentPhase(mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { phases: [{ status: "started" }, { name: "plan", status: "started" }] }] } })), "plan", "a nameless started phase is skipped")
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" },
+               { tree: { subtasks: [null, { phases: "x" }, { phases: [null, 5] }] } }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.currentPhase(bad[i]), "", "garbage " + i)
+  }
+
+  function test_age_text() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    compare(Runs.ageText("2026-10-04T11:59:30Z", now), "just now")
+    compare(Runs.ageText("2026-10-04T12:00:00Z", now), "just now", "zero seconds")
+    compare(Runs.ageText("2026-10-04T11:59:00Z", now), "1m")
+    compare(Runs.ageText("2026-10-04T11:01:00Z", now), "59m")
+    compare(Runs.ageText("2026-10-04T11:00:00Z", now), "1h")
+    compare(Runs.ageText("2026-10-03T12:00:01Z", now), "23h")
+    compare(Runs.ageText("2026-10-03T12:00:00Z", now), "1d")
+    compare(Runs.ageText("2026-09-24T12:00:00Z", now), "10d")
+    compare(Runs.ageText("2026-10-04T12:00:01Z", now), "", "the future")
+    var bad = ["", "not a date", null, undefined, 5, {}, []]
+    for (var i = 0; i < bad.length; i++) compare(Runs.ageText(bad[i], now), "", "garbage iso " + i)
+    var badNow = [undefined, null, "x", NaN, Infinity]
+    for (var j = 0; j < badNow.length; j++) compare(Runs.ageText("2026-10-04T11:00:00Z", badNow[j]), "", "garbage now " + j)
+  }
+
+  function test_run_age_text() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    compare(Runs.runAgeText(mkRun("r", "started", true, { started_at: "2026-10-04T10:00:00Z" }), now), "2h",
+            "started_at for a live run")
+    var dead = mkRun("d", "started", false, { started_at: "2026-10-01T00:00:00Z" })
+    dead.lease.heartbeat_at = "2026-10-04T11:55:00Z"
+    compare(Runs.runAgeText(dead, now), "5m", "the last heartbeat for a dead run")
+    compare(Runs.runAgeText(mkRun("n", "started", null, { started_at: "2026-10-01T00:00:00Z" }), now), "",
+            "a dead run with no lease has no age")
+    compare(Runs.runAgeText(mkRun("p", "stopped", null, { started_at: "2026-10-03T12:00:00Z" }), now), "1d", "parked")
+    compare(Runs.runAgeText(mkRun("e", "escalated", null), now), "", "no started_at")
+    var bad = [undefined, null, "x", 5, [], {}, { status: "started", lease: { live: false, heartbeat_at: 5 } }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.runAgeText(bad[i], now), "", "garbage " + i)
+  }
+
+  function screenRuns() {
+    return [
+      mkRun("run-live-0001", "started", true, { milestone_id: "alpha", tree: { stories: [], subtasks: [
+        { card_id: "t1", phases: [{ name: "implement", status: "started" }] }] } }),
+      mkRun("run-esc-00002", "escalated", null, { milestone_id: "beta" }),
+      mkRun("run-dead-0003", "started", false, { milestone_id: "gamma" }),
+      mkRun("run-park-0004", "stopped", null, { milestone_id: "delta" }),
+      mkRun("run-done-0005", "done", null, { milestone_id: "epsilon" })
+    ]
+  }
+
+  function ids(list) { return list.map(function(r) { return r.id }).join(",") }
+
+  function test_run_filter_counts() {
+    var c = Runs.runFilterCounts(screenRuns())
+    compare(Object.keys(c).sort().join(","), "all,attention,live,parked")
+    compare([c.attention, c.live, c.parked, c.all].join(","), "2,1,1,5")
+    var bad = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < bad.length; i++) {
+      var b = Runs.runFilterCounts(bad[i])
+      compare([b.attention, b.live, b.parked, b.all].join(","), "0,0,0,0", "garbage " + i)
+    }
+  }
+
+  function test_filter_runs() {
+    var list = screenRuns()
+    compare(ids(Runs.filterRuns(list, "attention")), "run-esc-00002,run-dead-0003")
+    compare(ids(Runs.filterRuns(list, "live")), "run-live-0001")
+    compare(ids(Runs.filterRuns(list, "parked")), "run-park-0004")
+    var all = ids(list)
+    compare(ids(Runs.filterRuns(list, "all")), all)
+    compare(ids(Runs.filterRuns(list, "")), all)
+    compare(ids(Runs.filterRuns(list, "bogus")), all, "an unknown id is All")
+    compare(ids(Runs.filterRuns(list, undefined)), all)
+    compare(ids(Runs.filterRuns(list, "constructor")), all)
+    compare(Runs.filterRuns(list, "live")[0] === list[0], true, "the same objects")
+    var bad = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.filterRuns(bad[i], "live").length, 0, "garbage " + i)
+  }
+
+  function test_search_runs() {
+    var list = screenRuns()
+    compare(Runs.searchRuns(list, "") === list, true, "no query returns the input itself")
+    compare(Runs.searchRuns(list, "   ") === list, true, "a query of spaces hides nothing")
+    compare(ids(Runs.searchRuns(list, "GAMMA")), "run-dead-0003", "title, any case")
+    compare(ids(Runs.searchRuns(list, "esc-0")), "run-esc-00002", "id")
+    compare(ids(Runs.searchRuns(list, "implem")), "run-live-0001", "current phase")
+    compare(ids(Runs.searchRuns(list, "parked")), "run-park-0004", "state name")
+    compare(ids(Runs.searchRuns(list, "dead")), "run-dead-0003", "dead is a state name too")
+    compare(Runs.searchRuns(list, "zzz").length, 0)
+    compare(ids(Runs.searchRuns([null, 5, list[1]], "beta")), "run-esc-00002", "junk entries never match")
+    var bad = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.searchRuns(bad[i], "a").length, 0, "garbage " + i)
   }
 }

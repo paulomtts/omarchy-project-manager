@@ -45,6 +45,7 @@ function normalizeRun(raw) {
     repo_dir: firstText(row.repo_dir, run.repo_dir),
     milestone_id: firstText(run.milestone_id, row.milestone_id),
     status: firstText(run.status, row.status),
+    started_at: firstText(row.started_at, run.started_at),
     lease: lease,
     rows: arrayOr(st.rows),
     tree: { stories: arrayOr(st.stories), subtasks: arrayOr(st.subtasks) }
@@ -269,4 +270,119 @@ function errorText(error) {
   if (type !== "") return type
   if (message !== "") return message
   return "unknown error"
+}
+
+// ---- Runs screen (5.1) -------------------------------------------------------------------
+//
+// What one row of the Runs screen shows, and the chip filters and the search
+// over the list. Pure and never throwing, like the rest of this file.
+
+function _subtasksOf(run) { return _arrayOr(_treeOf(run).subtasks) }
+
+// "…" and the last 8 characters of the id (all of a shorter one); "…" alone
+// when the id is not a string.
+function shortId(run) {
+  var id = _isObject(run) ? run.id : undefined
+  return typeof id === "string" ? "…" + id.slice(-8) : "…"
+}
+
+// The run's milestone, else its short id.
+function runTitle(run) {
+  var milestone = _isObject(run) ? _stringOr(run.milestone_id) : ""
+  return milestone !== "" ? milestone : shortId(run)
+}
+
+// How many of the run's subtasks are through. A subtask is done when it has
+// phases and every one of them is `done`; only object subtasks count at all.
+function runProgress(run) {
+  var subtasks = _subtasksOf(run)
+  var done = 0, total = 0
+  for (var i = 0; i < subtasks.length; i++) {
+    if (!_isObject(subtasks[i])) continue
+    total += 1
+    var phases = _arrayOr(subtasks[i].phases)
+    var allDone = phases.length > 0
+    for (var j = 0; allDone && j < phases.length; j++) allDone = _isObject(phases[j]) && phases[j].status === "done"
+    if (allDone) done += 1
+  }
+  return { done: done, total: total }
+}
+
+// The name of the first `started` phase, in subtask order; "" when none is.
+function currentPhase(run) {
+  var subtasks = _subtasksOf(run)
+  for (var i = 0; i < subtasks.length; i++) {
+    var phases = _isObject(subtasks[i]) ? _arrayOr(subtasks[i].phases) : []
+    for (var j = 0; j < phases.length; j++) {
+      if (!_isObject(phases[j]) || phases[j].status !== "started") continue
+      var name = _textOf(phases[j].name)
+      if (name !== "") return name
+    }
+  }
+  return ""
+}
+
+// How long ago an ISO time was, without "ago": "just now" under a minute, then
+// "Nm", "Nh" or "Nd". "" for an empty, unparsable or future time, or a clock
+// that is not a finite number.
+function ageText(iso, nowMs) {
+  if (typeof iso !== "string" || iso === "" || !_isFiniteNumber(nowMs)) return ""
+  var t = Date.parse(iso)
+  if (!isFinite(t)) return ""
+  var diff = nowMs - t
+  if (diff < 0) return ""
+  if (diff < 60000) return "just now"
+  if (diff < 3600000) return Math.floor(diff / 60000) + "m"
+  if (diff < 86400000) return Math.floor(diff / 3600000) + "h"
+  return Math.floor(diff / 86400000) + "d"
+}
+
+// A row's age: since the last heartbeat for a dead run ("" with no lease),
+// since it started for every other state.
+function runAgeText(run, nowMs) {
+  if (runState(run) === "dead") return _isObject(run.lease) ? ageText(run.lease.heartbeat_at, nowMs) : ""
+  return ageText(_isObject(run) ? run.started_at : "", nowMs)
+}
+
+function _withState(list, state) {
+  var out = []
+  for (var i = 0; i < list.length; i++) if (runState(list[i]) === state) out.push(list[i])
+  return out
+}
+
+// The chip counts, over every run (the search never narrows them).
+function runFilterCounts(runs) {
+  var list = _arrayOr(runs)
+  return {
+    attention: attention(list).length,
+    live: _withState(list, "running").length,
+    parked: _withState(list, "parked").length,
+    all: list.length
+  }
+}
+
+// One chip's runs, same objects in input order. `all`, "" or any unknown id is
+// every run.
+function filterRuns(runs, id) {
+  var list = _arrayOr(runs)
+  if (id === "attention") return attention(list)
+  if (id === "live") return _withState(list, "running")
+  if (id === "parked") return _withState(list, "parked")
+  return list
+}
+
+// Case-insensitive substring match on the id, title, current phase and state
+// name. An empty (or all-space) query returns the input itself.
+function searchRuns(runs, q) {
+  var list = _arrayOr(runs)
+  if (typeof q !== "string" || q.trim() === "") return list
+  var needle = q.trim().toLowerCase()
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var run = list[i]
+    if (!_isObject(run)) continue
+    var hay = [_stringOr(run.id), runTitle(run), currentPhase(run), runState(run)].join("\n").toLowerCase()
+    if (hay.indexOf(needle) >= 0) out.push(run)
+  }
+  return out
 }
