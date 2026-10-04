@@ -98,6 +98,9 @@ of one entity, used by the card detail and the issue detail),
 result), `StatusPips` (one status circle per subtask on a story node, the
 overflow as a `+N`; its single pulse animation runs only while the row is
 visible AND holds an in-progress pip, so an idle graph animates nothing),
+`Pulse` (that one fade, shared: `level` swings 1 -> 0.3 -> 1 while the owner
+keeps `running` true and is back at 1 the moment it stops; `StatusPips` and
+`RunBadge` bind their opacity to it instead of declaring a second animation),
 `Sidebar`, and the views
 `DocumentsView`, `MemoriesView`, `MemoryNoteView`, `GraphView`.
 `Sidebar`'s five nav rows (Board, Graph, Documents, Memories, Issues) each lead with an
