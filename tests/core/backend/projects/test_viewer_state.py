@@ -108,3 +108,75 @@ def test_the_new_state_file_wins_over_the_old_one(env):
 def test_a_newly_created_state_file_is_private(env):
     run(env, "set-project", "/home/u/proj")
     assert (state_file(env).stat().st_mode & 0o777) == 0o600
+
+
+# --- run settings ----------------------------------------------------------------
+
+USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"
+         " | set-run-settings <root_path> <json>")
+DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False}
+
+
+def write_state(env, content):
+    """Writes the state file: a str verbatim, anything else as JSON."""
+    state_file(env).parent.mkdir(parents=True, exist_ok=True)
+    state_file(env).write_text(content if isinstance(content, str) else json.dumps(content))
+
+
+def test_get_run_settings_with_no_file_is_defaults(env):
+    assert run(env, "get-run-settings", "/p") == (0, DEFAULTS)
+
+
+def test_get_run_settings_writes_nothing(env):
+    run(env, "get-run-settings", "/p")
+    assert not Path(env["XDG_STATE_HOME"]).exists()
+
+
+@pytest.mark.parametrize("content", ["", "not json", "[1]", '{"run_settings": 5}', '{"run_settings": {"/p": "x"}}',
+                                     '{"run_settings": {"/other": {"notifyOnEscalation": true}}}'])
+def test_get_run_settings_treats_bad_files_as_defaults(env, content):
+    write_state(env, content)
+    assert run(env, "get-run-settings", "/p") == (0, DEFAULTS)
+
+
+# Compared as JSON text: in Python 1 == True and 0 == False, so a dict compare
+# would not notice a stored 1 or 0 leaking through as a "boolean".
+@pytest.mark.parametrize("entry, expected", [
+    ({"verify": "pytest", "notifyOnEscalation": True}, {**DEFAULTS, "notifyOnEscalation": True}),
+    ({"verify": ["a", 5], "notifyOnEscalation": True}, {**DEFAULTS, "notifyOnEscalation": True}),
+    ({"verify": ["a", ""], "notifyOnEscalation": True}, {**DEFAULTS, "notifyOnEscalation": True}),
+    ({"verify": ["  "], "notifyOnEscalation": True}, {**DEFAULTS, "notifyOnEscalation": True}),
+    ({"verify": None, "notifyOnEscalation": True}, {**DEFAULTS, "notifyOnEscalation": True}),
+    ({"allowNoVerification": 1, "verify": ["a"]}, {**DEFAULTS, "verify": ["a"]}),
+    ({"allowNoVerification": "true", "verify": ["a"]}, {**DEFAULTS, "verify": ["a"]}),
+    ({"allowNoVerification": None, "verify": ["a"]}, {**DEFAULTS, "verify": ["a"]}),
+    ({"notifyOnEscalation": 0, "allowNoVerification": True}, {**DEFAULTS, "allowNoVerification": True}),
+    ({"notifyOnEscalation": "yes", "allowNoVerification": True}, {**DEFAULTS, "allowNoVerification": True}),
+])
+def test_get_run_settings_coerces_each_bad_field_independently(env, entry, expected):
+    write_state(env, {"run_settings": {"/p": entry}})
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and json.dumps(result, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+
+def test_get_run_settings_returns_only_known_keys(env):
+    write_state(env, {"run_settings": {"/p": {"verify": ["a"], "future": 1}}})
+    assert run(env, "get-run-settings", "/p") == (0, {**DEFAULTS, "verify": ["a"]})
+
+
+def test_get_run_settings_reads_the_legacy_file(env):
+    old = Path(env["XDG_STATE_HOME"]) / "brd-viewer" / "state.json"
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps({"run_settings": {"/p": {"verify": ["make check"], "allowNoVerification": True}}}))
+    assert run(env, "get-run-settings", "/p") == (
+        0, {"verify": ["make check"], "allowNoVerification": True, "notifyOnEscalation": False})
+
+
+@pytest.mark.parametrize("args", [
+    ("get-run-settings",), ("get-run-settings", ""), ("get-run-settings", "/p", "x"),
+    ("set-run-settings",), ("set-run-settings", "/p"), ("set-run-settings", "", "{}"),
+    ("set-run-settings", "/p", "{}", "x"),
+])
+def test_run_settings_bad_usage_is_rejected(env, args):
+    assert run(env, *args) == (2, {"ok": False, "error": USAGE})
+    assert not Path(env["XDG_STATE_HOME"]).exists()

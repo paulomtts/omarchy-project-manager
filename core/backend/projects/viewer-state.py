@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Remembers which brd project the panel was last showing.
+"""Remembers which brd project the panel was last showing, and each project's
+run settings.
 
     viewer-state.py get
     viewer-state.py set-project <root_path>
+    viewer-state.py get-run-settings <root_path>
 
 State lives in ${XDG_STATE_HOME:-~/.local/state}/omarchy-project-manager/state.json
-(`get` also reads the old brd-viewer/state.json until a new one is written). QML
-cannot write files, hence this helper. Prints one JSON line. `get` never fails
-(a missing or corrupt file just means no stored project); `set-project` writes
-atomically and keeps any other keys already in the file.
+(reads fall back to the old brd-viewer/state.json until a new one is written). QML
+cannot write files, hence this helper. Prints one JSON line. `get` and
+`get-run-settings` never fail (a missing or corrupt file, or a damaged value, just
+means the default); `set-project` writes atomically and keeps any other keys
+already in the file.
 """
 import json
 import os
@@ -18,6 +21,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from common.atomic_write import write_atomic  # noqa: E402
 from common.json_line import emit  # noqa: E402
 
+
+
+USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"
+         " | set-run-settings <root_path> <json>")
+RUN_SETTINGS_DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False}
 
 
 def state_base():
@@ -50,6 +58,26 @@ def cmd_get():
     return emit({"last_project": last if isinstance(last, str) and last else None}, 0)
 
 
+def valid_verify(value):
+    return isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)
+
+
+def run_settings_entry(data, root_path):
+    settings = data.get("run_settings")
+    entry = settings.get(root_path) if isinstance(settings, dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def cmd_get_run_settings(root_path):
+    entry = run_settings_entry(load(), root_path)
+    verify = entry.get("verify")
+    result = {"verify": verify if valid_verify(verify) else []}
+    for key in ("allowNoVerification", "notifyOnEscalation"):
+        value = entry.get(key)
+        result[key] = value if isinstance(value, bool) else RUN_SETTINGS_DEFAULTS[key]
+    return emit(result, 0)
+
+
 def cmd_set_project(root_path):
     data = load()
     data["last_project"] = root_path
@@ -68,7 +96,9 @@ def main(argv):
         return cmd_get()
     if argv[:1] == ["set-project"] and len(argv) == 2 and argv[1]:
         return cmd_set_project(argv[1])
-    return emit({"ok": False, "error": "usage: viewer-state.py get | set-project <root_path>"}, 2)
+    if argv[:1] == ["get-run-settings"] and len(argv) == 2 and argv[1]:
+        return cmd_get_run_settings(argv[1])
+    return emit({"ok": False, "error": USAGE}, 2)
 
 
 if __name__ == "__main__":
