@@ -173,4 +173,75 @@ TestCase {
     compare(p.app.runs.runs.length, 0)
     compare(p.app.runs.runFilter, "")
   }
+
+  // ---- Run detail (5.2)
+
+  // A started run with one story s1 > subtask t1 whose implement phase is on
+  // its second attempt.
+  function treeRun(id) {
+    var r = run(id, "started", true, "alpha")
+    r.tree = { stories: [{ card_id: "s1", subtasks: ["t1"] }], subtasks: [{ card_id: "t1", phases: [
+      { name: "implement", status: "started", attempts: [{ n: 1, status: "failed" }, { n: 2, status: "started" }] }] }] }
+    return r
+  }
+
+  // The panel on the detail view of treeRun("run-0000000000e5"), its default
+  // attempt's logs in flight.
+  function openDetail() {
+    var p = make(); if (!p) return null
+    p.app.runs.runs = [treeRun("run-0000000000e5")]
+    p.navigator.showSection("runs")
+    p.navigator.openRun("run-0000000000e5")
+    wait(50)
+    return p
+  }
+
+  function logsOk(text) { return JSON.stringify({ ok: true, data: { stdout: text, stderr: "" } }) + "\n" }
+
+  function test_opening_a_run_shows_it_and_fetches_its_default_attempt() {
+    var p = openDetail(); if (!p) return
+    compare(p.app.nav.viewMode, "run")
+    var view = H.find(p, "runDetailView")
+    verify(view, "the Run detail screen is mounted")
+    compare(view.visible, true)
+    compare(H.find(p, "runsView").visible, false)
+    compare(H.find(p, "runDetailTitle").text, "Run …000000e5")
+    var proc = p.app.runs.logsRunner.current
+    verify(proc, "the default attempt's logs were asked for")
+    verify(String(proc.command[1]).indexOf("core/backend/runs/runs-logs.py") > 0, String(proc.command[1]))
+    compare(proc.command.slice(2).join("|"), "run-0000000000e5|t1|implement|2")
+    proc.outText = logsOk("3 passed\n")
+    proc.exited(0)
+    compare(H.find(p, "runOutputHeading").text, "Output · t1 implement.2")
+    compare(H.find(p, "runOutputText").text, "3 passed")
+    compare(p.navigator.currentList().length, 0, "no keyboard list in the run view")
+  }
+
+  function test_escape_returns_to_runs_and_clears_the_logs() {
+    var p = openDetail(); if (!p) return
+    var proc = p.app.runs.logsRunner.current
+    proc.outText = logsOk("3 passed\n")
+    proc.exited(0)
+    compare(p.app.runs.logsText, "3 passed")
+    p.shortcuts.closeRequested()
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.selectedRunId, "")
+    compare(p.app.runs.selectedAttempt, null)
+    compare(p.app.runs.logsText, "")
+    compare(H.find(p, "runDetailView").visible, false)
+    compare(H.find(p, "runsView").visible, true)
+  }
+
+  function test_a_project_switch_on_the_run_view_clears_it() {
+    var p = openDetail(); if (!p) return
+    var proc = p.app.runs.logsRunner.current
+    p.app.projects.applyProjectsList([{ root_path: "/home/u/b", name: "beta" }])
+    p.app.runs.snapshotRunner.cancel()
+    compare(p.app.runs.selectedAttempt, null)
+    compare(p.app.runs.logsText, "")
+    compare(H.find(p, "runDetailView").visible, false)
+    proc.outText = logsOk("late\n")
+    proc.exited(0)
+    compare(p.app.runs.logsText, "", "the old project's late reply changes nothing")
+  }
 }

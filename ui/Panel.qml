@@ -548,9 +548,15 @@ Panel {
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
           }
 
-          // The "run" view's body is card 5.2's; until then the run mode
-          // shows nothing here.
           RunsScreen {
+            width: parent.width
+            app: appStores
+            navigator: navi
+            theme: panelTheme
+            onRevealRequested: function(item) { root.scrollItemIntoView(item) }
+          }
+
+          RunDetailScreen {
             width: parent.width
             app: appStores
             navigator: navi
