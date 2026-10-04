@@ -53,12 +53,25 @@ Scope {
 
   onActiveChanged: {
     if (store.active) store.startLive()
+    else store.stopLive()
   }
 
   // The panel opened: fetch now; the first good snapshot starts the watch.
   function startLive() {
     store.watchTried = false
     store.refresh()
+  }
+
+  // The panel closed: no process and no timer is left running. The runs, the
+  // selection and amStatus stay for the next opening.
+  function stopLive() {
+    store.stopWatch()
+    debounceTimer.stop()
+  }
+
+  function stopWatch() {
+    if (watchState.proc) watchState.proc.running = false
+    watchState.watching = false
   }
 
   // runs-watch.py for this project and the runs the snapshot just listed, in

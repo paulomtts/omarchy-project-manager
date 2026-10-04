@@ -490,4 +490,46 @@ TestCase {
     store.livenessTimer.triggered()
     compare(store.snapshotRunner.seq, seq + 1, "each tick fetches a snapshot")
   }
+
+  // ---- deactivation
+
+  function test_deactivate_kills_watch_and_timers() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    store.selectedRunId = "a"
+    var w = store.watchProc
+    sendLine(w, { changed: ["a"] })
+    compare(store.debounceTimer.running, true)
+    compare(store.livenessTimer.running, true)
+    store.active = false
+    compare(w.running, false, "the watch is killed")
+    compare(store.watching, false)
+    compare(store.debounceTimer.running, false, "the pending refresh is dropped")
+    compare(store.livenessTimer.running, false)
+    compare(store.runs.length, 1, "the runs stay for the next opening")
+    compare(store.runs[0].id, "a")
+    compare(store.selectedRunId, "a")
+    compare(store.amStatus, "ok")
+  }
+
+  function test_reactivation_starts_a_new_watch() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var old = store.watchProc
+    store.active = false
+    store.active = true
+    var first = store.snapshotRunner.current
+    store.active = false
+    store.active = true
+    var second = store.snapshotRunner.current
+    verify(first !== second, "each opening fetches its own snapshot")
+    compare(old.running, false, "the old watch stays dead")
+    reply(first, okReply([entry("a", "started", true)]), 0)
+    verify(store.watchProc === old, "the superseded opening's late reply starts nothing")
+    compare(store.watching, false)
+    reply(second, okReply([entry("a", "started", true)]), 0)
+    var fresh = store.watchProc
+    verify(fresh !== old, "the latest opening's first good snapshot starts a new watch")
+    compare(fresh.running, true)
+    compare(fresh.command[3], "a")
+    compare(store.watching, true)
+  }
 }
