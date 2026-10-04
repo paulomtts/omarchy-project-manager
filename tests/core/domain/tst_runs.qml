@@ -618,4 +618,54 @@ TestCase {
       compare(r.length, 0, "garbage " + i)
     }
   }
+
+  // ---- 1.2: escalation reason -------------------------------------------------------------
+
+  function test_escalation_reason_detail() {
+    var tree = { stories: [], subtasks: [
+      { card_id: "t1", phases: [{ name: "spec", status: "done", detail: "fine" }] },
+      { card_id: "t2", phases: [{ name: "plan", status: "done" },
+                                { name: "implement", status: "failed", detail: "  tests red after 3 attempts  " }] },
+      { card_id: "t3", phases: [{ name: "review", status: "failed", detail: "second failure" }] }
+    ] }
+    compare(Runs.escalationReason(mkRun("r", "escalated", null, { tree: tree })), "tests red after 3 attempts",
+            "first failed phase, trimmed")
+
+    var fromAttempt = { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "verify", status: "failed", detail: "  ",
+      attempts: [{ detail: "first" }, { detail: "second" }, { detail: "" }, null] }] }] }
+    compare(Runs.escalationReason(mkRun("r", "escalated", null, { tree: fromAttempt })), "second",
+            "last attempt that has a detail")
+
+    var numeric = { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "x", status: "failed", detail: 42 }] }] }
+    compare(Runs.escalationReason(mkRun("r", "escalated", null, { tree: numeric })), "42", "detail coerced with String")
+  }
+
+  function test_escalation_reason_fallbacks() {
+    var noDetail = mkRun("r", "escalated", null, {
+      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "review", status: "failed",
+                                                                  attempts: [{}, { detail: "" }] }] }] },
+      rows: [{ card_id: "t1", phase: "other" }]
+    })
+    compare(Runs.escalationReason(noDetail), "escalated at review")
+
+    var noFailed = mkRun("r", "escalated", null, {
+      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "spec", status: "done" },
+                                                                { name: "plan", status: "FAILED" }] }] },
+      rows: [{ card_id: "t1", phase: "spec" }, { card_id: "t2", phase: "implement" },
+             { card_id: "t3", phase: "" }, { card_id: "t4" }, null]
+    })
+    compare(Runs.escalationReason(noFailed), "escalated at implement", "last row phase; status match is exact")
+
+    var nameless = mkRun("r", "escalated", null, {
+      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ status: "failed" }] }] },
+      rows: [{ card_id: "t1", phase: "spec" }]
+    })
+    compare(Runs.escalationReason(nameless), "escalated", "nameless failed phase")
+
+    compare(Runs.escalationReason(mkRun("r", "escalated", null)), "escalated", "nothing at all")
+
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x", rows: "y" },
+               { tree: { subtasks: [null, { phases: "x" }, { phases: [null, 5] }] }, rows: [null] }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.escalationReason(bad[i]), "escalated", "garbage " + i)
+  }
 }

@@ -222,3 +222,37 @@ function attention(runs) {
   }
   return out
 }
+
+// String(v), trimmed. null/undefined, and values String() cannot convert (e.g. a
+// prototype-less object), become "".
+function _textOf(v) {
+  if (v === undefined || v === null) return ""
+  try { return String(v).trim() } catch (e) { return "" }
+}
+
+// Why a run escalated: the first failed phase's detail (or its last attempt's detail),
+// else "escalated at <phase>", else "escalated".
+function escalationReason(run) {
+  var subtasks = _arrayOr(_treeOf(run).subtasks)
+  for (var i = 0; i < subtasks.length; i++) {
+    var phases = _isObject(subtasks[i]) ? _arrayOr(subtasks[i].phases) : []
+    for (var j = 0; j < phases.length; j++) {
+      var phase = phases[j]
+      if (!_isObject(phase) || phase.status !== "failed") continue
+      var detail = _textOf(phase.detail)
+      var attempts = _arrayOr(phase.attempts)
+      for (var k = attempts.length - 1; detail === "" && k >= 0; k--) {
+        if (_isObject(attempts[k])) detail = _textOf(attempts[k].detail)
+      }
+      if (detail !== "") return detail
+      var name = _textOf(phase.name)
+      return name !== "" ? "escalated at " + name : "escalated"
+    }
+  }
+  var rows = _isObject(run) ? _arrayOr(run.rows) : []
+  for (var r = rows.length - 1; r >= 0; r--) {
+    var at = _isObject(rows[r]) ? _textOf(rows[r].phase) : ""
+    if (at !== "") return "escalated at " + at
+  }
+  return "escalated"
+}
