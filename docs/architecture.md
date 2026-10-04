@@ -77,8 +77,8 @@ manifest entry point.
   the panel binds to its `opened`).
 
 Other `ui/` pieces: `Navigator.qml` (screen switching), `Shortcuts.qml` (key
-events to store calls; Ctrl+1..5 follow the sidebar's order: Board, Graph,
-Documents, Memories, Issues), `theme/Theme.qml` (colours and fonts from the shell).
+events to store calls; Ctrl+1..6 follow the sidebar's order: Board, Graph,
+Documents, Memories, Issues, Runs), `theme/Theme.qml` (colours and fonts from the shell).
 
 Not every process goes through `HelperRunner`: `listProc` (`brd projects`), `treeProc` (`brd tree`), `issueProc` (`brd issue list`), `exportProc` (`brd export`), `brdDocsProc` (`brd doc list`), `saveStateProc`, `resolveDbPathProc` and `deleteProc` stay plain `Process` objects because they run the `brd` CLI or are fire-and-forget/single-owner with their own exit handling. `HelperRunner.run()` SIGTERMs a previous run of the same helper instead of letting it finish and dropping its reply (reachable for list-docs/list-memories refetches, and a set-doc-tag started in another project mid-flight); helpers write atomically, so at worst a stray `docs/.tmp-*` remains.
 
@@ -113,7 +113,7 @@ escalated in `urgent`; hidden when the rollup is null or its total is 0),
 `RunIndicator` (the toolbar's run strip beside `MilestoneJobIndicator`: one `ActionButton` per non-zero `running` / `parked` / `attention` prop, written glyph-then-count with no space such as `⟳2 ⏸1 ‼1`, glyphs from `runGlyphs.js` and counts clamped by its `countOf`; attention in `urgent`; hidden when all three are 0; static, no animation; presentation only -- the owner computes the counts, and a click emits `filterRequested(filter)` with `"live"`, `"parked"` or `"attention"` from the Runs filter set `attention` / `live` / `parked` / `all`, `all` being emitted by no segment),
 `Sidebar`, and the views
 `DocumentsView`, `MemoriesView`, `MemoryNoteView`, `GraphView`.
-`Sidebar`'s five nav rows (Board, Graph, Documents, Memories, Issues) each lead with an
+`Sidebar`'s six nav rows (Board, Graph, Documents, Memories, Issues, Runs) each lead with an
 icon glyph drawn in the theme's font; `tests/architecture/test_icon_glyphs.py`
 checks every glyph literal in `ui/` and `vendor/` against the installed Nerd
 Fonts, because a glyph the font does not have renders as an empty box.
