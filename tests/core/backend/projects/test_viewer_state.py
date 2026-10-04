@@ -244,7 +244,8 @@ def test_set_run_settings_keeps_strings_verbatim(env):
 
 BAD_UPDATES = ["", "{", "[]", '"x"', "null", "5", '{"allow_no_verification": true}', '{"verify": "pytest"}',
                '{"verify": [1]}', '{"verify": [""]}', '{"verify": ["  "]}', '{"allowNoVerification": "true"}',
-               '{"notifyOnEscalation": 1}', '{"notifyOnEscalation": null}', '{"verify": ["a"], "bogus": 1}']
+               '{"notifyOnEscalation": 1}', '{"notifyOnEscalation": null}', '{"verify": ["a"], "bogus": 1}',
+               pytest.param("[" * 100000, id="nested-past-the-recursion-limit")]
 
 
 @pytest.mark.parametrize("update", BAD_UPDATES)

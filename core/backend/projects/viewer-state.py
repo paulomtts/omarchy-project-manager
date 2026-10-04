@@ -86,7 +86,7 @@ def parse_run_settings(text):
     """The update in `text` and None, or None and a sentence saying what is wrong."""
     try:
         update = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None, "The run settings are not valid JSON."
     if not isinstance(update, dict):
         return None, "The run settings must be a JSON object."
