@@ -487,4 +487,107 @@ TestCase {
     var ids = [null, undefined, "", 0, 5, {}, []]
     for (var k = 0; k < ids.length; k++) checkNone(Runs.cardRunState(withBlank, ids[k]), "cardId " + k)
   }
+
+  // ---- 1.2: rollups -----------------------------------------------------------------------
+
+  // Milestone m1; story s1 owns t1 (string entry) and t2 ({card_id} entry); t3 belongs to s2
+  // via story_id; t4 belongs to no story; "integrate" is a synthetic subtask.
+  function rollupRun(id, status, live) {
+    return mkRun(id, status, live, {
+      tree: {
+        stories: [{ card_id: "s1", subtasks: ["t1", { card_id: "t2" }] }, { card_id: "s2", subtasks: [] }],
+        subtasks: [
+          { card_id: "t1", phases: [] }, { card_id: "t2", phases: [] }, { card_id: "t3", story_id: "s2", phases: [] },
+          { card_id: "t4", phases: [] }, { card_id: "integrate", phases: [] }
+        ]
+      },
+      rows: [
+        { card_id: "t1", status: "running" }, { card_id: "t1", status: "started" },
+        { card_id: "t2", status: "parked" }, { card_id: "t2", status: "stopped" },
+        { card_id: "t3", status: "escalated" }, { card_id: "t3", status: "failed" },
+        { card_id: "t4", status: "done" },
+        { card_id: "t4", status: "queued" }, { card_id: "t4" },
+        { card_id: "s1", status: "running" },
+        { card_id: "integrate", status: "running" },
+        { card_id: "bases", status: "running" },
+        { card_id: "zz", status: "running" },
+        null, "x"
+      ]
+    })
+  }
+
+  function counts(r) {
+    return [r.running, r.parked, r.escalated, r.done, r.pending, r.total].join(",")
+  }
+
+  function test_rollup_milestone() {
+    var r = Runs.rollup([rollupRun("r1", "started", true)], { id: "m1" })
+    compare(Object.keys(r).sort().join(","), "done,escalated,parked,pending,running,total")
+    // story row s1, synthetic integrate/bases, unknown zz and junk rows are excluded
+    compare(counts(r), "2,2,2,1,2,9")
+
+    var odd = mkRun("r2", "started", true, {
+      tree: { stories: [], subtasks: [{ card_id: "t1" }] },
+      rows: [{ card_id: "t1", status: "RUNNING" }, { card_id: "t1", status: "Done" }, { card_id: "t1", status: 5 }]
+    })
+    compare(counts(Runs.rollup([odd], { id: "m1" })), "0,0,0,0,3,3", "status match is exact")
+  }
+
+  function test_rollup_story_membership() {
+    var runs = [rollupRun("r1", "started", true)]
+    compare(counts(Runs.rollup(runs, { id: "s1" })), "2,2,0,0,0,4", "string and {card_id} entries")
+    compare(counts(Runs.rollup(runs, { id: "s2" })), "0,0,2,0,0,2", "story_id membership")
+  }
+
+  function test_rollup_uses_winning_run_only() {
+    var winner = mkRun("live", "started", true, {
+      tree: { stories: [], subtasks: [{ card_id: "t1" }] },
+      rows: [{ card_id: "t1", status: "running" }]
+    })
+    var loser = mkRun("old", "done", null, {
+      tree: { stories: [], subtasks: [{ card_id: "t1" }] },
+      rows: [{ card_id: "t1", status: "done" }, { card_id: "t1", status: "done" }]
+    })
+    compare(counts(Runs.rollup([loser, winner], { id: "m1" })), "1,0,0,0,0,1", "milestone")
+    compare(counts(Runs.rollup([loser, winner], { id: "t1" })), "1,0,0,0,0,1", "subtask")
+
+    var older = mkRun("older", "escalated", null, {
+      tree: { stories: [], subtasks: [{ card_id: "t1" }] },
+      rows: [{ card_id: "t1", status: "escalated" }]
+    })
+    compare(counts(Runs.rollup([loser, older], { id: "m1" })), "0,0,0,2,0,2", "all finished: newest wins")
+  }
+
+  function test_rollup_subtask_card() {
+    var runs = [rollupRun("r1", "started", true)]
+    compare(counts(Runs.rollup(runs, { id: "t1" })), "2,0,0,0,0,2")
+    compare(counts(Runs.rollup(runs, { id: "t4" })), "0,0,0,1,2,3")
+    compare(counts(Runs.rollup(runs, { id: "integrate" })), "0,0,0,0,0,0", "synthetic card")
+
+    var proto = mkRun("p", "started", true, {
+      tree: { stories: [{ card_id: "__proto__", subtasks: ["constructor"] }],
+              subtasks: [{ card_id: "constructor" }, { card_id: "toString" }] },
+      rows: [{ card_id: "constructor", status: "done" }, { card_id: "toString", status: "running" }]
+    })
+    compare(counts(Runs.rollup([proto], { id: "constructor" })), "0,0,0,1,0,1", "constructor subtask")
+    compare(counts(Runs.rollup([proto], { id: "__proto__" })), "0,0,0,1,0,1", "__proto__ story")
+    compare(counts(Runs.rollup([proto], { id: "valueOf" })), "0,0,0,0,0,0", "absent valueOf")
+  }
+
+  function test_rollup_rows_only_not_brd() {
+    var runs = [rollupRun("r1", "started", true)]
+    var card = { id: "s1", status: "done", children: ["t1", "t2", "t9"], counts: { done: 9 } }
+    compare(counts(Runs.rollup(runs, card)), "2,2,0,0,0,4", "brd status and children ignored")
+    compare(counts(Runs.rollup(runs, { id: "s9", status: "in_progress" })), "0,0,0,0,0,0", "untouched card")
+
+    var garbage = [[undefined, { id: "m1" }], [null, { id: "m1" }], ["x", { id: "m1" }], [runs, null],
+                   [runs, "m1"], [runs, {}], [runs, { id: "" }], [runs, { id: 5 }], [runs, []]]
+    for (var i = 0; i < garbage.length; i++) {
+      compare(counts(Runs.rollup(garbage[i][0], garbage[i][1])), "0,0,0,0,0,0", "garbage " + i)
+    }
+
+    var junk = [{ id: "j", status: "started", lease: { live: true }, milestone_id: "m1",
+                  tree: { stories: "x", subtasks: [null, 5] }, rows: [{ card_id: "t1", status: "running" }] }]
+    compare(counts(Runs.rollup(junk, { id: "m1" })), "0,0,0,0,0,0", "junk tree")
+  }
 }

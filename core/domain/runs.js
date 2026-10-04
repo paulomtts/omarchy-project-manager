@@ -162,3 +162,52 @@ function cardRunState(runs, cardId) {
   }
   return result
 }
+
+// Which am row status lands in which rollup bucket; anything else is pending.
+function _bucketOf(status) {
+  if (status === "running" || status === "started") return "running"
+  if (status === "parked" || status === "stopped") return "parked"
+  if (status === "escalated" || status === "failed") return "escalated"
+  if (status === "done") return "done"
+  return "pending"
+}
+
+// Does the story own this subtask? Via the subtask's story_id, or the story's own list
+// (entries are id strings or {card_id}).
+function _storyHas(story, subtask, storyId) {
+  if (subtask.story_id === storyId) return true
+  var entries = _arrayOr(story.subtasks)
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    if (e === subtask.card_id || (_isObject(e) && e.card_id === subtask.card_id)) return true
+  }
+  return false
+}
+
+// Run-progress counts for a brd card, from the winning run's am rows only (never brd status;
+// Board.subtreeCounts is a separate thing). Only rows of real subtasks in that run count.
+function rollup(runs, card) {
+  var counts = { running: 0, parked: 0, escalated: 0, done: 0, pending: 0, total: 0 }
+  if (!_isObject(card)) return counts
+  var cardId = card.id
+  var win = _winningRun(runs, cardId)
+  if (win === null) return counts
+  var run = win.run
+  var tree = _treeOf(run)
+  var isMilestone = run.milestone_id === cardId
+  var story = isMilestone ? null : _findByCardId(tree.stories, cardId)
+  var rows = _arrayOr(run.rows)
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i]
+    if (!_isObject(row) || !_isCardId(row.card_id)) continue
+    var subtask = _findByCardId(tree.subtasks, row.card_id)
+    if (subtask === null) continue
+    if (!isMilestone) {
+      var belongs = story !== null ? _storyHas(story, subtask, cardId) : row.card_id === cardId
+      if (!belongs) continue
+    }
+    counts[_bucketOf(row.status)] += 1
+    counts.total += 1
+  }
+  return counts
+}
