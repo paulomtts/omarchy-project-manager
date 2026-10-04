@@ -1394,4 +1394,91 @@ TestCase {
     compare(store.lastControlError, "")
     compare(store.lastControlErrorRunId, "")
   }
+
+  property string settingsCmd: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/my proj"
+  property string noVerifySentence: "Resume needs verify commands: none are stored for this project, and running without verification was not chosen."
+
+  // viewer-state.py get-run-settings: one bare object, not an envelope.
+  function settingsReply(verify, allow) {
+    return JSON.stringify({ verify: verify, allowNoVerification: allow, notifyOnEscalation: false }) + "\n"
+  }
+
+  function test_milestone_resume_reads_the_settings_then_passes_the_verify_set() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    compare(store.control("resume", "r1"), true)
+    compare(store.controlRunners.length, 1)
+    var runner = store.controlRunners[0]
+    compare(argv(runner.current), tc.settingsCmd)
+    compare(runner.current.command.length, 4)
+    compare(store.pending.r1, "resume")
+    reply(runner.current, settingsReply(["a", "-b c"], true), 0)
+    compare(store.controlRunners.length, 1, "the same request goes on to run-control")
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a|--verify|-b c")
+    compare(proc.command.length, 9, "each verify command is one argument")
+    compare(proc.command[8], "-b c")
+    compare(proc.command.indexOf("--allow-no-verification"), -1, "a stored verify set wins over the opt-out")
+    compare(store.pending.r1, "resume")
+  }
+
+  function test_milestone_resume_with_the_opt_out_passes_allow_no_verification() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    reply(store.controlRunners[0].current, settingsReply([], true), 0)
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--allow-no-verification")
+    compare(proc.command.length, 6)
+  }
+
+  function test_milestone_resume_with_nothing_stored_launches_nothing() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    var runner = store.controlRunners[0]
+    var seq = store.snapshotRunner.seq
+    reply(runner.current, settingsReply([], false), 0)
+    compare(runner.seq, 1, "run-control was never launched")
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.lastControlError, tc.noVerifySentence)
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.snapshotRunner.seq, seq, "nothing was asked of am, so no snapshot")
+  }
+
+  function test_garbled_run_settings_end_the_resume() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    var runner = store.controlRunners[0]
+    reply(runner.current, "oops\n", 2)
+    compare(runner.seq, 1, "run-control was never launched")
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.lastControlError, "The run settings gave no usable result (exit 2).")
+    compare(store.lastControlErrorRunId, "r1")
+  }
+
+  function test_a_card_run_resume_skips_the_settings() {
+    var store = ctlStore([ctlEntry("r1", "started", false, "task"),
+                          ctlEntry("r2", "started", false, "orchestrator")]); if (!store) return
+    compare(store.control("resume", "r1"), true)
+    compare(store.controlRunners.length, 1)
+    var runner = store.controlRunners[0]
+    compare(runner.seq, 1, "one launch only")
+    compare(argv(runner.current), tc.ctlCmd + "resume|r1|/home/u/my proj")
+    compare(runner.current.command.length, 5)
+    compare(store.control("resume", "r2"), true)
+    compare(argv(store.controlRunners[1].current), tc.settingsCmd, "any workflow but task follows the milestone rule")
+  }
+
+  // Review Focus 3.
+  function test_a_verify_set_with_a_non_string_is_not_used() {
+    var store = ctlStore([dead("r1"), dead("r2")]); if (!store) return
+    store.control("resume", "r1")
+    var runner = store.controlRunners[0]
+    reply(runner.current, settingsReply(["a", 5], false), 0)
+    compare(runner.seq, 1, "run-control was never launched")
+    compare(store.lastControlError, tc.noVerifySentence)
+    store.control("resume", "r2")
+    reply(store.controlRunners[0].current, settingsReply(["a", 5], true), 0)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r2|/home/u/my proj|--allow-no-verification")
+  }
 }

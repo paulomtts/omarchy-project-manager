@@ -454,7 +454,14 @@ Scope {
     var runner = controlC.createObject(store, { runId: runId, action: action,
                                                 token: controlState.nextToken, madeFor: store.project })
     controlState.runners = controlState.runners.concat([runner])
-    store.launchControl(runner, [])
+    if (action === "resume" && run.workflow !== "task") {
+      // A milestone resume reuses the project's stored verify set: read it first.
+      runner.settingsStep = true
+      runner.script = store.backendDir + "projects/viewer-state.py"
+      runner.run(["get-run-settings", store.project])
+    } else {
+      store.launchControl(runner, [])
+    }
     return true
   }
 
@@ -524,6 +531,11 @@ Scope {
       store.dropRunner(runner)
       return
     }
+    if (runner.settingsStep) {
+      runner.settingsStep = false
+      store.resumeWithSettings(runner, stdout, exitCode)
+      return
+    }
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var data = envelope.data
@@ -539,6 +551,35 @@ Scope {
     }
     store.dropRunner(runner)
     store.refresh()
+  }
+
+  // The run settings' reply for a milestone resume. A stored verify set (a
+  // non-empty list of strings) goes to run-control as --verify pairs in its
+  // order; otherwise the stored opt-out as --allow-no-verification; with
+  // neither, or no readable reply, run-control is never launched and the
+  // request ends with a sentence -- no re-snapshot, nothing was asked of am.
+  function resumeWithSettings(runner, stdout, exitCode) {
+    var settings = store.parseEnvelope(stdout)
+    if (settings === null) {
+      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").")
+      store.dropRunner(runner)
+      return
+    }
+    var verify = Array.isArray(settings.verify) ? settings.verify : []
+    var usable = verify.length > 0
+    for (var i = 0; i < verify.length; i++) {
+      if (typeof verify[i] !== "string") usable = false
+    }
+    if (usable) {
+      var extra = []
+      for (var j = 0; j < verify.length; j++) extra.push("--verify", verify[j])
+      store.launchControl(runner, extra)
+    } else if (settings.allowNoVerification === true) {
+      store.launchControl(runner, ["--allow-no-verification"])
+    } else {
+      store.failControl(runner.runId, "Resume needs verify commands: none are stored for this project, and running without verification was not chosen.")
+      store.dropRunner(runner)
+    }
   }
 
   // The guard is the project root, so a snapshot launched for a project the
@@ -624,7 +665,8 @@ Scope {
   // stop each other. Guarded by the project like the others: a reply for a
   // project the user has left is dropped, and its runner goes when its process
   // exits (the runner clears `busy` on that exit but emits no `finished`). No
-  // onGuardChanged: the snapshot runner's already runs projectSwitched().
+  // onGuardChanged: the snapshot runner's already runs projectSwitched(). A
+  // milestone resume uses its runner twice: viewer-state.py, then run-control.py.
   Component {
     id: controlC
 
@@ -634,6 +676,7 @@ Scope {
       property string action: ""
       property int token: 0
       property string madeFor: ""         // the project the request was made in
+      property bool settingsStep: false   // reading the run settings; run-control comes next
       guard: store.project
       onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
       onBusyChanged: if (!cr.busy && cr.guard !== cr.madeFor) store.dropRunner(cr)
