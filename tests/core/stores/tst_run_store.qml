@@ -1139,4 +1139,50 @@ TestCase {
     compare(store.staleTimer.running, false)
     compare(store.pollTimer.running, false)
   }
+
+  // The next snapshot of project A lists `entries`.
+  function snapshot(store, entries) {
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply(entries), 0)
+  }
+
+  function test_a_snapshot_that_changes_the_attempt_status_fetches_once() {
+    var store = opened("started"); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    snapshot(store, [treeEntry("r1", "started")])
+    compare(store.logsRunner.seq, seq, "an unchanged status fetches nothing")
+    store.refresh()
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}', 1)
+    compare(store.logsRunner.seq, seq, "a failed snapshot fetches nothing")
+    snapshot(store, [treeEntry("r1", "done")])
+    compare(store.logsRunner.seq, seq + 1, "started -> done fetches the logs again")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|implement|2")
+    compare(store.logsStatus, "done")
+    compare(store.logsText, "a", "the text stays until the new reply")
+    snapshot(store, [treeEntry("r1", "done")])
+    compare(store.logsRunner.seq, seq + 1, "only once")
+  }
+
+  function test_a_snapshot_without_a_selected_run_fetches_no_logs() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    snapshot(store, [treeEntry("r1", "done")])
+    verify(!store.logsRunner.current, "nothing is selected")
+  }
+
+  // Review Focus 2.
+  function test_a_run_opened_before_its_first_attempt_picks_one_when_it_appears() {
+    var store = makeWithProject(rootA); if (!store) return
+    var bare = treeEntry("r1", "started")
+    bare.status.subtasks[0].phases = []
+    reply(store.snapshotRunner.current, okReply([bare]), 0)
+    store.selectedRunId = "r1"
+    compare(store.selectedAttempt, null)
+    verify(!store.logsRunner.current)
+    snapshot(store, [treeEntry("r1", "started")])
+    verify(store.selectedAttempt, "the first attempt is picked once it exists")
+    compare(store.selectedAttempt.attempt, 2)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|implement|2")
+  }
 }

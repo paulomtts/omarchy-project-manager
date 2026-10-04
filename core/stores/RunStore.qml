@@ -279,6 +279,21 @@ Scope {
     if (d) store.selectAttempt(d.card_id, d.phase, d.attempt)
   }
 
+  // After every applied snapshot: a selected run with no attempt yet gets its
+  // default once one exists; otherwise the selected attempt is fetched again
+  // only when its status moved since its fetch was launched. Nothing else
+  // fetches logs on its own.
+  function logsAfterSnapshot() {
+    if (store.selectedRunId === "") return
+    var sel = store.selectedAttempt
+    if (!sel) {
+      store.openDefaultAttempt()
+      return
+    }
+    var status = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    if (status !== store.logsStatus) store.fetchLogs()
+  }
+
   // Another run (or none): the pane starts over on that run's default attempt.
   onSelectedRunIdChanged: {
     store.clearLogs()
@@ -355,6 +370,7 @@ Scope {
         out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
       }
       store.runs = out
+      store.logsAfterSnapshot()
       if (pollTimer.running && store.watchSchemaError !== "") {
         // The watch's schema banner outlives the polling snapshots.
         store.amStatus = "schema"
