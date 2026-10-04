@@ -453,4 +453,41 @@ TestCase {
     compare(store.amStatus, "ok")
     compare(store.lastError, "")
   }
+
+  // ---- liveness
+
+  function test_liveness_on_with_running_run() {
+    var store = watchedStore([entry("a", "done", false), entry("b", "started", true)]); if (!store) return
+    var t = store.livenessTimer
+    compare(t.objectName, "livenessTimer")
+    compare(t.interval, 10000)
+    compare(t.repeat, true)
+    compare(t.running, true, "a started run with a live lease is re-read")
+  }
+
+  function test_liveness_off_without_running_run() {
+    var store = watchedStore([entry("d", "started", false), entry("p", "stopped", true), entry("f", "done", false)]); if (!store) return
+    compare(store.livenessTimer.running, false, "dead, parked and done runs need no liveness re-read")
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([entry("d", "started", true)]), 0)
+    compare(store.livenessTimer.running, true, "it starts once a run is running")
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([entry("d", "done", false)]), 0)
+    compare(store.livenessTimer.running, false, "and stops when none is")
+  }
+
+  function test_liveness_off_when_inactive() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
+    compare(store.livenessTimer.running, false, "no timer while the panel is closed")
+    store.active = true
+    compare(store.livenessTimer.running, true, "opening the panel with a running run starts it")
+  }
+
+  function test_liveness_tick_refreshes() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var seq = store.snapshotRunner.seq
+    store.livenessTimer.triggered()
+    compare(store.snapshotRunner.seq, seq + 1, "each tick fetches a snapshot")
+  }
 }

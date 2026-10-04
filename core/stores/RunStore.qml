@@ -32,6 +32,17 @@ Scope {
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
   readonly property alias debounceTimer: debounceTimer
+  readonly property alias livenessTimer: livenessTimer
+
+  // Some run is started with a live lease: its heartbeat must be re-read even
+  // when the journal is quiet.
+  readonly property bool hasRunningRun: {
+    var list = store.runs
+    for (var i = 0; i < list.length; i++) {
+      if (Runs.runState(list[i]) === "running") return true
+    }
+    return false
+  }
 
   // Asks for a fresh snapshot of the current project. A newer call replaces an
   // older one (the runner's latest-wins rule).
@@ -175,6 +186,16 @@ Scope {
     objectName: "debounceTimer"
     interval: 250
     repeat: false
+    onTriggered: store.refresh()
+  }
+
+  // Only while the panel is open and a run is running: no timer while idle.
+  Timer {
+    id: livenessTimer
+    objectName: "livenessTimer"
+    interval: 10000
+    repeat: true
+    running: store.active && store.hasRunningRun
     onTriggered: store.refresh()
   }
 
