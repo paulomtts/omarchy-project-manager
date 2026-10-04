@@ -689,4 +689,168 @@ TestCase {
     compare(store.runs.length, 0)
     compare(store.snapshotRunner.seq, seq, "no snapshot without a project")
   }
+
+  // ---- watch exit and the fallback poll
+
+  function watchError(type, message) {
+    return JSON.stringify({ ok: false, error: { type: type, message: message } })
+  }
+
+  // The watch prints its last line (none when `line` is ""), then exits.
+  function endWatch(proc, line, code) {
+    if (line !== "") sendLine(proc, line)
+    proc.exited(code)
+  }
+
+  function test_schema_mismatch_falls_back_to_poll() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var t = store.pollTimer
+    compare(t.objectName, "pollTimer")
+    compare(t.interval, 5000)
+    compare(t.repeat, true)
+    compare(t.running, false, "no poll while the watch works")
+    var msg = "am watch speaks journal schema 2; this helper reads schema 1."
+    endWatch(store.watchProc, watchError("SchemaMismatch", msg), 1)
+    compare(store.amStatus, "schema")
+    compare(store.lastError, "SchemaMismatch: " + msg)
+    compare(store.watching, false)
+    compare(t.running, true)
+    var seq = store.snapshotRunner.seq
+    t.triggered()
+    compare(store.snapshotRunner.seq, seq + 1, "a poll tick fetches a snapshot")
+    reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+    compare(store.watching, false, "the poll replaces the watch: none is restarted")
+    compare(t.running, true)
+  }
+
+  function test_schema_banner_survives_poll_snapshots() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    endWatch(store.watchProc, watchError("SchemaMismatch", "schema 2"), 1)
+    store.pollTimer.triggered()
+    reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+    compare(store.runs[0].status, "done", "the polled snapshot is applied")
+    compare(store.amStatus, "schema", "the banner stays while polling")
+    compare(store.lastError, "SchemaMismatch: schema 2")
+    compare(store.stale, false)
+    compare(store.staleTimer.running, true, "the stale rule still applies while polling")
+  }
+
+  function test_corrupt_journal_sets_warning_and_polls() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    endWatch(store.watchProc, watchError("CorruptJournal", "journal line 12 is not JSON"), 1)
+    compare(store.watchWarning, "CorruptJournal: journal line 12 is not JSON")
+    compare(store.amStatus, "ok", "a warning chip, not a banner")
+    compare(store.lastError, "")
+    compare(store.watching, false)
+    compare(store.pollTimer.running, true)
+    var seq = store.snapshotRunner.seq
+    store.pollTimer.triggered()
+    compare(store.snapshotRunner.seq, seq + 1)
+    reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+    compare(store.watchWarning, "CorruptJournal: journal line 12 is not JSON", "the chip stays while polling")
+    compare(store.amStatus, "ok")
+    compare(store.watching, false)
+  }
+
+  function test_poll_stops_on_deactivate() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    endWatch(store.watchProc, watchError("SchemaMismatch", "schema 2"), 1)
+    compare(store.pollTimer.running, true)
+    store.active = false
+    compare(store.pollTimer.running, false)
+    compare(store.amStatus, "schema", "deactivation leaves amStatus as it is")
+    compare(store.lastError, "SchemaMismatch: schema 2")
+    store.active = true
+    compare(store.pollTimer.running, false, "the next opening tries the watch first")
+    reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+    compare(store.amStatus, "ok", "a good snapshot after re-opening resets the status")
+    compare(store.lastError, "")
+    compare(store.watching, true, "and the watch is tried again")
+  }
+
+  function test_corrupt_warning_cleared_on_deactivate() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    endWatch(store.watchProc, watchError("CorruptJournal", "bad"), 1)
+    compare(store.watchWarning, "CorruptJournal: bad")
+    store.active = false
+    compare(store.watchWarning, "")
+    compare(store.pollTimer.running, false)
+  }
+
+  function test_other_watch_error_stops_watching_without_poll() {
+    var cases = [["HelperError", 1], ["AmMissing", 1], ["Usage", 2]]
+    for (var i = 0; i < cases.length; i++) {
+      var type = cases[i][0]
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      endWatch(store.watchProc, watchError(type, "m"), cases[i][1])
+      compare(store.watching, false, type)
+      compare(store.lastError, type + ": m")
+      compare(store.amStatus, "ok", type + " is not a schema banner")
+      compare(store.watchWarning, "", type + " is not a warning chip")
+      compare(store.pollTimer.running, false, type + " starts no poll")
+      store.refresh()
+      reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+      compare(store.watching, false, type + ": no restart until the next opening")
+    }
+  }
+
+  function test_watch_exit_without_envelope_names_the_exit_code() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    endWatch(store.watchProc, "", 137)
+    compare(store.watching, false)
+    verify(store.lastError.indexOf("exit 137") >= 0, "the exit code is named: " + store.lastError)
+    compare(store.pollTimer.running, false)
+    compare(store.amStatus, "ok")
+  }
+
+  function test_watch_exit_zero_only_clears_watching() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    sendLine(store.watchProc, { changed: ["a"] })
+    endWatch(store.watchProc, "", 0)
+    compare(store.watching, false)
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    compare(store.watchWarning, "")
+    compare(store.pollTimer.running, false)
+    compare(store.debounceTimer.running, true, "the pending refresh still happens")
+    compare(store.livenessTimer.running, true)
+    compare(store.runs.length, 1)
+  }
+
+  function test_stale_exit_after_reactivation_ignored() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var old = store.watchProc
+    store.active = false
+    store.active = true
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
+    var fresh = store.watchProc
+    verify(fresh !== old)
+    compare(store.watching, true)
+    old.exited(0)
+    compare(store.watching, true, "the killed watch's late exit does not end the new one")
+    compare(fresh.running, true)
+  }
+
+  function test_old_watch_exit_ignored_after_switch() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var old = store.watchProc
+    store.project = rootB
+    endWatch(old, watchError("SchemaMismatch", "schema 2"), 1)
+    compare(store.amStatus, "ok", "A's watch says nothing about B")
+    compare(store.lastError, "")
+    compare(store.pollTimer.running, false)
+  }
+
+  function test_project_switch_clears_warning_and_poll() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    endWatch(store.watchProc, watchError("CorruptJournal", "bad"), 1)
+    compare(store.pollTimer.running, true)
+    store.project = rootB
+    compare(store.watchWarning, "")
+    compare(store.pollTimer.running, false)
+    compare(store.watching, false)
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    compare(store.watching, true, "B's watch is tried")
+    compare(store.watchProc.command[2], "/home/u/b")
+  }
 }

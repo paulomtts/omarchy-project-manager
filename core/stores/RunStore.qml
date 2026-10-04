@@ -22,6 +22,7 @@ Scope {
   property string amStatus: "ok"      // "ok" | "missing" | "schema" | "error"
   property string lastError: ""
   property bool stale: false          // the last good snapshot is over 30 s old while active
+  property string watchWarning: ""    // the corrupt-journal chip; "" when there is none
 
   // A watch has been started since the last activation or project switch:
   // later snapshots never start another (the helper picks up the project's new
@@ -29,6 +30,7 @@ Scope {
   // activation or project switch.
   property bool watchTried: false
   property int watchSeq: 0            // bumped on every watch start and stop: the launch guard
+  property string watchSchemaError: "" // the schema banner text while its fallback poll runs
 
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
@@ -36,6 +38,7 @@ Scope {
   readonly property alias debounceTimer: debounceTimer
   readonly property alias livenessTimer: livenessTimer
   readonly property alias staleTimer: staleTimer
+  readonly property alias pollTimer: pollTimer
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -72,8 +75,10 @@ Scope {
   function stopLive() {
     store.stopWatch()
     debounceTimer.stop()
+    store.stopPoll()
     staleTimer.stop()
     store.stale = false
+    store.watchWarning = ""
   }
 
   // Nothing is stale yet; the 30 s clock starts again while there is something
@@ -124,6 +129,42 @@ Scope {
     try { value = JSON.parse(text) } catch (e) { return }
     if (value === null || typeof value !== "object" || Array.isArray(value)) return
     if (Array.isArray(value.changed)) debounceTimer.restart()
+    else if (value.ok === false) proc.envelope = value
+  }
+
+  // The watch ended. Exit 0: it was stopped (by us, or because am exited).
+  // Otherwise the last envelope line it printed says why: a journal the helper
+  // cannot read switches to the 5 s poll; anything else is reported and the
+  // watch stays off until the next activation or project switch.
+  function watchExited(proc, exitCode) {
+    if (!store.isCurrentWatch(proc)) return
+    watchState.watching = false
+    if (exitCode === 0) return
+    var envelope = proc.envelope
+    var err = envelope ? envelope.error : null
+    var type = err !== null && typeof err === "object" ? err.type : ""
+    if (type === "SchemaMismatch") {
+      store.watchSchemaError = Runs.errorText(envelope)
+      store.amStatus = "schema"
+      store.lastError = store.watchSchemaError
+      store.startPoll()
+    } else if (type === "CorruptJournal") {
+      store.watchWarning = Runs.errorText(envelope)
+      store.startPoll()
+    } else {
+      store.lastError = envelope ? Runs.errorText(envelope) : "The runs watch stopped (exit " + exitCode + ")."
+    }
+  }
+
+  // The poll replaces the watch signal until the panel closes or the project
+  // changes.
+  function startPoll() {
+    pollTimer.start()
+  }
+
+  function stopPoll() {
+    pollTimer.stop()
+    store.watchSchemaError = ""
   }
 
   // A different project: nothing the old one left behind may show, and its
@@ -132,6 +173,8 @@ Scope {
     store.stopWatch()
     store.watchTried = false
     debounceTimer.stop()
+    store.stopPoll()
+    store.watchWarning = ""
     store.restartStale()
     store.runs = []
     store.selectedRunId = ""
@@ -188,8 +231,14 @@ Scope {
         out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
       }
       store.runs = out
-      store.amStatus = "ok"
-      store.lastError = ""
+      if (pollTimer.running && store.watchSchemaError !== "") {
+        // The watch's schema banner outlives the polling snapshots.
+        store.amStatus = "schema"
+        store.lastError = store.watchSchemaError
+      } else {
+        store.amStatus = "ok"
+        store.lastError = ""
+      }
       store.stale = false
       if (store.active) {
         staleTimer.restart()
@@ -254,6 +303,15 @@ Scope {
     onTriggered: store.stale = true
   }
 
+  // Replaces the watch when it cannot read am's journal (schema or corrupt).
+  Timer {
+    id: pollTimer
+    objectName: "pollTimer"
+    interval: 5000
+    repeat: true
+    onTriggered: store.refresh()
+  }
+
   // What the watch Process aliases read; kept apart so consumers cannot write it.
   QtObject {
     id: watchState
@@ -270,8 +328,13 @@ Scope {
       objectName: "watchProc"
       property int launchSeq: 0
       property string launchProject: ""
+      property var envelope: null       // the last {"ok": false, ...} line it printed
       stdout: SplitParser { onRead: function(data) { store.watchLine(wp, data) } }
       stderr: StdioCollector { waitForEnd: true }
+      onExited: function(exitCode) {
+        store.watchExited(wp, exitCode)
+        wp.destroy()
+      }
     }
   }
 }
