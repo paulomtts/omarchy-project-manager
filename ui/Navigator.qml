@@ -1,5 +1,6 @@
 import QtQuick
 import "../core/domain/board.js" as Board
+import "../core/domain/runs.js" as Runs
 
 // The ui-side navigation controller: where the panel is, what the cursor is on,
 // and the return-stack bookkeeping around an open card, document or memory note.
@@ -23,6 +24,7 @@ QtObject {
     if (navi.app.nav.viewMode === "memories") return navi.app.memories.filteredMemories
     if (navi.app.nav.viewMode === "issues") return navi.app.extras.filteredIssues
     if (navi.app.nav.viewMode === "issue") return navi.app.extras.detailLinkList
+    if (navi.app.nav.viewMode === "runs") return navi.app.runs.filteredRuns
     return []
   }
 
@@ -40,7 +42,9 @@ QtObject {
     if (!navi.app.projects.selectedProject) return [{ label: "Project Manager", clickable: false }]
     var mode = navi.app.nav.viewMode
     var section = { label: navi.app.nav.sectionTitle,
-                    clickable: mode === "entry" || mode === "document" || mode === "memory" || mode === "issue" }
+                    clickable: mode === "entry" || mode === "document" || mode === "memory" || mode === "issue" || mode === "run" }
+    if (mode === "run")
+      return [section, { label: Runs.shortId({ id: navi.app.runs.selectedRunId }), clickable: false }]
     if (mode === "issue") {
       var issue = navi.app.extras.selectedIssue
       return [section, { label: issue ? issue.title : navi.app.extras.selectedIssueId, clickable: false }]
@@ -109,6 +113,10 @@ QtObject {
     else if (navi.app.nav.viewMode === "issues") navi.openIssue(list[navi.app.nav.cursorIndex].id)
     else if (navi.app.nav.viewMode === "issue") navi.openIssueLink(list[navi.app.nav.cursorIndex].id)
     else if (navi.app.nav.viewMode === "entry") navi.openBlocker(list[navi.app.nav.cursorIndex].id)
+    else if (navi.app.nav.viewMode === "runs") {
+      var run = list[navi.app.nav.cursorIndex]
+      navi.openRun(run ? run.id : "")
+    }
     else navi.openCard(list[navi.app.nav.cursorIndex].id)
   }
 
@@ -166,7 +174,7 @@ QtObject {
     navi.resetSearch()
     navi.app.nav.scrollOnCursor = false
     navi.app.nav.viewMode = name === "documents" ? "documents" : name === "graph" ? "graph"
-      : name === "memories" ? "memories" : name === "issues" ? "issues" : "board"
+      : name === "memories" ? "memories" : name === "issues" ? "issues" : name === "runs" ? "runs" : "board"
     navi.app.memories.memoryEditing = false
     // Only here: `brd doc list` syncs every backup as it lists -- it WRITES --
     // so it follows the section being ENTERED and nothing else. Ctrl+3 pressed
@@ -314,6 +322,33 @@ QtObject {
     navi.actions.focusForView()
   }
 
+  // ---- Runs: the runs themselves live in RunStore; the navigation and focus
+  // work around them is here. The run view's body is card 5.2's.
+  function openRun(id) {
+    if (typeof id !== "string" || id === "") return
+    var runs = navi.app.runs.runs
+    var found = false
+    for (var i = 0; i < runs.length && !found; i++) found = !!runs[i] && runs[i].id === id
+    if (!found) return
+    navi.app.runs.selectedRunId = id
+    navi.app.nav.pushReturn(navi.flick ? navi.flick.contentY : 0)
+    navi.app.nav.viewMode = "run"
+    navi.app.nav.scrollOnCursor = false
+    navi.app.nav.cursorIndex = 0
+    Qt.callLater(navi.actions.scrollToTop)
+    navi.actions.focusForView()
+  }
+
+  function restoreRunsList() {
+    navi.app.runs.selectedRunId = ""
+    var back = navi.app.nav.popReturn()
+    navi.app.nav.viewMode = "runs"
+    navi.app.nav.scrollOnCursor = false
+    navi.app.nav.cursorIndex = back.cursor
+    Qt.callLater(function() { if (navi.flick) navi.actions.scrollBy(back.scrollY - navi.flick.contentY) })
+    navi.actions.focusForView()
+  }
+
   function goBack() {
     if (navi.app.nav.viewMode === "issue") {
       if (navi.app.nav.issueReturnMode === "entry") navi.restoreCardFromIssue()
@@ -323,5 +358,6 @@ QtObject {
     if (navi.app.nav.viewMode === "memory") { if (navi.app.memories.memoryEditing) navi.app.memories.memoryEscape(); else navi.restoreMemoriesList(); return }
     if (navi.app.nav.viewMode === "entry") { navi.restoreListView(); return }
     if (navi.app.nav.viewMode === "document") { navi.restoreDocumentsList(); return }
+    if (navi.app.nav.viewMode === "run") { navi.restoreRunsList(); return }
   }
 }
