@@ -50,3 +50,20 @@ function normalizeRun(raw) {
     tree: { stories: arrayOr(st.stories), subtasks: arrayOr(st.subtasks) }
   }
 }
+
+// The one state shown for a normalised run. The lease matters only while the
+// run says `started`: a started run whose lease is missing or not live is
+// dead. Anything else -- an unknown or empty status, or no run at all -- is
+// `unknown`, which is neither running nor finished. `stale` is a card state,
+// never a run state.
+function runState(run) {
+  if (run === null || typeof run !== "object") return "unknown"
+  var status = run.status
+  if (status === "started") {
+    var lease = run.lease
+    return lease !== null && typeof lease === "object" && lease.live === true ? "running" : "dead"
+  }
+  if (status === "stopped") return "parked"
+  if (status === "escalated" || status === "cancelled" || status === "done") return status
+  return "unknown"
+}

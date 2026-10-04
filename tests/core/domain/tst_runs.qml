@@ -179,4 +179,62 @@ TestCase {
     checkDefaults(Runs.normalizeRun({ row: null, status: null }), "null row and status")
     checkDefaults(Runs.normalizeRun({ status: { run: "x", control: "y" } }), "non-object run and control")
   }
+
+  function test_state_running() {
+    compare(Runs.runState({ status: "started", lease: { live: true } }), "running")
+    compare(Runs.runState(Runs.normalizeRun(fullRaw())), "running")
+  }
+
+  function test_state_dead_not_live() {
+    compare(Runs.runState({ status: "started", lease: { live: false } }), "dead")
+
+    var raw = fullRaw()
+    raw.status.control.lease.live = false
+    compare(Runs.runState(Runs.normalizeRun(raw)), "dead")
+
+    // A sloppy "true" string is not liveness.
+    var stringy = fullRaw()
+    stringy.status.control.lease.live = "true"
+    compare(Runs.runState(Runs.normalizeRun(stringy)), "dead")
+  }
+
+  function test_state_dead_missing_lease() {
+    compare(Runs.runState({ status: "started", lease: null }), "dead")
+    compare(Runs.runState({ status: "started" }), "dead")
+    compare(Runs.runState(Runs.normalizeRun({ row: { id: "r1", status: "started" } })), "dead")
+
+    var noLease = fullRaw()
+    delete noLease.status.control
+    compare(Runs.runState(Runs.normalizeRun(noLease)), "dead")
+  }
+
+  function test_state_terminal_and_parked() {
+    var expected = [
+      ["stopped", "parked"],
+      ["escalated", "escalated"],
+      ["cancelled", "cancelled"],
+      ["done", "done"]
+    ]
+    for (var i = 0; i < expected.length; i++) {
+      var status = expected[i][0]
+      var state = expected[i][1]
+      compare(Runs.runState({ status: status, lease: { live: true } }), state, status + " live lease")
+      compare(Runs.runState({ status: status, lease: { live: false } }), state, status + " dead lease")
+      compare(Runs.runState({ status: status, lease: null }), state, status + " no lease")
+      compare(Runs.runState({ status: status }), state, status + " lease key absent")
+    }
+  }
+
+  function test_state_unknown() {
+    var statuses = ["weird", "", "stale", "STARTED", "Done", "running", "dead"]
+    for (var i = 0; i < statuses.length; i++) {
+      compare(Runs.runState({ status: statuses[i], lease: { live: true } }), "unknown", "status " + statuses[i])
+    }
+    compare(Runs.runState({ lease: { live: true } }), "unknown", "missing status")
+    compare(Runs.runState({}), "unknown", "empty run")
+    compare(Runs.runState(null), "unknown", "null")
+    compare(Runs.runState(undefined), "unknown", "undefined")
+    compare(Runs.runState("x"), "unknown", "string run")
+    compare(Runs.runState(Runs.normalizeRun(undefined)), "unknown", "normalised garbage")
+  }
 }
