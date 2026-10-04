@@ -22,11 +22,12 @@ function glyphOf(state) {
 }
 
 // One count of a rollup-shaped object. A missing field, a non-object, a
-// negative or a non-number is 0.
+// negative or anything but a finite number (a numeric string, a boolean,
+// Infinity) is 0.
 function countOf(counts, key) {
   if (counts === null || typeof counts !== "object") return 0
-  var n = Number(counts[key])
-  return n > 0 ? n : 0
+  var n = counts[key]
+  return typeof n === "number" && isFinite(n) && n > 0 ? n : 0
 }
 
 // A parent's non-zero counts as "glyph N" pairs, e.g. "⟳ 2 ⏸ 1"; "" when none.

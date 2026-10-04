@@ -94,5 +94,13 @@ TestCase {
     compare(make({}).visible, false, "no total: nothing to show")
     compare(make("garbage").visible, false, "a non-object is empty")
     compare(make({ running: -2, parked: "x", total: 3 }, testTheme).visible, true)
+    var loose = make({ running: "2", parked: true, done: Infinity, pending: 1, total: "4" }, testTheme)
+    compare(loose.visible, false, "a numeric-string total is garbage, so nothing to show")
+    var strict = make({ running: "2", parked: true, done: Infinity, pending: 1, total: 4 }, testTheme)
+    compare(seg(strict, "runRollupRunning").visible, false, "a numeric string is not a count")
+    compare(seg(strict, "runRollupParked").visible, false, "a boolean is not a count")
+    compare(seg(strict, "runRollupDone").visible, false, "Infinity is not a count")
+    compare(seg(strict, "runRollupPending").text, "1 pending")
   }
+
 }

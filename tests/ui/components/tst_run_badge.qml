@@ -156,6 +156,9 @@ TestCase {
     // Missing and garbage entries count as 0.
     var odd = make({ theme: testTheme, counts: { running: -1, parked: "x", done: 2 } })
     compare(textOf(odd), "✔ 2")
+    // A count must be a finite number: a numeric string, a boolean or Infinity is garbage too.
+    var loose = make({ theme: testTheme, counts: { running: "2", parked: true, escalated: Infinity, done: 1 } })
+    compare(textOf(loose), "✔ 1")
 
     var zero = make({ theme: testTheme, counts: { running: 0, parked: 0, escalated: 0, done: 0 } })
     compare(zero.visible, false, "all-zero counts show nothing")
