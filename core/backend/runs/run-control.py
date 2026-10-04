@@ -12,8 +12,10 @@ REPO and CMD reach am unaltered; am refuses a bad repo or an unknown run itself.
 Prints exactly one JSON line on EVERY path:
 - am's envelope, unchanged, whether {"ok": true, "data": ...} or
   {"ok": false, "error": ...}. The envelope's `ok` decides, not am's exit code;
-- {"ok": false, "error": {"type": "AmBadOutput", ...}} when am's stdout is not
-  JSON, is not an object, or has no boolean `ok`;
+- {"ok": false, "error": {"type": "AmFailed", ...}} when am exited non-zero
+  without an envelope; the message is the tail of am's stderr;
+- {"ok": false, "error": {"type": "AmBadOutput", ...}} when am exited 0
+  without an envelope;
 - {"ok": false, "error": {"type": "AmMissing", ...}} when am is not on PATH;
 - {"ok": false, "error": {"type": "HelperError", ...}} on any unexpected
   failure (a timeout, an am that cannot start);
@@ -34,6 +36,8 @@ USAGE = ("usage: run-control.py <pause|resume|cancel> RUN REPO"
          " [--verify CMD]... [--allow-no-verification]")
 ACTIONS = ("pause", "resume", "cancel")
 AM_TIMEOUT = 60
+TAIL_LINES = 20
+TAIL_CHARS = 2000
 
 
 class BadOutput(Exception):
@@ -91,18 +95,29 @@ def envelope_of(action, stdout, returncode):
     return envelope
 
 
+def stderr_tail(stderr):
+    """The end of am's stderr, where a crash names its cause: at most TAIL_LINES
+    lines, and of those at most TAIL_CHARS characters."""
+    lines = stderr.rstrip().splitlines()[-TAIL_LINES:]
+    return "\n".join(lines)[-TAIL_CHARS:]
+
+
 def report(action, stdout, stderr, returncode):
     try:
         envelope = envelope_of(action, stdout, returncode)
     except BadOutput as e:
-        return failure("AmBadOutput", str(e))
+        if returncode == 0:
+            return failure("AmBadOutput", str(e))
+        tail = stderr_tail(stderr)
+        return failure("AmFailed", tail or "am " + action + " exited "
+                       + str(returncode) + " with no output.")
     return emit(envelope)
 
 
 def run_am(am, argv):
     """pause/cancel: am answers at once. Returns (stdout, stderr, returncode)."""
-    proc = subprocess.run([am, *argv], capture_output=True, text=True,
-                          stdin=subprocess.DEVNULL, timeout=AM_TIMEOUT)
+    proc = subprocess.run([am, *argv], capture_output=True, encoding="utf-8",
+                          errors="replace", stdin=subprocess.DEVNULL, timeout=AM_TIMEOUT)
     return proc.stdout, proc.stderr, proc.returncode
 
 

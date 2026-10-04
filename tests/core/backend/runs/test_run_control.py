@@ -367,3 +367,49 @@ def test_pause_timeout_is_helper_error(world, monkeypatch, capsys):
     assert out["ok"] is False
     assert out["error"]["type"] == "HelperError"
     assert out["error"]["message"].startswith("The run control failed: ")
+
+# --- am crashed -----------------------------------------------------------------
+
+@pytest.mark.parametrize("text", NOT_ENVELOPES, ids=NOT_ENVELOPE_IDS)
+def test_nonzero_exit_without_envelope_is_am_failed(world, text):
+    set_raw(world, "cancel", text, code=1, stderr=TRACEBACK)
+    code, out = run(world, ["cancel", "r1", "/p"])
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmFailed"
+    assert out["error"]["message"].endswith("ValueError: boom")
+
+
+def test_am_failed_message_is_the_stderr_tail(world):
+    lines = ["line %02d" % i for i in range(50)]
+    set_raw(world, "cancel", "", code=1, stderr="\n".join(lines) + "\n")
+    _, out = run(world, ["cancel", "r1", "/p"])
+    assert out["error"]["type"] == "AmFailed"
+    assert out["error"]["message"] == "\n".join(lines[30:])
+
+    set_raw(world, "cancel", "", code=1, stderr="a" * 3000 + "b" * 2000 + "\n")
+    _, out = run(world, ["cancel", "r1", "/p"])
+    assert out["error"]["type"] == "AmFailed"
+    assert out["error"]["message"] == "b" * 2000
+
+
+def test_am_failed_tail_drops_trailing_whitespace(world):
+    set_raw(world, "cancel", "", code=1, stderr="boom\n\n  \n\t\n")
+    _, out = run(world, ["cancel", "r1", "/p"])
+    assert out["error"] == {"type": "AmFailed", "message": "boom"}
+
+
+def test_am_failed_with_no_stderr(world):
+    set_raw(world, "cancel", "", code=1)
+    code, out = run(world, ["cancel", "r1", "/p"])
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "AmFailed",
+                                          "message": "am cancel exited 1 with no output."}}
+
+
+def test_am_failed_with_invalid_utf8_stderr(world):
+    # Bytes that are not UTF-8 must not turn into a HelperError.
+    set_raw(world, "cancel", b"", code=1, stderr=b"bad \xff byte\n")
+    code, out = run(world, ["cancel", "r1", "/p"])
+    assert code == 0
+    assert out["error"] == {"type": "AmFailed", "message": "bad � byte"}
