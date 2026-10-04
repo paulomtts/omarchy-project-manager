@@ -145,7 +145,7 @@ The run screens read `app.runs` and never import `core/stores`. `ui/screens/Runs
 
 Run state is a separate channel from brd status: a glyph plus a ring (`RunBadge`'s `Badge`, or a `StatusPips` ring), never colour alone. `ui/components/runGlyphs.js` is the one glyph source -- running ⟳, parked ⏸, escalated ‼, dead ✖, cancelled ⊘, done ✔ -- read by `RunBadge`, `RunRollupBar`, `PhaseTimeline`, `RunIndicator`, `RunMark`, `Sidebar` and the run screens. Escalated is drawn in the `urgent` token; merged purple and canceled red (`Board.statusColor`) are never used for a run state.
 
-Refresh model: no timers while idle. `RunStore`'s watch, its debounce, the liveness re-read (only while a run is running) and the fallback poll run only while the panel is open (`active`); closing it stops every process and timer. Logs are fetched on demand, and `Pulse` animates a run badge only while it is running, visible and `active`.
+Refresh model: no timers while idle. `RunStore`'s watch, its debounce, the liveness re-read (only while a run is running) and the fallback poll run only while the panel is open (`active`); closing it stops the watch process and every timer and starts nothing new (a one-shot snapshot or logs fetch already in flight runs to its end). Logs are fetched on demand, and `Pulse` animates a run badge only while it is running, visible and `active`.
 
 Domain helpers: `taxonomy.js` (typed labels), `results.js` (one JSON line +
 exit code), `text.js` (`matchesQuery`), `milestones.js` (the two helper
