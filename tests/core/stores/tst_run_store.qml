@@ -1608,4 +1608,45 @@ TestCase {
     compare(store.pending.r1, "pause")
     compare(store.controlRunners.length, 0)
   }
+
+  function test_a_request_is_still_waiting_after_30_seconds() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("pause", "r1")
+    store.checkWaiting(Date.now() + 29000)
+    compare(store.stillWaiting.r1, undefined, "29 s is not yet")
+    store.checkWaiting(Date.now() + 30000)
+    compare(store.stillWaiting.r1, true)
+    compare(store.stillWaiting.r2, undefined, "only pending runs")
+    compare(store.stillWaitingText, "still waiting — the run may be between phases or dead")
+    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.stillWaiting.r1, true, "acknowledged but not settled: still waiting")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone", [amRequest("pause", "t1", "t1h")]), running("r2")])
+    compare(store.stillWaiting.r1, undefined, "settling removes it")
+    compare(Object.keys(store.stillWaiting).length, 0)
+  }
+
+  // Review Focus 5 and D6.
+  function test_the_pending_timer_runs_only_while_active_with_something_pending() {
+    var store = activeStore(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
+    compare(store.pendingTimer.running, false, "nothing pending")
+    compare(store.pendingTimer.interval, 1000)
+    compare(store.pendingTimer.repeat, true)
+    store.control("pause", "r1")
+    compare(store.pendingTimer.running, true)
+    store.pendingTimer.triggered()
+    compare(store.stillWaiting.r1, undefined, "a fresh request is not waiting yet")
+    store.active = false
+    compare(store.pendingTimer.running, false, "no timer while the panel is closed")
+    compare(store.pending.r1, "pause", "closing the panel keeps pending")
+    compare(store.controlRunners.length, 1, "and the request in flight")
+    store.active = true
+    compare(store.pendingTimer.running, true, "reopening starts it again")
+    reply(store.controlRunners[0].current, ctlFail("NotRunningError", "x"), 0)
+    compare(store.pendingTimer.running, false, "nothing pending any more")
+
+    var idle = ctlStore([running("r1")]); if (!idle) return
+    idle.control("pause", "r1")
+    compare(idle.pendingTimer.running, false, "an inactive store runs no timer")
+  }
 }

@@ -77,6 +77,7 @@ Scope {
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
+  readonly property alias pendingTimer: pendingTimer
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -618,6 +619,18 @@ Scope {
     return match !== null && match.handled_at !== ""
   }
 
+  // Marks the pending requests launched 30 s or more before nowMs (the timer
+  // passes Date.now()); the UI shows stillWaitingText for them.
+  function checkWaiting(nowMs) {
+    var out = {}
+    var ids = Object.keys(store.pending)
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i]
+      if (store.hasKey(controlState.requests, id) && nowMs - controlState.requests[id].launchedMs >= 30000) out[id] = true
+    }
+    store.stillWaiting = out
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -677,6 +690,17 @@ Scope {
     interval: 5000
     repeat: true
     onTriggered: store.refresh()
+  }
+
+  // Only while the panel is open and a control request is pending: closing the
+  // panel keeps `pending` but leaves no timer running.
+  Timer {
+    id: pendingTimer
+    objectName: "pendingTimer"
+    interval: 1000
+    repeat: true
+    running: store.active && Object.keys(store.pending).length > 0
+    onTriggered: store.checkWaiting(Date.now())
   }
 
   // What the watch Process aliases read; kept apart so consumers cannot write it.
