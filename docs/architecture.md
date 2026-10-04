@@ -101,6 +101,11 @@ visible AND holds an in-progress pip, so an idle graph animates nothing),
 `Pulse` (that one fade, shared: `level` swings 1 -> 0.3 -> 1 while the owner
 keeps `running` true and is back at 1 the moment it stops; `StatusPips` and
 `RunBadge` bind their opacity to it instead of declaring a second animation),
+`RunBadge` (an am run state as a glyph in a `Badge` ring -- running ⟳, parked
+⏸, escalated ‼, dead ✖, cancelled ⊘, done ✔, from `runGlyphs.js` -- with a
+subtask's phase beside it, or a parent's non-zero counts such as `⟳ 2 ⏸ 1`
+instead; escalated in `urgent`, never `Board.statusColor`; it pulses only
+while running, visible and `active`),
 `Sidebar`, and the views
 `DocumentsView`, `MemoriesView`, `MemoryNoteView`, `GraphView`.
 `Sidebar`'s five nav rows (Board, Graph, Documents, Memories, Issues) each lead with an
