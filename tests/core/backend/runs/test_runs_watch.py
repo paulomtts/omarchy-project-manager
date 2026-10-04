@@ -216,11 +216,13 @@ def test_live_event_for_watched_run_emits_changed(world):
 
 
 def test_filters_unwatched_runs(world):
+    # r1's live line is the positive control: the helper is reading, and only
+    # the unwatched runs are dropped.
     set_script(world, [hello(), ev("r9"), ev("r8", "attempt_upsert"),
-                       upsert("r7", "/somewhere/else")])
+                       upsert("r7", "/somewhere/else"), ev("r1")])
     code, lines, _ = run_helper(world)
     assert code == 0
-    assert lines == []
+    assert changed(lines) == [["r1"]]
 
 
 def test_ignores_unknown_events_and_keys(world):
