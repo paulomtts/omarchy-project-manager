@@ -112,4 +112,114 @@ TestCase {
     compare(store.snapshotRunner.seq, seqBefore, "no snapshot is launched")
     compare(store.snapshotRunner.current, procA, "the runner was not asked to run again")
   }
+
+  // ---- ok snapshots
+
+  function test_an_ok_reply_fills_runs_with_normalized_runs() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([entry("r1", "started", true), entry("r2", "", false)]), 0)
+    compare(store.runs.length, 2)
+    compare(store.runs[0].id, "r1")
+    compare(store.runs[0].status, "started", "the status comes from the nested am status data")
+    compare(store.runs[0].milestone_id, "m-r1")
+    verify(store.runs[0].lease !== null, "the lease comes from the nested control data")
+    compare(store.runs[0].lease.live, true)
+    compare(store.runs[0].lease.pid, 42)
+    compare(store.runs[1].id, "r2")
+    // r2's am status has no run.status: normalizeRun falls back to the row's
+    // status, which must not be the status OBJECT the helper put there.
+    verify(store.runs[1].status !== "[object Object]", "the summary's overwritten status is not used")
+    compare(store.runs[1].status, "")
+    compare(store.runs[1].lease.live, false)
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+  }
+
+  function test_an_ok_reply_without_runs_is_ok_and_empty() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([entry("r1", "started", true)]), 0)
+    compare(store.runs.length, 1)
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([]), 0)
+    compare(store.runs.length, 0, "runs: [] empties the list")
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    store.refresh()
+    reply(store.snapshotRunner.current, '{"ok": true, "data_dir": "/x"}\n', 0)
+    compare(store.runs.length, 0, "an absent runs key is an empty list, not an error")
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+  }
+
+  function test_only_the_latest_refresh_is_applied() {
+    var store = makeWithProject(rootA); if (!store) return
+    store.refresh()
+    var first = store.snapshotRunner.current
+    store.refresh()
+    var second = store.snapshotRunner.current
+    verify(first !== second, "the second refresh launched its own process")
+    compare(first.running, false, "the older snapshot is stopped")
+    reply(second, okReply([entry("new", "started", true)]), 0)
+    compare(store.runs.length, 1)
+    compare(store.runs[0].id, "new")
+    reply(first, okReply([entry("old", "started", true), entry("old2", "done", false)]), 0)
+    compare(store.runs.length, 1, "a late exit of the older snapshot changes nothing")
+    compare(store.runs[0].id, "new")
+  }
+
+  function test_a_project_switch_drops_the_old_projects_late_result() {
+    var store = makeWithProject(rootA); if (!store) return
+    var procA = store.snapshotRunner.current
+    reply(procA, okReply([entry("a1", "started", true)]), 0)
+    compare(store.runs[0].id, "a1")
+    store.selectedRunId = "a1"
+    store.refresh()
+    var procA2 = store.snapshotRunner.current
+    store.project = rootB
+    compare(store.runs.length, 0, "cleared at once")
+    compare(store.selectedRunId, "", "the selection belongs to the old project")
+    var procB = store.snapshotRunner.current
+    verify(procB !== procA2, "a snapshot for B was launched")
+    compare(procB.command[2], "/home/u/b")
+    reply(procA2, okReply([entry("a2", "started", true)]), 0)
+    compare(store.runs.length, 0, "A's late reply changes nothing")
+    compare(store.amStatus, "ok")
+    reply(procB, okReply([entry("b1", "done", false)]), 0)
+    compare(store.runs.length, 1, "B's reply is applied")
+    compare(store.runs[0].id, "b1")
+  }
+
+  function test_a_refresh_in_the_same_project_keeps_the_selection() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([entry("r1", "started", true)]), 0)
+    store.selectedRunId = "r1"
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([entry("r1", "done", false)]), 0)
+    compare(store.selectedRunId, "r1")
+    compare(store.runs[0].status, "done")
+  }
+
+  function test_the_last_non_empty_line_is_the_reply() {
+    var store = makeWithProject(rootA); if (!store) return
+    var text = "warning: something chatty\n" + okReply([entry("r1", "started", true)]) + "\n  \n"
+    reply(store.snapshotRunner.current, text, 0)
+    compare(store.runs.length, 1)
+    compare(store.runs[0].id, "r1")
+    compare(store.amStatus, "ok")
+  }
+
+  function test_malformed_runs_are_skipped_without_throwing() {
+    var store = makeWithProject(rootA); if (!store) return
+    var mixed = JSON.stringify({ ok: true, runs: [null, 3, "x", [1], entry("r1", "started", true), { id: "r2" }] })
+    reply(store.snapshotRunner.current, mixed, 0)
+    compare(store.runs.length, 2, "only the object entries are kept")
+    compare(store.runs[0].id, "r1")
+    compare(store.runs[1].id, "r2", "an entry without status data still normalizes")
+    compare(store.runs[1].lease, null)
+    compare(store.amStatus, "ok")
+    store.refresh()
+    reply(store.snapshotRunner.current, '{"ok": true, "runs": {"r1": {}}}', 0)
+    compare(store.runs.length, 0, "a runs value that is not an array is empty")
+    compare(store.amStatus, "ok")
+  }
 }

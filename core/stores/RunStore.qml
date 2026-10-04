@@ -38,6 +38,53 @@ Scope {
     if (store.project !== "") store.refresh()
   }
 
+  // The helper prints exactly one JSON line; anything before it (a warning) and
+  // blank lines after it are ignored.
+  function lastLine(text) {
+    var lines = String(text || "").split("\n")
+    for (var i = lines.length - 1; i >= 0; i--) {
+      var line = lines[i].trim()
+      if (line !== "") return line
+    }
+    return ""
+  }
+
+  // The reply's envelope object, or null when there is none to read.
+  function parseEnvelope(text) {
+    var line = store.lastLine(text)
+    if (line === "") return null
+    var value = null
+    try { value = JSON.parse(line) } catch (e) { return null }
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
+  }
+
+  // The `am runs` summary without its `status` key: the helper replaced the
+  // summary's status string with the `am status` object, which normalizeRun
+  // must never read as the row's status ("[object Object]").
+  function rowOf(entry) {
+    var row = {}
+    for (var key in entry) {
+      if (key !== "status" && Object.prototype.hasOwnProperty.call(entry, key)) row[key] = entry[key]
+    }
+    return row
+  }
+
+  function applySnapshot(stdout, exitCode, launchedGuard) {
+    if (launchedGuard !== store.project) return
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope === null || envelope.ok !== true) return
+    var list = Array.isArray(envelope.runs) ? envelope.runs : []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i]
+      if (e === null || typeof e !== "object" || Array.isArray(e)) continue
+      out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
+    }
+    store.runs = out
+    store.amStatus = "ok"
+    store.lastError = ""
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -48,5 +95,6 @@ Scope {
     script: store.backendDir + "runs/runs-snapshot.py"
     guard: store.project
     onGuardChanged: store.projectSwitched()
+    onFinished: function(stdout, exitCode, launchedGuard) { store.applySnapshot(stdout, exitCode, launchedGuard) }
   }
 }
