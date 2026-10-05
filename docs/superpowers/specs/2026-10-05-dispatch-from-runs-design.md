@@ -1,9 +1,13 @@
 # Dispatch from the Runs screen — design
 
 Status: proposed. Builds on the S3 dispatch spec (`2026-10-03-am-run-dispatch-design.md`), S7
-(`2026-10-05-dispatch-story-level-design.md`), S6 (`2026-10-05-runs-all-projects-design.md`)
-and the store split (`2026-10-05-split-runstore-design.md`). All of them are merged on main when
-this starts, so read their code before changing it.
+(`2026-10-05-dispatch-story-level-design.md`) and S6 (`2026-10-05-runs-all-projects-design.md`).
+All of them are merged on main when this starts, so read their code before changing it. It
+lands BEFORE "Split RunStore" (`2026-10-05-split-runstore-design.md`), so it is written against
+the single `core/stores/RunStore.qml` (`app.runs`): S3's dispatch state machine (form, preview,
+start, its `dispatch*` members), S7's story target and retarget, the run settings
+(`get-run-settings` / `set-run-settings` through `viewer-state.py`), S6's `projectRoots` and
+per-root refresh, and the control requests all live in that one store.
 
 ## Problem
 
@@ -162,30 +166,47 @@ that `Runs.dispatchPlan(card, cardMap)` reads.
   `{key, level: board|milestone|story|subtask, card, label, depth}` in tree order. The rule is
   above, and every row's offer comes from `dispatchPlan`, so the two never disagree.
 
-### Store (`RunDispatchStore`)
+### Store (`RunStore`, its dispatch sections)
+
+`RunStore.qml` keeps growing until the split, so the new members are grouped in delimited
+sections the split can lift out whole into `RunDispatchStore`. Each opens with one header line
+in the file's existing style (`// ---- attempt logs (5.2)`, `RunStore.qml:288` on main at
+`84a9217`) and holds only its own members, all prefixed `dispatch*`:
+
+| where | members |
+|---|---|
+| S3's dispatch section, beside the form | `dispatchRoot` |
+| `// ---- dispatch: project and target steps` (right after S3's dispatch section) | `dispatchStep`, `dispatchOpenFromRuns()`, `dispatchBack()`; `dispatchProjectProbe`, `dispatchProjectRows`, `dispatchProjectRunner`, `dispatchProjectReplied(…)`, `dispatchProjectPick(root)`; `dispatchTargetCardMap`, `dispatchTargetRows`, `dispatchTargetLoading`, `dispatchTargetRunner`, `dispatchTargetReplied(…)`, `dispatchTargetPick(key)` |
 
 - **`dispatchRoot`**, the project the dialog is for. Every dispatch launch (defaults, preview,
-  start) and every run-settings request (`runSettingsWanted(root)`,
-  `runSettingsSaveRequested(root, patch)`) uses `dispatchRoot`, never `project`. A card entry
-  point sets `dispatchRoot = project` and skips steps 1 and 2. The Runs entry point leaves it
-  empty until step 1 picks.
-- **`step`** (`project` | `target` | `form`), `openFromRuns()`, `pickProject(root)`,
-  `pickTarget(key)`, `back()`. The inputs come from App: `projectRoots` (the S6 list) and
-  `runs`, which App already binds.
-- Two `HelperRunner`s: `probeRunner` (`board-tree.py --probe`, latest wins) and `treeRunner`
-  (`board-tree.py ROOT`, latest wins, `guard: dispatchRoot`). A reply for a project the user
-  has moved away from is dropped.
+  start) and every run-settings launch the dispatch section makes (S3's `get-run-settings`
+  read and `set-run-settings` save, S7's `prefixByMilestone` save) carries `dispatchRoot`,
+  never `project`. A card entry point sets `dispatchRoot = project` and skips steps 1 and 2.
+  The Runs entry point leaves it empty until step 1 picks.
+- **`dispatchStep`** (`project` | `target` | `form`), `dispatchOpenFromRuns()`,
+  `dispatchProjectPick(root)`, `dispatchTargetPick(key)`, `dispatchBack()`. The inputs are
+  members the store already has: `projectRoots` (S6, bound by App) and `runs`. No new App
+  binding.
+- Two `HelperRunner`s: `dispatchProjectRunner` (`board-tree.py --probe`, latest wins) and
+  `dispatchTargetRunner` (`board-tree.py ROOT`, latest wins, `guard: dispatchRoot`). A reply
+  for a project the user has moved away from is dropped. The picked tree, indexed with
+  `Board.indexTree`, is `dispatchTargetCardMap`, the card map a target picked here hands to
+  the form.
 - **Guards.** A dialog opened from Runs ignores a switch of the open project: its root is its
-  own. A dialog opened from a card keeps S3's behaviour on a project switch. A launch in flight
-  completes for the root it was started for (S3's rule), and its result names that root.
+  own (the dispatch section's project-switch reaction, S3's, sits in or beside
+  `projectSwitched()`, `RunStore.qml:253` on main, and skips a dialog with a non-empty
+  `dispatchStep`). A dialog opened from a card keeps S3's behaviour on a project switch. A
+  launch in flight completes for the root it was started for (S3's rule), and its result names
+  that root. On `started` the store asks S6's per-root refresh for `dispatchRoot` only.
 - Story targets need `am run --story` (S7). This milestone does not re-check it, because S7's
   contract test gates `am` before S7 merges.
 
 ### UI
 
-- `ui/components/DispatchDialog.qml` gains steps 1 and 2 above S3's form. It is built on
-  `ModalCard`, `ListRow`, `FilterableList` and `ActionButton`, with no new shared component and
-  no second copy of one.
+- `ui/components/DispatchDialog.qml` gains steps 1 and 2 above S3's form, reading
+  `app.runs.dispatchStep`, `dispatchProjectRows`, `dispatchTargetRows` and
+  `dispatchTargetLoading`. It is built on `ModalCard`, `ListRow`, `FilterableList` and
+  `ActionButton`, with no new shared component and no second copy of one.
 - `ui/screens/RunsScreen.qml` (**Start run** enablement and tooltip), `ui/Shortcuts.qml` (`d`)
   and `ui/Panel.qml` (the dialog without a project) follow the gating table.
 
@@ -209,11 +230,12 @@ that `Runs.dispatchPlan(card, cardMap)` reads.
 - `tests/core/domain/tst_runs.qml`: `dispatchProjects` (order, open first, unreachable
   disabled, empty) and `dispatchTargets` (board first, tree order, finished omitted, only todo
   subtasks, stories included, agreement with `dispatchPlan`).
-- `tests/core/stores/tst_run_dispatch_store.qml`: `dispatchRoot` drives the defaults, preview,
-  start and settings argv; a card entry uses the open project; the steps and `back()`; the probe
-  and tree runners and their guards; a failed tree read marks the row; an open-project switch
-  leaves a Runs-opened dialog alone. App test: `projectRoots` reaches the store, and `started`
-  refreshes ROOT only.
+- `tests/core/stores/tst_run_store.qml` (the one store test file until the split moves its
+  tests by concern), in its own dispatch block so the split can move it whole: `dispatchRoot`
+  drives the defaults, preview, start and settings argv; a card entry uses the open project;
+  the steps and `dispatchBack()`; the probe and tree runners and their guards; a failed tree
+  read marks the row; an open-project switch leaves a Runs-opened dialog alone; the project
+  step reads the store's `projectRoots`; `started` refreshes ROOT only.
 - `tests/ui/`: Start run with no project open, through all three steps, with a stubbed launcher,
   landing on Run detail. Also: `d` on the Runs list; a disabled project row; the empty registry;
   Back at each step; Escape; filter, arrows and Enter in step 2; the card entry points unchanged.

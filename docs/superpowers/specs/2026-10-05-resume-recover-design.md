@@ -2,13 +2,35 @@
 
 Status: proposed. Builds on the controls spec (`2026-10-03-am-run-controls-design.md`, S2),
 the dispatch spec (`2026-10-03-am-run-dispatch-design.md`, S3), story dispatch
-(`2026-10-05-dispatch-story-level-design.md`, S7) and global runs
-(`2026-10-05-runs-all-projects-design.md`, S6). Written against the stores as the
-"Split RunStore" milestone leaves them: `RunStore` (snapshot, watch, selection, events),
-`RunControlStore` (control, pending, run settings), `RunAlertsStore` (alerts,
-notifications) and `RunDispatchStore` (the dispatch state machine). Every test that needs
+(`2026-10-05-dispatch-story-level-design.md`, S7), global runs
+(`2026-10-05-runs-all-projects-design.md`, S6) and dispatch from the Runs screen
+(`2026-10-05-dispatch-from-runs-design.md`). It lands BEFORE "Split RunStore"
+(`2026-10-05-split-runstore-design.md`), so it is written against the single
+`core/stores/RunStore.qml` (`app.runs`): the snapshot, watch, selection and events, the
+control requests, the control error, the cancel dialog and flash (S2), the run settings, the
+alerts, and S3's dispatch state machine (with S7's story target and the project and target
+steps of dispatch from the Runs screen) all live in that one store. Every test that needs
 `am` data reads the fixtures the "Align the run model with real am" milestone records under
 `tests/fixtures/am/` (`status-escalated.json` above all).
+
+**Where the new state goes.** `RunStore.qml` keeps growing until the split, so this milestone
+adds its members as delimited sections the split can lift out whole. Each section opens with
+one header line in the file's existing style (`// ---- attempt logs (5.2)` at `:288`,
+`// ---- cancel confirmation and the footer flash (S2 4.3)` at `:690`, `// ---- alerts (S2
+4.4)` at `:750`) and holds only its own members, all with one prefix:
+
+| section (header line) | members | split target |
+|---|---|---|
+| `// ---- resume dialog` | `resumeRunId`, `resumeVerify`, `resumeAllowNoVerification`, `resumeError`, `resumeOpenFor(runId)`, `resumeClose()`, `resumeConfirm()`, `resumeSaveRunner`, `resumeSaveReplied(…)` | `RunControlStore` |
+| `// ---- relaunch` (right after S3's dispatch section) | `relaunchOpenFor(card, cardMap, relaunch)` | `RunDispatchStore` |
+
+Two changes extend existing members in place instead of adding a section:
+`lastControlErrorType` joins the control error pair (`lastControlError`,
+`lastControlErrorRunId`, `:68-69`; set in `failControl` `:570-574`, cleared in
+`dismissControlError` `:576-579`), and the stopped-run attempt choice changes the selection
+(`selectAttempt` `:303-316`, `openDefaultAttempt` `:346-349`, `logsAfterSnapshot`
+`:355-364`). Line numbers are main at `84a9217`; S3, S6 and the events timeline add to the
+file before this starts, so read it first.
 
 ## Problem
 
@@ -141,12 +163,12 @@ For a run in state `escalated`, `parked`, `dead` or `cancelled`, Run detail show
 
 ### Resume asks for the verify commands
 
-- `RunControlStore.control("resume", id)` on a non-`task` run reads the run settings of the
-  run's project (S6: `run.project.root`) as today. With a usable stored set or the stored
-  opt-out it resumes at once, as today.
-- With neither, it no longer fails: nothing is asked of am, no request stays pending, and
-  the **Resume dialog** opens for that run (`resumeRunId`, `resumeVerify`,
-  `resumeAllowNoVerification`, `resumeError`).
+- `RunStore.control("resume", id)` (`:501-530`) on a non-`task` run reads the run settings
+  of the run's project (S6: `run.project.root`) as today. With a usable stored set or the
+  stored opt-out it resumes at once, as today (`resumeWithSettings`, `:625-647`).
+- With neither, it no longer fails (the sentence at `:644`): nothing is asked of am, no
+  request stays pending, and the **Resume dialog** opens for that run (`resumeRunId`,
+  `resumeVerify`, `resumeAllowNoVerification`, `resumeError`).
 
 ```
 ┌ Resume run …4a51d663 ────────────────────────────────────────┐
@@ -162,12 +184,12 @@ For a run in state `escalated`, `parked`, `dead` or `cancelled`, Run detail show
 
 - Resume is enabled when the form passes the verify rule of `Runs.validateDispatch`
   (at least one non-blank command, or the opt-out ticked; the store reads only that rule's
-  `verify` error). `confirmResume()` re-checks `refusalOf("resume", id)`: a run that changed
+  `verify` error). `resumeConfirm()` re-checks `refusalOf("resume", id)`: a run that changed
   under the dialog keeps it open with `resumeError`. Then it starts the resume with
   `--verify` pairs in order (blank lines dropped) or `--allow-no-verification`, exactly as a
   stored set would, and saves `set-run-settings ROOT {"verify": [...], "allowNoVerification":
-  bool}` on its own runner. The resume does not wait for the save; a failed save flashes
-  `The verify commands could not be saved`.
+  bool}` on its own runner (`resumeSaveRunner`). The resume does not wait for the save; a
+  failed save flashes `The verify commands could not be saved`.
 - A `task` run's resume never opens the dialog: am ignores `--verify` there.
 - `r` and the Resume buttons go through the same `control("resume", …)`, so they open the
   dialog too. The dialog takes the focus while open and gives it back on close; Escape
@@ -178,12 +200,14 @@ For a run in state `escalated`, `parked`, `dead` or `cancelled`, Run detail show
 - Offered for a `cancelled` run, an `escalated` `task` run (am never resumes it), and any
   stopped run whose last resume am refused with `NotResumableError` or
   `CheckpointMismatchError`.
-- It opens S3's dispatch dialog through `RunDispatchStore` with the run's target and the
-  run's recorded prefix and base instead of the defaults: a milestone run targets its
-  milestone card, a `task` run its card, a story run (S7) its story. Verify and
-  parallelism come from the project's run settings as for any dispatch. Everything after
-  that is S3's: preview, cost warning, Start, landing on the new run.
-- Dispatch is project-bound (S6). For a run of a project that is not open, Relaunch is
+- It opens S3's dispatch dialog through `RunStore`'s dispatch state machine
+  (`relaunchOpenFor`) with the run's target and the run's recorded prefix and base instead of
+  the defaults: a milestone run targets its milestone card, a `task` run its card, a story
+  run (S7) its story. Verify and parallelism come from the project's run settings as for any
+  dispatch. Everything after that is S3's: preview, cost warning, Start, landing on the new
+  run.
+- Relaunch is a card entry, so it is bound to the open project (S6; dispatch from the Runs
+  screen leaves card entries unchanged). For a run of a project that is not open, Relaunch is
   disabled with "Open this run's project to relaunch it" (the run row's **Open project**
   action from S6 does that). A target card that is no longer on the board, or is finished,
   is refused by `dispatchPlan` as at any dispatch.
@@ -201,7 +225,7 @@ away, as today):
 | `DeadRunError` | The run's process has died, so nobody can act on this request. Resume picks the run up. | no |
 
 `Runs.offersRelaunch(error)` says whether an error type offers Relaunch, and
-`RunControlStore` keeps the type of the last failed request (`lastControlErrorType`) beside
+`RunStore` keeps the type of the last failed request (`lastControlErrorType`) beside
 its sentence. `Runs.controls(run).resume` is disabled for an `escalated` run whose
 `workflow` is `task`, with "An escalated card run cannot be resumed; relaunch it".
 
@@ -226,15 +250,23 @@ domain subtask keeps its diff to its own functions.
     `detail`, `next` and `why` lines in that order (backticks stripped), or null.
 - `core/backend/runs/runs-logs.py`: `ATTEMPT` `0` sends no `--attempt` (am's newest of that
   phase). Everything else unchanged.
-- `RunStore` (selection): `selectAttempt` accepts attempt 0 for a phase; when a run is
-  selected (and after a snapshot that moves its state) a run with a `stopReport` opens its
-  `attempt` instead of `Runs.defaultAttempt`.
-- `RunControlStore`: the Resume dialog state and `openResume` / `closeResume` /
-  `confirmResume`, the settings save runner, `lastControlErrorType`.
-- `RunDispatchStore`: `openRelaunch(card, cardMap, relaunch)` opens the dispatch state
-  machine for `card` with `relaunch.prefix` and `relaunch.base` over the defaults (name it
-  after the merged S3/S7 open function; read that store first). Refused (false) without
-  that card.
+- `RunStore` (one store until the split; sections as in the table above):
+  - selection: `selectAttempt` accepts attempt 0 for a phase (today it refuses
+    `attempt <= 0`, `:306`); when a run is selected (and after a snapshot that moves its
+    state) a run with a `stopReport` opens its `attempt` instead of `Runs.defaultAttempt`.
+  - control: `lastControlErrorType` beside the control error pair; the no-stored-set branch
+    of `resumeWithSettings` settles the request and calls `resumeOpenFor(runId)` instead of
+    `failControl`.
+  - `// ---- resume dialog`: the dialog state, `resumeOpenFor` / `resumeClose` /
+    `resumeConfirm`, and the verify-set save on `resumeSaveRunner` (its own runner, not the
+    notify switch's `settingsSaveRunner`, `:870`); a failed save uses the existing `flash`
+    (`:705`).
+  - `// ---- relaunch`: `relaunchOpenFor(card, cardMap, relaunch)` opens S3's dispatch state
+    machine for `card` with `relaunch.prefix` and `relaunch.base` over the defaults. It calls
+    the merged S3/S7 card-entry open function (read the dispatch section first; its members
+    are named `dispatch*`), so, with dispatch from the Runs screen merged, a relaunch is a
+    card entry: `dispatchRoot` is the open project and the project and target steps are
+    skipped. Refused (false) without that card.
 - UI: the verify editor of S3's `DispatchDialog` becomes a shared
   `ui/components/VerifyCommandsField.qml` (rule: shared before the second use) used by
   `DispatchDialog` and the new `ui/components/ResumeVerifyDialog.qml` (on `ModalCard`),
@@ -267,14 +299,16 @@ domain subtask keeps its diff to its own functions.
   run-end, another run's comment ignored, a non-am author ignored, newest wins).
 - `tests/core/backend/runs/test_runs_logs.py`: attempt `0` sends no `--attempt`; other
   numbers unchanged.
-- `tests/core/stores/tst_run_store.qml`: an escalated run opens its failed attempt, a step
-  opens attempt 0, a running run still opens `defaultAttempt`.
-- `tests/core/stores/tst_run_control_store.qml`: no stored set opens the dialog and leaves
-  nothing pending; confirm with commands (argv order, blanks dropped), with the opt-out,
-  invalid form refused, changed run keeps the dialog, save failure flashes but resumes, a
-  `task` run never opens it, `lastControlErrorType` set and cleared.
-- `tests/core/stores/tst_run_dispatch_store.qml`: `openRelaunch` overrides prefix and base,
-  keeps verify from settings, refuses a missing card.
+- `tests/core/stores/tst_run_store.qml` (the one store test file until the split moves its
+  tests by concern), each group in its own block so the split can move it whole:
+  - selection: an escalated run opens its failed attempt, a step opens attempt 0, a running
+    run still opens `defaultAttempt`.
+  - resume dialog: no stored set opens the dialog and leaves nothing pending; confirm with
+    commands (argv order, blanks dropped), with the opt-out, invalid form refused, changed
+    run keeps the dialog, save failure flashes but resumes, a `task` run never opens it,
+    `lastControlErrorType` set and cleared.
+  - relaunch: `relaunchOpenFor` overrides prefix and base, keeps verify from settings, uses
+    the open project as `dispatchRoot`, refuses a missing card.
 - `tests/ui/components/`: `VerifyCommandsField` (add, remove, opt-out), `ResumeVerifyDialog`,
   `StopReasonBlock` (each state, note hidden, actions' enabled and reasons).
 - `tests/ui/tst_runs_flow.qml`: escalated run → block and failed output; Resume with no

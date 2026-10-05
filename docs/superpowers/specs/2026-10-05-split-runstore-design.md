@@ -1,10 +1,12 @@
 # Split RunStore — design
 
-Status: proposed. A behaviour-preserving refactor. Lands after
-`2026-10-05-run-events-timeline-design.md` (S5) and before the Resume and recover milestone.
-By then the S3 (`2026-10-03-am-run-dispatch-design.md`), S7
-(`2026-10-05-dispatch-story-level-design.md`), S6 (`2026-10-05-runs-all-projects-design.md`)
-and S5 milestones are merged on main, and `RunStore.qml` carries all of them. The store names
+Status: proposed. A behaviour-preserving refactor. Lands after the Resume and recover milestone
+(`2026-10-05-resume-recover-design.md`) and before Alerts while the panel is closed. By then the
+S3 (`2026-10-03-am-run-dispatch-design.md`), S7 (`2026-10-05-dispatch-story-level-design.md`),
+S6 (`2026-10-05-runs-all-projects-design.md`), S5
+(`2026-10-05-run-events-timeline-design.md`), Dispatch from the Runs screen
+(`2026-10-05-dispatch-from-runs-design.md`) and Resume and recover milestones are merged on
+main, and `RunStore.qml` carries all of them. The store names
 here (`RunStore`, `RunControlStore`, `RunAlertsStore`, `RunDispatchStore`) are assumed by
 later specs, so do not rename them.
 
@@ -25,13 +27,18 @@ holds seven concerns. Grounded in today's file:
 | run settings | `notifyOnEscalation`, `notifySaved`, `notifyTouched` (94-96) | `setNotifyOnEscalation` (801), `applyRunSettings` (813), `notifySaveReplied` (823) | `settingsLoadRunner` (861), `settingsSaveRunner` (870) |
 
 Shared private helpers: `lastLine` (396), `parseEnvelope` (406), `copyMap` (485), `hasKey`
-(493). The queued milestones add four more concerns to the same file: S3 the dispatch state
+(493). The queued milestones add more concerns to the same file: S3 the dispatch state
 machine (form, preview, start) and S7 its story target and retarget; S6 `projectRoots`, the
 per-project snapshot, `runsChanged(ids)`, per-project alert arming and the global notify
-setting; S5 the events state. Each later milestone (Resume and recover, Alerts while the panel
-is closed, Live run output, Dispatch from the Runs screen, Run history) would edit the same file
-again. Agents working on it read 1500+ lines of unrelated state, and every change risks a
-neighbour.
+setting; S5 the events state; Dispatch from the Runs screen `dispatchRoot` and the project and
+target steps (a `// ---- dispatch: project and target steps` section: `dispatchStep`,
+`dispatchOpenFromRuns`, `dispatchBack`, `dispatchProject*`, `dispatchTarget*` and their two
+`board-tree.py` runners); Resume and recover the stopped-run attempt choice in the selection,
+`lastControlErrorType` beside the control error pair, the Resume dialog (a `// ---- resume
+dialog` section: `resume*`, with its own `resumeSaveRunner`) and the relaunch (a
+`// ---- relaunch` section: `relaunchOpenFor`). Each later milestone (Alerts while the panel is
+closed, Live run output, Run history) would edit the same file again. Agents working on it
+read 1500+ lines of unrelated state, and every change risks a neighbour.
 
 ## Decision
 
@@ -43,10 +50,10 @@ removes them.
 
 | store | `App` property | owns |
 |---|---|---|
-| `RunStore` | `app.runs` | the snapshot (every project root after S6), the watch and its `runsChanged(ids)` signal, `amStatus` / `lastError` / `stale` / `watchWarning`, the list filter (status chips, S6 project filter, search), the selection (`selectedRunId`, `runById`), the attempt logs, the S5 events |
-| `RunControlStore` | `app.runControl` | `control()`, `pending`, `stillWaiting`, the control error, `refusalOf`, the cancel confirmation, the flash, the resume verify read, and every run or global settings read and write through `viewer-state.py` (`get/set-run-settings`, S6 `get/set-global-settings`), so the notify switch and the stored verify set live here |
+| `RunStore` | `app.runs` | the snapshot (every project root after S6), the watch and its `runsChanged(ids)` signal, `amStatus` / `lastError` / `stale` / `watchWarning`, the list filter (status chips, S6 project filter, search), the selection (`selectedRunId`, `runById`, Resume and recover's stopped-run attempt choice), the attempt logs, the S5 events |
+| `RunControlStore` | `app.runControl` | `control()`, `pending`, `stillWaiting`, the control error (with Resume and recover's `lastControlErrorType`), `refusalOf`, the cancel confirmation, the flash, the resume verify read, the Resume dialog (the `resume*` section: its state, `resumeOpenFor` / `resumeClose` / `resumeConfirm`, `resumeSaveRunner`), and every run or global settings read and write through `viewer-state.py` (`get/set-run-settings`, S6 `get/set-global-settings`), so the notify switch and the stored verify set live here |
 | `RunAlertsStore` | `app.runAlerts` | `newAlerts` arming (per project after S6), the toast queue, the toast expiry, the desktop notification (`notify.py`) |
-| `RunDispatchStore` | `app.runDispatch` | the S3 dispatch state machine (`idle → previewing → ready / refused → starting → started / failed`), the form, the debounced preview, `dispatchStart()`, the S7 story target and `retargetToMilestone()`, the default-branch lookup |
+| `RunDispatchStore` | `app.runDispatch` | the S3 dispatch state machine (`idle → previewing → ready / refused → starting → started / failed`), the form, the debounced preview, `dispatchStart()`, the S7 story target and `retargetToMilestone()`, the default-branch lookup, Dispatch from the Runs screen's `dispatchRoot` and project and target steps (`dispatchStep`, `dispatchOpenFromRuns`, `dispatchBack`, `dispatchProject*`, `dispatchTarget*`, their runners), and Resume and recover's relaunch (the `relaunch*` section) |
 
 Rules:
 
@@ -54,7 +61,9 @@ Rules:
    component that is in `RunStore.qml` when this milestone starts goes to exactly one store.
    Nothing is duplicated, and nothing is dropped unless no code or test reads it. The first
    subtask writes the full list as Appendix A of this spec, from the code at that time. The
-   table above covers only what exists on main today.
+   concern table in Problem covers only what exists on main today; the members the queued
+   milestones add (named in Problem) are in Appendix A too, each delimited section mapped
+   whole to the store the responsibilities table names.
 2. **No duplicated helpers.** `lastLine` / `parseEnvelope` / `copyMap` / `hasKey` and the run
    lookup inside `runById` become pure functions in `core/domain/` before anything moves.
    `results.js` already holds the one-JSON-line reading (`parseJsonLine`). Each store imports
@@ -66,7 +75,7 @@ Rules:
    | `RunStore` | `backendDir`, `project` (open root), `active`, `searchQuery`, `projectRoots` (S6), `titles` (S5) | out: `runFilterToggled`, `runsChanged(ids)`, `snapshotReplied(root, outcome, previousRuns, runs)` |
    | `RunControlStore` | `backendDir`, `project`, `active`, `runs` (`app.runs.runs`) | in: `settleAfterSnapshot()`; out: `refreshRequested(roots)` |
    | `RunAlertsStore` | `backendDir`, `active`, `notifyOnEscalation` (`app.runControl.notifyOnEscalation`) | in: `snapshotReplied(…)` |
-   | `RunDispatchStore` | `backendDir`, `project`, `runs`, `cardMap` (`app.board.cardMap`), `runSettings` (from `RunControlStore`) | out: `dispatchStarted(runId)` (S3, unchanged), `refreshRequested(roots)`, `runSettingsWanted(root)`, `runSettingsSaveRequested(root, patch)`, `noticeRequested(text)` |
+   | `RunDispatchStore` | `backendDir`, `project`, `runs`, `projectRoots` (S6, read by the project step), `cardMap` (`app.board.cardMap`), `runSettings` (from `RunControlStore`) | out: `dispatchStarted(runId)` (S3, unchanged), `refreshRequested(roots)` (a start asks for `[dispatchRoot]`), `runSettingsWanted(root)`, `runSettingsSaveRequested(root, patch)` (`root` is `dispatchRoot`), `noticeRequested(text)` |
 
    `snapshotReplied` is new. `RunStore` emits it once per project reply, after the reply's own
    state is applied. `outcome` is `ok`, `missing` (AmMissing) or `failed`, and `previousRuns`
@@ -103,6 +112,11 @@ aliases (`app.runs.controlRunners`, `notifyRunners`, `settingsLoadRunner`,
 `tests/ui/screens/tst_card_detail_screen.qml`). The extractions keep that surface unchanged, so
 `ui/` is not touched until the last story:
 
+- The callers the queued milestones add go the same way: Resume and recover's
+  `ResumeVerifyDialog` in `Panel` (`resume*`), `RunDetailScreen` / `StopReasonBlock`
+  (`relaunchOpenFor`, `lastControlErrorType`), and Dispatch from the Runs screen's
+  `DispatchDialog` steps, `RunsScreen` **Start run** and `Shortcuts` `d`
+  (`dispatchOpenFromRuns`, `dispatchStep`, `dispatchProject*`, `dispatchTarget*`).
 - When a member moves, `RunStore` keeps a shim of the same name. A property is a read-only
   binding through a handle (`property var controlStore: null`, set by App). A function is a
   one-line forward that returns the target's result. A signal is re-emitted. A shim property
@@ -115,13 +129,14 @@ aliases (`app.runs.controlRunners`, `notifyRunners`, `settingsLoadRunner`,
 
 ## Where later work lands
 
+Dispatch from the Runs screen and Resume and recover land BEFORE this milestone, in
+`RunStore.qml`'s delimited sections (Problem); this milestone moves them as the
+responsibilities table says. The milestones after it land in the new stores:
+
 | milestone | store |
 |---|---|
-| Resume and recover: Why-it-stopped (a domain function plus the screen), the Resume dialog with verify fields | `RunControlStore` (the dialog state and storing the verify set) |
-| Resume and recover: Relaunch | `RunDispatchStore` (a form prefilled from a run) |
 | Alerts while the panel is closed | `RunAlertsStore` |
 | Live run output | `RunStore` (the logs) |
-| Dispatch from the Runs screen (`2026-10-05-dispatch-from-runs-design.md`) | `RunDispatchStore` |
 | Run history and titles | `RunStore` |
 
 ## Non-goals
@@ -135,8 +150,11 @@ aliases (`app.runs.controlRunners`, `notifyRunners`, `settingsLoadRunner`,
 ## Testing
 
 - **Characterization first.** The first subtask lists, for every member in Appendix A, the tests
-  that pin its behaviour, and adds tests for anything that is uncovered. The likely gaps are the
-  cross-concern couplings in rule 3, each pinned at App level.
+  that pin its behaviour, and adds tests for anything that is uncovered. That includes the
+  sections Dispatch from the Runs screen and Resume and recover added (`dispatch*` steps,
+  `resume*`, `relaunch*`, `lastControlErrorType`, the stopped-run attempt choice). The likely
+  gaps are the cross-concern couplings in rule 3, each pinned at App level, among them a
+  Runs-opened dispatch's `started` refreshing `dispatchRoot` only.
 - Each extraction: the moved tests pass unchanged against the new store. The App test proves
   the wiring: a snapshot settles a pending request, raises a toast and re-arms; a control reply
   refreshes; dispatch `started` re-snapshots. The ui suites pass untouched through the shims.
