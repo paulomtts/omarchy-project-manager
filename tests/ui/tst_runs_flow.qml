@@ -244,4 +244,75 @@ TestCase {
     proc.exited(0)
     compare(p.app.runs.logsText, "", "the old project's late reply changes nothing")
   }
+
+  // ---- run controls (S2 4.2): pause -> requested -> parked, then a refused resume
+
+  function reply(proc, text, code) {
+    proc.outText = text
+    proc.exited(code)
+  }
+
+  // One runs-snapshot.py entry: the `am runs` summary whose `status` the
+  // helper replaced with the `am status` data. workflow "task" makes a resume
+  // skip the run-settings read.
+  function snapEntry(id, runStatus, live, milestone) {
+    var control = live === null ? {} : { lease: { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live } }
+    return { id: id, workflow: "task", repo_dir: "/home/u/a", started_at: "",
+             status: { run: { id: id, status: runStatus, milestone_id: milestone },
+                       rows: [], stories: [], subtasks: [], control: control } }
+  }
+
+  function snapOk(entries) { return JSON.stringify({ ok: true, runs: entries, data_dir: "/d" }) + "\n" }
+
+  function controlOf(p, name) { return H.find(H.find(p, "runRowControls0"), "runControl" + name) }
+
+  // 22
+  function test_pause_is_requested_then_settled_by_a_parked_snapshot_and_a_refusal_shows_inline() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    var row = H.find(p, "runRow0")
+    verify(row, "the running run's row")
+    mouseMove(row, row.width / 2, row.height / 2)
+    compare(p.app.nav.cursorIndex, 0)
+    wait(50)
+
+    var pause = controlOf(p, "Pause")
+    compare(pause.visible, true)
+    compare(pause.enabled, true)
+    mouseClick(pause)
+    compare(p.app.nav.viewMode, "runs", "the button did not open the run")
+    compare(p.app.runs.pending["run-0000000000a1"], "pause")
+    compare(pause.text, "Pause requested…")
+    compare(pause.enabled, false)
+    compare(p.app.runs.controlRunners.length, 1)
+
+    reply(p.app.runs.controlRunners[0].current,
+          JSON.stringify({ ok: true, data: { run_id: "run-0000000000a1", command: "pause", requested_at: "t1" } }) + "\n", 0)
+    compare(p.app.runs.pending["run-0000000000a1"], "pause", "acknowledged, still pending until a snapshot")
+    var snap = p.app.runs.snapshotRunner.current
+    verify(snap, "the ok reply fetched the runs again")
+    reply(snap, snapOk([snapEntry("run-0000000000a1", "stopped", null, "alpha"),
+                        snapEntry("run-0000000000b2", "escalated", null, "beta")]), 0)
+    compare(p.app.runs.pending["run-0000000000a1"], undefined, "parked: the request settled")
+    wait(50)
+
+    var resume = controlOf(p, "Resume")
+    compare(resume.visible, true, "the parked run's row offers Resume")
+    compare(resume.enabled, true)
+    compare(controlOf(p, "Pause").visible, false)
+
+    wait(450)
+    mouseClick(resume)
+    compare(p.app.runs.pending["run-0000000000a1"], "resume")
+    compare(p.app.runs.controlRunners.length, 1)
+    reply(p.app.runs.controlRunners[0].current,
+          JSON.stringify({ ok: false, error: { type: "NotAcceptingError", message: "run is in integrate" } }) + "\n", 0)
+    var error = controlOf(p, "Error")
+    compare(error.visible, true)
+    compare(error.text, "Integrate is running; it cannot be paused or cancelled")
+    compare(controlOf(p, "Resume").enabled, true, "the buttons come back")
+    compare(controlOf(p, "Resume").text, "Resume")
+    compare(H.find(H.find(p, "runRowControls1"), "runControlError").visible, false, "only under that run")
+  }
 }
