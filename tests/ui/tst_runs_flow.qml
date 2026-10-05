@@ -315,4 +315,163 @@ TestCase {
     compare(controlOf(p, "Resume").text, "Resume")
     compare(H.find(H.find(p, "runRowControls1"), "runControlError").visible, false, "only under that run")
   }
+
+  // ---- cancel confirmation and the run keys (S2 4.3)
+
+  function cancelModal(p) { return H.find(p, "runCancelModal") }
+  // An item of the run cancel dialog (the delete dialog has the same names).
+  function inModal(p, name) { return H.find(cancelModal(p), name) }
+
+  // 16 (and Review Focus: the focus comes back)
+  function test_cancel_asks_for_the_typed_word_then_cancels_and_gives_the_focus_back() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    var row = H.find(p, "runRow0")
+    mouseMove(row, row.width / 2, row.height / 2)
+    wait(50)
+    var cancel = controlOf(p, "Cancel")
+    compare(cancel.enabled, true)
+    mouseClick(cancel)
+    wait(50)
+    var modal = cancelModal(p)
+    verify(modal, "the run cancel dialog")
+    compare(modal.visible, true)
+    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(p.app.nav.viewMode, "runs", "the click did not open the run")
+    compare(p.focusItem.objectName, "runCancelField")
+    var field = inModal(p, "runCancelField")
+    verify(field.activeFocus, "the field has the keyboard")
+    compare(String(field.placeholderText), "cancel")
+    compare(inModal(p, "confirmCancel").text, "Keep running")
+    var accept = inModal(p, "confirmAccept")
+    compare(accept.text, "Cancel run")
+    compare(modal.message, "Cancel run …000000a1? Cancel is final. The run cannot be resumed, only relaunched; cards keep their current status. A phase in flight finishes first.")
+    compare(modal.detail, "alpha")
+
+    field.text = "cancle"
+    compare(p.app.runs.cancelText, "cancle")
+    compare(accept.enabled, false)
+    keyClick(Qt.Key_Return)
+    compare(p.app.runs.controlRunners.length, 0)
+    compare(modal.visible, true)
+
+    field.text = "cancel"
+    compare(accept.enabled, true)
+    wait(450)
+    mouseClick(accept)
+    compare(p.app.runs.pending["run-0000000000a1"], "cancel")
+    compare(p.app.runs.controlRunners.length, 1)
+    compare(modal.visible, false)
+    wait(50)
+    compare(p.focusItem.objectName, "searchField")
+    verify(H.find(p, "searchField").activeFocus, "the focus is back in the search field")
+    compare(controlOf(p, "Cancel").text, "Cancel requested…")
+  }
+
+  // 17 (Review Focus: a handled letter never types; Escape closes only the dialog)
+  function test_c_in_the_empty_search_opens_the_dialog_without_typing_and_escape_closes_it() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    var field = H.find(p, "searchField")
+    field.forceActiveFocus()
+    compare(p.app.nav.cursorIndex, 0)
+    keyClick("c")
+    compare(p.app.runs.cancelOpen, true)
+    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(field.text, "", "the handled letter was not typed")
+    compare(p.app.nav.searchQuery, "")
+    wait(50)
+    compare(p.focusItem.objectName, "runCancelField")
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.nav.viewMode, "runs")
+    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(p.opened, true, "the panel stays open")
+    wait(50)
+    verify(field.activeFocus, "the focus is back in the search field")
+    keyClick("C", Qt.ShiftModifier)
+    compare(field.text, "C", "Shift+C types")
+    compare(p.app.runs.cancelOpen, false)
+    keyClick("p")
+    compare(field.text, "Cp", "with search text a bare letter types too")
+    compare(Object.keys(p.app.runs.pending).length, 0)
+  }
+
+  // 18
+  function test_integrate_disables_pause_and_cancel_and_a_key_says_why() {
+    var p = make(); if (!p) return
+    var r = run("run-0000000000a1", "started", true, "alpha")
+    r.lease.accepting = false
+    p.app.runs.runs = [r]
+    p.navigator.showSection("runs")
+    wait(50)
+    var row = H.find(p, "runRow0")
+    mouseMove(row, row.width / 2, row.height / 2)
+    wait(50)
+    compare(controlOf(p, "Pause").enabled, false)
+    compare(controlOf(p, "Cancel").enabled, false)
+    var reason = "Integrate is running; it cannot be paused or cancelled"
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), true)
+    compare(H.find(p, "runsFooter").text, reason)
+    compare(p.app.runs.controlRunners.length, 0)
+    p.app.runs.flash("")
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), true)
+    compare(p.app.runs.cancelOpen, false)
+    compare(cancelModal(p).visible, false)
+    compare(H.find(p, "runsFooter").text, reason)
+
+    p.navigator.openRun("run-0000000000a1")
+    wait(50)
+    var detail = H.find(p, "runDetailControls")
+    compare(H.find(detail, "runControlPause").enabled, false)
+    compare(H.find(detail, "runControlCancel").enabled, false)
+    p.app.runs.flash("")
+    compare(H.find(p, "runDetailFlash").visible, false)
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), true)
+    compare(H.find(p, "runDetailFlash").visible, true)
+    compare(H.find(p, "runDetailFlash").text, reason)
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), true)
+    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runs.controlRunners.length, 0)
+    compare(Object.keys(p.app.runs.pending).length, 0)
+  }
+
+  // 19 (and Review Focus 5)
+  function test_a_cards_runs_row_cancel_opens_the_same_dialog_and_keep_running_closes_it() {
+    var p = make(); if (!p) return
+    p.app.board.applyTreeData([{ id: "alpha", title: "Alpha", status: "in_progress", description: "d", blocked_by: [], children: [] }])
+    p.app.runs.runs = [run("run-0000000000a1", "started", true, "alpha")]
+    wait(50)
+    p.navigator.openCard("alpha")
+    wait(50)
+    compare(p.app.nav.viewMode, "entry")
+    var cancel = H.find(H.find(p, "cardRunControls0"), "runControlCancel")
+    verify(cancel, "the card's RUNS row carries the run's Cancel")
+    compare(cancel.enabled, true)
+    mouseClick(cancel)
+    wait(50)
+    compare(cancelModal(p).visible, true)
+    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(p.focusItem.objectName, "runCancelField")
+    inModal(p, "runCancelField").text = "cancel"
+    compare(inModal(p, "confirmAccept").enabled, true)
+    wait(450)
+    mouseClick(inModal(p, "confirmCancel"))
+    compare(p.app.runs.cancelOpen, false)
+    compare(cancelModal(p).visible, false)
+    compare(p.app.nav.viewMode, "entry", "the card is still open")
+    compare(p.app.board.selectedCardId, "alpha")
+    compare(p.app.runs.controlRunners.length, 0)
+    wait(50)
+    compare(p.focusItem.objectName, "keyCatcher")
+
+    wait(450)
+    mouseClick(cancel)
+    wait(50)
+    compare(cancelModal(p).visible, true)
+    compare(inModal(p, "runCancelField").text, "", "the old word does not carry over")
+    compare(inModal(p, "confirmAccept").enabled, false)
+  }
 }

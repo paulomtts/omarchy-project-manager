@@ -90,10 +90,12 @@ Panel {
   }
 
   // A different Runs chip means a different list: the cursor reset is App's,
-  // the scroll is the panel's.
+  // the scroll is the panel's. The cancel confirmation takes the focus when it
+  // opens and gives it back when it closes.
   Connections {
     target: appStores.runs
     function onRunFilterToggled() { Qt.callLater(root.scrollToTop) }
+    function onCancelOpenChanged() { root.focusForView() }
   }
 
   // The dialog picks one of the project's Markdown documents, so the documents
@@ -169,6 +171,7 @@ Panel {
     : appStores.memories.memoryDeleteOpen ? memoryConfirm.focusItem
     : appStores.memories.newMemoryOpen ? newMemoryDialog.focusItem
     : appStores.milestones.dialogOpen ? newMilestoneDialog.focusItem
+    : appStores.runs.cancelOpen ? runCancelModal.focusItem
     : (appStores.nav.viewMode === "memory" && appStores.memories.memoryEditing) ? memoryNoteScreen.editorItem
     : appStores.nav.dropdownOpen ? sidebar.filterItem
     : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "run" || appStores.nav.viewMode === "graph" || !appStores.projects.selectedProject) ? keyCatcher
@@ -261,9 +264,11 @@ Panel {
     contentHeight: panel.fittedContentHeight(Math.max(toolbar.implicitHeight + Style.space(12) + column.implicitHeight, sidebar.implicitHeight, minContentHeight),
       Math.max(Style.space(620), 0.8 * panel.screenH))
 
+    // The Ctrl chords, then the run keys (p / r / c on the Runs list and Run
+    // detail). An accepted key is not typed into the search field.
     Item {
       id: globalKeys
-      Keys.onPressed: function(event) { if (sc.handleGlobalKey(event)) event.accepted = true }
+      Keys.onPressed: function(event) { if (sc.handleGlobalKey(event) || sc.handleRunKey(event)) event.accepted = true }
     }
 
     PanelKeyCatcher {
@@ -552,6 +557,7 @@ Panel {
             navigator: navi
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
+            onCancelRequested: function(runId) { appStores.runs.openCancel(runId) }
           }
 
           IssuesScreen {
@@ -576,6 +582,7 @@ Panel {
             navigator: navi
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
+            onCancelRequested: function(runId) { appStores.runs.openCancel(runId) }
           }
 
           RunDetailScreen {
@@ -584,6 +591,7 @@ Panel {
             navigator: navi
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
+            onCancelRequested: function(runId) { appStores.runs.openCancel(runId) }
           }
         }
       }
@@ -622,6 +630,29 @@ Panel {
         theme: panelTheme
         onConfirmRequested: appStores.memories.performMemoryDelete()
         onCancelRequested: appStores.memories.cancelMemoryDelete()
+      }
+
+      // Run cancel confirmation (S2 4.3): any run surface's Cancel, or c,
+      // opens it through the run store; only its confirm cancels.
+      TypedConfirmDialog {
+        id: runCancelModal
+        objectName: "runCancelModal"
+        anchors.fill: parent
+        backdropObjectName: "runCancelBackdrop"
+        cardObjectName: "runCancelCard"
+        fieldObjectName: "runCancelField"
+        shown: appStores.runs.cancelOpen
+        confirmWord: "cancel"
+        message: "Cancel run " + Runs.shortId({ id: appStores.runs.cancelRunId }) + "? Cancel is final. The run cannot be resumed, only relaunched; cards keep their current status. A phase in flight finishes first."
+        detail: appStores.runs.runById(appStores.runs.cancelRunId) ? Runs.runTitle(appStores.runs.runById(appStores.runs.cancelRunId)) : ""
+        confirmLabel: "Cancel run"
+        dismissLabel: "Keep running"
+        error: appStores.runs.cancelError
+        typedText: appStores.runs.cancelText
+        theme: panelTheme
+        onTypedEdited: function(text) { appStores.runs.cancelText = text }
+        onConfirmRequested: appStores.runs.confirmCancel()
+        onCancelRequested: appStores.runs.closeCancel()
       }
 
       NewMemoryDialog {
