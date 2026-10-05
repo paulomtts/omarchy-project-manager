@@ -331,8 +331,13 @@ function _textOf(v) {
   try { return String(v).trim() } catch (e) { return "" }
 }
 
+// Row statuses that mean a phase or attempt failed.
+var _FAILURE_STATUSES = ["failed", "escalated", "gate_failed", "schema_invalid", "harness_error"]
+
 // Why a run escalated: the first failed phase's detail (or its last attempt's detail),
-// else "escalated at <phase>", else "escalated".
+// else "escalated at <that phase>". With no failed phase, "escalated at <phase>" of the
+// last row whose status is failed, escalated, gate_failed, schema_invalid or
+// harness_error and whose phase is not empty; else "escalated".
 function escalationReason(run) {
   var subtasks = _arrayOr(_treeOf(run).subtasks)
   for (var i = 0; i < subtasks.length; i++) {
@@ -352,7 +357,9 @@ function escalationReason(run) {
   }
   var rows = _isObject(run) ? _arrayOr(run.rows) : []
   for (var r = rows.length - 1; r >= 0; r--) {
-    var at = _isObject(rows[r]) ? _textOf(rows[r].phase) : ""
+    var row = rows[r]
+    if (!_isObject(row) || _FAILURE_STATUSES.indexOf(row.status) < 0) continue
+    var at = _textOf(row.phase)
     if (at !== "") return "escalated at " + at
   }
   return "escalated"

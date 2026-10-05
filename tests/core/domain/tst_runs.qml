@@ -1071,13 +1071,56 @@ TestCase {
     })
     compare(Runs.escalationReason(noDetail), "escalated at review")
 
-    var noFailed = mkRun("r", "escalated", null, {
-      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "spec", status: "done" },
-                                                                { name: "plan", status: "FAILED" }] }] },
-      rows: [{ card_id: "t1", phase: "spec" }, { card_id: "t2", phase: "implement" },
-             { card_id: "t3", phase: "" }, { card_id: "t4" }, null]
+    // synthetic: a tree with no phase whose status is exactly "failed", fresh per call
+    function noFailedTree() {
+      return { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "spec", status: "done" },
+                                                                 { name: "plan", status: "FAILED" }] }] }
+    }
+
+    var failures = ["failed", "escalated", "gate_failed", "schema_invalid", "harness_error"]
+    for (var f = 0; f < failures.length; f++) {
+      // synthetic: one failure row followed by finished rows
+      var oneFailure = mkRun("r", "escalated", null, { tree: noFailedTree(), rows: [
+        { card_id: "t1", phase: "spec", status: "done" },
+        { card_id: "t2", phase: "implement", status: failures[f] },
+        { card_id: "t3", phase: "verify", status: "done" },
+        { card_id: "t4", phase: "mark_done", status: "ok" }] })
+      compare(Runs.escalationReason(oneFailure), "escalated at implement",
+              failures[f] + ": the failure row, not a later finished row")
+    }
+
+    // synthetic: two failure rows, then a finished row
+    var twoFailures = mkRun("r", "escalated", null, { tree: noFailedTree(), rows: [
+      { phase: "spec", status: "failed" }, { phase: "review", status: "harness_error" },
+      { phase: "mark_done", status: "done" }] })
+    compare(Runs.escalationReason(twoFailures), "escalated at review", "the last failure row")
+
+    // synthetic: the later failure rows have no usable phase
+    var noPhase = mkRun("r", "escalated", null, { tree: noFailedTree(), rows: [
+      { phase: "spec", status: "gate_failed" }, { phase: "  ", status: "failed" }, { status: "escalated" }, null, 5] })
+    compare(Runs.escalationReason(noPhase), "escalated at spec", "a failure row without a phase is passed over")
+
+    // synthetic: statuses that are not failures, every row with a phase
+    var others = ["done", "ok", "started", "pending", "stopped", "cancelled", "FAILED", " failed", "dead",
+                  null, 1, "__proto__", "constructor", "toString"]
+    var otherRows = []
+    for (var o = 0; o < others.length; o++) otherRows.push({ card_id: "t" + o, phase: "p" + o, status: others[o] })
+    otherRows.push({ card_id: "tx", phase: "px" })
+    compare(Runs.escalationReason(mkRun("r", "escalated", null, { tree: noFailedTree(), rows: otherRows })),
+            "escalated", "no failure status; status match is exact")
+
+    // synthetic: rows that are not an array
+    var notArrays = ["x", {}]
+    for (var n = 0; n < notArrays.length; n++)
+      compare(Runs.escalationReason(mkRun("r", "escalated", null, { tree: noFailedTree(), rows: notArrays[n] })),
+              "escalated", "rows not an array " + n)
+
+    // synthetic: a failed tree phase and a failure row in another phase
+    var both = mkRun("r", "escalated", null, {
+      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "review", status: "failed" }] }] },
+      rows: [{ card_id: "t1", phase: "implement", status: "gate_failed" }]
     })
-    compare(Runs.escalationReason(noFailed), "escalated at implement", "last row phase; status match is exact")
+    compare(Runs.escalationReason(both), "escalated at review", "the failed tree phase wins over rows")
 
     var nameless = mkRun("r", "escalated", null, {
       tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ status: "failed" }] }] },
@@ -1090,6 +1133,41 @@ TestCase {
     var bad = [undefined, null, "x", 5, [], {}, { tree: "x", rows: "y" },
                { tree: { subtasks: [null, { phases: "x" }, { phases: [null, 5] }] }, rows: [null] }]
     for (var i = 0; i < bad.length; i++) compare(Runs.escalationReason(bad[i]), "escalated", "garbage " + i)
+  }
+
+  // The two escalated captures and the reason each escalated with: status-escalated.json's
+  // failed review phase's detail, and plain "escalated" for the Integrate escalation, whose
+  // tree has no failed phase and whose rows have no failure status.
+  function escalatedFixtures() {
+    return [
+      ["status-escalated.json", "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-eb8b1851"],
+      ["status-escalated-integrate.json", "escalated"]
+    ]
+  }
+
+  function test_fixture_escalation_reason() {
+    var integrate = Runs.normalizeRun(amRun("status-escalated-integrate.json"))
+    var last = integrate.rows[integrate.rows.length - 1]
+    compare(last.phase + ":" + last.status, "mark_done:done", "the Integrate capture ends on a finished row")
+
+    var cases = escalatedFixtures()
+    for (var i = 0; i < cases.length; i++)
+      compare(Runs.escalationReason(Runs.normalizeRun(amRun(cases[i][0]))), cases[i][1], cases[i][0])
+  }
+
+  function test_fixture_new_alerts_escalation_reason() {
+    var cases = escalatedFixtures()
+    for (var i = 0; i < cases.length; i++) {
+      var next = Runs.normalizeRun(amRun(cases[i][0]))
+      verify(next.id !== "", cases[i][0] + " has a run id")
+      // synthetic: the same run one snapshot earlier, while it was running -- no capture holds both
+      var prev = [mkRun(next.id, "started", true)]
+      var a = Runs.newAlerts(prev, [next])
+      compare(a.length, 1, cases[i][0] + " one alert")
+      compare(a[0].state, "escalated", cases[i][0] + " state")
+      compare(a[0].id, next.id, cases[i][0] + " id")
+      compare(a[0].reason, cases[i][1], cases[i][0] + " reason")
+    }
   }
 
   // ---- 1.2: error text --------------------------------------------------------------------
