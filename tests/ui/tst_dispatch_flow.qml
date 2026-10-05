@@ -157,6 +157,18 @@ TestCase {
     compare(p.focusItem.objectName, "dispatchBase", "the re-opened dialog has the focus")
   }
 
+  // A story whose milestone is not on the board: the refusal, no offer.
+  function test_a_story_whose_milestone_left_the_board_offers_nothing() {
+    var p = make(); if (!p) return
+    dispatchCard(p, "s1")
+    compare(H.find(p, "dispatchSuggest").visible, true)
+    p.app.board.applyTreeData([card("m9", "M nine", "done")])
+    wait(50)
+    compare(p.app.runs.dispatchState, "refused")
+    compare(text(p, "dispatchRefusal"), "A story is dispatched through its milestone")
+    compare(H.find(p, "dispatchSuggest").visible, false)
+  }
+
   // 23
   function test_a_subtask_shows_its_story_and_blockers_and_starts_on_the_second_click() {
     var p = make(); if (!p) return
