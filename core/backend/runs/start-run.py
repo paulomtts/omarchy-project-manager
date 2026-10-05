@@ -44,6 +44,7 @@ Exit 0 whenever a line was printed, refusals and errors included; exit 2 for
 Usage only.
 """
 import datetime
+import json
 import os
 import re
 import secrets
@@ -175,12 +176,43 @@ def spawn(am, argv, root, log):
         os.close(fd)
 
 
+def read_log(path):
+    with open(path, "rb") as f:
+        return f.read().decode("utf-8", "replace")
+
+
+def log_tail(text):
+    """The end of the log, where am's refusal or a crash names its cause: at most
+    TAIL_LINES lines, and of those at most TAIL_CHARS characters."""
+    lines = text.rstrip().splitlines()[-TAIL_LINES:]
+    return "\n".join(lines)[-TAIL_CHARS:]
+
+
+def refusal_of(text):
+    """am's own error object when the log's last non-empty line is its refusal
+    envelope ({"ok": false, "error": {...}}), else None."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        envelope = json.loads(lines[-1])
+    except ValueError:
+        return None
+    if (isinstance(envelope, dict) and envelope.get("ok") is False
+            and isinstance(envelope.get("error"), dict)):
+        return envelope["error"]
+    return None
+
+
 def early_exit(proc, launch):
-    """am exited before its run appeared."""
+    """am exited before its run appeared: its refusal if it printed one (a
+    ClaimedError, a missing milestone, missing verification), else AmExited."""
     code = proc.returncode
-    return emit({"ok": False, "error": {"type": "AmExited", "message":
-                 "am run exited " + str(code) + " before its run appeared."},
-                 **launch, "exit_code": code})
+    text = read_log(launch["log"])
+    error = refusal_of(text) or {"type": "AmExited", "message":
+                                 "am run exited " + str(code) + " before its run appeared."}
+    return emit({"ok": False, "error": error, **launch, "exit_code": code,
+                 "log_tail": log_tail(text)})
 
 
 def watch(proc, launch, deadline):

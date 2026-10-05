@@ -448,3 +448,68 @@ def test_usage_shapes(world, args):
     assert out == USAGE_LINE
     assert calls(world) == []
     assert not (world["state"] / "omarchy-project-manager").exists()
+
+
+# --- early exit ------------------------------------------------------------------
+
+EARLY_KEYS = {"ok", "error", "pid", "log", "started_at", "exit_code", "log_tail"}
+
+
+def test_early_exit_with_am_refusal(world):
+    # Trailing blank lines after the envelope: the last NON-EMPTY line decides.
+    (world["am"] / "run.out").write_text(json.dumps(CLAIMED) + "\n\n")
+    (world["am"] / "run.code").write_text("3")
+    code, out = run(world, [str(world["project"]), "milestone", "m1", "--branch-prefix", "m3"])
+    assert code == 0
+    assert set(out) == EARLY_KEYS
+    assert out["ok"] is False
+    assert out["error"] == CLAIMED["error"]
+    assert out["exit_code"] == 3
+    assert json.dumps(CLAIMED) in out["log_tail"]
+    assert out["pid"] == read_pid(world)
+
+
+def test_early_exit_without_envelope(world):
+    lines = ["line %d" % i for i in range(1, 31)]
+    (world["am"] / "run.err").write_text("\n".join(lines) + "\n")
+    (world["am"] / "run.code").write_text("2")
+    code, out = run(world, [str(world["project"]), "board"])
+    assert code == 0
+    assert set(out) == EARLY_KEYS
+    assert out["error"] == {"type": "AmExited",
+                            "message": "am run exited 2 before its run appeared."}
+    assert out["exit_code"] == 2
+    assert out["log_tail"] == "\n".join(lines[-20:])
+    # One 5000-character line is cut to its last 2000 characters.
+    assert load_helper().log_tail("x" * 3000 + "y" * 2000 + "\n") == "y" * 2000
+
+
+def test_last_line_not_a_refusal(world):
+    # JSON, ok false, but the error is not an object: not am's refusal shape.
+    (world["am"] / "run.out").write_text(json.dumps({"ok": False, "error": "text"}) + "\n")
+    (world["am"] / "run.code").write_text("4")
+    code, out = run(world, [str(world["project"]), "board"])
+    assert code == 0
+    assert out["error"] == {"type": "AmExited",
+                            "message": "am run exited 4 before its run appeared."}
+    assert out["exit_code"] == 4
+
+
+def test_early_exit_zero(world):
+    # An am that finishes at once without a visible run is still an early exit.
+    code, out = run(world, [str(world["project"]), "board"])
+    assert code == 0
+    assert set(out) == EARLY_KEYS
+    assert out["ok"] is False
+    assert out["error"] == {"type": "AmExited",
+                            "message": "am run exited 0 before its run appeared."}
+    assert out["exit_code"] == 0
+
+
+def test_early_exit_empty_log(world):
+    (world["am"] / "run.code").write_text("1")
+    code, out = run(world, [str(world["project"]), "board"])
+    assert code == 0
+    assert out["exit_code"] == 1
+    assert out["log_tail"] == ""
+    assert out["error"]["type"] == "AmExited"
