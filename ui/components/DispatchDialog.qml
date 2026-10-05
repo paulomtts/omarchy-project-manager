@@ -58,6 +58,29 @@ Item {
     return dialog.targetTitle !== "" ? quoted : "No card"
   }
 
+  // The preview area shows exactly one of these, checked in this order.
+  readonly property bool showRefusal: dialog.dispatchState === "refused" || dialog.dispatchState === "failed"
+  readonly property bool showSubtask: !dialog.showRefusal && dialog.targetLevel === "subtask"
+  readonly property bool showChecking: !dialog.showRefusal && !dialog.showSubtask
+    && dialog.dispatchState === "previewing"
+  readonly property bool showSummary: !dialog.showRefusal && !dialog.showSubtask
+    && ["ready", "starting", "started"].indexOf(dialog.dispatchState) >= 0
+  // A failed launch adds its exit code, log path and tail under the sentence.
+  readonly property bool showLaunch: dialog.dispatchState === "failed"
+  readonly property string integrateText: dialog.preview && typeof dialog.preview.integrate === "string"
+    ? dialog.preview.integrate : ""
+  readonly property string summaryText: {
+    var summary = dialog.preview && typeof dialog.preview.summary === "string" ? dialog.preview.summary : ""
+    return summary === "" && dialog.integrateText === ""
+      ? "am accepted the plan; it could not be summarised here" : summary
+  }
+  // The tail's last lines only: the log holds the rest, and the card keeps its
+  // buttons in view (start-run.py sends up to 20 lines).
+  readonly property string tailText: {
+    var lines = dialog.logTail.split("\n")
+    return lines.slice(Math.max(0, lines.length - 6)).join("\n")
+  }
+
   signal fieldEdited(string name, var value)
   signal startRequested()
   signal cancelRequested()
@@ -92,6 +115,112 @@ Item {
       theme: dialog.theme
       width: parent.width
       text: "Target   " + dialog.targetText
+      elide: Text.ElideRight
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchPreviewHeading"
+      variant: "caption"
+      theme: dialog.theme
+      text: dialog.targetLevel === "board" || dialog.targetLevel === "milestone"
+        ? "Preview  (am run --dry-run)" : "Preview"
+    }
+
+    // A refusal (the store's, am's or a failed launch's) verbatim: no parsing.
+    UI.ThemedText {
+      objectName: "dispatchRefusal"
+      variant: "small"
+      theme: dialog.theme
+      visible: dialog.showRefusal
+      width: parent.width
+      text: dialog.error
+      color: dialog.urgentColor
+      wrapMode: Text.WordWrap
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchExitCode"
+      variant: "caption"
+      theme: dialog.theme
+      visible: dialog.showLaunch && typeof dialog.exitCode === "number"
+      text: "Exit code " + dialog.exitCode
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchLogPath"
+      variant: "caption"
+      theme: dialog.theme
+      visible: dialog.showLaunch && dialog.logPath !== ""
+      width: parent.width
+      text: "Log: " + dialog.logPath
+      elide: Text.ElideMiddle
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchLogTail"
+      variant: "caption"
+      theme: dialog.theme
+      visible: dialog.showLaunch && dialog.logTail !== ""
+      width: parent.width
+      text: dialog.tailText
+      wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchSubtaskNote"
+      variant: "caption"
+      theme: dialog.theme
+      visible: dialog.showSubtask
+      width: parent.width
+      text: "No preview: am has no dry run for one subtask"
+      wrapMode: Text.WordWrap
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchStory"
+      variant: "small"
+      theme: dialog.theme
+      visible: dialog.showSubtask && dialog.storyTitle !== ""
+      width: parent.width
+      text: "Story   \"" + dialog.storyTitle + "\""
+      elide: Text.ElideRight
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchBlocked"
+      variant: "small"
+      theme: dialog.theme
+      visible: dialog.showSubtask && dialog.blockedText !== ""
+      width: parent.width
+      text: dialog.blockedText
+      wrapMode: Text.WordWrap
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchChecking"
+      variant: "caption"
+      theme: dialog.theme
+      visible: dialog.showChecking
+      text: "Checking…"
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchSummary"
+      variant: "small"
+      theme: dialog.theme
+      visible: dialog.showSummary && dialog.summaryText !== ""
+      width: parent.width
+      text: dialog.summaryText
+      wrapMode: Text.WordWrap
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchIntegrate"
+      variant: "small"
+      theme: dialog.theme
+      visible: dialog.showSummary && dialog.integrateText !== ""
+      width: parent.width
+      text: dialog.integrateText
       elide: Text.ElideRight
     }
 
