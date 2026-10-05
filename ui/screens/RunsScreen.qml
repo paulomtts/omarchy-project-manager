@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Ui
 import "../../core/domain/runs.js" as Runs
 import "../components/runGlyphs.js" as RunGlyphs
 import "../components/runControlFacts.js" as ControlFacts
@@ -111,6 +112,28 @@ Column {
 
     model: screen.app.runs.filteredRuns
     rowDelegate: Component { RunRow {} }
+  }
+
+  // The project's Notify on escalation setting: a desktop notification for
+  // every run toast. Shown even while am is missing -- it is the project's.
+  Row {
+    objectName: "runsNotifyRow"
+    spacing: Style.space(8)
+
+    ToggleSwitch {
+      objectName: "runsNotifyToggle"
+      anchors.verticalCenter: parent.verticalCenter
+      checked: screen.app.runs.notifyOnEscalation
+      onToggled: screen.app.runs.setNotifyOnEscalation(!screen.app.runs.notifyOnEscalation)
+    }
+
+    UI.ThemedText {
+      objectName: "runsNotifyLabel"
+      anchors.verticalCenter: parent.verticalCenter
+      variant: "caption"
+      theme: screen.theme
+      text: "Notify on escalation"
+    }
   }
 
   // The watch line, or why the last run key was refused while that flash

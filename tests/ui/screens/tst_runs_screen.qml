@@ -50,6 +50,14 @@ TestCase {
         rs.controlCalls = rs.controlCalls.concat([action + "|" + id])
         return true
       }
+      // The Notify on escalation switch (S2 4.4). `setNotifyOnEscalation`
+      // only records.
+      property bool notifyOnEscalation: false
+      property var notifyCalls: []
+      function setNotifyOnEscalation(on) {
+        rs.notifyCalls = rs.notifyCalls.concat([on])
+        return true
+      }
     }
   }
 
@@ -496,5 +504,30 @@ TestCase {
     compare(footer.text, "A request for this run is pending")
     s.runs.flashText = ""
     compare(footer.visible, false)
+  }
+
+  // ---- the Notify on escalation switch (S2 4.4)
+
+  // 25
+  function test_the_notify_switch_reads_and_asks_the_store() {
+    var s = make(sample()); if (!s) return
+    var row = H.find(s.screen, "runsNotifyRow")
+    var toggle = H.find(s.screen, "runsNotifyToggle")
+    verify(row, "the switch row")
+    verify(toggle, "the switch")
+    compare(H.find(s.screen, "runsNotifyLabel").text, "Notify on escalation")
+    compare(toggle.checked, false)
+    s.runs.notifyOnEscalation = true
+    compare(toggle.checked, true)
+    s.runs.notifyOnEscalation = false
+    compare(toggle.checked, false)
+    toggle.toggled()
+    compare(s.runs.notifyCalls.join(","), "true", "asked once, for the flipped value")
+    compare(toggle.checked, false, "the store decides; this stub did not flip it")
+    compare(row.visible, true)
+    verify(row.y < H.find(s.screen, "runsFooter").y, "above the footer")
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(row.visible, true, "the setting is the project's, not am's")
   }
 }
