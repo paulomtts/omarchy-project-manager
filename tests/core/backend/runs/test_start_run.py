@@ -246,6 +246,17 @@ def test_options_forwarded_in_fixed_order(world):
                                  "--allow-no-verification"]]
 
 
+def test_relative_root_names_one_directory(world, monkeypatch):
+    # am run starts in ROOT, so a relative --repo-dir would name ROOT/ROOT for it
+    # while `am runs` looks in ROOT: both get the same absolute path instead.
+    monkeypatch.chdir(world["tmp"])
+    code, _ = run(world, ["proj", "board"])
+    assert code == 0
+    root = str(world["project"])
+    assert run_calls(world) == [["run", "--board", "--repo-dir", root]]
+    assert ["runs", "--repo-dir", root] in calls(world)
+
+
 def test_verify_values_verbatim(world):
     # Spaces, shell metacharacters, a leading dash and an empty string each arrive
     # as one unaltered argv element: no shell, no validation by the helper.

@@ -7,8 +7,9 @@
 Spawns `am run (--milestone ID | --card ID | --board) --repo-dir ROOT`, then the
 options given in a fixed order (--base-branch, --branch-prefix, --max-concurrent,
 every --verify pair in the order given, --allow-no-verification), as an argv list
-(no shell). Every value is the next argument verbatim, even if it starts with `-`;
-am refuses bad ones itself. --dry-run, --detach and --pretty are never sent.
+(no shell), ROOT made absolute. Every value is the next argument verbatim, even if
+it starts with `-`; am refuses bad ones itself. --dry-run, --detach and --pretty
+are never sent.
 
 The child runs in ROOT, in its own session (so a signal to the helper's process
 group never reaches it), stdin /dev/null, stdout and stderr in a fresh log,
@@ -298,6 +299,8 @@ def main(argv, launch):
     if parsed is None:
         return failure("Usage", USAGE, 2)
     root, target, ident, options = parsed
+    # am run starts in ROOT, so a relative --repo-dir would name ROOT/ROOT to it.
+    root = os.path.abspath(root)
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
