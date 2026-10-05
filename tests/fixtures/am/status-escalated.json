@@ -1,0 +1,1153 @@
+{
+  "_am_runs_row": {
+    "base_branch": "main",
+    "branch_prefix": "m3",
+    "card_id": null,
+    "id": "20261005T032543Z-bcc4e411",
+    "lease": null,
+    "milestone_id": "bcc4e411-504c-48f4-8712-198a5c04ec8b",
+    "progress": {
+      "current": null,
+      "stories": {
+        "done": 1,
+        "total": 3
+      },
+      "subtasks": {
+        "done": 2,
+        "total": 4
+      }
+    },
+    "repo_dir": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project",
+    "started_at": "2026-10-05 03:25:43.779084+00:00",
+    "status": "escalated",
+    "workflow": "milestone"
+  },
+  "_note": "Not from a run of this repo: printed by the installed am's own `am status` serializer (cli.status_for + cli.render, exactly what the command prints) for a run of agent-manager's e2e suite under its fake claude (tests/e2e/test_milestone_run.py::test_a_review_failure_stops_the_milestone_and_a_relaunch_finishes_it, first launch: subtask escalated at review), captured 2026-10-05. No real run of any project has ever escalated. Shape unedited; only /home/<user> paths rewritten. `_am_runs_row` is this run's real `am runs` entry from the same capture.",
+  "data": {
+    "control": {
+      "claims": [],
+      "lease": null,
+      "requests": []
+    },
+    "integrity": {
+      "checked": true,
+      "mismatches": [],
+      "reason": null
+    },
+    "rows": [
+      {
+        "attempt": null,
+        "phase": "worktree",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": 1,
+        "phase": "explore",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_in_progress",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": null,
+        "phase": "plan_check",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": 1,
+        "phase": "spec",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_spec",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": 1,
+        "phase": "plan",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_plan",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_validated",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": null,
+        "phase": "docs_commit",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": 1,
+        "phase": "implement",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": 1,
+        "phase": "review",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": null,
+        "phase": "verify",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_done",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "c5e41536-7e1b-448b-aa2d-55e9550e63b2"
+      },
+      {
+        "attempt": null,
+        "phase": "worktree",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": 1,
+        "phase": "explore",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_in_progress",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": null,
+        "phase": "plan_check",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": 1,
+        "phase": "spec",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_spec",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": 1,
+        "phase": "plan",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_plan",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_validated",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": null,
+        "phase": "docs_commit",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": 1,
+        "phase": "implement",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": 1,
+        "phase": "review",
+        "state": "ok",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": null,
+        "phase": "verify",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_done",
+        "state": "done",
+        "story": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "subtask": "231a23cc-91bc-4516-924d-5b19476d5237"
+      },
+      {
+        "attempt": null,
+        "phase": "worktree",
+        "state": "done",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": 1,
+        "phase": "explore",
+        "state": "ok",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_in_progress",
+        "state": "done",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": null,
+        "phase": "plan_check",
+        "state": "done",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": 1,
+        "phase": "spec",
+        "state": "ok",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_spec",
+        "state": "ok",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": 1,
+        "phase": "plan",
+        "state": "ok",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_plan",
+        "state": "ok",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_validated",
+        "state": "done",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": null,
+        "phase": "docs_commit",
+        "state": "done",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": 1,
+        "phase": "implement",
+        "state": "ok",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      },
+      {
+        "attempt": 1,
+        "phase": "review",
+        "state": "gate_failed",
+        "story": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "subtask": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+      }
+    ],
+    "run": {
+      "base_branch": "main",
+      "branch_prefix": "m3",
+      "id": "20261005T032543Z-bcc4e411",
+      "repo_dir": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project",
+      "started_at": "2026-10-05 03:25:43.779084+00:00",
+      "status": "escalated",
+      "workflow": "milestone"
+    },
+    "stories": [
+      {
+        "card_id": "d76ef984-45c2-4700-8903-79b2d6b12d0f",
+        "level": 0,
+        "status": "done",
+        "subtasks": [
+          {
+            "base_branch": "main",
+            "branch": "m3/task-a1-first-subtask-of-c5e41536",
+            "card_id": "c5e41536-7e1b-448b-aa2d-55e9550e63b2",
+            "phases": [
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:43.968773+00:00",
+                "kind": "deterministic",
+                "name": "worktree",
+                "started_at": "2026-10-05 03:25:43.957923+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a1-first-subtask-of-c5e41536",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/explore.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/explore.1/result.json",
+                      "role": "explorer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06385445700288983,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/explore.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/explore.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/explore.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:44.037932+00:00",
+                "kind": "agent",
+                "name": "explore",
+                "started_at": "2026-10-05 03:25:43.970741+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:44.835154+00:00",
+                "kind": "deterministic",
+                "name": "mark_in_progress",
+                "started_at": "2026-10-05 03:25:44.039455+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:44.836993+00:00",
+                "kind": "deterministic",
+                "name": "plan_check",
+                "started_at": "2026-10-05 03:25:44.836617+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a1-first-subtask-of-c5e41536",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/spec.1/result.json",
+                      "role": "spec_author",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06374214900279185,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:44.903860+00:00",
+                "kind": "agent",
+                "name": "spec",
+                "started_at": "2026-10-05 03:25:44.838732+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a1-first-subtask-of-c5e41536",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_spec.1/result.json",
+                      "role": "spec_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06373128599807387,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:44.970783+00:00",
+                "kind": "agent",
+                "name": "validate_spec",
+                "started_at": "2026-10-05 03:25:44.905700+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a1-first-subtask-of-c5e41536",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/plan.1/result.json",
+                      "role": "planner",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06382731899793725,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:45.037735+00:00",
+                "kind": "agent",
+                "name": "plan",
+                "started_at": "2026-10-05 03:25:44.972356+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a1-first-subtask-of-c5e41536",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_plan.1/result.json",
+                      "role": "plan_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.031728711001051124,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/validate_plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:45.072729+00:00",
+                "kind": "agent",
+                "name": "validate_plan",
+                "started_at": "2026-10-05 03:25:45.039405+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:45.074547+00:00",
+                "kind": "deterministic",
+                "name": "mark_validated",
+                "started_at": "2026-10-05 03:25:45.074106+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:45.090143+00:00",
+                "kind": "deterministic",
+                "name": "docs_commit",
+                "started_at": "2026-10-05 03:25:45.075618+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a1-first-subtask-of-c5e41536",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/implement.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/implement.1/result.json",
+                      "role": "coder",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.0639017799985595,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/implement.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/implement.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/implement.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:45.157946+00:00",
+                "kind": "agent",
+                "name": "implement",
+                "started_at": "2026-10-05 03:25:45.091914+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a1-first-subtask-of-c5e41536",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/review.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/review.1/result.json",
+                      "role": "reviewer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.0638274469965836,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/review.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/review.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/c5e41536-7e1b-448b-aa2d-55e9550e63b2/review.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:45.226587+00:00",
+                "kind": "agent",
+                "name": "review",
+                "started_at": "2026-10-05 03:25:45.160951+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:45.229721+00:00",
+                "kind": "deterministic",
+                "name": "verify",
+                "started_at": "2026-10-05 03:25:45.227535+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:45.731308+00:00",
+                "kind": "deterministic",
+                "name": "mark_done",
+                "started_at": "2026-10-05 03:25:45.230815+00:00",
+                "status": "done"
+              }
+            ],
+            "status": "done",
+            "worktree_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a1-first-subtask-of-c5e41536"
+          },
+          {
+            "base_branch": "m3/task-a1-first-subtask-of-c5e41536",
+            "branch": "m3/task-a2-second-subtask-of-231a23cc",
+            "card_id": "231a23cc-91bc-4516-924d-5b19476d5237",
+            "phases": [
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.044001+00:00",
+                "kind": "deterministic",
+                "name": "worktree",
+                "started_at": "2026-10-05 03:25:46.032697+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a2-second-subtask-of-231a23cc",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/explore.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/explore.1/result.json",
+                      "role": "explorer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06368204700265778,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/explore.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/explore.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/explore.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.111456+00:00",
+                "kind": "agent",
+                "name": "explore",
+                "started_at": "2026-10-05 03:25:46.045922+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.654680+00:00",
+                "kind": "deterministic",
+                "name": "mark_in_progress",
+                "started_at": "2026-10-05 03:25:46.112804+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.656080+00:00",
+                "kind": "deterministic",
+                "name": "plan_check",
+                "started_at": "2026-10-05 03:25:46.655776+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a2-second-subtask-of-231a23cc",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/spec.1/result.json",
+                      "role": "spec_author",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06385898499866016,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.722707+00:00",
+                "kind": "agent",
+                "name": "spec",
+                "started_at": "2026-10-05 03:25:46.657551+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a2-second-subtask-of-231a23cc",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_spec.1/result.json",
+                      "role": "spec_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06373345699830679,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.789025+00:00",
+                "kind": "agent",
+                "name": "validate_spec",
+                "started_at": "2026-10-05 03:25:46.724066+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a2-second-subtask-of-231a23cc",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/plan.1/result.json",
+                      "role": "planner",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06377664300089236,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.856083+00:00",
+                "kind": "agent",
+                "name": "plan",
+                "started_at": "2026-10-05 03:25:46.790902+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a2-second-subtask-of-231a23cc",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_plan.1/result.json",
+                      "role": "plan_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.031779619996086694,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/validate_plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.891354+00:00",
+                "kind": "agent",
+                "name": "validate_plan",
+                "started_at": "2026-10-05 03:25:46.857861+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.892932+00:00",
+                "kind": "deterministic",
+                "name": "mark_validated",
+                "started_at": "2026-10-05 03:25:46.892550+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.909688+00:00",
+                "kind": "deterministic",
+                "name": "docs_commit",
+                "started_at": "2026-10-05 03:25:46.894036+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a2-second-subtask-of-231a23cc",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/implement.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/implement.1/result.json",
+                      "role": "coder",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.0638036220043432,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/implement.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/implement.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/implement.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:46.977082+00:00",
+                "kind": "agent",
+                "name": "implement",
+                "started_at": "2026-10-05 03:25:46.911866+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a2-second-subtask-of-231a23cc",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/review.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/review.1/result.json",
+                      "role": "reviewer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.0639036309949006,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/review.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/review.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/231a23cc-91bc-4516-924d-5b19476d5237/review.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:47.044169+00:00",
+                "kind": "agent",
+                "name": "review",
+                "started_at": "2026-10-05 03:25:46.978550+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:47.047536+00:00",
+                "kind": "deterministic",
+                "name": "verify",
+                "started_at": "2026-10-05 03:25:47.045220+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:47.691718+00:00",
+                "kind": "deterministic",
+                "name": "mark_done",
+                "started_at": "2026-10-05 03:25:47.048579+00:00",
+                "status": "done"
+              }
+            ],
+            "status": "done",
+            "worktree_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-a2-second-subtask-of-231a23cc"
+          }
+        ],
+        "tip_branch": "m3/task-a2-second-subtask-of-231a23cc",
+        "title": "Story A: the first level"
+      },
+      {
+        "card_id": "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9",
+        "level": 1,
+        "status": "escalated",
+        "subtasks": [
+          {
+            "base_branch": "m3/task-a2-second-subtask-of-231a23cc",
+            "branch": "m3/task-b1-only-subtask-of-eb8b1851",
+            "card_id": "eb8b1851-8245-45c3-9a29-d1fcefaad0b9",
+            "phases": [
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:47.998649+00:00",
+                "kind": "deterministic",
+                "name": "worktree",
+                "started_at": "2026-10-05 03:25:47.988071+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-b1-only-subtask-of-eb8b1851",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/explore.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/explore.1/result.json",
+                      "role": "explorer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.031794670001545455,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/explore.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/explore.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/explore.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.034600+00:00",
+                "kind": "agent",
+                "name": "explore",
+                "started_at": "2026-10-05 03:25:48.000666+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.632035+00:00",
+                "kind": "deterministic",
+                "name": "mark_in_progress",
+                "started_at": "2026-10-05 03:25:48.035831+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.633449+00:00",
+                "kind": "deterministic",
+                "name": "plan_check",
+                "started_at": "2026-10-05 03:25:48.633070+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-b1-only-subtask-of-eb8b1851",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/spec.1/result.json",
+                      "role": "spec_author",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.03177360600238899,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.667885+00:00",
+                "kind": "agent",
+                "name": "spec",
+                "started_at": "2026-10-05 03:25:48.634814+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-b1-only-subtask-of-eb8b1851",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_spec.1/result.json",
+                      "role": "spec_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.03170032799971523,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.702250+00:00",
+                "kind": "agent",
+                "name": "validate_spec",
+                "started_at": "2026-10-05 03:25:48.669358+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-b1-only-subtask-of-eb8b1851",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/plan.1/result.json",
+                      "role": "planner",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.0637715120028588,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.768969+00:00",
+                "kind": "agent",
+                "name": "plan",
+                "started_at": "2026-10-05 03:25:48.703974+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-b1-only-subtask-of-eb8b1851",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_plan.1/result.json",
+                      "role": "plan_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.03175720199942589,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/validate_plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.803995+00:00",
+                "kind": "agent",
+                "name": "validate_plan",
+                "started_at": "2026-10-05 03:25:48.770549+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.805779+00:00",
+                "kind": "deterministic",
+                "name": "mark_validated",
+                "started_at": "2026-10-05 03:25:48.805380+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.820726+00:00",
+                "kind": "deterministic",
+                "name": "docs_commit",
+                "started_at": "2026-10-05 03:25:48.806654+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-b1-only-subtask-of-eb8b1851",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/implement.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/implement.1/result.json",
+                      "role": "coder",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.063724376996106,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/implement.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/implement.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/implement.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:25:48.887608+00:00",
+                "kind": "agent",
+                "name": "implement",
+                "started_at": "2026-10-05 03:25:48.822543+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-b1-only-subtask-of-eb8b1851",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/review.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/review.1/result.json",
+                      "role": "reviewer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06375090199435363,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/review.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/review.1/result.json",
+                    "status": "gate_failed",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/xdg/agent-manager/runs/20261005T032543Z-bcc4e411/eb8b1851-8245-45c3-9a29-d1fcefaad0b9/review.1/stdout.log"
+                  }
+                ],
+                "detail": "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-eb8b1851",
+                "ended_at": "2026-10-05 03:25:48.954336+00:00",
+                "kind": "agent",
+                "name": "review",
+                "started_at": "2026-10-05 03:25:48.889256+00:00",
+                "status": "failed"
+              }
+            ],
+            "status": "escalated",
+            "worktree_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-b1-only-subtask-of-eb8b1851"
+          }
+        ],
+        "tip_branch": "m3/task-b1-only-subtask-of-eb8b1851",
+        "title": "Story B: blocked by story A"
+      },
+      {
+        "card_id": "6436569d-8cf0-44b0-80e6-f27614eb9a46",
+        "level": 2,
+        "status": "pending",
+        "subtasks": [
+          {
+            "base_branch": "m3/task-b1-only-subtask-of-eb8b1851",
+            "branch": "m3/task-c1-only-subtask-of-ca31fde7",
+            "card_id": "ca31fde7-d22a-43a3-b3da-b1d2d6f9f41e",
+            "phases": [],
+            "status": "pending",
+            "worktree_path": "/tmp/pytest-of-mtts/pytest-1083/test_a_review_failure_stops_th0/project/.claude/worktrees/m3/task-c1-only-subtask-of-ca31fde7"
+          }
+        ],
+        "tip_branch": "m3/task-c1-only-subtask-of-ca31fde7",
+        "title": "Story C: blocked by story B"
+      }
+    ]
+  },
+  "ok": true
+}

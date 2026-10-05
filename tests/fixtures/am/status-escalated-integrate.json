@@ -1,0 +1,802 @@
+{
+  "_am_runs_row": {
+    "base_branch": "main",
+    "branch_prefix": "m3",
+    "card_id": null,
+    "id": "20261005T032958Z-5a2d70ff",
+    "lease": null,
+    "milestone_id": "5a2d70ff-b0c8-4bb8-8a87-1cb2c679a754",
+    "progress": {
+      "current": null,
+      "stories": {
+        "done": 2,
+        "total": 2
+      },
+      "subtasks": {
+        "done": 2,
+        "total": 2
+      }
+    },
+    "repo_dir": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project",
+    "started_at": "2026-10-05 03:29:58.692356+00:00",
+    "status": "escalated",
+    "workflow": "milestone"
+  },
+  "_note": "Not from a run of this repo: printed by the installed am's own `am status` serializer (cli.status_for + cli.render, exactly what the command prints) for a run of agent-manager's e2e suite under its fake claude (tests/e2e/test_integrate.py::test_a_clean_merge_that_breaks_the_suite_escalates_at_integrate: run escalated at the final integrate verification, no phase failed in the tree), captured 2026-10-05. No real run of any project has escalated at Integrate. Shape unedited; only /home/<user> paths rewritten. `_am_runs_row` is this run's real `am runs` entry from the same capture.",
+  "data": {
+    "control": {
+      "claims": [],
+      "lease": null,
+      "requests": []
+    },
+    "integrity": {
+      "checked": true,
+      "mismatches": [],
+      "reason": null
+    },
+    "rows": [
+      {
+        "attempt": null,
+        "phase": "worktree",
+        "state": "done",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": 1,
+        "phase": "explore",
+        "state": "ok",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_in_progress",
+        "state": "done",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": null,
+        "phase": "plan_check",
+        "state": "done",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": 1,
+        "phase": "spec",
+        "state": "ok",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_spec",
+        "state": "ok",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": 1,
+        "phase": "plan",
+        "state": "ok",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_plan",
+        "state": "ok",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_validated",
+        "state": "done",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": null,
+        "phase": "docs_commit",
+        "state": "done",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": 1,
+        "phase": "implement",
+        "state": "ok",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": 1,
+        "phase": "review",
+        "state": "ok",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": null,
+        "phase": "verify",
+        "state": "done",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_done",
+        "state": "done",
+        "story": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "subtask": "1f04eab4-926e-4917-abf1-d605d90ab2ea"
+      },
+      {
+        "attempt": null,
+        "phase": "worktree",
+        "state": "done",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": 1,
+        "phase": "explore",
+        "state": "ok",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_in_progress",
+        "state": "done",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": null,
+        "phase": "plan_check",
+        "state": "done",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": 1,
+        "phase": "spec",
+        "state": "ok",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_spec",
+        "state": "ok",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": 1,
+        "phase": "plan",
+        "state": "ok",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": 1,
+        "phase": "validate_plan",
+        "state": "ok",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_validated",
+        "state": "done",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": null,
+        "phase": "docs_commit",
+        "state": "done",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": 1,
+        "phase": "implement",
+        "state": "ok",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": 1,
+        "phase": "review",
+        "state": "ok",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": null,
+        "phase": "verify",
+        "state": "done",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      },
+      {
+        "attempt": null,
+        "phase": "mark_done",
+        "state": "done",
+        "story": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "subtask": "0e01b1ba-48a3-4898-a696-c033ecaa0e71"
+      }
+    ],
+    "run": {
+      "base_branch": "main",
+      "branch_prefix": "m3",
+      "id": "20261005T032958Z-5a2d70ff",
+      "repo_dir": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project",
+      "started_at": "2026-10-05 03:29:58.692356+00:00",
+      "status": "escalated",
+      "workflow": "milestone"
+    },
+    "stories": [
+      {
+        "card_id": "376e06e2-ef7e-4a7b-aac7-93b191f6a24e",
+        "level": 0,
+        "status": "done",
+        "subtasks": [
+          {
+            "base_branch": "main",
+            "branch": "m3/task-a1-only-subtask-of-1f04eab4",
+            "card_id": "1f04eab4-926e-4917-abf1-d605d90ab2ea",
+            "phases": [
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:29:58.967357+00:00",
+                "kind": "deterministic",
+                "name": "worktree",
+                "started_at": "2026-10-05 03:29:58.939130+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-a1-only-subtask-of-1f04eab4",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/explore.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/explore.1/result.json",
+                      "role": "explorer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.0794264590003877,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/explore.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/explore.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/explore.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:29:59.051789+00:00",
+                "kind": "agent",
+                "name": "explore",
+                "started_at": "2026-10-05 03:29:58.969792+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:29:59.992106+00:00",
+                "kind": "deterministic",
+                "name": "mark_in_progress",
+                "started_at": "2026-10-05 03:29:59.052963+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:29:59.995259+00:00",
+                "kind": "deterministic",
+                "name": "plan_check",
+                "started_at": "2026-10-05 03:29:59.994786+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-a1-only-subtask-of-1f04eab4",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/spec.1/result.json",
+                      "role": "spec_author",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06514516299648676,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.066568+00:00",
+                "kind": "agent",
+                "name": "spec",
+                "started_at": "2026-10-05 03:29:59.999516+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-a1-only-subtask-of-1f04eab4",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_spec.1/result.json",
+                      "role": "spec_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06542568899749313,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.137365+00:00",
+                "kind": "agent",
+                "name": "validate_spec",
+                "started_at": "2026-10-05 03:30:00.069380+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-a1-only-subtask-of-1f04eab4",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/plan.1/result.json",
+                      "role": "planner",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.07158316099958029,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.217236+00:00",
+                "kind": "agent",
+                "name": "plan",
+                "started_at": "2026-10-05 03:30:00.143753+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-a1-only-subtask-of-1f04eab4",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_plan.1/result.json",
+                      "role": "plan_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.0693376800045371,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/validate_plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.291086+00:00",
+                "kind": "agent",
+                "name": "validate_plan",
+                "started_at": "2026-10-05 03:30:00.219737+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.293050+00:00",
+                "kind": "deterministic",
+                "name": "mark_validated",
+                "started_at": "2026-10-05 03:30:00.292588+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.322616+00:00",
+                "kind": "deterministic",
+                "name": "docs_commit",
+                "started_at": "2026-10-05 03:30:00.294459+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-a1-only-subtask-of-1f04eab4",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/implement.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/implement.1/result.json",
+                      "role": "coder",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06577197000297019,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/implement.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/implement.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/implement.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.392517+00:00",
+                "kind": "agent",
+                "name": "implement",
+                "started_at": "2026-10-05 03:30:00.324855+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-a1-only-subtask-of-1f04eab4",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/review.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/review.1/result.json",
+                      "role": "reviewer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06449405800231034,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/review.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/review.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/1f04eab4-926e-4917-abf1-d605d90ab2ea/review.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.460555+00:00",
+                "kind": "agent",
+                "name": "review",
+                "started_at": "2026-10-05 03:30:00.394370+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.494462+00:00",
+                "kind": "deterministic",
+                "name": "verify",
+                "started_at": "2026-10-05 03:30:00.462014+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.756968+00:00",
+                "kind": "deterministic",
+                "name": "mark_done",
+                "started_at": "2026-10-05 03:30:00.496032+00:00",
+                "status": "done"
+              }
+            ],
+            "status": "done",
+            "worktree_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-a1-only-subtask-of-1f04eab4"
+          }
+        ],
+        "tip_branch": "m3/task-a1-only-subtask-of-1f04eab4",
+        "title": "Story A: one side of the merge"
+      },
+      {
+        "card_id": "aeb34ef8-7592-4d5b-9040-76334e683ff1",
+        "level": 0,
+        "status": "done",
+        "subtasks": [
+          {
+            "base_branch": "main",
+            "branch": "m3/task-b1-only-subtask-of-0e01b1ba",
+            "card_id": "0e01b1ba-48a3-4898-a696-c033ecaa0e71",
+            "phases": [
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:29:58.959128+00:00",
+                "kind": "deterministic",
+                "name": "worktree",
+                "started_at": "2026-10-05 03:29:58.930385+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-b1-only-subtask-of-0e01b1ba",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/explore.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/explore.1/result.json",
+                      "role": "explorer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.11524723500042455,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/explore.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/explore.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/explore.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:29:59.082050+00:00",
+                "kind": "agent",
+                "name": "explore",
+                "started_at": "2026-10-05 03:29:58.962761+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.873463+00:00",
+                "kind": "deterministic",
+                "name": "mark_in_progress",
+                "started_at": "2026-10-05 03:29:59.083360+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.875600+00:00",
+                "kind": "deterministic",
+                "name": "plan_check",
+                "started_at": "2026-10-05 03:30:00.875126+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-b1-only-subtask-of-0e01b1ba",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/spec.1/result.json",
+                      "role": "spec_author",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06949460099713178,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:00.951295+00:00",
+                "kind": "agent",
+                "name": "spec",
+                "started_at": "2026-10-05 03:30:00.878960+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-b1-only-subtask-of-0e01b1ba",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_spec.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_spec.1/result.json",
+                      "role": "spec_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06757140300032916,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_spec.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_spec.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_spec.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.023587+00:00",
+                "kind": "agent",
+                "name": "validate_spec",
+                "started_at": "2026-10-05 03:30:00.953701+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-b1-only-subtask-of-0e01b1ba",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/plan.1/result.json",
+                      "role": "planner",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06592870299937204,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.095850+00:00",
+                "kind": "agent",
+                "name": "plan",
+                "started_at": "2026-10-05 03:30:01.027819+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-b1-only-subtask-of-0e01b1ba",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_plan.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_plan.1/result.json",
+                      "role": "plan_critic",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06538380400161259,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_plan.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_plan.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/validate_plan.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.166780+00:00",
+                "kind": "agent",
+                "name": "validate_plan",
+                "started_at": "2026-10-05 03:30:01.099532+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.169274+00:00",
+                "kind": "deterministic",
+                "name": "mark_validated",
+                "started_at": "2026-10-05 03:30:01.168790+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.195938+00:00",
+                "kind": "deterministic",
+                "name": "docs_commit",
+                "started_at": "2026-10-05 03:30:01.170488+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-b1-only-subtask-of-0e01b1ba",
+                      "harness": "claude",
+                      "model": "sonnet",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/implement.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/implement.1/result.json",
+                      "role": "coder",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.06463980799890123,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/implement.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/implement.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/implement.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.264689+00:00",
+                "kind": "agent",
+                "name": "implement",
+                "started_at": "2026-10-05 03:30:01.198015+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [
+                  {
+                    "dispatch": {
+                      "cwd": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-b1-only-subtask-of-0e01b1ba",
+                      "harness": "claude",
+                      "model": "opus",
+                      "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/review.1/prompt.txt",
+                      "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/review.1/result.json",
+                      "role": "reviewer",
+                      "timeout": 1800.0
+                    },
+                    "duration": 0.07291608499508584,
+                    "exit_code": 0,
+                    "n": 1,
+                    "prompt_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/review.1/prompt.txt",
+                    "result_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/review.1/result.json",
+                    "status": "ok",
+                    "stdout_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/xdg/agent-manager/runs/20261005T032958Z-5a2d70ff/0e01b1ba-48a3-4898-a696-c033ecaa0e71/review.1/stdout.log"
+                  }
+                ],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.341616+00:00",
+                "kind": "agent",
+                "name": "review",
+                "started_at": "2026-10-05 03:30:01.266625+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:01.376797+00:00",
+                "kind": "deterministic",
+                "name": "verify",
+                "started_at": "2026-10-05 03:30:01.344190+00:00",
+                "status": "done"
+              },
+              {
+                "attempts": [],
+                "detail": null,
+                "ended_at": "2026-10-05 03:30:02.595899+00:00",
+                "kind": "deterministic",
+                "name": "mark_done",
+                "started_at": "2026-10-05 03:30:01.381186+00:00",
+                "status": "done"
+              }
+            ],
+            "status": "done",
+            "worktree_path": "/tmp/pytest-of-mtts/pytest-1095/test_a_clean_merge_that_breaks0/project/.claude/worktrees/m3/task-b1-only-subtask-of-0e01b1ba"
+          }
+        ],
+        "tip_branch": "m3/task-b1-only-subtask-of-0e01b1ba",
+        "title": "Story B: the other side of the merge"
+      }
+    ]
+  },
+  "ok": true
+}
