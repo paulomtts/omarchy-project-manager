@@ -16,7 +16,7 @@ prints one JSON line per output event, flushed at once:
                                   envelope with an exit other than 3 is
                                   re-emitted unchanged.
 Every hello line (event "watch") must announce journal schema 1 or 2, else
-SchemaMismatch; none of its other keys is forwarded. Journal lines are handled
+SchemaMismatch; only its schema and am are forwarded. Journal lines are handled
 the same under either schema. Journal lines written before the helper started
 (the backlog) are dropped. A journal line is kept when its event is one of the
 five journal events and its run id is watched: the argv run ids, plus every run
