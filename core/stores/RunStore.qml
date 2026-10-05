@@ -87,6 +87,13 @@ Scope {
   property bool alertsArmed: false
   property var toasts: []
   property int toastMs: 8000
+  // "Notify on escalation", per project and off by default: the switch's
+  // value, the last value read from or written to viewer-state.py, and
+  // whether the user changed it since the project was selected (a late load
+  // reply then changes nothing).
+  property bool notifyOnEscalation: false
+  property bool notifySaved: false
+  property bool notifyTouched: false
 
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
@@ -100,6 +107,9 @@ Scope {
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
   readonly property alias toastTimer: toastTimer
+  readonly property alias settingsLoadRunner: settingsLoadRunner
+  readonly property alias settingsSaveRunner: settingsSaveRunner
+  readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -263,7 +273,16 @@ Scope {
     store.flash("")
     store.alertsArmed = false
     store.toasts = []
-    if (store.project !== "") store.refresh()
+    // The switch reads off until this project's own reply. Notifications
+    // already launched still run.
+    store.notifyOnEscalation = false
+    store.notifySaved = false
+    store.notifyTouched = false
+    settingsLoadRunner.guard = store.project
+    if (store.project !== "") {
+      store.refresh()
+      settingsLoadRunner.run(["get-run-settings", store.project])
+    }
   }
 
   // ---- attempt logs (5.2)
@@ -731,7 +750,8 @@ Scope {
   // ---- alerts (S2 4.4)
 
   // One toast per alert, newest last: a run's older toast goes first, then the
-  // oldest beyond three. Called from applySnapshot only while active.
+  // oldest beyond three. With the setting on, each alert also notifies.
+  // Called from applySnapshot only while active.
   function raiseAlerts(alerts) {
     var list = Array.isArray(alerts) ? alerts : []
     for (var i = 0; i < list.length; i++) {
@@ -742,6 +762,7 @@ Scope {
                   expiresMs: Date.now() + store.toastMs })
       while (next.length > 3) next.shift()
       store.toasts = next
+      if (store.notifyOnEscalation) store.notify(a)
     }
   }
 
@@ -759,6 +780,54 @@ Scope {
 
   function dismissAllToasts() {
     if (store.toasts.length > 0) store.toasts = []
+  }
+
+  // One notify.py launch for an alert, on a runner of its own so two never
+  // stop each other. The reply is not read: a failed or skipped notification
+  // changes nothing here.
+  function notify(alert) {
+    var runner = notifyC.createObject(store)
+    notifyState.runners = notifyState.runners.concat([runner])
+    runner.run([String(alert.title), String(alert.reason)])
+  }
+
+  function dropNotifyRunner(runner) {
+    notifyState.runners = notifyState.runners.filter(function(r) { return r !== runner })
+    runner.destroy()
+  }
+
+  // The switch changed: shown at once, written in the background. Refused
+  // (false, nothing changes) without a project.
+  function setNotifyOnEscalation(on) {
+    if (store.project === "") return false
+    var value = !!on
+    store.notifyOnEscalation = value
+    store.notifyTouched = true
+    settingsSaveRunner.sent = value
+    settingsSaveRunner.run(["set-run-settings", store.project, JSON.stringify({ notifyOnEscalation: value })])
+    return true
+  }
+
+  // get-run-settings: one bare object. Only a real true turns the switch on;
+  // an unreadable reply leaves it off. Too late once the user changed it.
+  function applyRunSettings(stdout, exitCode) {
+    if (store.notifyTouched) return
+    var settings = store.parseEnvelope(stdout)
+    var on = settings !== null && settings.notifyOnEscalation === true
+    store.notifyOnEscalation = on
+    store.notifySaved = on
+  }
+
+  // set-run-settings: {"ok": true} means `sent` is stored; anything else puts
+  // the switch back to what is stored and says so.
+  function notifySaveReplied(stdout, exitCode, sent) {
+    var reply = store.parseEnvelope(stdout)
+    if (reply !== null && reply.ok === true) {
+      store.notifySaved = sent
+      return
+    }
+    store.notifyOnEscalation = store.notifySaved
+    store.flash("Notify on escalation could not be saved")
   }
 
   // The guard is the project root, so a snapshot launched for a project the
@@ -783,6 +852,27 @@ Scope {
     script: store.backendDir + "runs/runs-logs.py"
     guard: store.project
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
+  }
+
+  // get-run-settings on a project switch. Its guard is set by projectSwitched()
+  // itself rather than bound to `project`: projectSwitched() runs from the
+  // snapshot runner's guard change, before a binding here is sure to have
+  // followed the project, and this launch must carry the NEW project.
+  HelperRunner {
+    id: settingsLoadRunner
+    script: store.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { store.applyRunSettings(stdout, exitCode) }
+  }
+
+  // set-run-settings on a change of the switch; latest wins. Bound to the
+  // project like the logs: it is launched by a click, long after the binding
+  // followed the project. `sent` is the value the latest launch writes.
+  HelperRunner {
+    id: settingsSaveRunner
+    property bool sent: false
+    script: store.backendDir + "projects/viewer-state.py"
+    guard: store.project
+    onFinished: function(stdout, exitCode) { store.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
   }
 
   // A burst of changed lines costs one snapshot.
@@ -876,6 +966,12 @@ Scope {
     property int nextKey: 0
   }
 
+  // The notify.py runners in flight; kept apart so consumers cannot write it.
+  QtObject {
+    id: notifyState
+    property var runners: []
+  }
+
   // One HelperRunner per control request, so requests for different runs never
   // stop each other. Guarded by the project like the others: a reply for a
   // project the user has left is dropped, and its runner goes when its process
@@ -895,6 +991,19 @@ Scope {
       guard: store.project
       onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
       onBusyChanged: if (!cr.busy && cr.guard !== cr.madeFor) store.dropRunner(cr)
+    }
+  }
+
+  // One HelperRunner per notification. Guard "": a project switch does not
+  // stop a notification already launched. It goes when its process exits.
+  Component {
+    id: notifyC
+
+    HelperRunner {
+      id: nr
+      script: store.backendDir + "runs/notify.py"
+      guard: ""
+      onFinished: store.dropNotifyRunner(nr)
     }
   }
 

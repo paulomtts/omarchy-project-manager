@@ -1985,4 +1985,175 @@ TestCase {
     compare(store.toasts.length, 0, "B's first snapshot raises nothing")
     compare(store.alertsArmed, true)
   }
+
+  // ---- alerts: the setting and the desktop notifications (S2 4.4)
+
+  property string notifyCmd: "python3|/plugin/core/backend/runs/notify.py|"
+  property string viewerCmd: "python3|/plugin/core/backend/projects/viewer-state.py|"
+
+  function runSettings(notify) {
+    return JSON.stringify({ verify: [], allowNoVerification: false, notifyOnEscalation: notify }) + "\n"
+  }
+
+  // 10 (the setting half)
+  function test_a_project_switch_resets_the_switch_and_loads_the_new_projects_setting() {
+    var store = makeWithProject(rootA); if (!store) return
+    var loadA = store.settingsLoadRunner.current
+    verify(loadA, "selecting a project loads its run settings")
+    compare(argv(loadA), tc.viewerCmd + "get-run-settings|/home/u/my proj")
+    compare(loadA.command.length, 4)
+    compare(loadA.launchGuard, "/home/u/my proj")
+    reply(loadA, runSettings(true), 0)
+    compare(store.notifyOnEscalation, true)
+    store.project = rootB
+    compare(store.notifyOnEscalation, false, "off until B's own reply")
+    compare(store.notifySaved, false)
+    compare(store.notifyTouched, false)
+    var loadB = store.settingsLoadRunner.current
+    verify(loadB !== loadA, "a new load")
+    compare(argv(loadB), tc.viewerCmd + "get-run-settings|/home/u/b")
+    compare(loadB.launchGuard, "/home/u/b", "the launch is guarded by the NEW project")
+    var seq = store.settingsLoadRunner.seq
+    store.project = ""
+    compare(store.settingsLoadRunner.seq, seq, "no project: nothing is loaded")
+    compare(store.settingsLoadRunner.guard, "")
+  }
+
+  // 11
+  function test_the_load_reply_sets_the_switch_and_a_garbled_one_leaves_it_off() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.settingsLoadRunner.current, runSettings(true), 0)
+    compare(store.notifyOnEscalation, true)
+    compare(store.notifySaved, true)
+    var other = makeWithProject(rootA); if (!other) return
+    reply(other.settingsLoadRunner.current, "Traceback: boom\n", 1)
+    compare(other.notifyOnEscalation, false)
+    compare(other.notifySaved, false)
+    var third = makeWithProject(rootA); if (!third) return
+    reply(third.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: "yes" }) + "\n", 0)
+    compare(third.notifyOnEscalation, false, "only a real true turns it on")
+  }
+
+  // Review Focus 3
+  function test_a_late_load_reply_for_the_old_project_is_dropped() {
+    var store = makeWithProject(rootA); if (!store) return
+    var loadA = store.settingsLoadRunner.current
+    store.project = rootB
+    reply(loadA, runSettings(true), 0)
+    compare(store.notifyOnEscalation, false, "A's setting never shows in B")
+    compare(store.notifySaved, false)
+  }
+
+  // 12
+  function test_with_the_setting_on_each_alert_launches_its_own_notification() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    compare(store.notifyRunners.length, 0)
+    store.notifyOnEscalation = true
+    snapshot(store, [escalated("a"), dead("b")])
+    compare(store.notifyRunners.length, 2, "one runner per alert")
+    var first = store.notifyRunners[0].current, second = store.notifyRunners[1].current
+    compare(argv(first), tc.notifyCmd + "m-a|escalated")
+    compare(argv(second), tc.notifyCmd + "m-b|process died")
+    compare(first.running, true, "the second launch did not stop the first")
+    compare(second.running, true)
+    compare(first.launchGuard, "")
+    reply(first, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
+    compare(store.notifyRunners.length, 1)
+    reply(second, "garbage\n", 1)
+    compare(store.notifyRunners.length, 0, "a failed notification goes too")
+    compare(toastIds(store), "a,b", "the replies change nothing else")
+    compare(store.flashText, "")
+
+    snapshot(store, [escalated("a"), dead("b"), escalated("c")])
+    compare(store.notifyRunners.length, 1)
+    var proc = store.notifyRunners[0].current
+    store.project = rootB
+    compare(proc.running, true, "a project switch does not stop a launched notification")
+    reply(proc, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
+    compare(store.notifyRunners.length, 0)
+
+    var off = armedStore([running("a")]); if (!off) return
+    snapshot(off, [escalated("a")])
+    compare(off.toasts.length, 1)
+    compare(off.notifyRunners.length, 0, "setting off: toasts only")
+
+    var five = armedStore([]); if (!five) return
+    five.notifyOnEscalation = true
+    snapshot(five, [escalated("r1"), escalated("r2"), dead("r3"), escalated("r4"), dead("r5")])
+    compare(five.toasts.length, 3)
+    compare(five.notifyRunners.length, 5, "every alert notifies, even those whose toast was capped away")
+  }
+
+  // 1 (the notification half)
+  function test_no_notification_while_the_panel_is_closed() {
+    var store = makeWithProject(rootA); if (!store) return
+    store.notifyOnEscalation = true
+    reply(store.snapshotRunner.current, okReply([running("a")]), 0)
+    snapshot(store, [escalated("a")])
+    compare(store.notifyRunners.length, 0)
+    compare(store.toasts.length, 0)
+  }
+
+  // 13
+  function test_the_switch_saves_at_once_and_a_failed_save_puts_it_back() {
+    var store = makeWithProject(rootA); if (!store) return
+    compare(store.setNotifyOnEscalation(true), true)
+    compare(store.notifyOnEscalation, true, "the switch flips at once")
+    compare(store.notifyTouched, true)
+    var save = store.settingsSaveRunner.current
+    verify(save, "a save was launched")
+    compare(save.command.length, 5)
+    compare(argv(save), tc.viewerCmd + 'set-run-settings|/home/u/my proj|{"notifyOnEscalation":true}')
+    compare(save.launchGuard, "/home/u/my proj")
+    reply(save, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.notifySaved, true)
+    compare(store.flashText, "")
+    compare(store.setNotifyOnEscalation(false), true)
+    compare(store.notifyOnEscalation, false)
+    compare(argv(store.settingsSaveRunner.current), tc.viewerCmd + 'set-run-settings|/home/u/my proj|{"notifyOnEscalation":false}')
+    reply(store.settingsSaveRunner.current, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(store.notifyOnEscalation, true, "back to the value last saved")
+    compare(store.notifySaved, true)
+    compare(store.flashText, "Notify on escalation could not be saved")
+    store.flash("")
+    store.setNotifyOnEscalation(false)
+    reply(store.settingsSaveRunner.current, "garbage\n", 1)
+    compare(store.notifyOnEscalation, true, "an unreadable reply is a failure too")
+    compare(store.flashText, "Notify on escalation could not be saved")
+  }
+
+  // Review Focus 4
+  function test_a_save_reply_for_a_project_the_user_left_changes_nothing() {
+    var store = makeWithProject(rootA); if (!store) return
+    store.setNotifyOnEscalation(true)
+    var save = store.settingsSaveRunner.current
+    store.project = rootB
+    reply(save, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(store.notifyOnEscalation, false)
+    compare(store.notifySaved, false)
+    compare(store.flashText, "", "no flash about A in B")
+  }
+
+  // 14
+  function test_a_load_reply_after_the_user_toggled_is_ignored() {
+    var store = makeWithProject(rootA); if (!store) return
+    var load = store.settingsLoadRunner.current
+    store.setNotifyOnEscalation(true)
+    reply(load, runSettings(false), 0)
+    compare(store.notifyOnEscalation, true)
+  }
+
+  // 15
+  function test_without_a_project_the_switch_does_nothing() {
+    var store = make(); if (!store) return
+    compare(store.notifyOnEscalation, false)
+    compare(store.notifySaved, false)
+    compare(store.notifyTouched, false)
+    compare(store.notifyRunners.length, 0)
+    compare(store.setNotifyOnEscalation(true), false)
+    compare(store.notifyOnEscalation, false)
+    compare(store.notifyTouched, false)
+    verify(!store.settingsSaveRunner.current, "nothing was launched")
+    verify(!store.settingsLoadRunner.current, "nothing was loaded")
+  }
 }
