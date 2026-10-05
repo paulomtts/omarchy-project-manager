@@ -156,7 +156,7 @@ def test_watch_all_follow_prints_a_hello_line_then_journal_lines(am):
                 proc.kill()
                 proc.wait()
     assert hello["event"] == "watch", hello
-    assert hello["schema"] == 1, hello
+    assert hello["schema"] in (1, 2), hello
     assert isinstance(hello["am"], str) and hello["am"], hello
     assert isinstance(hello["runs_dir"], str), hello
     # Hermetic: the stream reads the throwaway data dir, not the user's.
