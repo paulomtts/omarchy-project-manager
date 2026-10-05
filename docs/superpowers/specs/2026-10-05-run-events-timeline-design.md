@@ -98,8 +98,9 @@ duration, detail, card, phase, attempt}`:
 - `label`: the story/subtask title from `titles` (fall back to the short card id), plus
   `phase` or `phase.attempt` where the event has one; `run_upsert` reads
   "run started" / "run done" / "run paused" / "run escalated" / "run cancelled".
-- `glyph` follows the S1 table (`runGlyphs.js`: running, done, escalated `‼`, parked,
-  cancelled; an attempt `ok` is done, a failed phase is dead).
+- `glyph` is a `runGlyphs.js` state key (running, parked, escalated, dead, cancelled, done),
+  through `Runs.glyphStateOf`; an attempt `ok` is done, a failed phase is dead. The UI
+  resolves the character, so `core/domain` imports nothing from `ui/`.
 - `duration` from an attempt's `duration` field, formatted (`4.2s`, `3m 12s`); empty
   otherwise. A phase's `detail` (why it failed) is shown under the row.
 - `card`, `phase`, `attempt` are carried so a click can name the attempt.
