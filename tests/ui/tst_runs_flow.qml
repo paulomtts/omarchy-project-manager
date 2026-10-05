@@ -219,7 +219,7 @@ TestCase {
     var proc = p.app.runs.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
     verify(String(proc.command[1]).indexOf("core/backend/runs/runs-logs.py") > 0, String(proc.command[1]))
-    compare(proc.command.slice(2).join("|"), "run-0000000000e5|t1|implement|2")
+    compare(proc.command.slice(2).join("|"), "/home/u/a|run-0000000000e5|t1|implement|2")
     proc.outText = logsOk("3 passed\n")
     proc.exited(0)
     compare(H.find(p, "runOutputHeading").text, "Output · t1 implement.2")

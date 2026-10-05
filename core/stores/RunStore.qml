@@ -360,14 +360,15 @@ Scope {
     store.fetchLogs()
   }
 
-  // One runs-logs.py launch for the current selection, remembering the status
-  // it was launched for (a snapshot that changes it fetches again).
+  // One runs-logs.py launch for the current project and selection, the
+  // project root first, remembering the status it was launched for (a
+  // snapshot that changes it fetches again).
   function fetchLogs() {
     var sel = store.selectedAttempt
     if (store.project === "" || store.selectedRunId === "" || !sel) return
     store.logsStatus = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
     store.logsLoading = true
-    logsRunner.run([store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
+    logsRunner.run([store.project, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
   }
 
   // No selection and no logs; a fetch in flight is stopped and its reply dropped.
