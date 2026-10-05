@@ -318,6 +318,19 @@ def test_live_allowance_is_story_id_on_the_runs_row_and_status_run_only():
         assert_keys("live", "stories[0]", story, STORY_KEYS, LIVE_EXTRA.get(STORY_KEYS, frozenset()))
 
 
+def test_live_status_check_rejects_a_status_outside_the_vocabularies():
+    data = load("status-done.json")["data"]
+    data["run"]["story_id"] = "s"
+    check_status_data("live", data, LIVE_EXTRA)
+    data["stories"][0]["subtasks"][0]["phases"][1]["attempts"][0]["status"] = "done"
+    attempt = r"stories\[0\]\.subtasks\[0\]\.phases\[1\]\.attempts\[0\]\.status"
+    with pytest.raises(AssertionError, match=rf"^live {attempt}: 'done'"):
+        check_status_data("live", data, LIVE_EXTRA)
+    data["run"]["status"] = "bogus"
+    with pytest.raises(AssertionError, match=r"^live data\.run\.status: 'bogus'"):
+        check_status_data("live", data, LIVE_EXTRA)
+
+
 def test_live_check_skips_when_am_is_not_on_path(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(pytest.skip.Exception, match="am is not installed here"):
