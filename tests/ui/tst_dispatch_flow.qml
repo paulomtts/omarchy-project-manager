@@ -349,4 +349,65 @@ TestCase {
     wait(50)
     compare(H.find(p, "startRunButton").enabled, false)
   }
+
+  // ---- after a start
+
+  // A ready subtask t1, started (two clicks), then start-run.py's reply.
+  function startT1(p, replyText) {
+    dispatchCard(p, "t1")
+    toReady(p)
+    var start = H.find(p, "dispatchStart")
+    start.clicked()
+    start.clicked()
+    compare(p.app.runs.dispatchState, "starting")
+    reply(p.app.runs.dispatchStartRunners[0].current, replyText)
+    // A good start fetches the runs again; that launch cannot run here either.
+    p.app.runs.snapshotRunner.cancel()
+  }
+
+  // 24
+  function test_a_start_whose_run_is_listed_opens_its_run_detail() {
+    var p = make(); if (!p) return
+    p.app.runs.runs = [run("run-0000000000a1"), run("run-new")]
+    startT1(p, '{"ok":true,"run_id":"run-new","message":"started"}')
+    compare(H.find(p, "dispatchDialog").visible, false)
+    compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-new")
+    p.shortcuts.closeRequested()
+    compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
+  }
+
+  // 25
+  function test_a_start_before_the_snapshot_waits_for_the_run_then_opens_it() {
+    var p = make(); if (!p) return
+    startT1(p, '{"ok":true,"run_id":"run-late","message":"started"}')
+    compare(H.find(p, "dispatchDialog").visible, false)
+    compare(p.app.nav.viewMode, "runs")
+    wait(50)
+    compare(text(p, "runsFooter"), "Started — opening the run when it appears")
+    p.app.runs.runs = p.app.runs.runs.concat([run("run-late")])
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-late")
+  }
+
+  // 26
+  function test_a_start_without_a_run_id_goes_to_the_runs_list_and_says_so() {
+    var p = make(); if (!p) return
+    startT1(p, '{"ok":true,"message":"started, run not visible yet"}')
+    compare(H.find(p, "dispatchDialog").visible, false)
+    compare(p.app.nav.viewMode, "runs")
+    wait(50)
+    compare(text(p, "runsFooter"), "Started — waiting for the run to appear")
+  }
+
+  // 27
+  function test_a_failed_launch_keeps_the_dialog_and_goes_nowhere() {
+    var p = make(); if (!p) return
+    startT1(p, '{"ok":false,"error":{"type":"Spawn","message":"no am"},"log":"/tmp/l","exit_code":2}')
+    compare(p.app.runs.dispatchState, "failed")
+    compare(H.find(p, "dispatchDialog").visible, true)
+    compare(text(p, "dispatchRefusal"), "no am")
+    compare(p.app.nav.viewMode, "entry")
+  }
 }

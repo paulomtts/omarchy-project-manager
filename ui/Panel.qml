@@ -92,11 +92,18 @@ Panel {
 
   // A different Runs chip means a different list: the cursor reset is App's,
   // the scroll is the panel's. The cancel confirmation takes the focus when it
-  // opens and gives it back when it closes.
+  // opens and gives it back when it closes. A started dispatch closes its
+  // dialog and goes to the run; the run is usually not in the snapshot yet,
+  // so every new list may hold the run the navigator still waits for.
   Connections {
     target: appStores.runs
     function onRunFilterToggled() { Qt.callLater(root.scrollToTop) }
     function onCancelOpenChanged() { root.focusForView() }
+    function onDispatchStarted(runId) {
+      appStores.runs.closeDispatch()
+      navi.openStartedRun(runId)
+    }
+    function onRunsChanged() { navi.openAwaitedRun() }
   }
 
   // The dialog picks one of the project's Markdown documents, so the documents
