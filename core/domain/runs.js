@@ -584,23 +584,26 @@ function _syntheticLabel(id) {
 
 // One subtask as the detail tree shows it. Its own status, else its last am
 // row's; phases with a name only; every attempt object (attempt 0 when it has
-// no number); the current phase is the first started one, else the last.
+// no number). The current phase is the first started one, else the last one
+// with a numbered attempt, else the last; the current attempt is that phase's
+// newest number, 0 when it has none.
 function _subtaskNode(run, subtask) {
   var phases = [], attempts = []
-  var started = null, last = null
+  var started = null, numbered = null, last = null
   var list = _arrayOr(subtask.phases)
   for (var i = 0; i < list.length; i++) {
     var p = list[i]
     if (!_isObject(p) || typeof p.name !== "string" || p.name === "") continue
     phases.push({ name: p.name, status: _stringOr(p.status) })
     if (started === null && p.status === "started") started = p
+    if (_newestAttempt(p) > 0) numbered = p
     last = p
     var tries = _arrayOr(p.attempts)
     for (var k = 0; k < tries.length; k++) {
       if (_isObject(tries[k])) attempts.push({ phase: p.name, attempt: _attemptNumber(tries[k]), status: _stringOr(tries[k].status) })
     }
   }
-  var current = started !== null ? started : last
+  var current = started !== null ? started : numbered !== null ? numbered : last
   var own = _stringOr(subtask.status)
   return {
     card_id: subtask.card_id,

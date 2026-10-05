@@ -449,6 +449,82 @@ TestCase {
     for (var k = 0; k < it.stories.length; k++) compare(it.stories[k].other, false, "no Other group " + k)
   }
 
+  // The node with this card id in any group of a runTree result, else null.
+  function treeNode(tree, cardId) {
+    for (var i = 0; i < tree.stories.length; i++) {
+      var subtasks = tree.stories[i].subtasks
+      for (var j = 0; j < subtasks.length; j++) {
+        if (subtasks[j].card_id === cardId) return subtasks[j]
+      }
+    }
+    return null
+  }
+
+  // "phase/attempt" a tree node opens on.
+  function opensOn(node) { return node === null ? "null" : node.currentPhase + "/" + node.currentAttempt }
+
+  function test_fixture_run_tree_open_attempt() {
+    var done = Runs.runTree(Runs.normalizeRun(amRun("status-done.json")))
+    var count = 0
+    for (var i = 0; i < done.stories.length; i++) {
+      for (var j = 0; j < done.stories[i].subtasks.length; j++) {
+        var node = done.stories[i].subtasks[j]
+        compare(node.status, "done", node.card_id)
+        compare(node.phases.length, 14, node.card_id + " phases")
+        compare(node.attempts.length, 7, node.card_id + " attempts")
+        compare(opensOn(node), "review/1", node.card_id + ": the last phase with a numbered attempt, past verify and mark_done")
+        count++
+      }
+    }
+    compare(count, 10, "every done subtask is a node")
+
+    var started = Runs.runTree(Runs.normalizeRun(amRun("status-started.json")))
+    var expected = [
+      ["5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff", "review/1"],
+      ["45cc9067-d6b3-441f-b8d2-6602a81311d2", "review/1"],
+      ["a19ca446-659e-4735-86ed-5a583c1730bf", "review/1"],
+      ["299ec9c0-b935-4c44-a7a0-982a104cbfe5", "explore/1"],
+      ["fdb5feb1-0907-40b2-9937-d9b4cc2875f0", "/0"],
+      ["66a6b6c0-5032-4598-b80c-0afb0d0d46b5", "/0"],
+      ["dfc0ac87-978b-4419-87c2-61f10b9d0cd1", "/0"],
+      ["46141e11-da16-4aa2-8e1a-10e0e23e6980", "/0"]
+    ]
+    for (var k = 0; k < expected.length; k++)
+      compare(opensOn(treeNode(started, expected[k][0])), expected[k][1], "started run " + expected[k][0])
+
+    var escalated = Runs.runTree(Runs.normalizeRun(amRun("status-escalated.json")))
+    var expectedEscalated = [
+      ["c5e41536-7e1b-448b-aa2d-55e9550e63b2", "review/1"],
+      ["231a23cc-91bc-4516-924d-5b19476d5237", "review/1"],
+      ["eb8b1851-8245-45c3-9a29-d1fcefaad0b9", "review/1"],
+      ["ca31fde7-d22a-43a3-b3da-b1d2d6f9f41e", "/0"]
+    ]
+    for (var e = 0; e < expectedEscalated.length; e++)
+      compare(opensOn(treeNode(escalated, expectedEscalated[e][0])), expectedEscalated[e][1], "escalated run " + expectedEscalated[e][0])
+  }
+
+  function test_fixture_run_tree_started_deterministic_phase() {
+    var raw = amRun("status-started.json")
+    var subtask = null
+    for (var i = 0; i < raw.status.stories.length; i++) {
+      var list = raw.status.stories[i].subtasks
+      for (var j = 0; j < list.length; j++) {
+        if (list[j].card_id === "299ec9c0-b935-4c44-a7a0-982a104cbfe5") subtask = list[j]
+      }
+    }
+    verify(subtask !== null, "the started subtask is in the capture")
+    compare(subtask.phases.length, 2)
+    compare(subtask.phases[1].name + ":" + subtask.phases[1].status, "explore:started")
+    // synthetic: a deterministic phase in flight after a finished agent phase -- no capture has one
+    subtask.phases[1].status = "done"
+    var added = { name: "mark_in_progress", kind: "deterministic", status: "started", started_at: "", ended_at: null, detail: null, attempts: [] }
+    compare(Object.keys(added).sort().join(","), Object.keys(subtask.phases[0]).sort().join(","), "same keys as its neighbours")
+    subtask.phases.push(added)
+
+    var node = treeNode(Runs.runTree(Runs.normalizeRun(raw)), "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(opensOn(node), "mark_in_progress/0", "a started phase wins over an earlier numbered one, attempt 0 without attempts")
+  }
+
   function test_state_running() {
     compare(Runs.runState({ status: "started", lease: { live: true } }), "running")
     compare(Runs.runState(Runs.normalizeRun(amRun("status-started.json"))), "running")
@@ -1476,6 +1552,53 @@ TestCase {
     compare(cardIds(odd.stories[1].subtasks), "t1")
     compare(odd.stories[1].subtasks[0].phases.length, 1)
     compare(odd.stories[1].subtasks[0].attempts.length, 0)
+  }
+
+  function test_run_tree_open_attempt_rule() {
+    // synthetic: hand-built normalized subtasks, one per case of the open rule
+    var t = Runs.runTree(mkRun("r", "done", null, { tree: {
+      stories: [{ card_id: "s1", subtasks: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }],
+      subtasks: [
+        { card_id: "a", status: "done", phases: [
+          { name: "spec", status: "done", attempts: [{ n: 2 }] },
+          { name: "implement", status: "done", attempts: [{ n: 1 }] },
+          { name: "verify", status: "done", attempts: [] },
+          { name: "mark_done", status: "done", attempts: [{ status: "done" }] }] },
+        { card_id: "b", status: "started", phases: [
+          { name: "plan", status: "started", attempts: [] },
+          { name: "review", status: "done", attempts: [{ n: 1 }] }] },
+        { card_id: "c", status: "done", phases: [
+          { name: "spec", status: "done", attempts: [{ n: 1 }] },
+          { name: "", status: "done", attempts: [{ n: 3 }] },
+          null,
+          { name: "review", status: "done", attempts: [{ n: 0 }, { n: -1 }, { n: "2" }, { n: Infinity }, null] }] },
+        { card_id: "d", status: "done", phases: [
+          { name: "worktree", status: "done", attempts: [] },
+          { name: "explore", status: "done", attempts: "x" }] },
+        { card_id: "e", status: "started", phases: [
+          { name: "spec", status: "done", attempts: [{ n: 1 }] },
+          { name: "implement", status: "started", attempts: [] }] },
+        { card_id: "f", status: "pending", phases: [null, { name: "" }, { name: 5, status: "started", attempts: [{ n: 1 }] }] },
+        { card_id: "g", status: "pending" },
+        { card_id: "h", status: "started", phases: [
+          { name: "spec", status: "done", attempts: [{ n: 1 }] },
+          { name: "implement", status: "running", attempts: [] },
+          { name: "review", status: null, attempts: [] },
+          { name: "verify", status: 5, attempts: [] }] },
+        { card_id: "i", status: "done", phases: [
+          { name: "spec", status: "done", attempts: [{ attempt: 2, status: "done" }] },
+          { name: "verify", status: "done", attempts: [] }] }
+      ] } }))
+    compare(cardIds(t.stories[0].subtasks), "a,b,c,d,e,f,g,h,i")
+    compare(opensOn(treeNode(t, "a")), "implement/1", "the last numbered phase by position, not the highest n; unnumbered and empty trailing phases passed over")
+    compare(opensOn(treeNode(t, "b")), "plan/0", "a started phase wins over a later numbered one")
+    compare(opensOn(treeNode(t, "c")), "spec/1", "unnamed and non-object phases are never current; bad numbers are not numbered")
+    compare(opensOn(treeNode(t, "d")), "explore/0", "nothing numbered: the last phase")
+    compare(opensOn(treeNode(t, "e")), "implement/0", "a started phase after a numbered one wins")
+    compare(opensOn(treeNode(t, "f")), "/0", "only unnamed phases: no current phase")
+    compare(opensOn(treeNode(t, "g")), "/0", "no phases")
+    compare(opensOn(treeNode(t, "h")), "spec/1", "only the exact status started wins the first rule")
+    compare(opensOn(treeNode(t, "i")), "spec/2", "a legacy attempt number counts")
   }
 
   function at(d) { return d === null ? "null" : d.card_id + "/" + d.phase + "/" + d.attempt }
