@@ -4,31 +4,9 @@ import QtTest
 import "../../../core/domain/runs.js" as Runs
 import "../../helpers/amFixtures.js" as F
 
-// Input shape for Runs.normalizeRun (provisional until the runs-snapshot helper exists):
-//   raw = {
-//     row:    { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at }  // one `am runs` row
-//     status: { run: {...}, rows: [...], stories: [...], subtasks: [...],
-//               control: { lease: { pid, host, heartbeat_at, accepting, live } }, ... }  // `am status` data, may be absent
-//   }
+// normalizeRun's input is built from tests/fixtures/am/ via amRun.
 TestCase {
   name: "DomainRuns"
-
-  function fullRaw() {
-    return {
-      row: { id: "r1", workflow: "orchestrator", repo_dir: "/home/u/repo", base_branch: "main",
-             branch_prefix: "mon/", status: "started", started_at: "2026-10-03T10:00:00Z" },
-      status: {
-        run: { id: "r1", repo_dir: "/home/u/repo", milestone_id: "m-4bf4", status: "started" },
-        rows: [{ card_id: "c1", phase: "implement" }],
-        stories: [{ card_id: "s1", subtasks: [] }],
-        subtasks: [{ card_id: "c1", phases: [{ name: "implement", attempts: [] }] }],
-        control: { lease: { pid: 4242, host: "box", heartbeat_at: "2026-10-03T10:05:00Z",
-                            accepting: true, live: true } },
-        requests: [],
-        claims: []
-      }
-    }
-  }
 
   // One am run as RunStore hands it to normalizeRun, fresh on every call: the
   // fixture's `am runs` row (runs.json's entry with the same run id, else the
@@ -71,26 +49,30 @@ TestCase {
   }
 
   function test_normalize_status_prefers_am_status() {
-    var raw = fullRaw()
+    // synthetic: the row's and am status's run statuses edited to disagree
+    var raw = amRun("status-started.json")
     raw.row.status = "stopped"
     raw.status.run.status = "done"
     compare(Runs.normalizeRun(raw).status, "done")
 
+    // synthetic: a bare am runs row
     compare(Runs.normalizeRun({ row: { id: "r1", status: "stopped" } }).status, "stopped")
 
-    var noRun = fullRaw()
+    // synthetic: am status without its run
+    var noRun = amRun("status-started.json")
     noRun.row.status = "escalated"
     delete noRun.status.run
     compare(Runs.normalizeRun(noRun).status, "escalated")
 
-    // An empty am-status value is not fresher detail: fall back to the row.
-    var blank = fullRaw()
+    // synthetic: an empty am status run status. It is not fresher detail: fall back to the row.
+    var blank = amRun("status-started.json")
     blank.row.status = "stopped"
     blank.status.run.status = ""
     compare(Runs.normalizeRun(blank).status, "stopped")
   }
 
   function test_normalize_ids_fallback_and_coercion() {
+    // synthetic: bare am runs rows and am status runs, one or two fields each
     compare(Runs.normalizeRun({ row: { id: 7 } }).id, "7")
 
     var fromStatus = Runs.normalizeRun({ status: { run: { id: "r9", repo_dir: "/r", milestone_id: "m9" } } })
@@ -107,10 +89,12 @@ TestCase {
   }
 
   function test_normalize_missing_lease() {
-    var noControl = fullRaw()
+    // synthetic: am status without control
+    var noControl = amRun("status-started.json")
     delete noControl.status.control
     compare(Runs.normalizeRun(noControl).lease, null, "no control")
 
+    // synthetic: the capture's control replaced by each malformed shape
     var cases = [
       { label: "empty control", control: {} },
       { label: "null control", control: null },
@@ -119,16 +103,18 @@ TestCase {
       { label: "array lease", control: { lease: [] } }
     ]
     for (var i = 0; i < cases.length; i++) {
-      var raw = fullRaw()
+      var raw = amRun("status-started.json")
       raw.status.control = cases[i].control
       compare(Runs.normalizeRun(raw).lease, null, cases[i].label)
     }
 
+    // synthetic: a bare am runs row
     compare(Runs.normalizeRun({ row: { id: "r1", status: "started" } }).lease, null, "no status at all")
   }
 
   function test_normalize_lease_live_strict() {
-    var empty = fullRaw()
+    // synthetic: the capture's lease replaced by empty, null, string and numeric values
+    var empty = amRun("status-started.json")
     empty.status.control.lease = {}
     var e = Runs.normalizeRun(empty).lease
     compare(e.live, false)
@@ -137,7 +123,7 @@ TestCase {
     compare(e.host, "")
     compare(e.heartbeat_at, "")
 
-    var nulls = fullRaw()
+    var nulls = amRun("status-started.json")
     nulls.status.control.lease = { pid: null, host: null, heartbeat_at: null, live: null, accepting: null }
     var n = Runs.normalizeRun(nulls).lease
     compare(n.pid, "", "null pid")
@@ -146,12 +132,12 @@ TestCase {
     compare(n.live, false, "null live")
     compare(n.accepting, false, "null accepting")
 
-    var stringy = fullRaw()
+    var stringy = amRun("status-started.json")
     stringy.status.control.lease = { live: "true", accepting: "true" }
     compare(Runs.normalizeRun(stringy).lease.live, false)
     compare(Runs.normalizeRun(stringy).lease.accepting, false)
 
-    var numeric = fullRaw()
+    var numeric = amRun("status-started.json")
     numeric.status.control.lease = { live: 1, accepting: 1 }
     compare(Runs.normalizeRun(numeric).lease.live, false)
     compare(Runs.normalizeRun(numeric).lease.accepting, false)
@@ -211,6 +197,7 @@ TestCase {
   }
 
   function test_normalize_garbage() {
+    // synthetic: garbage in place of a run
     checkDefaults(Runs.normalizeRun(undefined), "undefined")
     checkDefaults(Runs.normalizeRun(null), "null")
     checkDefaults(Runs.normalizeRun("x"), "string")
@@ -464,18 +451,19 @@ TestCase {
 
   function test_state_running() {
     compare(Runs.runState({ status: "started", lease: { live: true } }), "running")
-    compare(Runs.runState(Runs.normalizeRun(fullRaw())), "running")
+    compare(Runs.runState(Runs.normalizeRun(amRun("status-started.json"))), "running")
   }
 
   function test_state_dead_not_live() {
     compare(Runs.runState({ status: "started", lease: { live: false } }), "dead")
 
-    var raw = fullRaw()
+    // synthetic: the capture's lease edited to not live
+    var raw = amRun("status-started.json")
     raw.status.control.lease.live = false
     compare(Runs.runState(Runs.normalizeRun(raw)), "dead")
 
-    // A sloppy "true" string is not liveness.
-    var stringy = fullRaw()
+    // synthetic: the capture's lease live as a string. A sloppy "true" string is not liveness.
+    var stringy = amRun("status-started.json")
     stringy.status.control.lease.live = "true"
     compare(Runs.runState(Runs.normalizeRun(stringy)), "dead")
 
@@ -490,9 +478,11 @@ TestCase {
   function test_state_dead_missing_lease() {
     compare(Runs.runState({ status: "started", lease: null }), "dead")
     compare(Runs.runState({ status: "started" }), "dead")
+    // synthetic: a bare am runs row
     compare(Runs.runState(Runs.normalizeRun({ row: { id: "r1", status: "started" } })), "dead")
 
-    var noLease = fullRaw()
+    // synthetic: am status without control
+    var noLease = amRun("status-started.json")
     delete noLease.status.control
     compare(Runs.runState(Runs.normalizeRun(noLease)), "dead")
   }
@@ -755,6 +745,7 @@ TestCase {
     compare(Runs.cardRunState(junk, "m1").runId, "k")
     checkNone(Runs.cardRunState(junk, "j"), "run id is not a card id")
 
+    // synthetic: a bare am runs row among hand-built normalized runs
     var withBlank = [good, mkRun("blank", "started", true, { milestone_id: "" }),
                      Runs.normalizeRun({ row: { id: "z", status: "started" } })]
     var ids = [null, undefined, "", 0, 5, {}, []]
@@ -970,7 +961,9 @@ TestCase {
   // ---- 5.1: the Runs screen's helpers -----------------------------------------------------
 
   function test_normalize_keeps_started_at() {
-    compare(Runs.normalizeRun(fullRaw()).started_at, "2026-10-03T10:00:00Z", "from the am runs row")
+    compare(Runs.normalizeRun(amRun("status-started.json")).started_at, "2026-10-05 02:14:00.590972+00:00",
+            "from the am runs row")
+    // synthetic: bare am status runs and rows, one field each
     compare(Runs.normalizeRun({ status: { run: { started_at: "2026-10-01T00:00:00Z" } } }).started_at,
             "2026-10-01T00:00:00Z", "falls back to am status")
     compare(Runs.normalizeRun({ row: { id: "r1" } }).started_at, "", "absent")
@@ -1128,9 +1121,10 @@ TestCase {
   // ---- Run detail (5.2)
 
   function test_normalize_branch_fields() {
-    var r = Runs.normalizeRun(fullRaw())
+    var r = Runs.normalizeRun(amRun("status-started.json"))
     compare(r.base_branch, "main")
-    compare(r.branch_prefix, "mon/")
+    compare(r.branch_prefix, "dsp")
+    // synthetic: bare am status runs and rows, branch fields only
     var fromRun = Runs.normalizeRun({ status: { run: { base_branch: "master", branch_prefix: "m3" } } })
     compare(fromRun.base_branch, "master", "status.run is the fallback")
     compare(fromRun.branch_prefix, "m3")
@@ -1466,6 +1460,7 @@ TestCase {
   }
 
   function test_controls_unknown_and_garbage() {
+    // synthetic: normalizeRun(undefined) stands for garbage am output
     var runs = [ctlRun("", true, true), ctlRun("weird", true, false), ctlRun("STARTED", true, true),
                 ctlRun("weird", null, true), undefined, null, 5, "x", {}, [], Object.create(null),
                 Runs.normalizeRun(undefined)]
@@ -1485,6 +1480,7 @@ TestCase {
   }
 
   function test_controls_from_normalized() {
+    // synthetic: am status with only a run and a lease
     function raw(lease) {
       return { status: { run: { id: "r", status: "started" }, control: { lease: lease } } }
     }
@@ -1772,6 +1768,7 @@ TestCase {
     compare(fromBare.length, 1, "a prototype-less run with an id alerts")
     checkAlert(fromBare[0], "np", "…np", "escalated", "escalated", "prototype-less run")
 
+    // synthetic: garbage, and a bare am runs row with an escalated am status run
     compare(Runs.newAlerts([], [Runs.normalizeRun(undefined)]).length, 0, "normalised garbage")
     var normalised = Runs.normalizeRun({ row: { id: "rz", status: "started" },
                                          status: { run: { milestone_id: "m9", status: "escalated" } } })
@@ -1809,8 +1806,9 @@ TestCase {
   // ---- S2 4.1: workflow and control requests ----------------------------------------------
 
   function test_normalize_workflow() {
-    compare(Runs.normalizeRun(fullRaw()).workflow, "orchestrator", "from the am runs row")
-    var raw = fullRaw()
+    compare(Runs.normalizeRun(amRun("status-started.json")).workflow, "milestone", "from the am runs row")
+    // synthetic: the capture's row and run workflows edited to each combination
+    var raw = amRun("status-started.json")
     delete raw.row.workflow
     raw.status.run.workflow = "task"
     compare(Runs.normalizeRun(raw).workflow, "task", "falls back to the am status run")
@@ -1821,12 +1819,14 @@ TestCase {
     delete raw.row.workflow
     delete raw.status.run.workflow
     compare(Runs.normalizeRun(raw).workflow, "", "neither gives empty")
+    // synthetic: null workflows, and garbage
     compare(Runs.normalizeRun({ row: { workflow: null }, status: { run: { workflow: null } } }).workflow, "", "nulls")
     compare(Runs.normalizeRun(undefined).workflow, "", "garbage")
   }
 
   function test_normalize_requests() {
-    var raw = fullRaw()
+    // synthetic: three requests, which no capture contains
+    var raw = amRun("status-started.json")
     raw.status.control.requests = [
       { command: "pause", requested_at: "2026-10-03T10:00:00Z", handled_at: "2026-10-03T10:00:05Z" },
       { command: "resume", requested_at: "2026-10-03T11:00:00Z", handled_at: null },
@@ -1845,12 +1845,13 @@ TestCase {
     compare(r.requests[2].handled_at, "", "missing means not handled")
     r.requests[0].command = "x"
     compare(raw.status.control.requests[0].command, "pause", "the elements are fresh objects")
-    compare(Runs.normalizeRun(fullRaw()).requests.length, 0, "no requests key under control")
+    compare(Runs.normalizeRun(amRun("status-started.json")).requests.length, 0, "the capture's requests are []")
   }
 
   // Review Focus 4.
   function test_normalize_requests_garbage() {
-    var raw = fullRaw()
+    // synthetic: garbage request elements in place of the capture's []
+    var raw = amRun("status-started.json")
     raw.status.control.requests = [null, "pause", 7, ["pause"], true,
                                    { command: 5, requested_at: true, handled_at: { a: 1 } }, {}]
     var r = Runs.normalizeRun(raw)
@@ -1862,17 +1863,20 @@ TestCase {
     compare(r.requests[1].requested_at, "")
     compare(r.requests[1].handled_at, "")
 
-    var noControl = fullRaw()
+    // synthetic: am status without control
+    var noControl = amRun("status-started.json")
     delete noControl.status.control
     compare(Runs.normalizeRun(noControl).requests.length, 0, "no control")
+    // synthetic: requests that are not a list
     var values = ["x", { a: 1 }, null, 5]
     for (var i = 0; i < values.length; i++) {
-      var bad = fullRaw()
+      var bad = amRun("status-started.json")
       bad.status.control.requests = values[i]
       var out = Runs.normalizeRun(bad)
       compare(Array.isArray(out.requests), true, "requests " + i)
       compare(out.requests.length, 0, "requests " + i)
     }
+    // synthetic: control that is not an object
     compare(Runs.normalizeRun({ status: { control: "y" } }).requests.length, 0, "control not an object")
   }
 
