@@ -208,17 +208,21 @@ Scope {
     else staleTimer.stop()
   }
 
+  // No watch is left running, so am's schema and version are unknown again.
   function stopWatch() {
     store.watchSeq += 1
     if (watchState.proc) watchState.proc.running = false
     watchState.watching = false
+    store.forgetHello()
   }
 
   // runs-watch.py for this project and the runs the snapshot just listed, in
   // its order. Long-lived, so a plain Process rather than the HelperRunner.
+  // It starts with am's schema and version unknown until its own hello.
   function startWatch() {
     store.watchSeq += 1
     store.watchTried = true
+    store.forgetHello()
     var ids = []
     for (var i = 0; i < store.runs.length; i++) {
       var id = store.runs[i].id
@@ -260,13 +264,21 @@ Scope {
     }
   }
 
-  // The watch ended. Exit 0: it was stopped (by us, or because am exited).
-  // Otherwise the last envelope line it printed says why: a journal the helper
-  // cannot read switches to the 5 s poll; anything else is reported and the
-  // watch stays off until the next activation or project switch.
+  // amSchema and amVersion back to unknown: no current watch has said hello.
+  function forgetHello() {
+    store.amSchema = 0
+    store.amVersion = ""
+  }
+
+  // The watch ended, whatever the code: its hello no longer holds, so amSchema
+  // and amVersion are reset. Exit 0: it was stopped (by us, or because am
+  // exited). Otherwise the last envelope line it printed says why: a journal
+  // the helper cannot read switches to the 5 s poll; anything else is reported
+  // and the watch stays off until the next activation or project switch.
   function watchExited(proc, exitCode) {
     if (!store.isCurrentWatch(proc)) return
     watchState.watching = false
+    store.forgetHello()
     if (exitCode === 0) return
     var envelope = proc.envelope
     var err = envelope ? envelope.error : null

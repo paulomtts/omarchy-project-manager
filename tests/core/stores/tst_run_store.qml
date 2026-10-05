@@ -622,6 +622,99 @@ TestCase {
     compare(store.amVersion, "", "an empty string is still a string")
   }
 
+  function test_hello_reset_on_deactivate() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    compare(store.amSchema, 2)
+    store.active = false
+    compare(store.amSchema, 0, "a closed panel has no watch hello")
+    compare(store.amVersion, "")
+    store.active = true
+    compare(store.amSchema, 0, "reopening alone restores nothing")
+    compare(store.amVersion, "")
+  }
+
+  function test_hello_reset_on_watch_exit() {
+    var cases = [["", 0], [watchError("HelperError", "m"), 1], ["", 137]]
+    for (var i = 0; i < cases.length; i++) {
+      var label = "exit " + cases[i][1] + " " + cases[i][0]
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amSchema, 2, label)
+      endWatch(store.watchProc, cases[i][0], cases[i][1])
+      compare(store.watching, false, label)
+      compare(store.amSchema, 0, label + ": an ended watch has no hello")
+      compare(store.amVersion, "", label)
+    }
+  }
+
+  function test_hello_reset_when_poll_takes_over() {
+    var types = ["SchemaMismatch", "CorruptJournal"]
+    for (var i = 0; i < types.length; i++) {
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amSchema, 2, types[i])
+      endWatch(store.watchProc, watchError(types[i], "m"), 1)
+      compare(store.amSchema, 0, types[i])
+      compare(store.amVersion, "", types[i])
+      compare(store.pollTimer.running, true, types[i] + " polls")
+      store.pollTimer.triggered()
+      reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+      compare(store.amSchema, 0, types[i] + ": a polled snapshot brings no hello")
+      compare(store.amVersion, "", types[i])
+    }
+  }
+
+  function test_hello_reset_on_project_switch() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    store.project = rootB
+    compare(store.amSchema, 0, "A's hello says nothing about B")
+    compare(store.amVersion, "")
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    sendLine(store.watchProc, helloLine("schema_1"))
+    compare(store.amSchema, 1, "B's watch says hello")
+    compare(store.amVersion, "0.1.0")
+    store.project = ""
+    compare(store.amSchema, 0, "no project, no hello")
+    compare(store.amVersion, "")
+  }
+
+  function test_old_watch_hello_ignored() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var old = store.watchProc
+    sendLine(old, helloLine("schema_2"))
+    store.project = rootB
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    verify(store.watchProc !== old, "B runs its own watch")
+    sendLine(old, helloLine("schema_2"))
+    compare(store.amSchema, 0, "A's late hello is dropped")
+    compare(store.amVersion, "")
+    sendLine(store.watchProc, helloLine("schema_1"))
+    compare(store.amSchema, 1, "B's own hello counts")
+    compare(store.amVersion, "0.1.0")
+    old.exited(0)
+    compare(store.amSchema, 1, "A's late exit forgets nothing")
+    compare(store.amVersion, "0.1.0")
+  }
+
+  function test_new_watch_starts_unknown() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var old = store.watchProc
+    sendLine(old, helloLine("schema_2"))
+    store.active = false
+    store.active = true
+    reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+    var fresh = store.watchProc
+    verify(fresh !== old, "a new watch was started")
+    compare(fresh.running, true)
+    compare(store.amSchema, 0, "a new watch starts unknown")
+    compare(store.amVersion, "")
+    sendLine(fresh, helloLine("schema_1"))
+    compare(store.amSchema, 1, "until its own hello")
+    compare(store.amVersion, "0.1.0")
+  }
+
   // ---- liveness
 
   function test_liveness_on_with_running_run() {
