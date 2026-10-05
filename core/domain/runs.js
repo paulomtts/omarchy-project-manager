@@ -7,9 +7,13 @@
 // exists; pinned by tests/core/domain/tst_runs.qml):
 //   raw = {
 //     row:    { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at }  // one `am runs` row
-//     status: { run: {...}, rows: [...], stories: [...], subtasks: [...],
-//               control: { lease: { pid, host, heartbeat_at, accepting, live } }, ... }  // `am status` data, may be absent
+//     status: { run: {..., workflow}, rows: [...], stories: [...], subtasks: [...],
+//               control: { lease: { pid, host, heartbeat_at, accepting, live },
+//                          requests: [{ command, requested_at, handled_at }] }, ... }  // `am status` data, may be absent
 //   }
+// `workflow` is the row's, else the am status run's ("task" for a --card run).
+// `requests` are am's control requests in the order made; handled_at "" means
+// the run has not acted on it yet.
 //
 // The status always comes from `am` (am status first, then the am runs row),
 // never from a brd card. Never throws: anything missing or malformed becomes
@@ -40,6 +44,14 @@ function normalizeRun(raw) {
     }
   }
 
+  var requests = []
+  var rawRequests = arrayOr(control.requests)
+  for (var i = 0; i < rawRequests.length; i++) {
+    var q = rawRequests[i]
+    if (!isObject(q)) continue
+    requests.push({ command: text(q.command), requested_at: text(q.requested_at), handled_at: text(q.handled_at) })
+  }
+
   return {
     id: firstText(row.id, run.id),
     repo_dir: firstText(row.repo_dir, run.repo_dir),
@@ -48,7 +60,9 @@ function normalizeRun(raw) {
     started_at: firstText(row.started_at, run.started_at),
     base_branch: firstText(row.base_branch, run.base_branch),
     branch_prefix: firstText(row.branch_prefix, run.branch_prefix),
+    workflow: firstText(row.workflow, run.workflow),
     lease: lease,
+    requests: requests,
     rows: arrayOr(st.rows),
     tree: { stories: arrayOr(st.stories), subtasks: arrayOr(st.subtasks) }
   }

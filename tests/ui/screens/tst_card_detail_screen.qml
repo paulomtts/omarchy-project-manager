@@ -381,4 +381,78 @@ TestCase {
     compare(s.app.board.selectedCardId, "s1")
     compare(s.app.runs.selectedRunId, "")
   }
+
+  // ---- run controls (S2 4.2)
+
+  SignalSpy { id: cancelSpy; signalName: "cancelRequested" }
+
+  function rc(s, i, name) { return H.find(H.find(s, "cardRunControls" + i), "runControl" + name) }
+
+  // 19
+  function test_a_story_cards_live_run_offers_whole_run_controls() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    compare(rc(s, 0, "Pause").visible, true)
+    compare(rc(s, 0, "Pause").text, "Pause run")
+    compare(rc(s, 0, "Cancel").text, "Cancel run")
+    compare(rc(s, 0, "Resume").visible, false)
+    compare(rc(s, 0, "Caption").visible, true)
+    compare(rc(s, 0, "Caption").text, "applies to the whole run")
+    compare(rc(s, 1, "Buttons").visible, false, "the done run is history: no controls")
+    compare(H.find(s, "cardRunControls1").height, 0)
+  }
+
+  function test_a_subtask_card_also_says_whole_run() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("t1")
+    wait(50)
+    compare(rc(s, 0, "Pause").text, "Pause run")
+    compare(rc(s, 0, "Caption").visible, true)
+  }
+
+  // 20
+  function test_a_milestone_cards_run_rows_use_the_plain_labels() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("m1")
+    wait(50)
+    compare(rc(s, 0, "Pause").text, "Pause")
+    compare(rc(s, 0, "Cancel").text, "Cancel")
+    compare(rc(s, 0, "Caption").visible, false)
+  }
+
+  // 21
+  function test_pause_run_starts_a_request_without_opening_the_run() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    compare(s.app.runs.project, "/home/u/a", "control() refuses without a project")
+    mouseClick(rc(s, 0, "Pause"))
+    compare(s.app.runs.pending["run-0000000000a1"], "pause")
+    compare(s.app.runs.controlRunners.length, 1)
+    compare(s.app.runs.controlRunners[0].action, "pause")
+    compare(s.app.runs.controlRunners[0].runId, "run-0000000000a1")
+    compare(s.app.nav.viewMode, "entry", "the button is not the row")
+    compare(rc(s, 0, "Pause").text, "Pause requested…")
+    compare(rc(s, 0, "Pause").enabled, false)
+  }
+
+  function test_cancel_run_asks_the_owner_and_starts_nothing() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    cancelSpy.target = s
+    cancelSpy.clear()
+    mouseClick(rc(s, 0, "Cancel"))
+    compare(cancelSpy.count, 1)
+    compare(cancelSpy.signalArguments[0][0], "run-0000000000a1")
+    compare(s.app.runs.controlRunners.length, 0)
+    compare(Object.keys(s.app.runs.pending).length, 0)
+    compare(s.app.nav.viewMode, "entry")
+  }
 }

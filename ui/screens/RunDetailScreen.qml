@@ -3,6 +3,7 @@ import qs.Commons
 import "../../core/domain/board.js" as Board
 import "../../core/domain/runs.js" as Runs
 import "../components/runGlyphs.js" as RunGlyphs
+import "../components/runControlFacts.js" as ControlFacts
 import "../components" as UI
 import "../theme" as T
 
@@ -25,6 +26,9 @@ Column {
 
   // The panel scrolls; Panel wires this like every other screen's.
   signal revealRequested(var item)
+  // The run's Cancel was clicked. Cancelling needs a typed confirmation, which
+  // is the owner's to ask for; nothing here cancels a run.
+  signal cancelRequested(string runId)
 
   readonly property var run: screen.runById(screen.app.runs.runs, screen.app.runs.selectedRunId)
   readonly property var tree: Runs.runTree(screen.run)
@@ -148,6 +152,15 @@ Column {
     return screen.tree.synthetic[k] || ({ id: "", label: "", status: "" })
   }
 
+  // A control button: pause and resume go straight to the store, a cancel
+  // only asks (cancelRequested).
+  function requestControl(action) {
+    var id = ControlFacts.runIdOf(screen.run)
+    if (id === "") return
+    if (action === "cancel") screen.cancelRequested(id)
+    else screen.app.runs.control(action, id)
+  }
+
   UI.ListStatus {
     objectName: "runDetailMissing"
     theme: screen.theme
@@ -201,6 +214,20 @@ Column {
       text: Runs.escalationReason(screen.run)
       color: screen.theme.urgent
       wrapMode: Text.WordWrap
+    }
+
+    UI.RunControls {
+      objectName: "runDetailControls"
+      width: parent.width
+      theme: screen.theme
+      run: screen.run
+      pendingAction: ControlFacts.pendingOf(screen.app.runs.pending, screen.run)
+      waiting: ControlFacts.waitingOf(screen.app.runs.stillWaiting, screen.run)
+      waitingText: screen.app.runs.stillWaitingText
+      errorText: ControlFacts.errorOf(screen.app.runs.lastControlError, screen.app.runs.lastControlErrorRunId, screen.run)
+      wholeRun: false
+      showButtons: true
+      onActionRequested: function(action) { screen.requestControl(action) }
     }
 
     Repeater {
@@ -278,6 +305,17 @@ Column {
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
       }
+    }
+
+    // Why the last run key was refused, while that flash lasts.
+    UI.ThemedText {
+      objectName: "runDetailFlash"
+      variant: "caption"
+      theme: screen.theme
+      width: parent.width
+      visible: text !== ""
+      text: screen.app.runs.flashText
+      wrapMode: Text.WordWrap
     }
   }
 

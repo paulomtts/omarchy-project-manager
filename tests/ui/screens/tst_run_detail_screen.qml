@@ -31,6 +31,7 @@ TestCase {
       property bool logsLoading: false
       property string logsError: ""
       property string amStatus: "ok"
+      property string flashText: ""
       property var selected: null
       property int refreshed: 0
       function selectAttempt(cardId, phase, attempt) {
@@ -38,6 +39,17 @@ TestCase {
         rs.selectedAttempt = { card_id: cardId, phase: phase, attempt: attempt }
       }
       function refreshLogs() { rs.refreshed += 1 }
+      // The control surface the header reads (S2 4.2). `control` only records.
+      property var pending: ({})
+      property var stillWaiting: ({})
+      readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
+      property string lastControlError: ""
+      property string lastControlErrorRunId: ""
+      property var controlCalls: []
+      function control(action, id) {
+        rs.controlCalls = rs.controlCalls.concat([action + "|" + id])
+        return true
+      }
     }
   }
 
@@ -313,5 +325,76 @@ TestCase {
     s.nav.viewMode = "run"
     s.app.projects = { selectedProject: null }
     compare(s.screen.visible, false)
+  }
+
+  // ---- run controls (S2 4.2)
+
+  SignalSpy { id: cancelSpy; signalName: "cancelRequested" }
+
+  function ctl(s, name) { return H.find(H.find(s.screen, "runDetailControls"), "runControl" + name) }
+
+  // 17
+  function test_a_running_run_offers_pause_and_cancel_without_hover() {
+    var s = make(detail()); if (!s) return
+    compare(ctl(s, "Pause").visible, true)
+    compare(ctl(s, "Pause").text, "Pause")
+    compare(ctl(s, "Cancel").visible, true)
+    compare(ctl(s, "Resume").visible, false)
+    compare(ctl(s, "Caption").visible, false, "Run detail is the run itself, not a card")
+  }
+
+  function test_a_parked_run_offers_resume() {
+    var s = make([run("run-x-park0002", "stopped", null, {})], "run-x-park0002"); if (!s) return
+    compare(ctl(s, "Resume").visible, true)
+    compare(ctl(s, "Resume").enabled, true)
+    compare(ctl(s, "Pause").visible, false)
+  }
+
+  function test_pause_goes_to_the_store_and_cancel_only_asks() {
+    var s = make(detail()); if (!s) return
+    cancelSpy.target = s.screen
+    cancelSpy.clear()
+    tap(ctl(s, "Pause"))
+    compare(s.runs.controlCalls.join(","), "pause|run-20261004-19efcddc")
+    tap(ctl(s, "Cancel"))
+    compare(cancelSpy.count, 1)
+    compare(cancelSpy.signalArguments[0][0], "run-20261004-19efcddc")
+    compare(s.runs.controlCalls.length, 1, "cancel never reaches the store")
+  }
+
+  function test_the_runs_own_error_and_waiting_lines() {
+    var s = make(detail()); if (!s) return
+    s.runs.lastControlError = "The run no longer exists"
+    s.runs.lastControlErrorRunId = "run-other"
+    compare(ctl(s, "Error").visible, false, "another run's error")
+    s.runs.lastControlErrorRunId = "run-20261004-19efcddc"
+    compare(ctl(s, "Error").visible, true)
+    compare(ctl(s, "Error").text, "The run no longer exists")
+    s.runs.pending = { "run-20261004-19efcddc": "pause" }
+    s.runs.stillWaiting = { "run-20261004-19efcddc": true }
+    compare(ctl(s, "Pause").text, "Pause requested…")
+    compare(ctl(s, "Waiting").visible, true)
+  }
+
+  // 18
+  function test_a_done_run_shows_no_controls() {
+    var s = make([run("run-x-done0003", "done", null, {})], "run-x-done0003"); if (!s) return
+    compare(ctl(s, "Buttons").visible, false)
+    compare(H.find(s.screen, "runDetailControls").height, 0)
+  }
+
+  // ---- the flash line (S2 4.3)
+
+  // 15
+  function test_the_flash_line_shows_only_while_there_is_a_flash() {
+    var s = make(detail()); if (!s) return
+    var line = H.find(s.screen, "runDetailFlash")
+    verify(line, "the flash line")
+    compare(line.visible, false)
+    s.runs.flashText = "Integrate is running; it cannot be paused or cancelled"
+    compare(line.visible, true)
+    compare(line.text, "Integrate is running; it cannot be paused or cancelled")
+    s.runs.flashText = ""
+    compare(line.visible, false)
   }
 }
