@@ -61,7 +61,8 @@ TestCase {
       close: function() { tc.calls.push("close") },
       scrollBy: navActions.scrollBy,
       switchPanel: function(direction) { tc.calls.push("switch:" + direction) },
-      searchAtEnd: function() { return tc.atEnd }
+      searchAtEnd: function() { return tc.atEnd },
+      openDispatch: function(target) { tc.calls.push("dispatch:" + target) }
     } })
     app.projects.stateLoaded = true
     app.projects.stateReadOk = true
@@ -644,5 +645,106 @@ TestCase {
     compare(s.handleRunKey(plain(Qt.Key_P)), true)
     compare(s.app.runs.pending["run-0000000000a1"], "pause")
     compare(s.app.runs.toasts.length, 1, "the keys leave the toasts alone")
+  }
+
+  // ---- d: the dispatch dialog (S3 4.2)
+
+  // Project A's board list: milestone m1 (story s1 under it) under the cursor,
+  // the search empty, am installed.
+  function onBoard() {
+    var s = make(); if (!s) return null
+    s.app.runs.snapshotRunner.cancel()
+    s.app.board.applyTreeData([card("m1", "Milestone", "todo", [card("s1", "Story", "todo")])])
+    wait(20)
+    s.navigator.showSection("board")
+    s.app.nav.cursorIndex = 0
+    return s
+  }
+  function dispatched() { return tc.calls.filter(function(c) { return c.indexOf("dispatch:") === 0 }) }
+
+  // 6
+  function test_d_on_the_board_list_asks_for_the_cursor_cards_dispatch() {
+    var s = onBoard(); if (!s) return
+    compare(s.app.board.boardCards[0].id, "m1")
+    compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
+    compare(dispatched().join(","), "dispatch:m1")
+    compare(s.app.runs.dispatchState, "idle", "the key only asks the panel")
+  }
+
+  // 7 (and Review Focus 1)
+  function test_d_is_left_alone_data() {
+    return [
+      { tag: "shift" }, { tag: "ctrl" }, { tag: "search-text" }, { tag: "no-project" }, { tag: "am-missing" },
+      { tag: "dropdown" }, { tag: "modal" }, { tag: "dispatch-open" }, { tag: "runs" }, { tag: "graph" },
+      { tag: "documents" }, { tag: "empty-board" }, { tag: "cursor-past-the-end" }, { tag: "other-letter" }
+    ]
+  }
+
+  function test_d_is_left_alone(data) {
+    var s = onBoard(); if (!s) return
+    var e = plain(Qt.Key_D)
+    switch (data.tag) {
+    case "shift": e = shift(Qt.Key_D); break
+    case "ctrl": e = ctrl(Qt.Key_D); break
+    case "search-text": s.app.nav.searchQuery = "mile"; break
+    case "no-project": s.app.projects.selectedProject = null; s.app.nav.viewMode = "board"; break
+    case "am-missing": s.app.runs.amStatus = "missing"; break
+    case "dropdown": s.navigator.toggleDropdown(); break
+    case "modal": s.app.runs.cancelRunId = "run-0000000000a1"; break
+    case "dispatch-open": s.app.runs.dispatchState = "ready"; break
+    case "runs": s.navigator.showSection("runs"); break
+    case "graph": s.navigator.showSection("graph"); break
+    case "documents": s.navigator.showSection("documents"); break
+    case "empty-board": s.app.board.applyTreeData([]); break
+    case "cursor-past-the-end": s.app.nav.cursorIndex = 5; break
+    case "other-letter": e = plain(Qt.Key_E); break
+    }
+    compare(s.handleDispatchKey(e), false)
+    compare(dispatched().length, 0)
+  }
+
+  // 8
+  function test_d_on_a_card_asks_for_that_cards_dispatch() {
+    var s = onBoard(); if (!s) return
+    s.navigator.openCard("s1")
+    compare(s.app.nav.viewMode, "entry")
+    compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
+    compare(dispatched().join(","), "dispatch:s1")
+  }
+
+  // 9
+  function test_an_open_dispatch_is_a_modal() {
+    var s = onBoard(); if (!s) return
+    compare(s.modalOpen(), false)
+    s.app.runs.dispatchState = "ready"
+    compare(s.modalOpen(), true)
+    compare(s.handleGlobalKey(ctrl(Qt.Key_1)), false)
+    compare(s.handleGlobalKey(ctrl(Qt.Key_6)), false)
+    compare(s.app.nav.viewMode, "board")
+  }
+
+  // 10
+  function test_escape_closes_an_open_dispatch_before_anything_else() {
+    var s = onBoard(); if (!s) return
+    s.navigator.openCard("s1")
+    compare(s.app.runs.openDispatch(s.app.board.cardMap["s1"], s.app.board.cardMap), false, "a story is refused at once")
+    compare(s.app.runs.dispatchState, "refused")
+    s.closeRequested()
+    compare(s.app.runs.dispatchState, "idle")
+    compare(s.app.nav.viewMode, "entry", "that Escape closed the dialog only")
+    compare(tc.calls.indexOf("close"), -1)
+    s.closeRequested()
+    compare(s.app.nav.viewMode, "board", "the next one goes back as before")
+  }
+
+  // 10
+  function test_escape_while_a_start_is_in_flight_does_nothing() {
+    var s = onBoard(); if (!s) return
+    s.navigator.openCard("s1")
+    s.app.runs.dispatchState = "starting"
+    s.closeRequested()
+    compare(s.app.runs.dispatchState, "starting")
+    compare(s.app.nav.viewMode, "entry", "no Back")
+    compare(tc.calls.indexOf("close"), -1, "no panel close")
   }
 }

@@ -17,6 +17,7 @@ TestCase {
 
   Component { id: hostC; Item { width: 500; height: 700 } }
   Component { id: flickC; Flickable { width: 500; height: 300; contentWidth: 500; contentHeight: 2000 } }
+  SignalSpy { id: dispatchSpy; signalName: "dispatchRequested" }
 
   property var pA: ({ root_path: "/home/u/a", name: "alpha" })
 
@@ -454,5 +455,53 @@ TestCase {
     compare(s.app.runs.controlRunners.length, 0)
     compare(Object.keys(s.app.runs.pending).length, 0)
     compare(s.app.nav.viewMode, "entry")
+  }
+
+  // ---- Dispatch (S3 4.2)
+
+  // 16
+  function test_every_card_has_a_dispatch_button_that_asks_the_owner_data() {
+    return [{ tag: "milestone", id: "m1" }, { tag: "story", id: "s1" }, { tag: "done-subtask", id: "t1" }]
+  }
+
+  function test_every_card_has_a_dispatch_button_that_asks_the_owner(data) {
+    var s = make(); if (!s) return
+    s.app.runs.snapshotRunner.cancel()
+    dispatchSpy.target = s
+    dispatchSpy.clear()
+    s.navigator.openCard(data.id)
+    wait(50)
+    var button = H.find(s, "cardDispatchButton")
+    verify(button, "the Dispatch button")
+    compare(button.visible, true)
+    compare(String(button.text), "Dispatch")
+    compare(String(button.iconText), "▶")
+    compare(button.enabled, true)
+    compare(H.find(s, "cardDispatchMissing").visible, false)
+    mouseClick(button)
+    compare(dispatchSpy.count, 1)
+    compare(dispatchSpy.signalArguments[0][0], data.id)
+    compare(s.app.runs.dispatchState, "idle", "the screen opens nothing itself")
+  }
+
+  // 17
+  function test_without_am_the_dispatch_button_is_disabled_and_says_why() {
+    var s = make(); if (!s) return
+    s.app.runs.snapshotRunner.cancel()
+    dispatchSpy.target = s
+    dispatchSpy.clear()
+    s.app.runs.amStatus = "missing"
+    s.navigator.openCard("m1")
+    wait(50)
+    var button = H.find(s, "cardDispatchButton")
+    compare(button.enabled, false)
+    mouseClick(button)
+    compare(dispatchSpy.count, 0)
+    var caption = H.find(s, "cardDispatchMissing")
+    compare(caption.visible, true)
+    compare(String(caption.text), "am is not installed or not on PATH")
+    s.app.runs.amStatus = "ok"
+    compare(caption.visible, false)
+    compare(button.enabled, true)
   }
 }

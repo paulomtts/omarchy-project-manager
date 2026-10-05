@@ -25,6 +25,9 @@ Column {
   // A run's Cancel was clicked. Cancelling needs a typed confirmation, which is
   // the owner's to ask for; nothing here cancels a run.
   signal cancelRequested(string runId)
+  // The card's Dispatch was clicked. Opening a dispatch is the owner's job;
+  // nothing here starts a run.
+  signal dispatchRequested(string cardId)
 
   visible: detailCard.app.nav.viewMode === "entry" && !!detailCard.app.board.cardMap[detailCard.app.board.selectedCardId]
   spacing: Style.space(10)
@@ -85,6 +88,30 @@ Column {
       visible: text !== ""
       text: detailCard.card ? Board.openIssueLabel(detailCard.card, detailCard.app.board.issueMap) : ""
       tone: Board.statusColor("blocked", detailCard.theme.dim)
+    }
+  }
+
+  // Every card has it: a story or a finished card opens a dialog that says
+  // why it cannot start (and offers a story's milestone). Without am it is
+  // disabled, and the caption says why.
+  Row {
+    spacing: Style.space(8)
+
+    UI.ActionButton {
+      objectName: "cardDispatchButton"
+      theme: detailCard.theme
+      iconText: "▶"
+      text: "Dispatch"
+      enabled: detailCard.app.runs.amStatus !== "missing"
+      onClicked: if (detailCard.card) detailCard.dispatchRequested(detailCard.card.id)
+    }
+
+    UI.ThemedText {
+      objectName: "cardDispatchMissing"
+      variant: "caption"
+      theme: detailCard.theme
+      visible: detailCard.app.runs.amStatus === "missing"
+      text: "am is not installed or not on PATH"
     }
   }
 
