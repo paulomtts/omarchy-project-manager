@@ -68,6 +68,16 @@ Scope {
   property string lastControlError: ""      // Runs.controlError sentence of the last failed request
   property string lastControlErrorRunId: "" // the run that sentence is about
 
+  // The cancel confirmation (S2 4.3). Panel renders it; the store keeps the
+  // run it asks about ("" = closed), the typed word and why the last confirm
+  // was refused.
+  property string cancelRunId: ""
+  readonly property bool cancelOpen: store.cancelRunId !== ""
+  property string cancelText: ""
+  property string cancelError: ""
+  // The footer flash: why a run key was refused. flashTimer clears it.
+  property string flashText: ""
+
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
@@ -78,6 +88,7 @@ Scope {
   readonly property alias logsRunner: logsRunner
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
+  readonly property alias flashTimer: flashTimer
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -233,6 +244,8 @@ Scope {
     store.stillWaiting = {}
     controlState.requests = {}
     store.dismissControlError()
+    store.closeCancel()
+    store.flash("")
     if (store.project !== "") store.refresh()
   }
 
@@ -631,6 +644,66 @@ Scope {
     store.stillWaiting = out
   }
 
+  // ---- cancel confirmation and the footer flash (S2 4.3)
+
+  // "" when control(action, runId) would start a request; otherwise why not:
+  // a run that is not in the snapshot (or no project), then a request already
+  // pending for it, then the reason Runs.controls gives. Changes nothing.
+  function refusalOf(action, runId) {
+    if (action !== "pause" && action !== "resume" && action !== "cancel") return "Unknown control"
+    var run = store.project === "" || typeof runId !== "string" || runId === "" ? null : store.runById(runId)
+    if (run === null) return "This run is no longer in the snapshot"
+    if (store.hasKey(store.pending, runId)) return "A request for this run is pending"
+    return Runs.controls(run)[action].reason
+  }
+
+  // Shows text in the footers for 3 s; a new flash replaces it and restarts
+  // the clock, flash("") clears it.
+  function flash(text) {
+    store.flashText = String(text || "")
+    if (store.flashText === "") flashTimer.stop()
+    else flashTimer.restart()
+  }
+
+  // Opens the cancel confirmation for a run that can be cancelled now;
+  // otherwise flashes why not and leaves any dialog as it is.
+  function openCancel(runId) {
+    var reason = store.refusalOf("cancel", runId)
+    if (reason !== "") {
+      store.flash(reason)
+      return false
+    }
+    store.cancelText = ""
+    store.cancelError = ""
+    store.cancelRunId = runId
+    return true
+  }
+
+  function closeCancel() {
+    store.cancelRunId = ""
+    store.cancelText = ""
+    store.cancelError = ""
+  }
+
+  // The dialog's confirm. The typed word is checked again here (the dialog
+  // gates it too), then the run is checked again: one that changed under the
+  // open dialog keeps it open with the reason. A started cancel closes it.
+  function confirmCancel() {
+    if (store.cancelRunId === "") return false
+    if (String(store.cancelText).trim().toLowerCase() !== "cancel") return false
+    var reason = store.refusalOf("cancel", store.cancelRunId)
+    if (reason !== "") {
+      store.cancelError = reason
+      return false
+    }
+    if (!store.control("cancel", store.cancelRunId)) {
+      store.cancelError = "The run could not be cancelled"
+      return false
+    }
+    store.closeCancel()
+    return true
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -701,6 +774,15 @@ Scope {
     repeat: true
     running: store.active && Object.keys(store.pending).length > 0
     onTriggered: store.checkWaiting(Date.now())
+  }
+
+  // Clears the footer flash 3 s after the last flash().
+  Timer {
+    id: flashTimer
+    objectName: "flashTimer"
+    interval: 3000
+    repeat: false
+    onTriggered: store.flashText = ""
   }
 
   // What the watch Process aliases read; kept apart so consumers cannot write it.

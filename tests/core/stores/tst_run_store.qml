@@ -1134,7 +1134,7 @@ TestCase {
       var o = store.data[i]
       if (o && typeof o.interval === "number" && typeof o.repeat === "boolean") timers.push(o.objectName)
     }
-    compare(timers.sort().join(","), "debounceTimer,livenessTimer,pendingTimer,pollTimer,staleTimer", "the logs add no timer")
+    compare(timers.sort().join(","), "debounceTimer,flashTimer,livenessTimer,pendingTimer,pollTimer,staleTimer", "the logs add no timer")
     compare(store.debounceTimer.running, false)
     compare(store.livenessTimer.running, false)
     compare(store.staleTimer.running, false)
@@ -1649,5 +1649,150 @@ TestCase {
     var idle = ctlStore([running("r1")]); if (!idle) return
     idle.control("pause", "r1")
     compare(idle.pendingTimer.running, false, "an inactive store runs no timer")
+  }
+
+  // ---- cancel confirmation and the footer flash (S2 4.3)
+
+  property string integrateReason: "Integrate is running; it cannot be paused or cancelled"
+
+  // A running run whose lease is not accepting requests: am is in Integrate.
+  function integrate(id) { return ctlEntry(id, "started", true, "milestone", [], false) }
+
+  // 1 (and Review Focus 4)
+  function test_refusal_of_says_why_a_control_would_not_start() {
+    var bare = make(); if (!bare) return
+    compare(bare.refusalOf("pause", "r1"), "This run is no longer in the snapshot", "no project")
+    var store = ctlStore([running("r1"), ctlEntry("r2", "stopped", false), integrate("r3"),
+                          ctlEntry("r4", "done", false), running("r5"), running("constructor")]); if (!store) return
+    compare(store.refusalOf("pause", "r1"), "")
+    compare(store.refusalOf("cancel", "r1"), "")
+    compare(store.refusalOf("resume", "r2"), "")
+    compare(store.refusalOf("cancel", "r2"), "")
+    compare(store.refusalOf("pause", "nope"), "This run is no longer in the snapshot")
+    compare(store.refusalOf("pause", ""), "This run is no longer in the snapshot")
+    compare(store.refusalOf("pause", "r3"), tc.integrateReason)
+    compare(store.refusalOf("cancel", "r3"), tc.integrateReason)
+    compare(store.refusalOf("cancel", "r4"), "The run has finished")
+    compare(store.refusalOf("resume", "r1"), "The run is still running")
+    compare(store.refusalOf("bogus", "r1"), "Unknown control")
+    compare(store.refusalOf("pause", "constructor"), "", "an id like constructor is not pending")
+    compare(store.refusalOf("resume", "constructor"), "The run is still running")
+    compare(store.control("pause", "r5"), true)
+    compare(store.refusalOf("pause", "r5"), "A request for this run is pending")
+    compare(store.refusalOf("resume", "r5"), "A request for this run is pending", "pending wins over the state's reason")
+    compare(store.controlRunners.length, 1, "refusalOf starts nothing")
+  }
+
+  // 2
+  function test_a_flash_clears_itself_and_a_new_one_restarts_the_clock() {
+    var store = make(); if (!store) return
+    compare(store.flashText, "")
+    compare(store.flashTimer.interval, 3000)
+    compare(store.flashTimer.repeat, false)
+    compare(store.flashTimer.running, false)
+    store.flashTimer.interval = 500
+    store.flash("first")
+    compare(store.flashText, "first")
+    compare(store.flashTimer.running, true)
+    wait(300)
+    store.flash("second")
+    compare(store.flashText, "second", "the new text replaces the old")
+    wait(300)
+    compare(store.flashText, "second", "the clock restarted with the second flash")
+    tryCompare(store, "flashText", "", 2000)
+    compare(store.flashTimer.running, false)
+    store.flash("third")
+    store.flash("")
+    compare(store.flashText, "")
+    compare(store.flashTimer.running, false, "flash(\"\") stops the clock")
+  }
+
+  // 3
+  function test_open_cancel_opens_only_for_a_cancellable_run() {
+    var store = ctlStore([running("r1"), integrate("r3")]); if (!store) return
+    compare(store.cancelOpen, false)
+    compare(store.cancelRunId, "")
+    compare(store.cancelText, "")
+    compare(store.cancelError, "")
+    store.cancelText = "left over"
+    store.cancelError = "old"
+    compare(store.openCancel("r1"), true)
+    compare(store.cancelOpen, true)
+    compare(store.cancelRunId, "r1")
+    compare(store.cancelText, "", "the dialog opens empty")
+    compare(store.cancelError, "")
+    compare(store.flashText, "")
+    store.closeCancel()
+    compare(store.cancelOpen, false)
+    compare(store.openCancel("r3"), false)
+    compare(store.cancelOpen, false, "an Integrate run gets no dialog")
+    compare(store.flashText, tc.integrateReason)
+    compare(store.controlRunners.length, 0)
+  }
+
+  // 4 (and Review Focus 1)
+  function test_confirm_cancel_needs_the_word_then_starts_the_cancel_and_closes() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    compare(store.confirmCancel(), false, "nothing is open")
+    store.openCancel("r1")
+    store.cancelText = "cancle"
+    compare(store.confirmCancel(), false)
+    compare(store.controlRunners.length, 0)
+    compare(store.cancelOpen, true)
+    compare(store.cancelError, "", "a wrong word is not an error")
+    store.cancelText = " Cancel "
+    compare(store.confirmCancel(), true)
+    compare(store.pending.r1, "cancel")
+    compare(store.controlRunners.length, 1)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "cancel|r1|/home/u/my proj")
+    compare(store.cancelOpen, false)
+    compare(store.cancelRunId, "")
+    compare(store.cancelText, "")
+    compare(store.cancelError, "")
+    compare(store.confirmCancel(), false, "a second confirm finds the dialog closed")
+    compare(store.controlRunners.length, 1)
+  }
+
+  // 5 (D6, Review Focus 2)
+  function test_a_run_that_changed_under_the_open_dialog_refuses_the_confirm() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.openCancel("r2")
+    store.cancelText = "cancel"
+    store.control("pause", "r2")
+    compare(store.confirmCancel(), false)
+    compare(store.cancelError, "A request for this run is pending")
+    compare(store.cancelOpen, true)
+    compare(store.controlRunners.length, 1, "only the pause")
+    store.closeCancel()
+
+    store.openCancel("r1")
+    store.cancelText = "cancel"
+    snapshot(store, [ctlEntry("r1", "done", false)])
+    compare(store.confirmCancel(), false)
+    compare(store.cancelError, "The run has finished")
+    compare(store.cancelOpen, true, "the dialog stays for the user to read why")
+    compare(store.cancelRunId, "r1")
+    compare(store.pending.r1, undefined)
+    snapshot(store, [])
+    compare(store.confirmCancel(), false)
+    compare(store.cancelError, "This run is no longer in the snapshot")
+    compare(store.cancelOpen, true)
+    compare(store.controlRunners.length, 1, "no cancel was ever launched")
+  }
+
+  // 6
+  function test_a_project_switch_closes_the_dialog_and_clears_the_flash() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.openCancel("r1")
+    store.cancelText = "can"
+    store.cancelError = "x"
+    store.flash("The run has finished")
+    store.project = rootB
+    compare(store.cancelOpen, false)
+    compare(store.cancelRunId, "")
+    compare(store.cancelText, "")
+    compare(store.cancelError, "")
+    compare(store.flashText, "")
+    compare(store.flashTimer.running, false)
   }
 }
