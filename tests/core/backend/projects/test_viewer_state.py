@@ -312,7 +312,18 @@ def test_set_run_settings_keeps_strings_verbatim(env):
 BAD_UPDATES = ["", "{", "[]", '"x"', "null", "5", '{"allow_no_verification": true}', '{"verify": "pytest"}',
                '{"verify": [1]}', '{"verify": [""]}', '{"verify": ["  "]}', '{"allowNoVerification": "true"}',
                '{"notifyOnEscalation": 1}', '{"notifyOnEscalation": null}', '{"verify": ["a"], "bogus": 1}',
-               pytest.param("[" * 100000, id="nested-past-the-recursion-limit")]
+               pytest.param("[" * 100000, id="nested-past-the-recursion-limit"),
+               '{"prefixHistory": "m3"}', '{"prefixHistory": {"m3": 1}}', '{"prefixHistory": [1]}',
+               '{"prefixHistory": [""]}', '{"prefixHistory": ["  "]}', '{"prefixHistory": null}',
+               '{"prefixHistory": ["\\t\\n"]}',
+               pytest.param(json.dumps({"prefixHistory": ["m%d" % i for i in range(21)]}), id="prefix-history-of-21"),
+               '{"parallelism": 0}', '{"parallelism": -1}', '{"parallelism": -0}', '{"parallelism": 1.5}',
+               '{"parallelism": 2.0}', '{"parallelism": 4e0}', '{"parallelism": 1e400}', '{"parallelism": "4"}',
+               '{"parallelism": true}', '{"parallelism": null}', '{"parallelism": NaN}', '{"parallelism": Infinity}',
+               '{"parallelism": -Infinity}', '{"parallelism": [4]}',
+               '{"confirmDispatch": 1}', '{"confirmDispatch": 0}', '{"confirmDispatch": "true"}',
+               '{"confirmDispatch": null}',
+               '{"parallelism": 2, "confirmDispatch": "yes"}']
 
 
 @pytest.mark.parametrize("update", BAD_UPDATES)
@@ -396,3 +407,121 @@ def test_set_run_settings_keeps_damaged_stored_fields_it_was_not_given(env):
 def test_run_settings_root_is_any_non_empty_string(env, root):
     assert run(env, "set-run-settings", root, '{"verify": ["a"]}') == (0, {"ok": True})
     assert run(env, "get-run-settings", root) == (0, {**DEFAULTS, "verify": ["a"]})
+
+
+# --- dispatch settings -------------------------------------------------------------
+
+def same_json(actual, expected):
+    """JSON text equality: 1 is not true, 2.0 is not 2."""
+    return json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+
+def test_set_then_get_dispatch_settings_round_trips(env):
+    settings = {"prefixHistory": ["m3", "m2"], "parallelism": 2, "confirmDispatch": False}
+    assert run(env, "set-run-settings", "/p", json.dumps(settings)) == (0, {"ok": True})
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and same_json(result, {**DEFAULTS, **settings})
+
+
+def test_set_dispatch_settings_is_partial(env):
+    expected = dict(DEFAULTS)
+    for update in ({"verify": ["a"], "notifyOnEscalation": True}, {"parallelism": 6}, {"confirmDispatch": False},
+                   {"prefixHistory": ["m3"]}, {"verify": ["b"]}):
+        assert run(env, "set-run-settings", "/p", json.dumps(update)) == (0, {"ok": True})
+        expected.update(update)
+        code, result = run(env, "get-run-settings", "/p")
+        assert code == 0 and same_json(result, expected), update
+    assert expected["parallelism"] == 6 and expected["confirmDispatch"] is False
+    assert expected["prefixHistory"] == ["m3"]
+
+
+def test_set_prefix_history_replaces_the_list(env):
+    assert run(env, "set-run-settings", "/p", '{"prefixHistory": ["m1", "m2", "m3"]}') == (0, {"ok": True})
+    assert run(env, "set-run-settings", "/p", '{"prefixHistory": ["m4"]}') == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixHistory"] == ["m4"]
+    assert run(env, "set-run-settings", "/p", '{"prefixHistory": []}') == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixHistory"] == []
+
+
+def test_set_prefix_history_keeps_strings_verbatim(env):
+    history = ["  m3  ", "feat/x", "caf\u00e9", "m3", "m3"]
+    assert run(env, "set-run-settings", "/p", json.dumps({"prefixHistory": history}, ensure_ascii=False)) == (
+        0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixHistory"] == history
+
+
+def test_set_prefix_history_of_exactly_twenty_is_accepted(env):
+    twenty = ["m%d" % i for i in range(20)]
+    assert run(env, "set-run-settings", "/p", json.dumps({"prefixHistory": twenty})) == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixHistory"] == twenty
+    before = state_file(env).read_bytes()
+    assert run(env, "set-run-settings", "/p", json.dumps({"prefixHistory": twenty + ["m20"]})) == (
+        2, {"ok": False, "error": "prefixHistory must be a list of at most 20 non-empty strings."})
+    assert state_file(env).read_bytes() == before
+    assert [p.name for p in state_file(env).parent.iterdir()] == ["state.json"]
+
+
+@pytest.mark.parametrize("value", [1, 1000])
+def test_set_parallelism_has_no_upper_bound(env, value):
+    assert run(env, "set-run-settings", "/p", json.dumps({"parallelism": value})) == (0, {"ok": True})
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and json.dumps(result["parallelism"]) == str(value)
+
+
+@pytest.mark.parametrize("update, error", [
+    ('{"prefixHistory": "m3"}', "prefixHistory must be a list of at most 20 non-empty strings."),
+    ('{"parallelism": 0}', "parallelism must be a whole number of at least 1."),
+    ('{"confirmDispatch": 1}', "confirmDispatch must be true or false."),
+])
+def test_dispatch_setting_errors_are_exact_sentences(env, update, error):
+    assert run(env, "set-run-settings", "/p", update) == (2, {"ok": False, "error": error})
+
+
+def test_first_bad_key_in_input_order_is_reported(env):
+    assert run(env, "set-run-settings", "/p", '{"parallelism": 0, "confirmDispatch": 1}') == (
+        2, {"ok": False, "error": "parallelism must be a whole number of at least 1."})
+    assert run(env, "set-run-settings", "/p", '{"confirmDispatch": 1, "parallelism": 0}') == (
+        2, {"ok": False, "error": "confirmDispatch must be true or false."})
+
+
+def test_set_dispatch_settings_preserves_other_keys(env):
+    write_state(env, {"last_project": "/p",
+                      "run_settings": {"/q": {"parallelism": 3},
+                                       "/p": {"verify": ["old"], "future": 1, "parallelism": "x"}}})
+    assert run(env, "set-run-settings", "/p", '{"confirmDispatch": false}') == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {
+        "last_project": "/p",
+        "run_settings": {"/q": {"parallelism": 3},
+                         "/p": {"verify": ["old"], "future": 1, "parallelism": "x", "confirmDispatch": False}}}
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and same_json(result, {**DEFAULTS, "verify": ["old"], "confirmDispatch": False})
+
+
+def test_dispatch_settings_are_per_root(env):
+    assert run(env, "set-run-settings", "/a",
+               '{"parallelism": 2, "confirmDispatch": false, "prefixHistory": ["a1"]}') == (0, {"ok": True})
+    code, result = run(env, "get-run-settings", "/a")
+    assert code == 0 and same_json(result, {**DEFAULTS, "parallelism": 2, "confirmDispatch": False,
+                                            "prefixHistory": ["a1"]})
+    for root in ("/b", "/a/"):
+        code, result = run(env, "get-run-settings", root)
+        assert code == 0 and same_json(result, DEFAULTS), root
+
+
+def test_set_project_preserves_dispatch_settings(env):
+    stored = {"prefixHistory": ["m3", "m2"], "parallelism": 3, "confirmDispatch": False}
+    assert run(env, "set-run-settings", "/p", json.dumps(stored)) == (0, {"ok": True})
+    assert run(env, "set-project", "/other") == (0, {"ok": True})
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and same_json(result, {**DEFAULTS, **stored})
+    assert run(env, "get") == (0, {"last_project": "/other"})
+
+
+def test_set_parallelism_huge_values(env):
+    # Python refuses to parse an integer of more than 4300 digits: a clean refusal, no traceback.
+    assert run(env, "set-run-settings", "/p", '{"parallelism": 1%s}' % ("0" * 5000)) == (
+        2, {"ok": False, "error": "The run settings are not valid JSON."})
+    assert not Path(env["XDG_STATE_HOME"]).exists()
+    assert run(env, "set-run-settings", "/p", json.dumps({"parallelism": 10 ** 30})) == (0, {"ok": True})
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and json.dumps(result["parallelism"]) == str(10 ** 30)

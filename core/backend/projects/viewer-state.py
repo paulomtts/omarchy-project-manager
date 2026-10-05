@@ -13,9 +13,14 @@ cannot write files, hence this helper. Prints one JSON line. `get` and
 `get-run-settings` never fail (a missing or corrupt file, or a damaged value, just
 means the default); `set-project` and `set-run-settings` write atomically and keep
 any other keys already in the file. Run settings live under "run_settings", keyed
-by the root path verbatim: `set-run-settings` takes a JSON object with any of
-verify (a list of non-empty strings), allowNoVerification and notifyOnEscalation
-(booleans), validates it before writing anything, and changes only the keys given.
+by the root path verbatim. There are six, each read on its own:
+verify (a list of non-empty strings, default []), allowNoVerification and
+notifyOnEscalation (booleans, default false), prefixHistory (a list of at most 20
+non-empty strings, most recent first, default []), parallelism (a whole number
+>= 1, default 4) and confirmDispatch (a boolean, default true).
+`set-run-settings` takes a JSON object with any of them, validates every key
+before writing anything, and changes only the keys given; a list given replaces
+the stored list wholesale.
 """
 import json
 import os
@@ -84,6 +89,14 @@ def valid_boolean(value):
 RUN_SETTINGS_VALID = {"verify": valid_verify, "allowNoVerification": valid_boolean,
                       "notifyOnEscalation": valid_boolean, "prefixHistory": valid_prefix_history,
                       "parallelism": valid_parallelism, "confirmDispatch": valid_boolean}
+RUN_SETTINGS_REFUSALS = {
+    "verify": "verify must be a list of non-empty strings.",
+    "allowNoVerification": "allowNoVerification must be true or false.",
+    "notifyOnEscalation": "notifyOnEscalation must be true or false.",
+    "prefixHistory": "prefixHistory must be a list of at most %d non-empty strings." % PREFIX_HISTORY_CAP,
+    "parallelism": "parallelism must be a whole number of at least 1.",
+    "confirmDispatch": "confirmDispatch must be true or false.",
+}
 
 
 def run_settings_entry(data, root_path):
@@ -112,10 +125,8 @@ def parse_run_settings(text):
     for key, value in update.items():
         if key not in RUN_SETTINGS_DEFAULTS:
             return None, "Unknown run setting: %s." % key
-        if key == "verify" and not valid_verify(value):
-            return None, "verify must be a list of non-empty strings."
-        if key != "verify" and not isinstance(value, bool):
-            return None, "%s must be true or false." % key
+        if not RUN_SETTINGS_VALID[key](value):
+            return None, RUN_SETTINGS_REFUSALS[key]
     return update, None
 
 
