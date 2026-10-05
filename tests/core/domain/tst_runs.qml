@@ -1124,7 +1124,7 @@ TestCase {
 
     var nameless = mkRun("r", "escalated", null, {
       tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ status: "failed" }] }] },
-      rows: [{ card_id: "t1", phase: "spec" }]
+      rows: [{ card_id: "t1", phase: "spec", status: "failed" }]
     })
     compare(Runs.escalationReason(nameless), "escalated", "nameless failed phase")
 
