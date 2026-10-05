@@ -12,6 +12,9 @@ import "../domain/runs.js" as Runs
 // costs one debounced snapshot. Logs are fetched on a selection, on Refresh and
 // when a snapshot changes the selected attempt's status -- never on a timer.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
+// Dispatch (openDispatch .. dispatchStart) previews a run with
+// dispatch-preview.py and starts it with start-run.py, one HelperRunner per
+// Start.
 // The project root and the backend directory are handed to it from outside --
 // it never reaches for another store. App composes it as `app.runs` and binds
 // `active` to the panel being open.
