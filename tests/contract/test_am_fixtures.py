@@ -116,6 +116,49 @@ def runs_rows_of_fixtures():
     return rows + [(f"{name} _am_runs_row", load(name)["_am_runs_row"]) for name in E2E_FIXTURES]
 
 
+def status_levels(data):
+    """(where, obj, expected key set) for am status data and every level inside it."""
+    yield "data", data, STATUS_DATA_KEYS
+    yield "data.run", data.get("run"), STATUS_RUN_KEYS
+    for s, story in enumerate(data.get("stories") or []):
+        yield f"stories[{s}]", story, STORY_KEYS
+        for t, subtask in enumerate(story.get("subtasks") or []):
+            yield f"stories[{s}].subtasks[{t}]", subtask, SUBTASK_KEYS
+            for p, phase in enumerate(subtask.get("phases") or []):
+                where = f"stories[{s}].subtasks[{t}].phases[{p}]"
+                yield where, phase, PHASE_KEYS
+                for a, attempt in enumerate(phase.get("attempts") or []):
+                    yield f"{where}.attempts[{a}]", attempt, ATTEMPT_KEYS
+    for r, row in enumerate(data.get("rows") or []):
+        yield f"rows[{r}]", row, ROW_KEYS
+    control = data.get("control")
+    yield "control", control, CONTROL_KEYS
+    if isinstance(control, dict) and control.get("lease") is not None:
+        yield "control.lease", control["lease"], CONTROL_LEASE_KEYS
+
+
+def status_statuses(data):
+    """(where, status, vocabulary) for the run and every story, subtask, phase and attempt."""
+    yield "data.run.status", data["run"]["status"], RUN_STATUSES
+    for s, story in enumerate(data["stories"]):
+        yield f"stories[{s}].status", story["status"], RUN_STATUSES
+        for t, subtask in enumerate(story["subtasks"]):
+            yield f"stories[{s}].subtasks[{t}].status", subtask["status"], RUN_STATUSES
+            for p, phase in enumerate(subtask["phases"]):
+                where = f"stories[{s}].subtasks[{t}].phases[{p}]"
+                yield f"{where}.status", phase["status"], RUN_STATUSES
+                for a, attempt in enumerate(phase["attempts"]):
+                    yield f"{where}.attempts[{a}].status", attempt["status"], ATTEMPT_STATUSES
+
+
+def check_status_data(source, data, extra_allowed=None):
+    """Every level's key set and every status of am status data."""
+    for where, obj, expected in status_levels(data):
+        assert_keys(source, where, obj, expected, (extra_allowed or {}).get(expected, frozenset()))
+    for where, status, vocabulary in status_statuses(data):
+        assert status in vocabulary, f"{source} {where}: {status!r} not in {sorted(vocabulary)}"
+
+
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
 def test_every_fixture_exists_and_parses(name):
     path = FIXTURES / name
@@ -154,3 +197,30 @@ def test_runs_rows_key_sets():
 def test_runs_row_statuses_are_in_the_run_vocabulary():
     for source, row in runs_rows_of_fixtures():
         assert row["status"] in RUN_STATUSES, f"{source}.status: {row['status']!r}"
+
+
+@pytest.mark.parametrize("name", STATUS_FIXTURES)
+def test_status_data_has_no_top_level_subtasks(name):
+    assert "subtasks" not in load(name)["data"], f"{name}: data has a top-level subtasks"
+
+
+@pytest.mark.parametrize("name", STATUS_FIXTURES)
+def test_status_key_sets_at_every_level(name):
+    data = load(name)["data"]
+    for where, obj, expected in status_levels(data):
+        assert_keys(name, where, obj, expected)
+    assert isinstance(data["control"]["requests"], list), f"{name} control.requests: not a list"
+    assert isinstance(data["control"]["claims"], list), f"{name} control.claims: not a list"
+
+
+def test_status_fixtures_reach_attempts_and_a_control_lease():
+    levels = [expected for name in STATUS_FIXTURES for _, _, expected in status_levels(load(name)["data"])]
+    assert ATTEMPT_KEYS in levels, "no status fixture has an attempt"
+    assert load("status-started.json")["data"]["control"]["lease"] is not None, \
+        "status-started.json: control.lease is null"
+
+
+@pytest.mark.parametrize("name", STATUS_FIXTURES)
+def test_status_vocabularies(name):
+    for where, status, vocabulary in status_statuses(load(name)["data"]):
+        assert status in vocabulary, f"{name} {where}: {status!r} not in {sorted(vocabulary)}"
