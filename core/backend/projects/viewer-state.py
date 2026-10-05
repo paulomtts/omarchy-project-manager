@@ -13,9 +13,14 @@ cannot write files, hence this helper. Prints one JSON line. `get` and
 `get-run-settings` never fail (a missing or corrupt file, or a damaged value, just
 means the default); `set-project` and `set-run-settings` write atomically and keep
 any other keys already in the file. Run settings live under "run_settings", keyed
-by the root path verbatim: `set-run-settings` takes a JSON object with any of
-verify (a list of non-empty strings), allowNoVerification and notifyOnEscalation
-(booleans), validates it before writing anything, and changes only the keys given.
+by the root path verbatim. There are six, each read on its own:
+verify (a list of non-empty strings, default []), allowNoVerification and
+notifyOnEscalation (booleans, default false), prefixHistory (a list of at most 20
+non-empty strings, most recent first, default []), parallelism (a whole number
+>= 1, default 4) and confirmDispatch (a boolean, default true).
+`set-run-settings` takes a JSON object with any of them, validates every key
+before writing anything, and changes only the keys given; a list given replaces
+the stored list wholesale.
 """
 import json
 import os
@@ -29,7 +34,9 @@ from common.json_line import emit  # noqa: E402
 
 USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"
          " | set-run-settings <root_path> <json>")
-RUN_SETTINGS_DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False}
+PREFIX_HISTORY_CAP = 20
+RUN_SETTINGS_DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False,
+                         "prefixHistory": [], "parallelism": 4, "confirmDispatch": True}
 
 
 def state_base():
@@ -66,6 +73,32 @@ def valid_verify(value):
     return isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)
 
 
+def valid_prefix_history(value):
+    return valid_verify(value) and len(value) <= PREFIX_HISTORY_CAP
+
+
+def valid_parallelism(value):
+    # type(), not isinstance(): True is an int, and 2.0, NaN and Infinity are floats.
+    return type(value) is int and value >= 1
+
+
+def valid_boolean(value):
+    return isinstance(value, bool)
+
+
+RUN_SETTINGS_VALID = {"verify": valid_verify, "allowNoVerification": valid_boolean,
+                      "notifyOnEscalation": valid_boolean, "prefixHistory": valid_prefix_history,
+                      "parallelism": valid_parallelism, "confirmDispatch": valid_boolean}
+RUN_SETTINGS_REFUSALS = {
+    "verify": "verify must be a list of non-empty strings.",
+    "allowNoVerification": "allowNoVerification must be true or false.",
+    "notifyOnEscalation": "notifyOnEscalation must be true or false.",
+    "prefixHistory": "prefixHistory must be a list of at most %d non-empty strings." % PREFIX_HISTORY_CAP,
+    "parallelism": "parallelism must be a whole number of at least 1.",
+    "confirmDispatch": "confirmDispatch must be true or false.",
+}
+
+
 def run_settings_entry(data, root_path):
     settings = data.get("run_settings")
     entry = settings.get(root_path) if isinstance(settings, dict) else None
@@ -74,11 +107,10 @@ def run_settings_entry(data, root_path):
 
 def cmd_get_run_settings(root_path):
     entry = run_settings_entry(load(), root_path)
-    verify = entry.get("verify")
-    result = {"verify": verify if valid_verify(verify) else []}
-    for key in ("allowNoVerification", "notifyOnEscalation"):
+    result = {}
+    for key, default in RUN_SETTINGS_DEFAULTS.items():
         value = entry.get(key)
-        result[key] = value if isinstance(value, bool) else RUN_SETTINGS_DEFAULTS[key]
+        result[key] = value if RUN_SETTINGS_VALID[key](value) else default
     return emit(result, 0)
 
 
@@ -93,10 +125,8 @@ def parse_run_settings(text):
     for key, value in update.items():
         if key not in RUN_SETTINGS_DEFAULTS:
             return None, "Unknown run setting: %s." % key
-        if key == "verify" and not valid_verify(value):
-            return None, "verify must be a list of non-empty strings."
-        if key != "verify" and not isinstance(value, bool):
-            return None, "%s must be true or false." % key
+        if not RUN_SETTINGS_VALID[key](value):
+            return None, RUN_SETTINGS_REFUSALS[key]
     return update, None
 
 
