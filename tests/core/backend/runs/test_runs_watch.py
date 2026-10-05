@@ -75,6 +75,16 @@ def fixture(name):
 WATCHED = fixture("watch-events.json")["data"]["events"][0]["run_id"]
 
 
+def hello_line(schema):
+    """The helper's hello output line for the capture's schema_<schema> hello."""
+    line = fixture("watch-hello.json")["schema_%d" % schema]
+    return {"hello": {"schema": line["schema"], "am": line["am"]}}
+
+
+HELLO1 = hello_line(1)
+HELLO2 = hello_line(2)
+
+
 def write_exec(path, text):
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -108,18 +118,27 @@ def env_for(world, **extra):
     return e
 
 
-def hello(schema=1):
+KEEP = object()
+
+
+def hello(schema=1, am=KEEP):
     """The --follow hello: the captured schema_1 line, or the capture's derived
     schema_2 line for schema=2. synthetic: any other schema value is set on a
-    schema_1 copy; MISSING leaves the key out."""
+    schema_1 copy; MISSING leaves the key out. synthetic: am, unless KEEP, is set
+    to the given value on the copy; MISSING leaves the key out."""
     lines = fixture("watch-hello.json")
     if type(schema) is int and schema in (1, 2):
-        return {"line": lines["schema_%d" % schema]}
-    line = lines["schema_1"]
-    if schema is MISSING:
-        del line["schema"]
+        line = lines["schema_%d" % schema]
     else:
-        line["schema"] = schema
+        line = lines["schema_1"]
+        if schema is MISSING:
+            del line["schema"]
+        else:
+            line["schema"] = schema
+    if am is MISSING:
+        del line["am"]
+    elif am is not KEEP:
+        line["am"] = am
     return {"line": line}
 
 
@@ -198,6 +217,13 @@ def changed(lines):
     return [sorted(line["changed"]) for line in lines]
 
 
+def split(lines, greeting=HELLO1):
+    """The lines after the leading hello line, which must be `greeting`."""
+    assert lines, lines
+    assert lines[0] == greeting, lines
+    return lines[1:]
+
+
 def calls(world):
     log = world["am"] / "calls.log"
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -219,6 +245,8 @@ def test_lines_are_capture_copies():
     assert upsert()["line"]["run_id"] == WATCHED
     assert hello() == {"line": fixture("watch-hello.json")["schema_1"]}
     assert hello(2) == {"line": fixture("watch-hello.json")["schema_2"]}
+    assert HELLO1 == {"hello": {"schema": 1, "am": "0.1.0"}}
+    assert HELLO2 == {"hello": {"schema": 2, "am": "0.1.0"}}
 
 
 # --- usage, am missing, clean exit --------------------------------------------
@@ -227,7 +255,7 @@ def test_clean_exit_zero(world):
     set_script(world, [hello()])
     code, lines, err = run_helper(world)
     assert code == 0
-    assert lines == []
+    assert lines == [HELLO1]
     assert "Traceback" not in err
     # argv list, no shell: the fake am sees exactly these three arguments.
     assert calls(world) == [["watch", "--all", "--follow"]]
@@ -257,14 +285,14 @@ def test_am_missing(world):
 
 # --- backlog, filter, unknown input ------------------------------------------
 
-def test_drops_hello_and_backlog(world):
+def test_forwards_hello_and_drops_backlog(world):
     # WATCHED's lines were written an hour before the helper started: backlog,
     # dropped. r2's line is live and proves the helper is reading at all.
     set_script(world, [hello(), ev(ts="PAST"), ev("subtask_upsert", ts="PAST"),
                        other("r2")])
     code, lines, _ = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
     assert code == 0
-    assert changed(lines) == [["r2"]]
+    assert changed(split(lines)) == [["r2"]]
 
 
 def test_live_event_for_watched_run_emits_changed(world):
@@ -272,7 +300,7 @@ def test_live_event_for_watched_run_emits_changed(world):
     code, lines, _ = run_helper(world)
     assert code == 0
     # Exactly this object: run ids only, no event contents.
-    assert lines == [{"changed": [WATCHED]}]
+    assert lines == [HELLO1, {"changed": [WATCHED]}]
 
 
 def test_filters_unwatched_runs(world):
@@ -282,7 +310,7 @@ def test_filters_unwatched_runs(world):
                        other("r7", "run_upsert", repo_dir="/somewhere/else"), ev()])
     code, lines, _ = run_helper(world)
     assert code == 0
-    assert changed(lines) == [[WATCHED]]
+    assert changed(split(lines)) == [[WATCHED]]
 
 
 def test_ignores_unknown_events_and_keys(world):
@@ -299,7 +327,7 @@ def test_ignores_unknown_events_and_keys(world):
     code, lines, err = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
     assert code == 0
     assert "Traceback" not in err
-    assert changed(lines) == [[WATCHED]]
+    assert changed(split(lines)) == [[WATCHED]]
 
 
 def test_missing_or_unparseable_ts_is_kept(world):
@@ -307,7 +335,7 @@ def test_missing_or_unparseable_ts_is_kept(world):
     set_script(world, [hello(), other(WATCHED, ts=MISSING), other("r2", ts="yesterday-ish")])
     code, lines, _ = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
     assert code == 0
-    assert changed(lines) == [sorted([WATCHED, "r2"])]
+    assert changed(split(lines)) == [sorted([WATCHED, "r2"])]
 
 
 # --- debounce -------------------------------------------------------------------
@@ -317,14 +345,14 @@ def test_debounce_batches_and_dedupes(world):
                        ev("subtask_upsert"), pause(0.6)])
     code, lines, _ = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
     assert code == 0
-    assert changed(lines) == [sorted([WATCHED, "r2"])]
+    assert changed(split(lines)) == [sorted([WATCHED, "r2"])]
 
 
 def test_debounce_separate_windows(world):
     set_script(world, [hello(), ev(), pause(0.6), ev(), pause(0.6)])
     code, lines, _ = run_helper(world)
     assert code == 0
-    assert changed(lines) == [[WATCHED], [WATCHED]]
+    assert changed(split(lines)) == [[WATCHED], [WATCHED]]
 
 
 def test_debounce_continuous_stream_is_rate_limited(world):
@@ -338,7 +366,7 @@ def test_debounce_continuous_stream_is_rate_limited(world):
     code, lines, _ = run_helper(world)
     elapsed = time.monotonic() - began
     assert code == 0
-    got = changed(lines)
+    got = changed(split(lines))
     assert all(ids == [WATCHED] for ids in got)
     assert len(got) >= 2, got
     assert len(got) <= int(elapsed / 0.25) + 1, (len(got), elapsed)
@@ -361,12 +389,107 @@ def test_new_run_upsert_in_project_is_adopted(world, form):
     ])
     code, lines, _ = run_helper(world, [root])  # zero run ids on argv is valid
     assert code == 0
-    assert changed(lines) == [["n1"], ["n1"]]
+    assert changed(split(lines)) == [["n1"], ["n1"]]
+
+
+# --- the hello line ---------------------------------------------------------------
+
+@pytest.mark.parametrize("schema, greeting", [(1, HELLO1), (2, HELLO2)], ids=["one", "two"])
+def test_hello_forwarded_for_schema(world, schema, greeting):
+    # Only schema and am are forwarded (not event or runs_dir), before the
+    # changed line that follows the hello.
+    set_script(world, [hello(schema), ev()])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [greeting, {"changed": [WATCHED]}]
+
+
+# synthetic: hellos whose am is missing, a number, null or an object.
+@pytest.mark.parametrize("am", [MISSING, 5, None, {"v": 1}],
+                         ids=["synthetic: missing", "synthetic: number", "synthetic: null",
+                              "synthetic: object"])
+def test_hello_am_not_a_string(world, am):
+    set_script(world, [hello(2, am=am), ev()])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [{"hello": {"schema": 2, "am": ""}}, {"changed": [WATCHED]}]
+
+
+def test_hello_unknown_keys_not_forwarded(world):
+    step = hello(2)
+    step["line"]["shiny"] = {"new": 1}  # synthetic: a hello key no capture has
+    set_script(world, [step, ev()])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [HELLO2, {"changed": [WATCHED]}]
+
+
+def test_hello_forwarded_once(world):
+    set_script(world, [hello(1), hello(2), hello(1), ev()])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert [line for line in lines if "hello" in line] == [HELLO1]
+    assert changed(split(lines)) == [[WATCHED]]
+
+
+def test_hello_mid_batch_keeps_the_batch(world):
+    # WATCHED's line opens a batch; the hello is printed at once without
+    # flushing or clearing it, so r2 joins the same changed line.
+    set_script(world, [ev(), hello(1), other("r2"), pause(0.6)])
+    code, lines, _ = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
+    assert code == 0
+    assert changed(split(lines)) == [sorted([WATCHED, "r2"])]
+
+
+@pytest.mark.parametrize("steps", [
+    [hello(1), hello(3), ev(), pause(8)],
+    [hello(1), ev(), hello(3), ev(), pause(8)],  # the pending batch is dropped
+], ids=["synthetic: three", "synthetic: three, pending-batch"])
+def test_later_bad_hello_is_schema_mismatch(world, steps):
+    set_script(world, steps)
+    began = time.monotonic()
+    code, lines, _ = run_helper(world)
+    assert time.monotonic() - began < 5
+    assert code != 0
+    assert len(lines) == 2, lines
+    assert lines[0] == HELLO1
+    assert lines[1]["ok"] is False
+    assert lines[1]["error"]["type"] == "SchemaMismatch"
+    assert lines[1]["error"]["message"]
+    assert_gone(am_pid(world))
+
+
+@pytest.mark.parametrize("schema, greeting", [(1, HELLO1), (2, HELLO2)], ids=["one", "two"])
+def test_journal_same_under_both_schemas(world, schema, greeting):
+    root = str(world["proj"])
+    set_script(world, [
+        hello(schema),
+        ev(ts="PAST"),                                          # backlog: dropped
+        other("r9"),                                            # unwatched: dropped
+        other("r7", "run_upsert", repo_dir="/somewhere/else"),  # other repo: ignored
+        other("n1", "run_upsert", repo_dir=root),               # this project: adopted
+        ev(), other("n1"), ev("subtask_upsert"),                # one debounced burst
+        pause(0.6),
+        other("n1"),                                            # adopted: kept from now on
+        pause(0.6),
+    ])
+    code, lines, _ = run_helper(world, [root, WATCHED])
+    assert code == 0
+    assert changed(split(lines, greeting)) == [sorted([WATCHED, "n1"]), ["n1"]]
+
+
+def test_no_hello_still_streams(world):
+    set_script(world, [ev()])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [{"changed": [WATCHED]}]
 
 
 # --- error paths -----------------------------------------------------------------
 
-@pytest.mark.parametrize("schema", [2, "1", MISSING], ids=["two", "string-one", "missing"])
+@pytest.mark.parametrize("schema", [3, "1", MISSING, True, 0, 2.0, "2"],
+                         ids=["synthetic: three", "string-one", "missing", "synthetic: true",
+                              "synthetic: zero", "synthetic: two-float", "synthetic: string-two"])
 def test_schema_mismatch(world, schema):
     # am would keep streaming for 8 s; the helper must stop it and leave at once.
     set_script(world, [hello(schema), ev(), pause(8)])
@@ -377,7 +500,11 @@ def test_schema_mismatch(world, schema):
     assert len(lines) == 1, lines
     assert lines[0]["ok"] is False
     assert lines[0]["error"]["type"] == "SchemaMismatch"
-    assert lines[0]["error"]["message"]
+    message = lines[0]["error"]["message"]
+    assert message
+    received = json.dumps(None if schema is MISSING else schema)
+    assert "schema " + received in message, message
+    assert "1 or 2" in message, message
     assert_gone(am_pid(world))  # am was terminated, not left streaming
 
 
@@ -387,11 +514,12 @@ def test_exit_3_corrupt_journal(world):
                stderr="am watch: journal line 4 of run r1 is not JSON\n")
     code, lines, _ = run_helper(world)
     assert code != 0
-    assert len(lines) == 2, lines
-    assert lines[0] == {"changed": [WATCHED]}  # the pending batch is flushed first
-    assert lines[1]["ok"] is False
-    assert lines[1]["error"]["type"] == "CorruptJournal"
-    assert "journal line 4 of run r1 is not JSON" in lines[1]["error"]["message"]
+    assert len(lines) == 3, lines
+    assert lines[0] == HELLO1
+    assert lines[1] == {"changed": [WATCHED]}  # the pending batch is flushed first
+    assert lines[2]["ok"] is False
+    assert lines[2]["error"]["type"] == "CorruptJournal"
+    assert "journal line 4 of run r1 is not JSON" in lines[2]["error"]["message"]
 
 
 def test_other_exit_is_helper_error(world):
@@ -399,11 +527,12 @@ def test_other_exit_is_helper_error(world):
     set_script(world, [hello(), ev()], exit=1, stderr="boom\n")
     code, lines, _ = run_helper(world)
     assert code != 0
-    assert len(lines) == 2, lines
-    assert lines[0] == {"changed": [WATCHED]}
-    assert lines[1]["ok"] is False
-    assert lines[1]["error"]["type"] == "HelperError"
-    assert "boom" in lines[1]["error"]["message"]
+    assert len(lines) == 3, lines
+    assert lines[0] == HELLO1
+    assert lines[1] == {"changed": [WATCHED]}
+    assert lines[2]["ok"] is False
+    assert lines[2]["error"]["type"] == "HelperError"
+    assert "boom" in lines[2]["error"]["message"]
 
 
 def test_refusal_exit_3_is_corrupt_journal(world):
@@ -426,6 +555,15 @@ def test_refusal_other_exit_is_reemitted(world):
     code, lines, _ = run_helper(world)
     assert code != 0
     assert lines == [envelope]
+
+
+def test_refusal_after_hello_is_reemitted(world):
+    # synthetic: an am refusal envelope; no capture holds one.
+    envelope = {"error": {"message": "something else", "type": "OddError"}, "ok": False}
+    set_script(world, [hello(2), {"line": envelope}], exit=0)
+    code, lines, _ = run_helper(world)
+    assert code != 0
+    assert lines == [HELLO2, envelope]
 
 
 # --- stopping: signals and a closed stdout ---------------------------------------
@@ -459,8 +597,9 @@ def test_signal_stops_am_and_exits_zero(world, sig):
     set_script(world, [hello(), ev(), pause(30)])
     p = start_helper(world)
     try:
-        first = p.stdout.readline()  # sync point: am is running, helper is streaming
-        assert json.loads(first) == {"changed": [WATCHED]}
+        assert json.loads(p.stdout.readline()) == HELLO1
+        second = p.stdout.readline()  # sync point: am is running, helper is streaming
+        assert json.loads(second) == {"changed": [WATCHED]}
         p.send_signal(sig)
         code = p.wait(timeout=10)
     finally:
