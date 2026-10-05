@@ -31,6 +31,7 @@ TestCase {
       property bool logsLoading: false
       property string logsError: ""
       property string amStatus: "ok"
+      property string flashText: ""
       property var selected: null
       property int refreshed: 0
       function selectAttempt(cardId, phase, attempt) {
@@ -380,5 +381,20 @@ TestCase {
     var s = make([run("run-x-done0003", "done", null, {})], "run-x-done0003"); if (!s) return
     compare(ctl(s, "Buttons").visible, false)
     compare(H.find(s.screen, "runDetailControls").height, 0)
+  }
+
+  // ---- the flash line (S2 4.3)
+
+  // 15
+  function test_the_flash_line_shows_only_while_there_is_a_flash() {
+    var s = make(detail()); if (!s) return
+    var line = H.find(s.screen, "runDetailFlash")
+    verify(line, "the flash line")
+    compare(line.visible, false)
+    s.runs.flashText = "Integrate is running; it cannot be paused or cancelled"
+    compare(line.visible, true)
+    compare(line.text, "Integrate is running; it cannot be paused or cancelled")
+    s.runs.flashText = ""
+    compare(line.visible, false)
   }
 }

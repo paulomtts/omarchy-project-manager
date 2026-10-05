@@ -306,6 +306,17 @@ Column {
         wrapMode: Text.WrapAnywhere
       }
     }
+
+    // Why the last run key was refused, while that flash lasts.
+    UI.ThemedText {
+      objectName: "runDetailFlash"
+      variant: "caption"
+      theme: screen.theme
+      width: parent.width
+      visible: text !== ""
+      text: screen.app.runs.flashText
+      wrapMode: Text.WordWrap
+    }
   }
 
   component StoryBlock: Column {

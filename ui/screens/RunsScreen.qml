@@ -113,15 +113,19 @@ Column {
     rowDelegate: Component { RunRow {} }
   }
 
+  // The watch line, or why the last run key was refused while that flash
+  // lasts; a flash shows even where the footer is otherwise hidden.
   UI.ThemedText {
     objectName: "runsFooter"
     variant: "caption"
     theme: screen.theme
     width: parent.width
-    visible: !screen.amMissing && screen.app.runs.amStatus !== "schema"
-    text: screen.app.runs.amStatus === "error" && screen.app.runs.lastError !== ""
-      ? screen.app.runs.lastError
-      : "am · schema 1 · " + (screen.app.runs.watching ? "watching" : "not watching")
+    visible: (!screen.amMissing && screen.app.runs.amStatus !== "schema") || screen.app.runs.flashText !== ""
+    text: screen.app.runs.flashText !== ""
+      ? screen.app.runs.flashText
+      : screen.app.runs.amStatus === "error" && screen.app.runs.lastError !== ""
+        ? screen.app.runs.lastError
+        : "am · schema 1 · " + (screen.app.runs.watching ? "watching" : "not watching")
     wrapMode: Text.WordWrap
   }
 

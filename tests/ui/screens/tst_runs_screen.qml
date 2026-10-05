@@ -36,6 +36,7 @@ TestCase {
       property string watchWarning: ""
       property bool watching: true
       property string watchSchemaError: ""
+      property string flashText: ""
       readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(rs.runs, rs.runFilter), rs.searchQuery)
       function toggleRunFilter(id) { rs.runFilter = id === "all" || id === rs.runFilter ? "" : id }
       // The control surface the rows read (S2 4.2). `control` only records.
@@ -468,5 +469,32 @@ TestCase {
     wait(20)
     compare(ctl(s, 1, "Resume").text, "Resume")
     compare(ctl(s, 1, "Resume").enabled, true)
+  }
+
+  // ---- the footer flash (S2 4.3)
+
+  // 14
+  function test_a_flash_takes_the_footer_and_then_gives_it_back() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.flashText = "The run has finished"
+    compare(footer.text, "The run has finished")
+    compare(footer.visible, true)
+    s.runs.flashText = ""
+    compare(footer.text, "am · schema 1 · watching")
+    s.runs.amStatus = "error"
+    s.runs.lastError = "AmFailed: boom"
+    s.runs.flashText = "The run is still running"
+    compare(footer.text, "The run is still running", "the flash wins over the error line")
+    s.runs.flashText = ""
+    compare(footer.text, "AmFailed: boom")
+    s.runs.amStatus = "schema"
+    s.runs.watchSchemaError = "SchemaMismatch: schema 2"
+    compare(footer.visible, false)
+    s.runs.flashText = "A request for this run is pending"
+    compare(footer.visible, true, "a flash shows even beside the schema banner")
+    compare(footer.text, "A request for this run is pending")
+    s.runs.flashText = ""
+    compare(footer.visible, false)
   }
 }
