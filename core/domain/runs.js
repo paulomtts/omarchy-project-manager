@@ -895,3 +895,37 @@ function dispatchDefaults(project, card, cardMap) {
     verify: verify
   }
 }
+
+
+// ---- Dispatch form and preview (S3 1.2) --------------------------------------------------
+//
+// The dispatch form's own checks, and the one-line summary of an `am run
+// --dry-run` payload (the envelope's data, milestone or board). Pure and never
+// throwing, like the rest of this file. Rules, sentences and payload shapes are
+// pinned in docs/superpowers/specs/1-2-runs-js-45cc9067.md.
+
+var _DISPATCH_PREFIX_EMPTY = "Enter a branch prefix"
+var _DISPATCH_VERIFY_MISSING = "Add a verify command or choose to run without verification"
+var _DISPATCH_PARALLELISM_INVALID = "Parallelism must be a whole number of at least 1"
+
+// A fresh form error.
+function _formError(field, message) { return { field: field, message: message } }
+
+// The form's failed rules, in order prefix, verify, parallelism; ok when none
+// failed. form has dispatchDefaults' keys; a non-object form is read as {}.
+// prefix must be a non-blank string; verify needs one non-blank string command
+// unless allowNoVerification is exactly true; parallelism must be a whole
+// number >= 1. base is not checked: am refuses a bad one through the preview.
+function validateDispatch(form) {
+  var f = _isObject(form) ? form : {}
+  var errors = []
+  if (typeof f.prefix !== "string" || f.prefix.trim() === "") errors.push(_formError("prefix", _DISPATCH_PREFIX_EMPTY))
+  var commands = _arrayOr(f.verify)
+  var count = 0
+  for (var i = 0; i < commands.length; i++) {
+    if (typeof commands[i] === "string" && commands[i].trim() !== "") count++
+  }
+  if (count === 0 && f.allowNoVerification !== true) errors.push(_formError("verify", _DISPATCH_VERIFY_MISSING))
+  if (!(_isWholeNumber(f.parallelism) && f.parallelism >= 1)) errors.push(_formError("parallelism", _DISPATCH_PARALLELISM_INVALID))
+  return { errors: errors, ok: errors.length === 0 }
+}

@@ -1946,4 +1946,144 @@ TestCase {
     compare(JSON.stringify([project, map]), before, "project and cardMap unchanged")
     compare(Object.keys(c).sort().join(","), "depth,id,parentId,status,title", "no key added to the card")
   }
+
+  // ---- S3 1.2: dispatch form and preview ---------------------------------------------------
+
+  function validForm() {
+    return { allowNoVerification: false, base: "main", parallelism: 4, prefix: "m3", verify: ["uv run pytest"] }
+  }
+
+  // validForm() with key set to value.
+  function formWith(key, value) {
+    var f = validForm()
+    f[key] = value
+    return f
+  }
+
+  // validForm() without key.
+  function formWithout(key) {
+    var f = validForm()
+    delete f[key]
+    return f
+  }
+
+  // The pinned sentence for a validateDispatch error field.
+  function formMessage(field) {
+    if (field === "prefix") return "Enter a branch prefix"
+    if (field === "verify") return "Add a verify command or choose to run without verification"
+    if (field === "parallelism") return "Parallelism must be a whole number of at least 1"
+    return "unknown field " + field
+  }
+
+  // Asserts a validateDispatch result: its keys, ok, each error's keys and
+  // sentence, and the error fields in order.
+  function checkValid(v, fields, label) {
+    compare(Object.keys(v).sort().join(","), "errors,ok", label + " keys")
+    compare(v.ok, fields.length === 0, label + " ok")
+    compare(Array.isArray(v.errors), true, label + " errors is array")
+    var got = []
+    for (var i = 0; i < v.errors.length; i++) {
+      compare(Object.keys(v.errors[i]).sort().join(","), "field,message", label + " error " + i + " keys")
+      compare(v.errors[i].message, formMessage(v.errors[i].field), label + " error " + i + " message")
+      got.push(v.errors[i].field)
+    }
+    compare(got.join(","), fields.join(","), label + " fields")
+  }
+
+  function test_validateDispatch_shape() {
+    var forms = [validForm(), formWith("prefix", "")]
+    for (var i = 0; i < forms.length; i++) {
+      var a = Runs.validateDispatch(forms[i])
+      var b = Runs.validateDispatch(forms[i])
+      checkValid(a, i === 0 ? [] : ["prefix"], "form " + i)
+      verify(a !== b, "distinct objects " + i)
+      verify(a.errors !== b.errors, "distinct errors arrays " + i)
+    }
+    var first = Runs.validateDispatch(forms[1])
+    var second = Runs.validateDispatch(forms[1])
+    verify(first.errors[0] !== second.errors[0], "distinct error objects")
+    first.errors.push({ field: "x", message: "y" })
+    first.errors[0].message = "changed"
+    checkValid(Runs.validateDispatch(forms[1]), ["prefix"], "mutation does not leak")
+  }
+
+  function test_validateDispatch_valid() {
+    checkValid(Runs.validateDispatch(validForm()), [], "valid form")
+    checkValid(Runs.validateDispatch(formWith("base", "")), [], "base unchecked")
+    checkValid(Runs.validateDispatch(formWith("prefix", "my prefix")), [], "inner spaces")
+    checkValid(Runs.validateDispatch(formWith("allowNoVerification", true)), [], "commands and opt-out")
+  }
+
+  function test_validateDispatch_prefix() {
+    var bad = ["", "   ", "\t\n", null, 5]
+    for (var i = 0; i < bad.length; i++) {
+      checkValid(Runs.validateDispatch(formWith("prefix", bad[i])), ["prefix"], "prefix " + i)
+    }
+    checkValid(Runs.validateDispatch(formWithout("prefix")), ["prefix"], "prefix missing")
+  }
+
+  function test_validateDispatch_verify() {
+    var lists = [[], ["", "  "], [5, null], "uv run pytest"]
+    for (var i = 0; i < lists.length; i++) {
+      checkValid(Runs.validateDispatch(formWith("verify", lists[i])), ["verify"], "verify " + i)
+      var optedOut = formWith("verify", lists[i])
+      optedOut.allowNoVerification = true
+      checkValid(Runs.validateDispatch(optedOut), [], "opted out " + i)
+    }
+    var missing = formWithout("verify")
+    checkValid(Runs.validateDispatch(missing), ["verify"], "verify missing")
+    missing.allowNoVerification = true
+    checkValid(Runs.validateDispatch(missing), [], "verify missing, opted out")
+    var loose = ["true", 1]
+    for (var j = 0; j < loose.length; j++) {
+      var f = formWith("verify", [])
+      f.allowNoVerification = loose[j]
+      checkValid(Runs.validateDispatch(f), ["verify"], "opt-out " + loose[j] + " is not true")
+    }
+    checkValid(Runs.validateDispatch(formWith("verify", ["", " make test "])), [], "one real command")
+  }
+
+  function test_validateDispatch_parallelism() {
+    checkValid(Runs.validateDispatch(formWith("parallelism", 1)), [], "1")
+    checkValid(Runs.validateDispatch(formWith("parallelism", 16)), [], "16")
+    var bad = [0, -1, 2.5, NaN, Infinity, "3", null]
+    for (var i = 0; i < bad.length; i++) {
+      checkValid(Runs.validateDispatch(formWith("parallelism", bad[i])), ["parallelism"], "parallelism " + bad[i])
+    }
+    checkValid(Runs.validateDispatch(formWithout("parallelism")), ["parallelism"], "parallelism missing")
+  }
+
+  function test_validateDispatch_all_errors() {
+    var form = { allowNoVerification: false, base: "main", parallelism: 0, prefix: "  ", verify: [] }
+    checkValid(Runs.validateDispatch(form), ["prefix", "verify", "parallelism"], "all three, in order")
+  }
+
+  function test_validateDispatch_defaults() {
+    var m = mkCard("m1", 0, "todo", null, "M3 Document runs")
+    checkValid(Runs.validateDispatch(Runs.dispatchDefaults(fullProject(), m)), [], "stored verify and a milestone")
+    checkValid(Runs.validateDispatch(Runs.dispatchDefaults(null)), ["prefix", "verify"], "garbage project")
+  }
+
+  function test_validateDispatch_garbage() {
+    var values = [undefined, null, 0, true, "x", [], {}, Object.create(null)]
+    for (var i = 0; i < values.length; i++) {
+      checkValid(Runs.validateDispatch(values[i]), ["prefix", "verify", "parallelism"], "form " + i)
+    }
+    checkValid(Runs.validateDispatch(), ["prefix", "verify", "parallelism"], "no argument")
+  }
+
+  // Review Focus 1, 4 and 5.
+  function test_validateDispatch_edges() {
+    var bare = Object.create(null)
+    bare.allowNoVerification = false
+    bare.base = "main"
+    bare.parallelism = 2
+    bare.prefix = "m3"
+    bare.verify = ["make test"]
+    checkValid(Runs.validateDispatch(bare), [], "prototype-less form with real values")
+    var padded = formWith("prefix", "  m3 ")
+    checkValid(Runs.validateDispatch(padded), [], "padded prefix is not blank")
+    compare(padded.prefix, "  m3 ", "the form's prefix is not trimmed")
+    checkValid(Runs.validateDispatch(formWith("verify", ["\t", "\n ", "\r\n"])), ["verify"], "whitespace-only commands")
+  }
 }
