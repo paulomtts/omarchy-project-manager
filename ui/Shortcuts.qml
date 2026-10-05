@@ -35,9 +35,11 @@ QtObject {
     return false
   }
 
-  // Escape (and the key catcher's close gesture): innermost thing first.
+  // Escape (and the key catcher's close gesture): innermost thing first. The
+  // run toasts come right after the modals: they are not a modal, but an
+  // Escape with toasts showing never goes Back or closes the panel.
   function closeRequested() {
-    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : keys.app.runs.cancelOpen ? keys.app.runs.closeCancel() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
+    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : keys.app.runs.cancelOpen ? keys.app.runs.closeCancel() : keys.app.runs.toasts.length > 0 ? keys.app.runs.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
   }
 
   // A modal is open: the global shortcuts and the run keys do nothing under it.
@@ -92,9 +94,12 @@ QtObject {
     else if (keys.app.nav.viewMode === "graph") keys.navigator.activateGraphNode()
   }
 
+  // The search field's keys. Its Escape does not go through closeRequested():
+  // the run toasts go first, then a non-empty search, then the panel.
   function handleSearchKey(event) {
     if (event.key === Qt.Key_Escape) {
-      if (keys.app.nav.searchQuery !== "") { keys.app.nav.searchQuery = "" }
+      if (keys.app.runs.toasts.length > 0) keys.app.runs.dismissAllToasts()
+      else if (keys.app.nav.searchQuery !== "") { keys.app.nav.searchQuery = "" }
       else keys.actions.close()
       event.accepted = true
       return

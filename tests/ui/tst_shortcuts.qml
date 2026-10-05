@@ -563,4 +563,86 @@ TestCase {
     compare(s.app.runs.flashText, "")
     compare(Object.keys(s.app.runs.pending).length, 0)
   }
+
+  // ---- run toasts (S2 4.4)
+
+  function alertOf(id) { return { id: id, title: "m", state: "escalated", reason: "escalated" } }
+
+  // 21
+  function test_escape_dismisses_the_toasts_before_going_back_from_a_run() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.app.nav.viewMode, "run")
+    s.app.runs.raiseAlerts([alertOf("run-0000000000a1"), alertOf("run-0000000000b2")])
+    compare(s.app.runs.toasts.length, 2)
+    s.closeRequested()
+    compare(s.app.runs.toasts.length, 0)
+    compare(s.app.nav.viewMode, "run", "that Escape went to the toasts")
+    s.closeRequested()
+    compare(s.app.nav.viewMode, "runs", "the next one goes back as before")
+    compare(tc.calls.indexOf("close"), -1)
+  }
+
+  // Review Focus 5
+  function test_escape_on_the_board_dismisses_the_toasts_and_keeps_the_panel_open() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.showSection("board")
+    s.app.runs.raiseAlerts([alertOf("run-0000000000a1")])
+    s.closeRequested()
+    compare(s.app.runs.toasts.length, 0)
+    compare(tc.calls.indexOf("close"), -1, "the panel stays open")
+    compare(s.app.nav.viewMode, "board")
+    s.closeRequested()
+    verify(tc.calls.indexOf("close") !== -1, "with no toast left Escape closes the panel as before")
+  }
+
+  // 22
+  function test_the_cancel_dialog_closes_before_the_toasts() {
+    var s = inRunKeys(); if (!s) return
+    s.app.runs.raiseAlerts([alertOf("run-0000000000b2")])
+    compare(s.app.runs.openCancel("run-0000000000a1"), true)
+    s.closeRequested()
+    compare(s.app.runs.cancelOpen, false)
+    compare(s.app.runs.toasts.length, 1, "the toasts stay")
+    s.closeRequested()
+    compare(s.app.runs.toasts.length, 0)
+    compare(s.app.nav.viewMode, "runs")
+    compare(tc.calls.indexOf("close"), -1)
+  }
+
+  // 23
+  function test_escape_in_the_search_field_dismisses_the_toasts_first() {
+    var s = inRunKeys(); if (!s) return
+    s.app.nav.searchQuery = "x"
+    s.app.runs.raiseAlerts([alertOf("run-0000000000a1")])
+    var e = plain(Qt.Key_Escape)
+    s.handleSearchKey(e)
+    compare(e.accepted, true)
+    compare(s.app.runs.toasts.length, 0)
+    compare(s.app.nav.searchQuery, "x", "the search is kept")
+    compare(tc.calls.indexOf("close"), -1)
+    s.handleSearchKey(plain(Qt.Key_Escape))
+    compare(s.app.nav.searchQuery, "", "the next Escape clears the search")
+    compare(tc.calls.indexOf("close"), -1)
+    s.app.runs.raiseAlerts([alertOf("run-0000000000a1")])
+    var e2 = plain(Qt.Key_Escape)
+    s.handleSearchKey(e2)
+    compare(e2.accepted, true)
+    compare(s.app.runs.toasts.length, 0)
+    compare(tc.calls.indexOf("close"), -1, "an empty search with toasts showing does not close the panel")
+  }
+
+  // 24
+  function test_toasts_are_not_a_modal() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.showSection("board")
+    s.app.runs.raiseAlerts([alertOf("run-0000000000a1")])
+    compare(s.modalOpen(), false)
+    compare(s.handleGlobalKey(ctrl(Qt.Key_6)), true)
+    compare(s.app.nav.viewMode, "runs")
+    s.app.nav.cursorIndex = 0
+    compare(s.handleRunKey(plain(Qt.Key_P)), true)
+    compare(s.app.runs.pending["run-0000000000a1"], "pause")
+    compare(s.app.runs.toasts.length, 1, "the keys leave the toasts alone")
+  }
 }

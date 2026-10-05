@@ -100,8 +100,11 @@ Documents, Memories, Issues, Runs; `handleRunKey` makes a bare `p` / `r` / `c`
 pause, resume or cancel the run on Run detail, and the cursor row on the Runs
 list while its search is empty -- a refused key flashes `refusalOf`'s sentence,
 `c` only opens the cancel confirmation; `modalOpen()` is the one guard both the
-chords and the run keys obey, and Escape closes the cancel confirmation before
-the dropdown), `theme/Theme.qml` (colours and fonts from the shell).
+chords and the run keys obey, and Escape closes the cancel confirmation, then
+dismisses the run toasts, before the dropdown; in the search field Escape
+dismisses the toasts before it clears the search or closes the panel -- a toast
+is not a modal, so it never blocks the chords or the run keys),
+`theme/Theme.qml` (colours and fonts from the shell).
 
 Not every process goes through `HelperRunner`: `listProc` (`brd projects`), `treeProc` (`brd tree`), `issueProc` (`brd issue list`), `exportProc` (`brd export`), `brdDocsProc` (`brd doc list`), `saveStateProc`, `resolveDbPathProc` and `deleteProc` stay plain `Process` objects because they run the `brd` CLI or are fire-and-forget/single-owner with their own exit handling. `HelperRunner.run()` SIGTERMs a previous run of the same helper instead of letting it finish and dropping its reply (reachable for list-docs/list-memories refetches, and a set-doc-tag started in another project mid-flight); helpers write atomically, so at worst a stray `docs/.tmp-*` remains.
 
