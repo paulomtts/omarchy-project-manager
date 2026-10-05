@@ -929,3 +929,71 @@ function validateDispatch(form) {
   if (!(_isWholeNumber(f.parallelism) && f.parallelism >= 1)) errors.push(_formError("parallelism", _DISPATCH_PARALLELISM_INVALID))
   return { errors: errors, ok: errors.length === 0 }
 }
+
+
+// "<n> <singular>" when n is exactly 1, else "<n> <plural>".
+function _countOf(n, singular, plural) { return n + " " + (n === 1 ? singular : plural) }
+
+// The object entries of list, fresh; [] when list is not an array.
+function _objectsOf(list) {
+  var a = _arrayOr(list)
+  var out = []
+  for (var i = 0; i < a.length; i++) {
+    if (_isObject(a[i])) out.push(a[i])
+  }
+  return out
+}
+
+// How many subtasks a milestone dry-run plan would dispatch: the object entries
+// of levels[].stories[].subtasks, skipping non-object levels and stories. A
+// non-object plan, and already_done, count nothing.
+function _planSubtasks(plan) {
+  if (!_isObject(plan)) return 0
+  var count = 0
+  var levels = _objectsOf(plan.levels)
+  for (var i = 0; i < levels.length; i++) {
+    var stories = _objectsOf(levels[i].stories)
+    for (var j = 0; j < stories.length; j++) count += _objectsOf(stories[j].subtasks).length
+  }
+  return count
+}
+
+// The fresh result for a payload previewSummary cannot read.
+function _unreadablePreview() { return { board: false, integrate: "", summary: "" } }
+
+// The dispatch dialog's preview lines for `am run --dry-run` data (never the
+// {ok, data} envelope). A board payload (board exactly true) gives "<N>
+// milestone(s), <M> subtask(s)" and no Integrate line; a milestone payload
+// gives "<L> level(s) \u00b7 <S> subtask(s)", then " \u00b7 <D> stor(y|ies) already
+// done" when D > 0, and "Integrate \u2192 <branch>" when integrate.branch is a
+// non-blank string. Only subtasks listed in levels count. No array levels
+// means unreadable: board false and both lines "".
+function previewSummary(dryRunData) {
+  if (!_isObject(dryRunData) || !Array.isArray(dryRunData.levels)) return _unreadablePreview()
+  var levels = _objectsOf(dryRunData.levels)
+  if (dryRunData.board === true) {
+    var milestones = 0
+    var boardSubtasks = 0
+    for (var i = 0; i < levels.length; i++) {
+      var entries = _objectsOf(levels[i].milestones)
+      milestones += entries.length
+      for (var j = 0; j < entries.length; j++) boardSubtasks += _planSubtasks(entries[j].plan)
+    }
+    return {
+      board: true,
+      integrate: "",
+      summary: _countOf(milestones, "milestone", "milestones") + ", " + _countOf(boardSubtasks, "subtask", "subtasks")
+    }
+  }
+  var summary = _countOf(levels.length, "level", "levels") + " \u00b7 " +
+                _countOf(_planSubtasks(dryRunData), "subtask", "subtasks")
+  var finished = _objectsOf(dryRunData.already_done)
+  var done = 0
+  for (var k = 0; k < finished.length; k++) {
+    if (finished[k].kind === "story") done++
+  }
+  if (done > 0) summary += " \u00b7 " + _countOf(done, "story", "stories") + " already done"
+  var integrate = dryRunData.integrate
+  var branch = _isObject(integrate) && typeof integrate.branch === "string" ? _textOf(integrate.branch) : ""
+  return { board: false, integrate: branch !== "" ? "Integrate \u2192 " + branch : "", summary: summary }
+}

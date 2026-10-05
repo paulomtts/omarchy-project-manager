@@ -2086,4 +2086,221 @@ TestCase {
     compare(padded.prefix, "  m3 ", "the form's prefix is not trimmed")
     checkValid(Runs.validateDispatch(formWith("verify", ["\t", "\n ", "\r\n"])), ["verify"], "whitespace-only commands")
   }
+
+  // One subtask row of a dry-run level, as am prints it.
+  function planSubtask(prefix, id, base) {
+    return { id: id, title: "Subtask " + id, status: "todo", branch: prefix + "-" + id, base: base }
+  }
+
+  // `am run --milestone m3 --dry-run` data: 2 levels, 5 subtasks, 3 stories already done.
+  function dryRunMilestone() {
+    return {
+      max_concurrent: 4,
+      levels: [
+        { level: 0, concurrent: 2, stories: [
+          { story: "s1", title: "Story one", root: "main",
+            subtasks: [planSubtask("m3", "c1", "main"), planSubtask("m3", "c2", "m3-c1")] },
+          { story: "s2", title: "Story two", root: "main",
+            subtasks: [planSubtask("m3", "c3", "main")] }
+        ] },
+        { level: 1, concurrent: 1, stories: [
+          { story: "s3", title: "Story three", root: "m3-s3", merged_from: ["s1", "s2"],
+            subtasks: [planSubtask("m3", "c4", "m3-s3"), planSubtask("m3", "c5", "m3-c4")] }
+        ] }
+      ],
+      already_done: [
+        { kind: "story", id: "s4", title: "Story four" },
+        { kind: "story", id: "s5", title: "Story five" },
+        { kind: "story", id: "s6", title: "Story six" },
+        { kind: "subtask", id: "c0", title: "Subtask c0", story: "s1" }
+      ],
+      integrate: { branch: "m3-integrate", worktree: "/repo/.worktrees/m3-integrate",
+                   order: [{ story: "s1", tip: "m3-c2" }, { story: "s2", tip: "m3-c3" }, { story: "s3", tip: "m3-c5" }] }
+    }
+  }
+
+  // A board milestone's own plan: one level, one story with count subtasks,
+  // one story already done, its own Integrate branch.
+  function boardPlan(prefix, count) {
+    var subtasks = []
+    for (var i = 1; i <= count; i++) {
+      subtasks.push(planSubtask(prefix, "c" + i, i === 1 ? "main" : prefix + "-c" + (i - 1)))
+    }
+    return {
+      max_concurrent: 4,
+      levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Story one", root: "main", subtasks: subtasks }] }],
+      already_done: [{ kind: "story", id: "s9", title: "Story nine" }],
+      integrate: { branch: prefix + "-integrate", worktree: "/repo/.worktrees/" + prefix + "-integrate",
+                   order: [{ story: "s1", tip: prefix + "-c" + count }] }
+    }
+  }
+
+  function boardMilestone(id, title, prefix, base, count) {
+    return { milestone_id: id, title: title, branch_prefix: prefix, base_branch: base, plan: boardPlan(prefix, count) }
+  }
+
+  // `am run --board --dry-run` data: 3 milestones, 7 subtasks.
+  function dryRunBoard() {
+    return {
+      board: true,
+      max_concurrent: 4,
+      levels: [
+        { level: 0, milestones: [boardMilestone("m1", "M1 First", "m1", "main", 2),
+                                 boardMilestone("m2", "M2 Second", "m2", "main", 3)] },
+        { level: 1, milestones: [boardMilestone("m3", "M3 Third", "m3", "m1-integrate", 2)] }
+      ]
+    }
+  }
+
+  // Asserts a previewSummary result: its keys and the three values.
+  function checkSummary(r, board, summary, integrate, label) {
+    compare(Object.keys(r).sort().join(","), "board,integrate,summary", label + " keys")
+    compare(r.board, board, label + " board")
+    compare(r.summary, summary, label + " summary")
+    compare(r.integrate, integrate, label + " integrate")
+  }
+
+  function test_previewSummary_milestone() {
+    checkSummary(Runs.previewSummary(dryRunMilestone()), false,
+                 "2 levels \u00b7 5 subtasks \u00b7 3 stories already done", "Integrate \u2192 m3-integrate", "milestone")
+    var a = Runs.previewSummary(dryRunMilestone())
+    var b = Runs.previewSummary(dryRunMilestone())
+    verify(a !== b, "distinct objects")
+    a.summary = "changed"
+    compare(Runs.previewSummary(dryRunMilestone()).summary, "2 levels \u00b7 5 subtasks \u00b7 3 stories already done",
+            "mutation does not leak")
+  }
+
+  function test_previewSummary_milestone_plurals() {
+    var one = dryRunMilestone()
+    one.levels = [one.levels[0]]
+    one.levels[0].stories = [one.levels[0].stories[1]]
+    one.already_done = [one.already_done[0], one.already_done[3]]
+    checkSummary(Runs.previewSummary(one), false, "1 level \u00b7 1 subtask \u00b7 1 story already done",
+                 "Integrate \u2192 m3-integrate", "singulars")
+    var two = dryRunMilestone()
+    two.levels = [two.levels[0]]
+    two.levels[0].stories = [two.levels[0].stories[0]]
+    two.already_done = []
+    checkSummary(Runs.previewSummary(two), false, "1 level \u00b7 2 subtasks", "Integrate \u2192 m3-integrate", "nothing done")
+    var subtaskOnly = dryRunMilestone()
+    subtaskOnly.already_done = [subtaskOnly.already_done[3]]
+    checkSummary(Runs.previewSummary(subtaskOnly), false, "2 levels \u00b7 5 subtasks", "Integrate \u2192 m3-integrate",
+                 "only a subtask done")
+    var allDone = dryRunMilestone()
+    allDone.levels = []
+    allDone.already_done.push({ kind: "story", id: "s7", title: "Story seven" })
+    checkSummary(Runs.previewSummary(allDone), false, "0 levels \u00b7 0 subtasks \u00b7 4 stories already done",
+                 "Integrate \u2192 m3-integrate", "everything done")
+  }
+
+  function test_previewSummary_milestone_counting() {
+    var full = "2 levels \u00b7 5 subtasks \u00b7 3 stories already done"
+    var d = dryRunMilestone()
+    d.levels[0].stories.push("x", null, [], { story: "s8", title: "Story eight", root: "main", subtasks: "x" },
+                             { story: "s9", title: "Story nine", root: "main" })
+    d.levels[0].stories[0].subtasks.push(null, "c9", 7, [])
+    d.levels.push("x", null, [])
+    checkSummary(Runs.previewSummary(d), false, full, "Integrate \u2192 m3-integrate", "garbage entries skipped")
+    var noDone = [undefined, "x", {}, 5]
+    for (var i = 0; i < noDone.length; i++) {
+      var e = dryRunMilestone()
+      if (noDone[i] === undefined) delete e.already_done
+      else e.already_done = noDone[i]
+      checkSummary(Runs.previewSummary(e), false, "2 levels \u00b7 5 subtasks", "Integrate \u2192 m3-integrate",
+                   "already_done " + i)
+    }
+    var kinds = dryRunMilestone()
+    kinds.already_done = [{ kind: "Story", id: "s4" }, { id: "s5" }, "story", null,
+                          { kind: "story", id: "s6", title: "Story six" }]
+    checkSummary(Runs.previewSummary(kinds), false, "2 levels \u00b7 5 subtasks \u00b7 1 story already done",
+                 "Integrate \u2192 m3-integrate", "only kind story counts")
+  }
+
+  function test_previewSummary_integrate() {
+    var full = "2 levels \u00b7 5 subtasks \u00b7 3 stories already done"
+    var padded = dryRunMilestone()
+    padded.integrate.branch = "  m3-integrate \n"
+    checkSummary(Runs.previewSummary(padded), false, full, "Integrate \u2192 m3-integrate", "branch trimmed")
+    var objs = [undefined, null, "x", {}]
+    for (var i = 0; i < objs.length; i++) {
+      var e = dryRunMilestone()
+      if (objs[i] === undefined) delete e.integrate
+      else e.integrate = objs[i]
+      checkSummary(Runs.previewSummary(e), false, full, "", "integrate " + i)
+    }
+    var branches = ["", "  ", 5, null]
+    for (var j = 0; j < branches.length; j++) {
+      var b = dryRunMilestone()
+      b.integrate.branch = branches[j]
+      checkSummary(Runs.previewSummary(b), false, full, "", "branch " + j)
+    }
+  }
+
+  function test_previewSummary_board() {
+    checkSummary(Runs.previewSummary(dryRunBoard()), true, "3 milestones, 7 subtasks", "", "board")
+    var one = { board: true, max_concurrent: 4,
+                levels: [{ level: 0, milestones: [boardMilestone("m1", "M1 First", "m1", "main", 1)] }] }
+    checkSummary(Runs.previewSummary(one), true, "1 milestone, 1 subtask", "", "singulars")
+    checkSummary(Runs.previewSummary({ board: true, max_concurrent: 4, levels: [] }), true,
+                 "0 milestones, 0 subtasks", "", "no levels")
+    var plans = dryRunBoard()
+    delete plans.levels[0].milestones[0].plan
+    plans.levels[1].milestones[0].plan = "x"
+    checkSummary(Runs.previewSummary(plans), true, "3 milestones, 3 subtasks", "", "unreadable plans count 0")
+    var skipped = dryRunBoard()
+    skipped.levels[0].milestones.push("x", null, [])
+    skipped.levels.push({ level: 2, milestones: "x" }, { level: 3 }, "x", null)
+    checkSummary(Runs.previewSummary(skipped), true, "3 milestones, 7 subtasks", "", "garbage entries skipped")
+  }
+
+  function test_previewSummary_board_flag() {
+    var flags = ["true", 1]
+    for (var i = 0; i < flags.length; i++) {
+      var d = dryRunBoard()
+      d.board = flags[i]
+      checkSummary(Runs.previewSummary(d), false, "2 levels \u00b7 0 subtasks", "", "board " + flags[i])
+    }
+  }
+
+  function test_previewSummary_unreadable() {
+    var values = [undefined, null, 0, true, "x", [], Object.create(null), {}, { levels: "x" }, { board: true },
+                  { board: true, levels: {} }, { ok: true, data: dryRunMilestone() }]
+    for (var i = 0; i < values.length; i++) {
+      checkSummary(Runs.previewSummary(values[i]), false, "", "", "value " + i)
+    }
+    checkSummary(Runs.previewSummary(), false, "", "", "no argument")
+  }
+
+  // Review Focus 1, 2 and 3.
+  function test_previewSummary_edges() {
+    var src = dryRunMilestone()
+    var bare = Object.create(null)
+    bare.levels = src.levels
+    bare.already_done = src.already_done
+    bare.integrate = src.integrate
+    checkSummary(Runs.previewSummary(bare), false, "2 levels \u00b7 5 subtasks \u00b7 3 stories already done",
+                 "Integrate \u2192 m3-integrate", "prototype-less payload")
+    var empty = dryRunMilestone()
+    empty.levels[0].stories[1].subtasks = []
+    empty.levels[1].stories = []
+    checkSummary(Runs.previewSummary(empty), false, "2 levels \u00b7 2 subtasks \u00b7 3 stories already done",
+                 "Integrate \u2192 m3-integrate", "empty story and empty level")
+    var board = dryRunBoard()
+    board.levels[0].milestones[0].plan.already_done.push({ kind: "story", id: "s8", title: "Story eight" })
+    checkSummary(Runs.previewSummary(board), true, "3 milestones, 7 subtasks", "", "plans' done and integrate stay out")
+  }
+
+  function test_dispatch_form_preview_inputs_unchanged() {
+    var form = validForm()
+    var milestone = dryRunMilestone()
+    var board = dryRunBoard()
+    var before = JSON.stringify([form, milestone, board])
+    Runs.validateDispatch(form)
+    Runs.validateDispatch(formWith("prefix", ""))
+    Runs.previewSummary(milestone)
+    Runs.previewSummary(board)
+    compare(JSON.stringify([form, milestone, board]), before, "form and payloads unchanged")
+    compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify", "no key added to the form")
+  }
 }
