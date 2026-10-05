@@ -1045,6 +1045,100 @@ Scope {
     return true
   }
 
+  // Start: only from ready. start-run.py runs on a HelperRunner of its own
+  // (guard "", madeFor this project), which no preview, project switch or
+  // other Start stops. The settings a successful start saves are fixed now,
+  // from this project's runSettings: the non-blank verify commands sent, the
+  // opt-out, the prefix sent followed by the stored history without it (at
+  // most 20), and the parallelism.
+  function dispatchStart() {
+    if (store.dispatchState !== "ready") return false
+    var form = store.dispatchForm
+    var prefix = form.prefix.trim()
+    var history = [prefix]
+    var stored = Array.isArray(store.runSettings.prefixHistory) ? store.runSettings.prefixHistory : []
+    for (var i = 0; i < stored.length && history.length < 20; i++) {
+      var p = stored[i]
+      if (typeof p === "string" && p.trim() !== "" && p !== prefix) history.push(p)
+    }
+    var saved = { verify: store.dispatchCommands(form), allowNoVerification: form.allowNoVerification === true,
+                  prefixHistory: history, parallelism: form.parallelism }
+    var runner = dispatchStartC.createObject(store, { madeFor: store.project, savedJson: JSON.stringify(saved) })
+    dispatchBook.runners = dispatchBook.runners.concat([runner])
+    dispatchBook.startRunner = runner
+    store.dispatchState = "starting"
+    runner.run([store.project].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
+    return true
+  }
+
+  // A start runner's reply is this dispatch's: it was made in the current
+  // project and is the runner that put the store into `starting` (an idle
+  // reset, and so a project switch, forgets it).
+  function isHereStart(runner) {
+    return runner.madeFor === store.project && dispatchBook.startRunner === runner
+  }
+
+  // start-run.py's reply. When it is this dispatch's: ok gives `started`,
+  // the run id and message, the saved values in runSettings, a re-snapshot
+  // and dispatchStarted(id or null); anything else gives `failed` with what
+  // the helper said. After any successful start, wherever it was made, the
+  // same runner writes the saved values for the project it was made in.
+  function dispatchStartReplied(runner, stdout) {
+    if (runner.saving) {
+      store.dispatchSaveReplied(runner, stdout)
+      return
+    }
+    var here = store.isHereStart(runner)
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true) {
+      if (here) {
+        store.dispatchRunId = typeof envelope.run_id === "string" ? envelope.run_id : ""
+        store.dispatchMessage = typeof envelope.message === "string" ? envelope.message : ""
+        var settings = store.copyMap(store.runSettings)
+        // Parsed from the JSON that is written: a var property hands back a
+        // list Runs.dispatchDefaults does not take for an array.
+        var saved = JSON.parse(runner.savedJson)
+        for (var key in saved) settings[key] = saved[key]
+        store.runSettings = settings
+        store.dispatchState = "started"
+        store.refresh()
+        store.dispatchStarted(store.dispatchRunId !== "" ? store.dispatchRunId : null)
+      }
+      runner.saving = true
+      runner.script = store.backendDir + "projects/viewer-state.py"
+      runner.run(["set-run-settings", runner.madeFor, runner.savedJson])
+      return
+    }
+    if (here) {
+      var failure = envelope !== null && envelope.ok === false ? envelope : {}
+      var err = failure.error
+      var isErr = err !== null && err !== undefined && typeof err === "object"
+      var message = isErr && typeof err.message === "string" ? err.message : ""
+      store.dispatchState = "failed"
+      store.dispatchError = message.trim() !== "" ? message : "The launch could not be read"
+      store.dispatchErrorType = isErr && typeof err.type === "string" ? err.type : ""
+      store.dispatchLog = typeof failure.log === "string" ? failure.log : ""
+      store.dispatchLogTail = typeof failure.log_tail === "string" ? failure.log_tail : ""
+      store.dispatchExitCode = typeof failure.exit_code === "number" ? failure.exit_code : null
+    }
+    store.dropStartRunner(runner)
+  }
+
+  // set-run-settings after a start: a failure is said only while the
+  // dispatch is still this one. The runner then goes.
+  function dispatchSaveReplied(runner, stdout) {
+    var reply = store.parseEnvelope(stdout)
+    if (store.isHereStart(runner) && !(reply !== null && reply.ok === true)) store.flash("Dispatch settings could not be saved")
+    store.dropStartRunner(runner)
+  }
+
+  // A start runner's work is over: it leaves dispatchStartRunners and is destroyed.
+  function dropStartRunner(runner) {
+    dispatchBook.runners = dispatchBook.runners.filter(function(r) { return r !== runner })
+    if (dispatchBook.startRunner === runner) dispatchBook.startRunner = null
+    runner.destroy()
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -1259,6 +1353,25 @@ Scope {
       script: store.backendDir + "runs/notify.py"
       guard: ""
       onFinished: store.dropNotifyRunner(nr)
+    }
+  }
+
+  // One HelperRunner per Start. Guard "": start-run.py may take ~20 s, and
+  // neither a preview, a project switch nor a Start in another project may
+  // stop it. After a successful start the same runner writes the settings
+  // for `madeFor`; it goes when that write replies, or at once after a
+  // failed start.
+  Component {
+    id: dispatchStartC
+
+    HelperRunner {
+      id: sr
+      property string madeFor: ""     // the project the start was made in
+      property string savedJson: ""   // `saved` as set-run-settings takes it
+      property bool saving: false     // the settings write is in flight
+      script: store.backendDir + "runs/start-run.py"
+      guard: ""
+      onFinished: function(stdout, exitCode) { store.dispatchStartReplied(sr, stdout) }
     }
   }
 
