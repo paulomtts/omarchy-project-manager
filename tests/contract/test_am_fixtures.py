@@ -89,6 +89,33 @@ def assert_keys(source, where, obj, expected, extra_allowed=frozenset()):
     pytest.fail(f"{source} {where}: missing {missing}, extra {extra}")
 
 
+def run_row_levels(where, row):
+    """(where, obj, expected key set) for an am runs row and every object inside it."""
+    yield where, row, RUN_ROW_KEYS
+    if row.get("lease") is not None:
+        yield f"{where}.lease", row["lease"], RUN_LEASE_KEYS
+    progress = row.get("progress")
+    yield f"{where}.progress", progress, PROGRESS_KEYS
+    if isinstance(progress, dict):
+        yield f"{where}.progress.stories", progress.get("stories"), COUNT_KEYS
+        yield f"{where}.progress.subtasks", progress.get("subtasks"), COUNT_KEYS
+        if progress.get("current") is not None:
+            yield f"{where}.progress.current", progress["current"], CURRENT_KEYS
+
+
+def check_runs_rows(source, rows, extra_allowed=None):
+    """Every row's key sets and status; extra_allowed maps an expected set to keys also accepted."""
+    for i, row in enumerate(rows):
+        for where, obj, expected in run_row_levels(f"runs[{i}]", row):
+            assert_keys(source, where, obj, expected, (extra_allowed or {}).get(expected, frozenset()))
+        assert row["status"] in RUN_STATUSES, f"{source} runs[{i}].status: {row['status']!r}"
+
+
+def runs_rows_of_fixtures():
+    rows = [(f"runs.json runs[{i}]", row) for i, row in enumerate(load("runs.json")["data"]["runs"])]
+    return rows + [(f"{name} _am_runs_row", load(name)["_am_runs_row"]) for name in E2E_FIXTURES]
+
+
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
 def test_every_fixture_exists_and_parses(name):
     path = FIXTURES / name
@@ -112,3 +139,18 @@ def test_assert_keys_names_source_level_missing_and_extra():
     assert str(failure.value) == "x.json runs[0].progress: missing ['current', 'subtasks'], extra ['extra']"
     with pytest.raises(AssertionError, match=r"x\.json runs\[0\]\.progress: expected an object, got None"):
         assert_keys("x.json", "runs[0].progress", None, PROGRESS_KEYS)
+
+
+def test_runs_rows_key_sets():
+    rows = load("runs.json")["data"]["runs"]
+    assert rows, "runs.json: no data.runs rows"
+    assert any(row["lease"] is not None for row in rows), "runs.json: no row has a lease"
+    assert any(row["progress"]["current"] is not None for row in rows), \
+        "runs.json: no row has a progress.current"
+    for source, row in runs_rows_of_fixtures():
+        check_runs_rows(source, [row])
+
+
+def test_runs_row_statuses_are_in_the_run_vocabulary():
+    for source, row in runs_rows_of_fixtures():
+        assert row["status"] in RUN_STATUSES, f"{source}.status: {row['status']!r}"
