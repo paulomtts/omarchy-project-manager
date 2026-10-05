@@ -109,7 +109,9 @@ presentational),
 `Chip` and `ChipRow` (filter chips), `CommentList` (the read-only brd comments
 of one entity, used by the card detail and the issue detail),
 `ModalCard` (dimmed backdrop and card),
-`TypedConfirmDialog`, `ListRow` (hover / keyboard cursor / reveal; its
+`TypedConfirmDialog` (the typed-word modal: `confirmWord`, and `dismissLabel`
+for the safe button -- `Cancel` unless the owner says otherwise, `Keep running`
+for a run cancel), `ListRow` (hover / keyboard cursor / reveal; its
 `actions` slot holds items under the content, stacked above the row's
 MouseArea so a button there takes its own click -- a click anywhere in that
 strip, a disabled button included, never activates the row -- and with nothing

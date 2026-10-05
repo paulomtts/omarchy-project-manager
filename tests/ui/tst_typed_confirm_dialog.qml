@@ -298,4 +298,18 @@ TestCase {
     compare(cancelSpy.count, 1)
     compare(confirmSpy.count, 0)
   }
+
+  // 4.3 D5: the safe button's text is the owner's, "Cancel" unless it says
+  // otherwise, and it still only cancels.
+  function test_the_dismiss_button_reads_its_label_and_still_cancels() {
+    var d = make()
+    d.shown = true
+    var dismiss = find(d, "confirmCancel")
+    compare(dismiss.text, "Cancel")
+    d.dismissLabel = "Keep running"
+    compare(dismiss.text, "Keep running")
+    mouseClick(dismiss, dismiss.width / 2, dismiss.height / 2)
+    compare(cancelSpy.count, 1)
+    compare(confirmSpy.count, 0)
+  }
 }
