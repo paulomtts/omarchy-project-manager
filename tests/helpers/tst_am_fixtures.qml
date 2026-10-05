@@ -62,4 +62,47 @@ TestCase {
     compare(o.r.ok, true)
     o.destroy()
   }
+
+  function test_unknown_name_throws_naming_it() {
+    try {
+      F.load("no-such-fixture.json")
+      fail("no throw for no-such-fixture.json")
+    } catch (e) {
+      verify(e instanceof Error, "not an Error: " + e)
+      verify(e.message.indexOf("no-such-fixture.json") >= 0, e.message)
+    }
+  }
+
+  function test_directory_name_throws_naming_it() {
+    try {
+      F.load("")
+      fail("no throw for the fixtures directory")
+    } catch (e) {
+      verify(e instanceof Error, "not an Error: " + e)
+      verify(e.message.indexOf("amFixtures") >= 0, e.message)
+    }
+  }
+
+  function test_a_name_without_extension_is_not_completed() {
+    try {
+      F.load("runs")
+      fail("no throw for runs")
+    } catch (e) {
+      verify(e instanceof Error, "not an Error: " + e)
+      verify(e.message.indexOf("runs") >= 0, e.message)
+      verify(e.message.indexOf("amFixtures") >= 0, e.message)
+    }
+  }
+
+  function test_malformed_json_throws_naming_it_and_the_cause() {
+    var name = "../../helpers/testdata/bad.json"
+    try {
+      F.load(name)
+      fail("no throw for " + name)
+    } catch (e) {
+      verify(e instanceof Error, "not an Error: " + e)
+      verify(e.message.indexOf(name) >= 0, e.message)
+      verify(e.message.indexOf("not readable") < 0, "a parse failure reported as a read failure: " + e.message)
+    }
+  }
 }
