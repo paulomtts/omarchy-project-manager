@@ -302,6 +302,7 @@ def test_fake_am_serves_the_captures(world):
         assert set(row) == keys
         assert (row["id"], row["status"]) == ("e1", status)
 
+
 def test_snapshot_shape(world):
     runs = runs_rows()
     seed(world, runs)
