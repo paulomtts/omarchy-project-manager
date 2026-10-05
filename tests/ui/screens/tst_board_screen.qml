@@ -182,15 +182,15 @@ TestCase {
     s.app.runs.runs = [
       mkRun("run-a1", "started", true, "m1",
         { stories: [{ card_id: "s1", subtasks: ["t1"] }],
-          subtasks: [{ card_id: "t1", phases: [{ name: "implement", status: "started" }] }] },
+          subtasks: [{ card_id: "t1", status: "started", phases: [{ name: "implement", status: "started" }] }] },
         [{ card_id: "t1", status: "running" }]),
       mkRun("run-b2", "started", true, "mX",
-        { stories: [], subtasks: [{ card_id: "m2", phases: [{ name: "review", status: "started" }] }] },
+        { stories: [], subtasks: [{ card_id: "m2", status: "started", phases: [{ name: "review", status: "started" }] }] },
         [{ card_id: "m2", status: "running" }]),
       mkRun("run-c3", "started", true, "m4",
-        { stories: [], subtasks: [{ card_id: "t4", phases: [] }] }, [{ card_id: "t4", status: "running" }]),
+        { stories: [], subtasks: [{ card_id: "t4", status: "started", phases: [] }] }, [{ card_id: "t4", status: "running" }]),
       mkRun("run-d4", "stopped", null, "m5",
-        { stories: [], subtasks: [{ card_id: "t5", phases: [] }] }, [{ card_id: "t5", status: "stopped" }])]
+        { stories: [], subtasks: [{ card_id: "t5", status: "stopped", phases: [] }] }, [{ card_id: "t5", status: "stopped" }])]
     wait(50)
     return s
   }

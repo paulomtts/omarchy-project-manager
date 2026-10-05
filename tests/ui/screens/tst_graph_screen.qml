@@ -211,8 +211,8 @@ TestCase {
     s.app.runs.runs = [
       mkRun("run-a1", "started", true, "m1",
         { stories: [{ card_id: "s1", subtasks: ["t1", "t2"] }],
-          subtasks: [{ card_id: "t1", phases: [{ name: "implement", status: "started" }] },
-                     { card_id: "t2", phases: [] }] },
+          subtasks: [{ card_id: "t1", status: "started", phases: [{ name: "implement", status: "started" }] },
+                     { card_id: "t2", status: "pending", phases: [] }] },
         [{ card_id: "t1", status: "running" }, { card_id: "t2", status: "pending" }]),
       mkRun("run-b2", "started", true, "m2", { stories: [{ card_id: "s2", subtasks: [] }], subtasks: [] }, [])]
     return s

@@ -266,7 +266,7 @@ function runsTouching(runs, cardId) {
   return out
 }
 
-// Which am row status lands in which rollup bucket; anything else is pending.
+// Which subtask status lands in which rollup bucket; anything else is pending.
 function _bucketOf(status) {
   if (status === "running" || status === "started") return "running"
   if (status === "parked" || status === "stopped") return "parked"
@@ -287,8 +287,8 @@ function _storyHas(story, subtask, storyId) {
   return false
 }
 
-// Run-progress counts for a brd card, from the winning run's am rows only (never brd status;
-// Board.subtreeCounts is a separate thing). Only rows of real subtasks in that run count.
+// Run-progress counts for a brd card: the winning run's real subtasks, one each, by the
+// subtask's own status. Never rows, never brd status (Board.subtreeCounts is separate).
 function rollup(runs, card) {
   var counts = { running: 0, parked: 0, escalated: 0, done: 0, pending: 0, total: 0 }
   if (!_isObject(card)) return counts
@@ -299,17 +299,15 @@ function rollup(runs, card) {
   var tree = _treeOf(run)
   var isMilestone = run.milestone_id === cardId
   var story = isMilestone ? null : _findByCardId(tree.stories, cardId)
-  var rows = _arrayOr(run.rows)
-  for (var i = 0; i < rows.length; i++) {
-    var row = rows[i]
-    if (!_isObject(row) || !_isCardId(row.card_id)) continue
-    var subtask = _findByCardId(tree.subtasks, row.card_id)
-    if (subtask === null) continue
+  var subtasks = _arrayOr(tree.subtasks)
+  for (var i = 0; i < subtasks.length; i++) {
+    var subtask = subtasks[i]
+    if (!_isObject(subtask) || !_isCardId(subtask.card_id)) continue
     if (!isMilestone) {
-      var belongs = story !== null ? _storyHas(story, subtask, cardId) : row.card_id === cardId
+      var belongs = story !== null ? _storyHas(story, subtask, cardId) : subtask.card_id === cardId
       if (!belongs) continue
     }
-    counts[_bucketOf(row.status)] += 1
+    counts[_bucketOf(subtask.status)] += 1
     counts.total += 1
   }
   return counts
