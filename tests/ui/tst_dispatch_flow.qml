@@ -290,4 +290,63 @@ TestCase {
     compare(String(field.text), "d", "the letter typed into the search")
     compare(p.app.runs.dispatchState, "idle")
   }
+
+  // ---- the Runs entry
+
+  // 21
+  function test_the_runs_toolbar_opens_the_whole_board_with_a_row_of_targets() {
+    var p = make(); if (!p) return
+    compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 }), true)
+    wait(50)
+    var button = H.find(p, "startRunButton")
+    compare(button.visible, true)
+    button.clicked()
+    compare(H.find(p, "dispatchDialog").visible, true)
+    compare(p.dispatchCardId, "")
+    compare(text(p, "dispatchTarget"), "Target   Whole board")
+    compare(H.find(p, "dispatchTargetChoices").visible, true)
+    compare(p.dispatchChoices.map(function(c) { return c.id + ":" + c.label }).join(","), "board:Whole board,m1:M one")
+    verify(H.find(p, "dispatchTargetChoiceboard"), "the board chip")
+    verify(!H.find(p, "dispatchTargetChoicem9"), "a done milestone is not offered")
+    compare(H.find(p, "dispatchTargetChoiceboard").active, true)
+    // The board has no milestone to name a branch prefix after: refused until one is typed.
+    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
+    compare(p.app.runs.dispatchState, "refused")
+    compare(H.find(p, "dispatchTargetChoices").visible, true, "a refused board keeps its row")
+    H.find(p, "dispatchTargetChoicem1").clicked()
+    compare(p.dispatchCardId, "m1")
+    compare(p.app.runs.dispatchState, "previewing")
+    compare(text(p, "dispatchTarget"), "Target   Milestone \"M one\"")
+    compare(H.find(p, "dispatchTargetChoices").visible, true, "the row survives a re-target")
+    compare(p.dispatchChoices.length, 2)
+    compare(H.find(p, "dispatchTargetChoicem1").active, true)
+    compare(H.find(p, "dispatchTargetChoiceboard").active, false)
+    H.find(p, "dispatchCancel").clicked()
+    compare(H.find(p, "dispatchDialog").visible, false)
+    compare(p.dispatchChoices.length, 0, "a close drops the row")
+    dispatchCard(p, "m1")
+    compare(H.find(p, "dispatchDialog").visible, true)
+    compare(H.find(p, "dispatchTargetChoices").visible, false, "the card detail has no row")
+  }
+
+  // 30
+  function test_a_project_switch_drops_the_dialog_and_its_targets() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    H.find(p, "startRunButton").clicked()
+    compare(p.dispatchChoices.length, 2)
+    p.navigator.chooseProject(tc.pB)
+    compare(p.app.runs.dispatchState, "idle")
+    compare(H.find(p, "dispatchDialog").visible, false)
+    compare(p.dispatchChoices.length, 0)
+  }
+
+  // 31
+  function test_without_am_start_run_is_disabled() {
+    var p = make(); if (!p) return
+    p.app.runs.amStatus = "missing"
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(H.find(p, "startRunButton").enabled, false)
+  }
 }
