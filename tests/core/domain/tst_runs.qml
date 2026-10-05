@@ -1478,45 +1478,116 @@ TestCase {
     return out.join("\n") + "\n"
   }
 
+  // A fresh logs-attempt.json `am logs` data object whose stdout and stderr
+  // artifact texts are `stdout` and `stderr`; an undefined argument keeps the
+  // fixture's text (stdout: 19 lines, stderr: null).
+  function logsData(stdout, stderr) {
+    var data = F.load("logs-attempt.json").data
+    // synthetic: the texts are the test's; the shape is the capture's.
+    if (stdout !== undefined) data.artifacts.stdout.text = stdout
+    if (stderr !== undefined) data.artifacts.stderr.text = stderr
+    return data
+  }
+
+  // The capture's stdout text as its 19 lines.
+  function fixtureStdoutLines() {
+    var text = F.load("logs-attempt.json").data.artifacts.stdout.text
+    return text.slice(0, -1).split("\n")
+  }
+
   function test_log_tail() {
-    var under = Runs.logTail({ stdout: "collecting...\n3 passed\n", stderr: "" }, 200)
+    var under = Runs.logTail(logsData("collecting...\n3 passed\n"), 200)
     compare(under.text, "collecting...\n3 passed")
     compare(under.truncated, false)
 
-    var exact = Runs.logTail({ stdout: numbered(200) }, 200)
+    var exact = Runs.logTail(logsData(numbered(200)), 200)
     compare(exact.text.split("\n").length, 200)
     compare(exact.truncated, false, "exactly 200 lines is not cut")
 
-    var big = Runs.logTail({ stdout: numbered(5000), stderr: "" }, 200)
+    var big = Runs.logTail(logsData(numbered(5000), ""), 200)
     var lines = big.text.split("\n")
     compare(lines.length, 200)
     compare(lines[0], "line 4800")
     compare(lines[199], "line 4999")
     compare(big.truncated, true)
 
-    var withErr = Runs.logTail({ stdout: "out\n", stderr: "err1\nerr2\n" }, 200)
+    var withErr = Runs.logTail(logsData("out\n", "err1\nerr2\n"), 200)
     compare(withErr.text, "out\nerr1\nerr2", "stderr follows stdout")
     compare(withErr.truncated, false)
 
-    var errOnly = Runs.logTail({ stdout: "", stderr: "boom" }, 200)
+    var errOnly = Runs.logTail(logsData("", "boom"), 200)
     compare(errOnly.text, "boom")
 
-    // A huge stderr is bounded too (Review Focus 5).
-    var hugeErr = Runs.logTail({ stdout: "out\n", stderr: numbered(300) }, 200)
+    // A huge stderr is bounded too.
+    var hugeErr = Runs.logTail(logsData("out\n", numbered(300)), 200)
     var errLines = hugeErr.text.split("\n")
     compare(errLines.length, 201, "stdout, then the last 200 stderr lines")
     compare(errLines[0], "out")
     compare(errLines[1], "line 100")
     compare(hugeErr.truncated, true)
 
-    compare(Runs.logTail({ stdout: numbered(250) }, undefined).text.split("\n").length, 200, "a bad maxLines is 200")
+    compare(Runs.logTail(logsData(numbered(250)), undefined).text.split("\n").length, 200, "a bad maxLines is 200")
 
-    var bad = [undefined, null, "x", 5, [], {}, { stdout: 5, stderr: {} }]
+    var newlineOnly = Runs.logTail(logsData("\n"), 200)
+    compare(newlineOnly.text, "", "a lone newline is no lines")
+    compare(newlineOnly.truncated, false)
+
+    // synthetic: garbage in place of an `am logs` data object.
+    var bad = [undefined, null, "x", 5, [], {}, { artifacts: null }, { artifacts: "x" }, { artifacts: [] },
+               { artifacts: {} }, { artifacts: { stdout: 5, stderr: {} } },
+               { artifacts: { stdout: { text: 5 }, stderr: { text: [] } } },
+               { artifacts: { stdout: { text: null }, stderr: { text: null } } },
+               { artifacts: { stdout: { text: "" } } }]
     for (var i = 0; i < bad.length; i++) {
       var t = Runs.logTail(bad[i], 200)
       compare(t.text, "", "garbage " + i)
       compare(t.truncated, false, "garbage " + i)
     }
+  }
+
+  function test_log_tail_of_a_real_attempt() {
+    var data = F.load("logs-attempt.json").data
+    var stdout = data.artifacts.stdout.text
+    var tail = Runs.logTail(data, 200)
+    compare(tail.text, stdout.slice(0, -1), "the stdout artifact without its trailing newline")
+    var lines = tail.text.split("\n")
+    compare(lines.length, 19)
+    verify(lines[0].indexOf("Permission allow rule") === 0, lines[0])
+    compare(lines[18], "| plan_hash | `e8f781ba` |")
+    compare(tail.truncated, false)
+    verify(tail.text.indexOf("# Reviewer") < 0, "the prompt artifact is not shown")
+
+    var ten = Runs.logTail(F.load("logs-attempt.json").data, 10)
+    compare(ten.text, lines.slice(9).join("\n"), "the last 10 of the 19 lines")
+    compare(ten.truncated, true)
+  }
+
+  function test_log_tail_reads_only_the_stream_artifacts() {
+    // synthetic: a top-level stdout/stderr of the old guessed shape added to a fresh copy.
+    var legacy = F.load("logs-attempt.json").data
+    legacy.stdout = "legacy\n"
+    legacy.stderr = "legacy\n"
+    compare(Runs.logTail(legacy, 200).text, fixtureStdoutLines().join("\n"), "the old shape is ignored")
+
+    // synthetic: the old guessed shape alone.
+    var old = Runs.logTail({ stdout: "x\n", stderr: "y\n" }, 200)
+    compare(old.text, "")
+    compare(old.truncated, false)
+
+    // synthetic: a fresh copy with no stdout artifact and a stderr text.
+    var noOut = logsData(undefined, "boom\n")
+    delete noOut.artifacts.stdout
+    compare(Runs.logTail(noOut, 200).text, "boom")
+
+    // synthetic: a fresh copy whose stderr says present: false yet has a text.
+    var late = logsData(undefined, "late\n")
+    late.artifacts.stderr.present = false
+    compare(Runs.logTail(late, 200).text, fixtureStdoutLines().concat(["late"]).join("\n"), "present is not consulted")
+
+    var data = F.load("logs-attempt.json").data
+    var before = JSON.stringify(data)
+    Runs.logTail(data, 10)
+    compare(JSON.stringify(data), before, "data is not mutated")
   }
 
   function test_snapshot_age_text() {

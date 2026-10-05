@@ -930,8 +930,15 @@ TestCase {
     return e
   }
 
+  // A fresh logs-attempt.json `am logs` reply, as one JSON line, whose stdout
+  // artifact text is `stdout` and, when given, whose stderr artifact text is
+  // `stderr` (else the capture's null).
   function logsReply(stdout, stderr) {
-    return JSON.stringify({ ok: true, data: { stdout: stdout, stderr: stderr || "" } }) + "\n"
+    var envelope = F.load("logs-attempt.json")
+    // synthetic: the texts are the test's; the envelope is the capture's.
+    envelope.data.artifacts.stdout.text = stdout
+    if (stderr !== undefined) envelope.data.artifacts.stderr.text = stderr
+    return JSON.stringify(envelope) + "\n"
   }
 
   function argv(proc) { return proc.command.join("|") }
@@ -1028,6 +1035,17 @@ TestCase {
     compare(shown[199], "line 249")
     compare(shown[200], "boom")
     compare(store.logsTruncated, true)
+  }
+
+  function test_a_real_logs_reply_shows_the_attempts_output() {
+    var store = opened(); if (!store) return
+    var envelope = F.load("logs-attempt.json")
+    reply(store.logsRunner.current, JSON.stringify(envelope) + "\n", 0)
+    compare(store.logsText, envelope.data.artifacts.stdout.text.slice(0, -1), "the attempt's stdout")
+    compare(store.logsText.split("\n").length, 19)
+    compare(store.logsTruncated, false)
+    compare(store.logsError, "")
+    compare(store.logsLoading, false)
   }
 
   function test_logs_failures_keep_the_text_and_never_touch_am_status() {

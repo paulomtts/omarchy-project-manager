@@ -6,6 +6,7 @@
 import QtQuick
 import QtTest
 import "../helpers/find.js" as H
+import "../helpers/amFixtures.js" as F
 
 TestCase {
   id: tc
@@ -198,7 +199,14 @@ TestCase {
     return p
   }
 
-  function logsOk(text) { return JSON.stringify({ ok: true, data: { stdout: text, stderr: "" } }) + "\n" }
+  // A fresh logs-attempt.json `am logs` reply, as one JSON line, whose stdout
+  // artifact text is `text`.
+  function logsOk(text) {
+    var envelope = F.load("logs-attempt.json")
+    // synthetic: the text is the test's; the envelope is the capture's.
+    envelope.data.artifacts.stdout.text = text
+    return JSON.stringify(envelope) + "\n"
+  }
 
   function test_opening_a_run_shows_it_and_fetches_its_default_attempt() {
     var p = openDetail(); if (!p) return
