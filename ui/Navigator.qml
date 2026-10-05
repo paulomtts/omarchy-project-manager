@@ -369,6 +369,43 @@ QtObject {
     navi.actions.focusForView()
   }
 
+  // ---- After a dispatch (S3 4.2). The store says a run started before its
+  // re-snapshot lands, so the run is usually not listed yet: it is awaited,
+  // and the next snapshot that lists it opens it -- but only while the panel
+  // is still on that project's Runs list. A newer start replaces it.
+  property string awaitedRunId: ""
+  property string awaitedProject: ""
+
+  function openStartedRun(runId) {
+    navi.showSection("runs")
+    navi.awaitedRunId = ""
+    navi.awaitedProject = ""
+    if (typeof runId !== "string" || runId === "") {
+      navi.app.runs.flash("Started — waiting for the run to appear")
+      return
+    }
+    if (navi.app.runs.runById(runId) !== null) {
+      navi.openRun(runId, "runs")
+      return
+    }
+    navi.awaitedRunId = runId
+    navi.awaitedProject = navi.app.projects.selectedProject ? navi.app.projects.selectedProject.root_path : ""
+    navi.app.runs.flash("Started — opening the run when it appears")
+  }
+
+  // Every change of the runs: open the awaited run once it is listed; away
+  // from this project's Runs list, forget it.
+  function openAwaitedRun() {
+    if (navi.awaitedRunId === "") return
+    var id = navi.awaitedRunId
+    var project = navi.app.projects.selectedProject
+    var here = navi.app.nav.viewMode === "runs" && !!project && project.root_path === navi.awaitedProject
+    if (here && navi.app.runs.runById(id) === null) return
+    navi.awaitedRunId = ""
+    navi.awaitedProject = ""
+    if (here) navi.openRun(id, "runs")
+  }
+
   function goBack() {
     if (navi.app.nav.viewMode === "issue") {
       if (navi.app.nav.issueReturnMode === "entry") navi.restoreCardFromIssue()

@@ -1,4 +1,5 @@
 .pragma library
+.import "board.js" as Board
 
 // Run domain model: one `am` orchestrator run, normalised from the CLI's
 // output.
@@ -771,4 +772,228 @@ function newAlerts(prevRuns, nextRuns) {
     })
   }
   return out
+}
+
+
+// ---- Dispatch (S3 1.1) -------------------------------------------------------------------
+//
+// What the dispatch dialog may start, and the form's starting values. Pure and
+// never throwing, like the rest of this file. The one exception to "every input
+// comes from am": these read a brd card as Board.indexTree() leaves it
+// ({id, title, status, parentId, depth}) and its {id: card} cardMap. Ids are
+// compared with === and looked up only as own keys of cardMap, so ids such as
+// `__proto__` behave like any absent id.
+
+var _DISPATCH_NO_CARD = "No card to dispatch"
+var _DISPATCH_UNKNOWN_LEVEL = "The card's level is unknown"
+var _DISPATCH_STORY = "A story is dispatched through its milestone"
+
+// A card id am can take as a target: a non-empty string that cannot be read as a flag.
+function _isDispatchId(id) { return typeof id === "string" && id !== "" && id.charAt(0) !== "-" }
+
+// A finite number with no fractional part.
+function _isWholeNumber(v) { return _isFiniteNumber(v) && Math.floor(v) === v }
+
+// cardMap[id] when cardMap is an object that owns the string key id and the
+// entry is an object, else null. Inherited keys never count.
+function _ownCard(cardMap, id) {
+  if (!_isObject(cardMap) || typeof id !== "string") return null
+  if (!Object.prototype.hasOwnProperty.call(cardMap, id)) return null
+  return _isObject(cardMap[id]) ? cardMap[id] : null
+}
+
+// A fresh plan the dialog may start.
+function _offeredPlan(level, command, flags) {
+  return { command: command, flags: flags, level: level, offered: true, reason: "", suggest: null }
+}
+
+// A fresh plan the dialog must refuse, with the sentence that says why.
+function _refusedPlan(level, reason, suggest) {
+  return { command: "", flags: [], level: level, offered: false, reason: reason, suggest: suggest }
+}
+
+// What the dispatch dialog may start for card. "board" is the whole board;
+// otherwise card is a brd card: depth 0 milestone, 1 story, 2+ subtask. A
+// finished card is refused; a story is refused with its milestone as the
+// suggestion (title from cardMap when it owns the parent, else ""). Decision
+// order and sentences are pinned in docs/superpowers/specs/1-1-runs-js-5eb7ec0c.md.
+function dispatchPlan(card, cardMap) {
+  if (card === "board") return _offeredPlan("board", "board", ["--board"])
+  if (!_isObject(card) || !_isDispatchId(card.id)) return _refusedPlan("", _DISPATCH_NO_CARD, null)
+  if (!_isWholeNumber(card.depth) || card.depth < 0) return _refusedPlan("", _DISPATCH_UNKNOWN_LEVEL, null)
+  var level = card.depth === 0 ? "milestone" : (card.depth === 1 ? "story" : "subtask")
+  if (Board.isFinishedStatus(card.status)) return _refusedPlan(level, "The card is " + card.status, null)
+  if (level === "story") {
+    var suggest = null
+    if (typeof card.parentId === "string" && card.parentId !== "") {
+      var parent = _ownCard(cardMap, card.parentId)
+      suggest = { id: card.parentId, title: parent !== null ? _textOf(parent.title) : "" }
+    }
+    return _refusedPlan("story", _DISPATCH_STORY, suggest)
+  }
+  if (level === "milestone") return _offeredPlan("milestone", "milestone", ["--milestone", card.id])
+  return _offeredPlan("subtask", "card", ["--card", card.id])
+}
+
+// The milestone card whose title names the branch prefix: card itself at depth
+// 0, else the first card with no parentId (null, undefined or "") reached by
+// following parentId through cardMap's own keys. The walk trusts parentId, not
+// depth. A missing link, a non-string parentId, a non-object entry or a cycle
+// (an id seen twice) gives null, as does no cardMap.
+function _milestoneOf(card, cardMap) {
+  if (!_isObject(card)) return null
+  if (card.depth === 0) return card
+  if (!_isObject(cardMap)) return null
+  var seen = []
+  var current = card
+  while (true) {
+    var parentId = current.parentId
+    if (parentId === null || parentId === undefined || parentId === "") return current
+    if (seen.indexOf(parentId) >= 0) return null
+    seen.push(parentId)
+    current = _ownCard(cardMap, parentId)
+    if (current === null) return null
+  }
+}
+
+// The branch-prefix stem of a milestone title: lower-case [a-z0-9] tokens; a
+// first token like "m3" (letters then digits) is the stem, else the first three
+// tokens joined by "-", cut to 24 characters, without a trailing "-".
+function _stemOf(title) {
+  var words = _textOf(title).split(/\s+/)
+  var tokens = []
+  for (var i = 0; i < words.length; i++) {
+    var token = words[i].toLowerCase().replace(/[^a-z0-9]/g, "")
+    if (token !== "") tokens.push(token)
+  }
+  if (tokens.length === 0) return ""
+  if (/^[a-z]+[0-9]+$/.test(tokens[0])) return tokens[0]
+  return tokens.slice(0, 3).join("-").slice(0, 24).replace(/-+$/, "")
+}
+
+// The dispatch form's starting values. project is {defaultBranch, settings}
+// with settings as get-run-settings returns it; any part may be missing. base
+// is the trimmed default branch (no fallback: the caller resolves it), prefix
+// the stem of the card's milestone title, verify the stored non-blank commands
+// verbatim, parallelism the stored whole number >= 1 else 4. The opt-out from
+// verification is never pre-ticked.
+function dispatchDefaults(project, card, cardMap) {
+  var p = _isObject(project) ? project : {}
+  var settings = _isObject(p.settings) ? p.settings : {}
+  var milestone = _milestoneOf(card, cardMap)
+  var stored = _arrayOr(settings.verify)
+  var verify = []
+  for (var i = 0; i < stored.length; i++) {
+    if (typeof stored[i] === "string" && stored[i].trim() !== "") verify.push(stored[i])
+  }
+  var parallelism = settings.parallelism
+  return {
+    allowNoVerification: false,
+    base: typeof p.defaultBranch === "string" ? _textOf(p.defaultBranch) : "",
+    parallelism: _isWholeNumber(parallelism) && parallelism >= 1 ? parallelism : 4,
+    prefix: milestone !== null ? _stemOf(milestone.title) : "",
+    verify: verify
+  }
+}
+
+
+// ---- Dispatch form and preview (S3 1.2) --------------------------------------------------
+//
+// The dispatch form's own checks, and the one-line summary of an `am run
+// --dry-run` payload (the envelope's data, milestone or board). Pure and never
+// throwing, like the rest of this file. Rules, sentences and payload shapes are
+// pinned in docs/superpowers/specs/1-2-runs-js-45cc9067.md.
+
+var _DISPATCH_PREFIX_EMPTY = "Enter a branch prefix"
+var _DISPATCH_VERIFY_MISSING = "Add a verify command or choose to run without verification"
+var _DISPATCH_PARALLELISM_INVALID = "Parallelism must be a whole number of at least 1"
+
+// A fresh form error.
+function _formError(field, message) { return { field: field, message: message } }
+
+// The form's failed rules, in order prefix, verify, parallelism; ok when none
+// failed. form has dispatchDefaults' keys; a non-object form is read as {}.
+// prefix must be a non-blank string; verify needs one non-blank string command
+// unless allowNoVerification is exactly true; parallelism must be a whole
+// number >= 1. base is not checked: am refuses a bad one through the preview.
+function validateDispatch(form) {
+  var f = _isObject(form) ? form : {}
+  var errors = []
+  if (typeof f.prefix !== "string" || f.prefix.trim() === "") errors.push(_formError("prefix", _DISPATCH_PREFIX_EMPTY))
+  var commands = _arrayOr(f.verify)
+  var count = 0
+  for (var i = 0; i < commands.length; i++) {
+    if (typeof commands[i] === "string" && commands[i].trim() !== "") count++
+  }
+  if (count === 0 && f.allowNoVerification !== true) errors.push(_formError("verify", _DISPATCH_VERIFY_MISSING))
+  if (!(_isWholeNumber(f.parallelism) && f.parallelism >= 1)) errors.push(_formError("parallelism", _DISPATCH_PARALLELISM_INVALID))
+  return { errors: errors, ok: errors.length === 0 }
+}
+
+
+// "<n> <singular>" when n is exactly 1, else "<n> <plural>".
+function _countOf(n, singular, plural) { return n + " " + (n === 1 ? singular : plural) }
+
+// The object entries of list, fresh; [] when list is not an array.
+function _objectsOf(list) {
+  var a = _arrayOr(list)
+  var out = []
+  for (var i = 0; i < a.length; i++) {
+    if (_isObject(a[i])) out.push(a[i])
+  }
+  return out
+}
+
+// How many subtasks a milestone dry-run plan would dispatch: the object entries
+// of levels[].stories[].subtasks, skipping non-object levels and stories. A
+// non-object plan, and already_done, count nothing.
+function _planSubtasks(plan) {
+  if (!_isObject(plan)) return 0
+  var count = 0
+  var levels = _objectsOf(plan.levels)
+  for (var i = 0; i < levels.length; i++) {
+    var stories = _objectsOf(levels[i].stories)
+    for (var j = 0; j < stories.length; j++) count += _objectsOf(stories[j].subtasks).length
+  }
+  return count
+}
+
+// The fresh result for a payload previewSummary cannot read.
+function _unreadablePreview() { return { board: false, integrate: "", summary: "" } }
+
+// The dispatch dialog's preview lines for `am run --dry-run` data (never the
+// {ok, data} envelope). A board payload (board exactly true) gives "<N>
+// milestone(s), <M> subtask(s)" and no Integrate line; a milestone payload
+// gives "<L> level(s) \u00b7 <S> subtask(s)", then " \u00b7 <D> stor(y|ies) already
+// done" when D > 0, and "Integrate \u2192 <branch>" when integrate.branch is a
+// non-blank string. Only subtasks listed in levels count. No array levels
+// means unreadable: board false and both lines "".
+function previewSummary(dryRunData) {
+  if (!_isObject(dryRunData) || !Array.isArray(dryRunData.levels)) return _unreadablePreview()
+  var levels = _objectsOf(dryRunData.levels)
+  if (dryRunData.board === true) {
+    var milestones = 0
+    var boardSubtasks = 0
+    for (var i = 0; i < levels.length; i++) {
+      var entries = _objectsOf(levels[i].milestones)
+      milestones += entries.length
+      for (var j = 0; j < entries.length; j++) boardSubtasks += _planSubtasks(entries[j].plan)
+    }
+    return {
+      board: true,
+      integrate: "",
+      summary: _countOf(milestones, "milestone", "milestones") + ", " + _countOf(boardSubtasks, "subtask", "subtasks")
+    }
+  }
+  var summary = _countOf(levels.length, "level", "levels") + " \u00b7 " +
+                _countOf(_planSubtasks(dryRunData), "subtask", "subtasks")
+  var finished = _objectsOf(dryRunData.already_done)
+  var done = 0
+  for (var k = 0; k < finished.length; k++) {
+    if (finished[k].kind === "story") done++
+  }
+  if (done > 0) summary += " \u00b7 " + _countOf(done, "story", "stories") + " already done"
+  var integrate = dryRunData.integrate
+  var branch = _isObject(integrate) && typeof integrate.branch === "string" ? _textOf(integrate.branch) : ""
+  return { board: false, integrate: branch !== "" ? "Integrate \u2192 " + branch : "", summary: summary }
 }

@@ -283,4 +283,39 @@ TestCase {
     mouseClick(crumb, crumb.width / 2, crumb.height / 2)
     compare(p.app.nav.viewMode, "documents")
   }
+
+  // ---- Start run (S3 4.2)
+
+  // 18
+  function test_start_run_shows_only_on_the_runs_list_of_a_project() {
+    var p = make(); if (!p) return
+    p.app.runs.snapshotRunner.cancel()
+    p.app.runs.runs = [{ id: "run-0000000000a1", repo_dir: "/home/u/my proj", milestone_id: "alpha", status: "started",
+                         started_at: "", lease: null, rows: [], tree: { stories: [], subtasks: [] } }]
+    var button = H.find(p, "startRunButton")
+    verify(button, "the Start run button")
+    var hidden = ["board", "graph", "memories", "issues"]
+    for (var i = 0; i < hidden.length; i++) {
+      p.navigator.showSection(hidden[i])
+      compare(button.visible, false, hidden[i])
+    }
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(button.visible, true)
+    compare(String(button.text), "Start run")
+    compare(String(button.iconText), "▶")
+    compare(button.enabled, true)
+    compare(String(button.tooltipText), "Start an am run")
+    p.navigator.openRun("run-0000000000a1", "runs")
+    compare(p.app.nav.viewMode, "run")
+    compare(button.visible, false, "run detail")
+    p.navigator.goBack()
+    compare(button.visible, true)
+    p.app.runs.amStatus = "missing"
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "am is not installed or not on PATH")
+    p.app.projects.selectedProject = null
+    p.app.nav.viewMode = "runs"
+    compare(button.visible, false, "no project")
+  }
 }
