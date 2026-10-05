@@ -1024,6 +1024,27 @@ Scope {
     }
   }
 
+  // One form field changed (name one of base, prefix, verify, parallelism,
+  // allowNoVerification) while the form may be edited: back to previewing,
+  // the preview, any refusal or failure and any preview in flight dropped,
+  // and the 400 ms check restarted, so a burst of changes costs one check.
+  // Refused (false, nothing changes) for another name, without a form, and
+  // while idle, starting or started.
+  function setDispatchField(name, value) {
+    if (["base", "prefix", "verify", "parallelism", "allowNoVerification"].indexOf(name) < 0) return false
+    var state = store.dispatchState
+    if (state !== "previewing" && state !== "ready" && state !== "refused" && state !== "failed") return false
+    if (store.dispatchForm === null) return false
+    store.dispatchForm = store.withField(store.dispatchForm, name, value)
+    if (name === "base") dispatchBook.baseTouched = true
+    store.dispatchState = "previewing"
+    store.dispatchPreview = null
+    store.clearDispatchError()
+    dispatchPreviewRunner.cancel()
+    dispatchDebounceTimer.restart()
+    return true
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -1160,6 +1181,7 @@ Scope {
     objectName: "dispatchDebounceTimer"
     interval: 400
     repeat: false
+    onTriggered: store.checkDispatch()
   }
 
   // What the watch Process aliases read; kept apart so consumers cannot write it.

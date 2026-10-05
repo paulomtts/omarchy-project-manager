@@ -2504,4 +2504,177 @@ TestCase {
     checkDispatchIdle(store, "after the late reply")
     verify(!store.dispatchPreviewRunner.current, "no preview")
   }
+
+  // 7
+  function test_defaults_reply_keeps_a_user_set_base() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.openDispatch(cards.m1, cards)
+    compare(store.setDispatchField("base", "develop"), true)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchForm.base, "develop", "the user's base wins over the lookup")
+    compare(argv(store.dispatchPreviewRunner.current),
+            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|develop|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest")
+  }
+
+  // 9
+  function test_debounce_waits_for_defaults() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.openDispatch(cards.m1, cards)
+    compare(store.setDispatchField("prefix", "m3b"), true)
+    compare(store.dispatchDebounceTimer.running, true)
+    fire(store.dispatchDebounceTimer)
+    verify(!store.dispatchPreviewRunner.current, "nothing launched before the default branch is known")
+    compare(store.dispatchState, "previewing")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc, "the defaults reply checks the form")
+    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3b|--max-concurrent|4|--verify|uv run pytest")
+
+    var early = dispatchStore(); if (!early) return
+    early.openDispatch(cards.m1, cards)
+    early.setDispatchField("parallelism", 2)
+    reply(early.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(early.dispatchDebounceTimer.running, false, "the defaults reply's check replaces the pending one")
+    compare(early.dispatchPreviewRunner.current.command[10], "2")
+  }
+
+  // 13
+  function test_board_preview_argv() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.openDispatch("board", cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchState, "refused", "the board starts with no prefix")
+    compare(store.setDispatchField("prefix", " all "), true)
+    fire(store.dispatchDebounceTimer)
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc, "the board is previewed")
+    compare(argv(proc), tc.previewCmd + "/home/u/my proj|board|--base-branch|main|--branch-prefix|all|--max-concurrent|4|--verify|uv run pytest")
+    compare(proc.command.length, 12)
+    var board = { board: true, levels: [{ level: 0, milestones: [{ milestone_id: "m1", title: "M3", branch_prefix: "m3",
+                                                                   base_branch: "main", plan: dispatchDryRun() }] }] }
+    reply(proc, previewOk(board), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchPreview.summary, "1 milestone, 3 subtasks")
+    compare(store.dispatchPreview.board, true)
+  }
+
+  // 15 + Review Focus 1
+  function test_allow_no_verification_flag() {
+    var store = previewingStore(); if (!store) return
+    store.setDispatchField("verify", [])
+    fire(store.dispatchDebounceTimer)
+    compare(store.dispatchState, "refused", "no command and no opt-out")
+    compare(store.dispatchErrors[0].field, "verify")
+    store.setDispatchField("allowNoVerification", true)
+    fire(store.dispatchDebounceTimer)
+    compare(store.dispatchState, "previewing")
+    var proc = store.dispatchPreviewRunner.current
+    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--allow-no-verification")
+    store.setDispatchField("verify", ["", "  ", "-x make check", "uv run pytest"])
+    fire(store.dispatchDebounceTimer)
+    proc = store.dispatchPreviewRunner.current
+    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--verify|-x make check|--verify|uv run pytest|--allow-no-verification")
+    compare(proc.command[12], "-x make check", "a command that starts with a dash is one verbatim argument")
+    store.setDispatchField("allowNoVerification", "yes")
+    fire(store.dispatchDebounceTimer)
+    compare(store.dispatchPreviewRunner.current.command[store.dispatchPreviewRunner.current.command.length - 1], "uv run pytest",
+            "only a real true sends the opt-out")
+  }
+
+  // Review Focus 4 (the form half)
+  function test_a_verify_value_that_is_not_a_list_is_refused_not_thrown() {
+    var store = previewingStore(); if (!store) return
+    compare(store.setDispatchField("verify", "uv run pytest"), true)
+    fire(store.dispatchDebounceTimer)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchErrors[0].field, "verify")
+    store.setDispatchField("allowNoVerification", true)
+    store.setDispatchField("parallelism", "4")
+    fire(store.dispatchDebounceTimer)
+    compare(store.dispatchState, "refused", "the store converts nothing")
+    compare(store.dispatchErrors[0].field, "parallelism")
+    store.setDispatchField("parallelism", 4)
+    fire(store.dispatchDebounceTimer)
+    compare(argv(store.dispatchPreviewRunner.current),
+            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--allow-no-verification")
+  }
+
+  // 16
+  function test_change_restarts_400ms_debounce_and_one_preview_per_burst() {
+    var store = previewingStore(); if (!store) return
+    var timer = store.dispatchDebounceTimer
+    compare(timer.objectName, "dispatchDebounceTimer")
+    compare(timer.interval, 400)
+    compare(timer.repeat, false)
+    var first = store.dispatchPreviewRunner.current
+    compare(store.setDispatchField("prefix", "a"), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.setDispatchField("prefix", "ab"), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.setDispatchField("parallelism", 2), true)
+    compare(store.dispatchState, "previewing")
+    compare(timer.running, true)
+    verify(store.dispatchPreviewRunner.current === first, "nothing launched during the burst")
+    compare(first.running, false, "the preview in flight was cancelled")
+    fire(timer)
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc !== first, "one preview for the burst")
+    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|ab|--max-concurrent|2|--verify|uv run pytest")
+  }
+
+  // 17
+  function test_latest_preview_wins() {
+    var store = previewingStore(); if (!store) return
+    var first = store.dispatchPreviewRunner.current
+    store.setDispatchField("parallelism", 2)
+    fire(store.dispatchDebounceTimer)
+    var second = store.dispatchPreviewRunner.current
+    verify(second !== first, "a second preview")
+    reply(first, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchState, "previewing", "the older preview's reply is dropped")
+    compare(store.dispatchPreview, null)
+    reply(second, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    verify(store.dispatchPreview !== null)
+  }
+
+  // 18
+  function test_change_after_ready_drops_preview_and_goes_previewing() {
+    var store = previewingStore(); if (!store) return
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    var form = store.dispatchForm
+    var list = ["make test"]
+    compare(store.setDispatchField("verify", list), true)
+    list.push("rm -rf /")
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchPreview, null)
+    compare(form.verify[0], "uv run pytest", "the old form was not changed in place")
+    compare(store.dispatchForm.verify.length, 1, "verify is copied")
+    compare(store.dispatchForm.verify[0], "make test")
+    compare(store.dispatchForm.prefix, "m3", "the other fields are kept")
+    compare(store.dispatchForm.base, "main")
+    compare(store.dispatchDebounceTimer.running, true)
+  }
+
+  // 19
+  function test_set_unknown_field_or_while_idle_is_refused() {
+    var store = dispatchStore(); if (!store) return
+    compare(store.setDispatchField("prefix", "x"), false, "idle")
+    compare(store.dispatchForm, null)
+    var cards = dispatchCards()
+    store.openDispatch(cards.s1, cards)
+    compare(store.setDispatchField("prefix", "x"), false, "a refused target has no form")
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchError, "A story is dispatched through its milestone")
+    store.openDispatch(cards.m1, cards)
+    compare(store.setDispatchField("branch", "x"), false, "unknown field")
+    compare(store.setDispatchField("__proto__", {}), false)
+    compare(store.dispatchForm.prefix, "m3", "nothing changed")
+    compare(store.dispatchForm.branch, undefined)
+    compare(store.dispatchDebounceTimer.running, false)
+  }
 }
