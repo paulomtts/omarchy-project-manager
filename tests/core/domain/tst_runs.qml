@@ -1772,4 +1772,178 @@ TestCase {
     compare(Runs.dispatchPlan(story, { m1: mkCard("m1", 0, "todo", null, 7) }).suggest.title, "7", "number title")
     compare(Runs.dispatchPlan(story, { m1: mkCard("m1", 0, "todo", null, null) }).suggest.title, "", "null title")
   }
+
+  function fullProject() {
+    return { defaultBranch: "main",
+             settings: { verify: ["uv run pytest", "bash tests/run.sh"], allowNoVerification: true,
+                         notifyOnEscalation: true, parallelism: 2 } }
+  }
+
+  // Asserts all five dispatchDefaults fields; verify compared as JSON.
+  function checkDefaults5(d, base, parallelism, prefix, verifyList, label) {
+    compare(Object.keys(d).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify", label + " keys")
+    compare(d.allowNoVerification, false, label + " allowNoVerification")
+    compare(d.base, base, label + " base")
+    compare(d.parallelism, parallelism, label + " parallelism")
+    compare(d.prefix, prefix, label + " prefix")
+    compare(Array.isArray(d.verify), true, label + " verify is array")
+    compare(JSON.stringify(d.verify), JSON.stringify(verifyList), label + " verify")
+  }
+
+  function prefixOf(title) {
+    return Runs.dispatchDefaults({}, mkCard("m1", 0, "todo", null, title)).prefix
+  }
+
+  function test_dispatchDefaults_shape() {
+    var project = fullProject()
+    var m = mkCard("m1", 0, "todo", null, "M3 Document runs")
+    checkDefaults5(Runs.dispatchDefaults(project, m), "main", 2, "m3", ["uv run pytest", "bash tests/run.sh"], "full")
+    checkDefaults5(Runs.dispatchDefaults(undefined, undefined, undefined), "", 4, "", [], "garbage")
+    var a = Runs.dispatchDefaults(project, m)
+    var b = Runs.dispatchDefaults(project, m)
+    verify(a !== b, "distinct objects")
+    verify(a.verify !== b.verify, "distinct verify arrays")
+    verify(a.verify !== project.settings.verify, "verify is not the settings array")
+    a.verify.push("rm -rf /")
+    a.verify[0] = "x"
+    compare(JSON.stringify(project.settings.verify), JSON.stringify(["uv run pytest", "bash tests/run.sh"]), "settings.verify unchanged")
+    compare(JSON.stringify(Runs.dispatchDefaults(project, m).verify), JSON.stringify(["uv run pytest", "bash tests/run.sh"]), "next result unchanged")
+  }
+
+  function test_dispatchDefaults_base() {
+    compare(Runs.dispatchDefaults({ defaultBranch: "main" }).base, "main", "main")
+    compare(Runs.dispatchDefaults({ defaultBranch: "  trunk \n" }).base, "trunk", "trimmed")
+    var bad = [undefined, null, 5, {}]
+    for (var i = 0; i < bad.length; i++) {
+      compare(Runs.dispatchDefaults({ defaultBranch: bad[i] }).base, "", "defaultBranch " + i)
+    }
+    compare(Runs.dispatchDefaults({}).base, "", "defaultBranch missing")
+    var projects = [undefined, null, 0, "main", [], Object.create(null)]
+    for (var j = 0; j < projects.length; j++) {
+      compare(Runs.dispatchDefaults(projects[j]).base, "", "project " + j)
+    }
+  }
+
+  function test_dispatchDefaults_prefix_stem() {
+    var cases = [
+      ["M3 Document runs", "m3"],
+      ["M3: Document", "m3"],
+      ["s12 Polish", "s12"],
+      ["am run monitor (read-only)", "am-run-monitor"],
+      ["Dispatching am runs from the panel", "dispatching-am-runs"],
+      ["Milestone 3", "milestone-3"],
+      ["Internationalization localization globalization", "internationalization-loc"],
+      ["-- ** --", ""]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      compare(prefixOf(cases[i][0]), cases[i][1], "'" + cases[i][0] + "'")
+    }
+    compare(prefixOf(undefined), "", "title missing")
+    compare(prefixOf(null), "", "title null")
+    compare(prefixOf(5), "5", "title 5")
+    compare(Runs.dispatchDefaults({}, { id: "m1", depth: 0 }).prefix, "", "no title key")
+  }
+
+  // Review Focus 3 and 4.
+  function test_dispatchDefaults_prefix_stem_edges() {
+    compare(prefixOf("abcdefghijklmnopqrstuvw xyz"), "abcdefghijklmnopqrstuvw", "cut after a hyphen drops the hyphen")
+    compare(prefixOf("Caf\u00e9 d\u00e9j\u00e0 vu"), "caf-dj-vu", "non-ASCII letters are dropped")
+    compare(prefixOf("   "), "", "blank title")
+    compare(prefixOf("M3\tDocument\nruns"), "m3", "any whitespace splits")
+    compare(prefixOf("3M Polish"), "3m-polish", "digits first is not a stem")
+    compare(prefixOf(Object.create(null)), "", "unconvertible title")
+  }
+
+  function test_dispatchDefaults_prefix_ancestor() {
+    var m = mkCard("m1", 0, "todo", null, "M3 Document runs")
+    var s = mkCard("s1", 1, "todo", "m1", "Story")
+    var c = mkCard("c1", 2, "todo", "s1", "Subtask")
+    var map = { m1: m, s1: s, c1: c }
+    compare(Runs.dispatchDefaults({}, s, map).prefix, "m3", "story")
+    compare(Runs.dispatchDefaults({}, c, map).prefix, "m3", "subtask")
+    compare(Runs.dispatchDefaults({}, s).prefix, "", "story without cardMap")
+    compare(Runs.dispatchDefaults({}, c).prefix, "", "subtask without cardMap")
+    compare(Runs.dispatchDefaults({}, c, { s1: s, c1: c }).prefix, "", "broken chain")
+    var a = mkCard("a", 1, "todo", "b", "A")
+    var b = mkCard("b", 1, "todo", "a", "B")
+    compare(Runs.dispatchDefaults({}, a, { a: a, b: b }).prefix, "", "two-card cycle")
+    compare(Runs.dispatchDefaults({}, "board", map).prefix, "", "board")
+    compare(Runs.dispatchDefaults({}, mkCard("c1", 2, "done", "s1", "Subtask"), map).prefix, "m3", "own status ignored")
+    compare(Runs.dispatchDefaults({}, mkCard("m1", 0, "archived", null, "M3 Document runs")).prefix, "m3", "finished milestone still gives a prefix")
+  }
+
+  // Review Focus 2 and 5.
+  function test_dispatchDefaults_prefix_ancestor_edges() {
+    var loop = mkCard("x", 1, "todo", "x", "M3 Self")
+    compare(Runs.dispatchDefaults({}, loop, { x: loop }).prefix, "", "self cycle")
+    var stray = mkCard("m1", 0, "todo", "zz", "M3 Document runs")
+    compare(Runs.dispatchDefaults({}, stray).prefix, "m3", "depth 0 with a stray parentId is its own milestone")
+    var top = mkCard("t", 1, "todo", null, "S7 Top")
+    var child = mkCard("c", 2, "todo", "t", "C")
+    compare(Runs.dispatchDefaults({}, child, { t: top, c: child }).prefix, "s7", "walk ends at the parentless card whatever its depth")
+    compare(Runs.dispatchDefaults({}, mkCard("o", undefined, "todo", null, "S8 Orphan"), {}).prefix, "s8", "no parentId and no depth: own milestone")
+    compare(Runs.dispatchDefaults({}, mkCard("o", 1, "todo", "", "S9 Orphan"), {}).prefix, "s9", "empty parentId ends the walk")
+    compare(Runs.dispatchDefaults({}, mkCard("c", 2, "todo", "__proto__", "C"), {}).prefix, "", "__proto__ parent is absent")
+    compare(Runs.dispatchDefaults({}, mkCard("c", 2, "todo", "toString", "C"), {}).prefix, "", "toString parent is absent")
+    compare(Runs.dispatchDefaults({}, mkCard("c", 2, "todo", "m1", "C"), { m1: "M3" }).prefix, "", "non-object entry")
+    compare(Runs.dispatchDefaults({}, mkCard("c", 2, "todo", 5, "C"), { "5": mkCard("5", 0, "todo", null, "M5 Five") }).prefix,
+            "", "a non-string parentId is a missing link")
+  }
+
+  function test_dispatchDefaults_verify() {
+    var project = { settings: { verify: ["uv run pytest", "  ", "", 5, null, " make test "] } }
+    compare(JSON.stringify(Runs.dispatchDefaults(project).verify), JSON.stringify(["uv run pytest", " make test "]), "filtered, verbatim, in order")
+    var bad = [undefined, "x", {}]
+    for (var i = 0; i < bad.length; i++) {
+      compare(JSON.stringify(Runs.dispatchDefaults({ settings: { verify: bad[i] } }).verify), "[]", "verify " + i)
+    }
+    compare(JSON.stringify(Runs.dispatchDefaults({ settings: {} }).verify), "[]", "verify missing")
+    compare(JSON.stringify(Runs.dispatchDefaults({ settings: "x" }).verify), "[]", "settings garbage")
+    compare(JSON.stringify(Runs.dispatchDefaults({}).verify), "[]", "no settings")
+  }
+
+  function test_dispatchDefaults_allow_no_verification() {
+    compare(Runs.dispatchDefaults({ settings: { allowNoVerification: true } }).allowNoVerification, false, "stored true")
+    compare(Runs.dispatchDefaults({ settings: {} }).allowNoVerification, false, "absent")
+    compare(Runs.dispatchDefaults(null).allowNoVerification, false, "garbage project")
+  }
+
+  function test_dispatchDefaults_parallelism() {
+    compare(Runs.dispatchDefaults({ settings: { parallelism: 2 } }).parallelism, 2, "2")
+    compare(Runs.dispatchDefaults({ settings: { parallelism: 1 } }).parallelism, 1, "1")
+    compare(Runs.dispatchDefaults({ settings: { parallelism: 64 } }).parallelism, 64, "no upper cap")
+    var bad = [undefined, 0, -3, 2.5, "3", NaN, Infinity, null]
+    for (var i = 0; i < bad.length; i++) {
+      compare(Runs.dispatchDefaults({ settings: { parallelism: bad[i] } }).parallelism, 4, "parallelism " + bad[i])
+    }
+    compare(Runs.dispatchDefaults({ settings: {} }).parallelism, 4, "missing")
+  }
+
+  function test_dispatchDefaults_garbage() {
+    var values = [undefined, null, 0, "x", [], Object.create(null)]
+    for (var p = 0; p < values.length; p++) {
+      for (var c = 0; c < values.length; c++) {
+        for (var m = 0; m < values.length; m++) {
+          checkDefaults5(Runs.dispatchDefaults(values[p], values[c], values[m]), "", 4, "", [], "p" + p + " c" + c + " m" + m)
+        }
+      }
+    }
+    checkDefaults5(Runs.dispatchDefaults(), "", 4, "", [], "no arguments")
+  }
+
+  // Review Focus 1.
+  function test_dispatch_inputs_unchanged() {
+    var project = fullProject()
+    var m = mkCard("m1", 0, "todo", null, "M3 Document runs")
+    var s = mkCard("s1", 1, "todo", "m1", "Story")
+    var c = mkCard("c1", 2, "todo", "s1", "Subtask")
+    var map = { m1: m, s1: s, c1: c }
+    var before = JSON.stringify([project, map])
+    Runs.dispatchDefaults(project, c, map)
+    Runs.dispatchDefaults(project, s, map)
+    Runs.dispatchPlan(s, map)
+    Runs.dispatchPlan(c, map)
+    compare(JSON.stringify([project, map]), before, "project and cardMap unchanged")
+    compare(Object.keys(c).sort().join(","), "depth,id,parentId,status,title", "no key added to the card")
+  }
 }

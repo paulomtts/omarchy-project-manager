@@ -834,3 +834,64 @@ function dispatchPlan(card, cardMap) {
   if (level === "milestone") return _offeredPlan("milestone", "milestone", ["--milestone", card.id])
   return _offeredPlan("subtask", "card", ["--card", card.id])
 }
+
+// The milestone card whose title names the branch prefix: card itself at depth
+// 0, else the first card with no parentId (null, undefined or "") reached by
+// following parentId through cardMap's own keys. The walk trusts parentId, not
+// depth. A missing link, a non-string parentId, a non-object entry or a cycle
+// (an id seen twice) gives null, as does no cardMap.
+function _milestoneOf(card, cardMap) {
+  if (!_isObject(card)) return null
+  if (card.depth === 0) return card
+  if (!_isObject(cardMap)) return null
+  var seen = []
+  var current = card
+  while (true) {
+    var parentId = current.parentId
+    if (parentId === null || parentId === undefined || parentId === "") return current
+    if (seen.indexOf(parentId) >= 0) return null
+    seen.push(parentId)
+    current = _ownCard(cardMap, parentId)
+    if (current === null) return null
+  }
+}
+
+// The branch-prefix stem of a milestone title: lower-case [a-z0-9] tokens; a
+// first token like "m3" (letters then digits) is the stem, else the first three
+// tokens joined by "-", cut to 24 characters, without a trailing "-".
+function _stemOf(title) {
+  var words = _textOf(title).split(/\s+/)
+  var tokens = []
+  for (var i = 0; i < words.length; i++) {
+    var token = words[i].toLowerCase().replace(/[^a-z0-9]/g, "")
+    if (token !== "") tokens.push(token)
+  }
+  if (tokens.length === 0) return ""
+  if (/^[a-z]+[0-9]+$/.test(tokens[0])) return tokens[0]
+  return tokens.slice(0, 3).join("-").slice(0, 24).replace(/-+$/, "")
+}
+
+// The dispatch form's starting values. project is {defaultBranch, settings}
+// with settings as get-run-settings returns it; any part may be missing. base
+// is the trimmed default branch (no fallback: the caller resolves it), prefix
+// the stem of the card's milestone title, verify the stored non-blank commands
+// verbatim, parallelism the stored whole number >= 1 else 4. The opt-out from
+// verification is never pre-ticked.
+function dispatchDefaults(project, card, cardMap) {
+  var p = _isObject(project) ? project : {}
+  var settings = _isObject(p.settings) ? p.settings : {}
+  var milestone = _milestoneOf(card, cardMap)
+  var stored = _arrayOr(settings.verify)
+  var verify = []
+  for (var i = 0; i < stored.length; i++) {
+    if (typeof stored[i] === "string" && stored[i].trim() !== "") verify.push(stored[i])
+  }
+  var parallelism = settings.parallelism
+  return {
+    allowNoVerification: false,
+    base: typeof p.defaultBranch === "string" ? _textOf(p.defaultBranch) : "",
+    parallelism: _isWholeNumber(parallelism) && parallelism >= 1 ? parallelism : 4,
+    prefix: milestone !== null ? _stemOf(milestone.title) : "",
+    verify: verify
+  }
+}
