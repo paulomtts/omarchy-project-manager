@@ -6,6 +6,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../helpers/amFixtures.js" as F
 
 TestCase {
   id: tc
@@ -14,6 +15,10 @@ TestCase {
   property string rootA: "/home/u/my proj"
   property string rootB: "/home/u/b"
   property string logsCmd: "python3|/plugin/core/backend/runs/runs-logs.py|"
+  // The started capture's open subtask (explore attempt 1 is started) and a
+  // done subtask of it (spec attempt 1 is ok).
+  readonly property string openCard: "299ec9c0-b935-4c44-a7a0-982a104cbfe5"
+  readonly property string doneCard: "5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff"
 
   Component { id: spyC; SignalSpy {} }
 
@@ -910,14 +915,18 @@ TestCase {
 
   // ---- attempt logs (5.2)
 
-  // A snapshot entry whose run has story s1 with subtask t1: spec is done,
-  // implement is started and on its second attempt, whose status is `status`.
+  // A snapshot entry of the started capture: runs.json's first `am runs` row
+  // whose `status` is status-started.json's `am status` data. Its open attempt
+  // is openCard explore 1 and doneCard spec 1 is an earlier, ok attempt. The
+  // run id and repo dir are the test's; so is the open attempt's status, in
+  // am's attempt vocabulary (started, ok).
   function treeEntry(id, status) {
-    var e = entry(id, "started", true)
-    e.status.stories = [{ card_id: "s1", subtasks: ["t1"] }]
-    e.status.subtasks = [{ card_id: "t1", phases: [
-      { name: "spec", status: "done", attempts: [{ n: 1, status: "done" }] },
-      { name: "implement", status: "started", attempts: [{ n: 1, status: "failed" }, { n: 2, status: status }] }] }]
+    var e = F.load("runs.json").data.runs[0]
+    e.id = id
+    e.repo_dir = tc.rootA
+    e.status = F.load("status-started.json").data
+    e.status.run.id = id
+    e.status.stories[1].subtasks[1].phases[1].attempts[0].status = status
     return e
   }
 
@@ -952,31 +961,31 @@ TestCase {
     var store = opened(); if (!store) return
     var proc = store.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
-    compare(argv(proc), tc.logsCmd + "r1|t1|implement|2")
+    compare(argv(proc), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
     compare(proc.launchGuard, "/home/u/my proj", "guarded by the project")
-    compare(store.selectedAttempt.card_id, "t1")
-    compare(store.selectedAttempt.phase, "implement")
-    compare(store.selectedAttempt.attempt, 2)
+    compare(store.selectedAttempt.card_id, tc.openCard)
+    compare(store.selectedAttempt.phase, "explore")
+    compare(store.selectedAttempt.attempt, 1)
     compare(store.logsStatus, "started", "the status the fetch was launched for")
     compare(store.logsLoading, true)
   }
 
   function test_select_attempt_and_refresh_launch_the_exact_argv() {
     var store = opened(); if (!store) return
-    store.selectAttempt("t1", "spec", 1)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|spec|1")
-    compare(store.logsStatus, "done")
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|1")
+    compare(store.logsStatus, "ok")
     var first = store.logsRunner.current
     var seq = store.logsRunner.seq
     store.refreshLogs()
     compare(store.logsRunner.seq, seq + 1, "Refresh fetches again")
     verify(store.logsRunner.current !== first)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|spec|1")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|1")
   }
 
   function test_no_logs_launch_without_project_run_or_selection() {
     var bare = make(); if (!bare) return
-    bare.selectAttempt("t1", "spec", 1)
+    bare.selectAttempt(tc.doneCard, "spec", 1)
     verify(!bare.logsRunner.current, "no project")
     compare(bare.selectedAttempt, null)
     bare.refreshLogs()
@@ -984,7 +993,7 @@ TestCase {
 
     var store = makeWithProject(rootA); if (!store) return
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started"), entry("r2", "started", true)]), 0)
-    store.selectAttempt("t1", "spec", 1)
+    store.selectAttempt(tc.doneCard, "spec", 1)
     verify(!store.logsRunner.current, "no run selected")
     compare(store.selectedAttempt, null)
     store.selectedRunId = "r2"
@@ -992,10 +1001,10 @@ TestCase {
     compare(store.selectedAttempt, null)
     store.refreshLogs()
     verify(!store.logsRunner.current, "no selection")
-    store.selectAttempt("t1", "spec", 0)
-    store.selectAttempt("t1", "", 1)
+    store.selectAttempt(tc.doneCard, "spec", 0)
+    store.selectAttempt(tc.doneCard, "", 1)
     store.selectAttempt("", "spec", 1)
-    store.selectAttempt("t1", "spec", "1")
+    store.selectAttempt(tc.doneCard, "spec", "1")
     verify(!store.logsRunner.current, "not a real attempt")
   }
 
@@ -1057,12 +1066,12 @@ TestCase {
   function test_only_the_latest_logs_fetch_is_applied() {
     var store = opened(); if (!store) return
     var first = store.logsRunner.current
-    store.selectAttempt("t1", "spec", 1)
+    store.selectAttempt(tc.doneCard, "spec", 1)
     var second = store.logsRunner.current
     compare(first.running, false, "the older fetch is stopped")
     reply(second, logsReply("spec text\n"), 0)
     compare(store.logsText, "spec text")
-    reply(first, logsReply("implement text\n"), 0)
+    reply(first, logsReply("explore text\n"), 0)
     compare(store.logsText, "spec text", "a late reply for an older selection changes nothing")
   }
 
@@ -1073,7 +1082,7 @@ TestCase {
     store.refreshLogs()
     compare(store.logsText, "first", "a refresh keeps the text until its reply")
     compare(store.logsLoading, true)
-    store.selectAttempt("t1", "spec", 1)
+    store.selectAttempt(tc.doneCard, "spec", 1)
     compare(store.logsText, "", "another attempt's text is never shown under this heading")
     compare(store.logsFetchedMs, 0)
     compare(store.logsError, "")
@@ -1083,20 +1092,24 @@ TestCase {
 
   function test_changing_the_selected_run_resets_to_its_default_attempt() {
     var store = makeWithProject(rootA); if (!store) return
-    var r2 = treeEntry("r2", "started")
-    r2.status.stories = [{ card_id: "s9", subtasks: ["t9"] }]
-    r2.status.subtasks = [{ card_id: "t9", phases: [{ name: "review", status: "started", attempts: [{ n: 3, status: "started" }] }] }]
+    // r2 is the done capture: runs.json's second row with status-done.json's
+    // `am status`, under the test's run id and repo dir.
+    var r2 = F.load("runs.json").data.runs[1]
+    r2.id = "r2"
+    r2.repo_dir = tc.rootA
+    r2.status = F.load("status-done.json").data
+    r2.status.run.id = "r2"
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started"), r2]), 0)
     store.selectedRunId = "r1"
     reply(store.logsRunner.current, logsReply("r1 text\n"), 0)
-    store.selectAttempt("t1", "spec", 1)
+    store.selectAttempt(tc.doneCard, "spec", 1)
     store.selectedRunId = "r2"
-    compare(store.selectedAttempt.card_id, "t9")
+    compare(store.selectedAttempt.card_id, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
     compare(store.selectedAttempt.phase, "review")
-    compare(store.selectedAttempt.attempt, 3)
+    compare(store.selectedAttempt.attempt, 1)
     compare(store.logsText, "")
     compare(store.logsFetchedMs, 0)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r2|t9|review|3")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r2|22153f5f-9632-4b5f-a7dd-664c39d89e5c|review|1")
     var pending = store.logsRunner.current
     store.selectedRunId = ""
     compare(store.selectedAttempt, null, "clearing the run clears the selection")
@@ -1157,35 +1170,40 @@ TestCase {
     store.refresh()
     reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}', 1)
     compare(store.logsRunner.seq, seq, "a failed snapshot fetches nothing")
-    snapshot(store, [treeEntry("r1", "done")])
-    compare(store.logsRunner.seq, seq + 1, "started -> done fetches the logs again")
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|implement|2")
-    compare(store.logsStatus, "done")
+    snapshot(store, [treeEntry("r1", "ok")])
+    compare(store.logsRunner.seq, seq + 1, "started -> ok fetches the logs again")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+    compare(store.logsStatus, "ok")
     compare(store.logsText, "a", "the text stays until the new reply")
-    snapshot(store, [treeEntry("r1", "done")])
+    snapshot(store, [treeEntry("r1", "ok")])
     compare(store.logsRunner.seq, seq + 1, "only once")
   }
 
   function test_a_snapshot_without_a_selected_run_fetches_no_logs() {
     var store = makeWithProject(rootA); if (!store) return
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
-    snapshot(store, [treeEntry("r1", "done")])
+    snapshot(store, [treeEntry("r1", "ok")])
     verify(!store.logsRunner.current, "nothing is selected")
   }
 
   // Review Focus 2.
   function test_a_run_opened_before_its_first_attempt_picks_one_when_it_appears() {
     var store = makeWithProject(rootA); if (!store) return
+    // synthetic: the run before any attempt exists; shape kept
     var bare = treeEntry("r1", "started")
-    bare.status.subtasks[0].phases = []
+    var stories = bare.status.stories
+    for (var i = 0; i < stories.length; i++) {
+      for (var j = 0; j < stories[i].subtasks.length; j++) stories[i].subtasks[j].phases = []
+    }
+    bare.status.rows = []
     reply(store.snapshotRunner.current, okReply([bare]), 0)
     store.selectedRunId = "r1"
     compare(store.selectedAttempt, null)
     verify(!store.logsRunner.current)
     snapshot(store, [treeEntry("r1", "started")])
     verify(store.selectedAttempt, "the first attempt is picked once it exists")
-    compare(store.selectedAttempt.attempt, 2)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|implement|2")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
   }
 
   // ---- run controls (S2 4.1)

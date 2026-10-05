@@ -2,6 +2,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../helpers/amFixtures.js" as F
 
 // Input shape for Runs.normalizeRun (provisional until the runs-snapshot helper exists):
 //   raw = {
@@ -29,6 +30,28 @@ TestCase {
     }
   }
 
+  // One am run as RunStore hands it to normalizeRun, fresh on every call: the
+  // fixture's `am runs` row (runs.json's entry with the same run id, else the
+  // fixture's own _am_runs_row) without `status`, and the fixture's `am status`
+  // data.
+  function amRun(name) {
+    var fixture = F.load(name)
+    var runs = F.load("runs.json").data.runs
+    var row = fixture._am_runs_row
+    for (var i = 0; i < runs.length; i++) {
+      if (runs[i].id === fixture.data.run.id) row = runs[i]
+    }
+    delete row.status
+    return { row: row, status: fixture.data }
+  }
+
+  // The four captures, normalized, in this order: started, done, escalated,
+  // done-integrate.
+  function fixtureRuns() {
+    return [Runs.normalizeRun(amRun("status-started.json")), Runs.normalizeRun(amRun("status-done.json")),
+            Runs.normalizeRun(amRun("status-escalated.json")), Runs.normalizeRun(amRun("status-done-integrate.json"))]
+  }
+
   function checkDefaults(r, label) {
     compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow", label)
     compare(r.started_at, "", label)
@@ -45,29 +68,6 @@ TestCase {
     compare(r.tree.stories.length, 0, label)
     compare(Array.isArray(r.tree.subtasks), true, label)
     compare(r.tree.subtasks.length, 0, label)
-  }
-
-  function test_normalize_full() {
-    var r = Runs.normalizeRun(fullRaw())
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow")
-    compare(r.started_at, "2026-10-03T10:00:00Z")
-    compare(r.id, "r1")
-    compare(r.repo_dir, "/home/u/repo")
-    compare(r.milestone_id, "m-4bf4")
-    compare(r.status, "started")
-    compare(Object.keys(r.lease).sort().join(","), "accepting,heartbeat_at,host,live,pid")
-    compare(r.lease.pid, 4242)
-    compare(r.lease.host, "box")
-    compare(r.lease.heartbeat_at, "2026-10-03T10:05:00Z")
-    compare(r.lease.accepting, true)
-    compare(r.lease.live, true)
-    compare(r.rows.length, 1)
-    compare(r.rows[0].card_id, "c1")
-    compare(r.tree.stories.length, 1)
-    compare(r.tree.stories[0].card_id, "s1")
-    compare(r.tree.subtasks.length, 1)
-    compare(r.tree.subtasks[0].card_id, "c1")
-    compare(r.tree.subtasks[0].phases[0].name, "implement")
   }
 
   function test_normalize_status_prefers_am_status() {
@@ -157,14 +157,16 @@ TestCase {
     compare(Runs.normalizeRun(numeric).lease.accepting, false)
   }
 
-  function test_normalize_missing_rows_tree() {
+  function test_normalize_tree_garbage() {
+    // synthetic: am status with only a run
     var bare = Runs.normalizeRun({ status: { run: { status: "started" } } })
     compare(Array.isArray(bare.rows), true)
     compare(bare.rows.length, 0)
     compare(bare.tree.stories.length, 0)
     compare(bare.tree.subtasks.length, 0)
 
-    var raw = fullRaw()
+    // synthetic: rows, stories and a top-level subtasks that are not arrays
+    var raw = amRun("status-started.json")
     raw.status.rows = { a: 1 }
     raw.status.stories = {}
     raw.status.subtasks = "x"
@@ -176,9 +178,36 @@ TestCase {
     compare(Array.isArray(r.tree.subtasks), true)
     compare(r.tree.subtasks.length, 0)
 
-    var strRows = fullRaw()
+    // synthetic: rows as a string
+    var strRows = amRun("status-started.json")
     strRows.status.rows = "x"
     compare(Runs.normalizeRun(strRows).rows.length, 0)
+
+    // synthetic: a top-level subtasks list, which am never prints
+    var topLevel = amRun("status-started.json")
+    topLevel.status.subtasks = [{ card_id: "zz", phases: [] }]
+    var t = Runs.normalizeRun(topLevel)
+    compare(t.tree.subtasks.length, 8, "a top-level subtasks is ignored")
+    for (var i = 0; i < t.tree.subtasks.length; i++) verify(t.tree.subtasks[i].card_id !== "zz", "no zz at " + i)
+
+    // synthetic: garbage elements in place of the capture's stories and rows
+    var junk = amRun("status-started.json")
+    junk.status.stories = [null, 5, "s", [], { card_id: "s9" }, { card_id: "s8", subtasks: "x" },
+                           { card_id: "s7", subtasks: [null, 3, { card_id: 4 }, { card_id: "t7" }] }]
+    junk.status.rows = [null, "r", 7, {}, { story: 1, subtask: "t7", phase: [], attempt: "2", state: {} }]
+    var g = Runs.normalizeRun(junk)
+    compare(cardIds(g.tree.stories), "s9,s8,s7", "only object stories are kept")
+    compare(JSON.stringify(g.tree.stories[0].subtasks), "[]", "missing subtasks")
+    compare(JSON.stringify(g.tree.stories[1].subtasks), "[]", "subtasks not an array")
+    compare(JSON.stringify(g.tree.stories[2].subtasks), "[\"t7\"]", "only string ids of object subtasks")
+    compare(g.tree.subtasks.length, 2, "the two object subtasks of s7")
+    compare(g.tree.subtasks[0].card_id, 4)
+    compare(g.tree.subtasks[0].story_id, "s7")
+    compare(g.tree.subtasks[1].card_id, "t7")
+    compare(g.tree.subtasks[1].story_id, "s7")
+    compare(g.rows.length, 2, "only object rows are kept")
+    compare(JSON.stringify(g.rows[0]), JSON.stringify({ story_id: "", card_id: "", phase: "", attempt: null, status: "" }))
+    compare(JSON.stringify(g.rows[1]), JSON.stringify({ story_id: "", card_id: "t7", phase: "", attempt: null, status: "" }))
   }
 
   function test_normalize_garbage() {
@@ -191,6 +220,246 @@ TestCase {
     checkDefaults(Runs.normalizeRun({ row: "x", status: 5 }), "non-object row and status")
     checkDefaults(Runs.normalizeRun({ row: null, status: null }), "null row and status")
     checkDefaults(Runs.normalizeRun({ status: { run: "x", control: "y" } }), "non-object run and control")
+  }
+
+  // ---- 2.1: normalizeRun over the am captures ----------------------------------------------
+
+  function test_normalize_fixture_counts() {
+    var expected = [
+      ["status-started.json", 4, 8, 44],
+      ["status-done.json", 4, 10, 140],
+      ["status-escalated.json", 3, 4, 40],
+      ["status-done-integrate.json", 3, 2, 28]
+    ]
+    for (var i = 0; i < expected.length; i++) {
+      var r = Runs.normalizeRun(amRun(expected[i][0]))
+      compare(r.tree.stories.length, expected[i][1], expected[i][0] + " stories")
+      compare(r.tree.subtasks.length, expected[i][2], expected[i][0] + " subtasks")
+      compare(r.rows.length, expected[i][3], expected[i][0] + " rows")
+    }
+  }
+
+  function test_normalize_scalars_from_fixture() {
+    var r = Runs.normalizeRun(amRun("status-started.json"))
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow")
+    compare(r.id, "20261005T021400Z-837c4431")
+    compare(r.repo_dir, "/home/user/Code/omarchy-project-manager")
+    compare(r.milestone_id, "837c4431-7a24-4531-96a8-881698ea8c5e", "only the am runs row carries it")
+    compare(r.status, "started")
+    compare(r.workflow, "milestone")
+    compare(r.base_branch, "main")
+    compare(r.branch_prefix, "dsp")
+    compare(r.started_at, "2026-10-05 02:14:00.590972+00:00")
+    compare(Object.keys(r.lease).sort().join(","), "accepting,heartbeat_at,host,live,pid", "acquired_at is not kept")
+    compare(r.lease.pid, 3736962)
+    compare(r.lease.host, "mtts-desktop")
+    compare(r.lease.heartbeat_at, "2026-10-05T03:30:22.281942+00:00")
+    compare(r.lease.accepting, true)
+    compare(r.lease.live, true)
+    compare(Array.isArray(r.requests), true)
+    compare(r.requests.length, 0)
+  }
+
+  function test_normalize_stories_are_id_lists() {
+    var raw = amRun("status-started.json")
+    var am = raw.status.stories[1]
+    var s = Runs.normalizeRun(raw).tree.stories[1]
+    compare(s.card_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
+    compare(JSON.stringify(s.subtasks), JSON.stringify(["a19ca446-659e-4735-86ed-5a583c1730bf",
+                                                        "299ec9c0-b935-4c44-a7a0-982a104cbfe5",
+                                                        "fdb5feb1-0907-40b2-9937-d9b4cc2875f0"]))
+    for (var i = 0; i < s.subtasks.length; i++) compare(typeof s.subtasks[i], "string", "id " + i)
+    compare(s.title, am.title)
+    compare(s.level, am.level)
+    compare(s.status, am.status)
+    compare(s.tip_branch, am.tip_branch)
+    compare(Object.keys(s).sort().join(","), "card_id,level,status,subtasks,tip_branch,title")
+  }
+
+  function test_normalize_subtasks_flatten_with_story_id() {
+    var raw = amRun("status-started.json")
+    var r = Runs.normalizeRun(raw)
+    var ids = [], storyIds = []
+    for (var i = 0; i < raw.status.stories.length; i++) {
+      var story = raw.status.stories[i]
+      for (var j = 0; j < story.subtasks.length; j++) {
+        ids.push(story.subtasks[j].card_id)
+        storyIds.push(story.card_id)
+      }
+    }
+    compare(cardIds(r.tree.subtasks), ids.join(","), "am's flattened order")
+    for (var k = 0; k < r.tree.subtasks.length; k++) compare(r.tree.subtasks[k].story_id, storyIds[k], "story_id " + k)
+    var open = r.tree.subtasks[3]
+    compare(open.card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(open.story_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
+    compare(Object.keys(open).sort().join(","), "base_branch,branch,card_id,phases,status,story_id,worktree_path")
+    compare(open.phases[1].name, "explore")
+    compare(open.phases[1].attempts[0].n, 1)
+  }
+
+  function test_normalize_rows_renamed() {
+    var r = Runs.normalizeRun(amRun("status-started.json"))
+    compare(Object.keys(r.rows[0]).sort().join(","), "attempt,card_id,phase,status,story_id")
+    compare(r.rows[0].story_id, "1c665cfd-9a72-4a9d-a539-4c83f0f6ddc1")
+    compare(r.rows[0].card_id, "5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff")
+    compare(r.rows[0].phase, "worktree")
+    compare(r.rows[0].attempt, null)
+    compare(r.rows[0].status, "done")
+    compare(r.rows[43].story_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
+    compare(r.rows[43].card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(r.rows[43].phase, "explore")
+    compare(r.rows[43].attempt, 1)
+    compare(r.rows[43].status, "started")
+  }
+
+  function test_normalize_integrate_story_kept_resolver_dropped() {
+    var r = Runs.normalizeRun(amRun("status-done-integrate.json"))
+    var integrate = r.tree.stories[2]
+    compare(integrate.card_id, "integrate")
+    compare(JSON.stringify(integrate.subtasks), JSON.stringify(["b429248c-c69e-4df5-8f7d-52776253ea14"]))
+    compare(integrate.status, "done")
+    for (var i = 0; i < r.tree.subtasks.length; i++) {
+      verify(r.tree.subtasks[i].story_id !== "integrate", "no subtask of integrate at " + i)
+      verify(r.tree.subtasks[i].card_id !== "b429248c-c69e-4df5-8f7d-52776253ea14", "no resolver subtask at " + i)
+    }
+    compare(r.rows.length, 28, "the two resolver rows are dropped")
+    for (var j = 0; j < r.rows.length; j++) verify(r.rows[j].story_id !== "integrate", "no integrate row at " + j)
+  }
+
+  function test_normalize_base_rows_kept() {
+    // synthetic: a bases story, which no capture contains
+    var raw = amRun("status-done-integrate.json")
+    var baseId = "base-2f88f774-d2b6-4c8d-adc1-6ac9eb978017"
+    raw.status.stories.push({ card_id: "bases", title: "Bases", level: 0, status: "done", tip_branch: "m3-bases",
+                              subtasks: [{ card_id: baseId, branch: "m3-" + baseId, base_branch: "main", status: "done",
+                                           worktree_path: "/tmp/m3-bases", phases: [] }] })
+    raw.status.rows.push({ story: "bases", subtask: baseId, phase: "verify", attempt: null, state: "done" })
+    var r = Runs.normalizeRun(raw)
+    compare(r.tree.stories.length, 4)
+    compare(r.tree.stories[3].card_id, "bases")
+    compare(JSON.stringify(r.tree.stories[3].subtasks), JSON.stringify([baseId]))
+    compare(r.tree.subtasks.length, 2, "the base subtask is not a tree subtask")
+    for (var i = 0; i < r.tree.subtasks.length; i++) verify(r.tree.subtasks[i].card_id !== baseId, "no base subtask at " + i)
+    compare(r.rows.length, 29, "28 real rows and the base row")
+    var last = r.rows[28]
+    compare(last.story_id, "bases")
+    compare(last.card_id, baseId)
+    compare(last.phase, "verify")
+    compare(last.attempt, null)
+    compare(last.status, "done")
+    for (var j = 0; j < r.rows.length; j++) verify(r.rows[j].story_id !== "integrate", "resolver rows still dropped at " + j)
+  }
+
+  function test_normalize_copies_never_am_objects() {
+    var raw = amRun("status-started.json")
+    var before = JSON.stringify(raw)
+    var r = Runs.normalizeRun(raw)
+    verify(r.tree.stories[1] !== raw.status.stories[1], "story is a copy")
+    verify(r.tree.subtasks[3] !== raw.status.stories[1].subtasks[1], "subtask is a copy")
+    verify(r.tree.subtasks[3].phases !== raw.status.stories[1].subtasks[1].phases, "phases are a copy")
+    verify(r.tree.subtasks[3].phases[1].attempts[0] !== raw.status.stories[1].subtasks[1].phases[1].attempts[0],
+           "attempt is a copy")
+    verify(r.rows[0] !== raw.status.rows[0], "row is a copy")
+    r.tree.stories[1].title = "changed"
+    r.tree.subtasks[3].phases[1].attempts[0].status = "changed"
+    r.rows[0].phase = "changed"
+    r.tree.stories[1].subtasks[0] = "changed"
+    compare(JSON.stringify(raw), before, "changing the output leaves the input unchanged")
+
+    var later = amRun("status-started.json")
+    var out = Runs.normalizeRun(later)
+    var outBefore = JSON.stringify(out)
+    later.status.stories[1].title = "later"
+    later.status.stories[1].subtasks[1].phases[1].attempts[0].status = "later"
+    later.status.stories[1].subtasks.push({ card_id: "later" })
+    later.status.rows[0].phase = "later"
+    compare(JSON.stringify(out), outBefore, "changing the input after the call leaves the output unchanged")
+  }
+
+  function test_normalize_own_proto_key_never_sets_prototype() {
+    // synthetic: an own __proto__ key, which no capture contains
+    function withProto(o) { return JSON.parse('{"__proto__": {"x": 1}, ' + JSON.stringify(o).slice(1)) }
+    var raw = amRun("status-started.json")
+    var amStory = raw.status.stories[1]
+    var phase = withProto(amStory.subtasks[1].phases[1])
+    var subtask = withProto(amStory.subtasks[1])
+    subtask.phases[1] = phase
+    var story = withProto(amStory)
+    story.subtasks[1] = subtask
+    raw.status.stories[1] = story
+    verify(Object.prototype.hasOwnProperty.call(story, "__proto__"), "the input carries an own __proto__ key")
+
+    var r = Runs.normalizeRun(raw)
+    var copies = [["story", r.tree.stories[1]], ["subtask", r.tree.subtasks[3]], ["phase", r.tree.subtasks[3].phases[1]]]
+    for (var i = 0; i < copies.length; i++) {
+      compare(Object.getPrototypeOf(copies[i][1]) === Object.prototype, true, copies[i][0] + " prototype")
+      compare(copies[i][1].x, undefined, copies[i][0] + " x")
+    }
+    compare(r.tree.subtasks[3].card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5", "the rest is copied")
+    compare(r.tree.subtasks[3].phases[1].name, "explore")
+  }
+
+  function test_fixture_current_phase_and_default_attempt() {
+    var expected = [
+      ["explore", "299ec9c0-b935-4c44-a7a0-982a104cbfe5/explore/1"],
+      ["", "22153f5f-9632-4b5f-a7dd-664c39d89e5c/review/1"],
+      ["", "eb8b1851-8245-45c3-9a29-d1fcefaad0b9/review/1"],
+      ["", "5d5114f9-8d86-4712-95f3-87dd9d56feef/review/1"]
+    ]
+    var runs = fixtureRuns()
+    for (var i = 0; i < runs.length; i++) {
+      compare(Runs.currentPhase(runs[i]), expected[i][0], "currentPhase " + runs[i].id)
+      compare(at(Runs.defaultAttempt(runs[i])), expected[i][1], "defaultAttempt " + runs[i].id)
+    }
+  }
+
+  function test_fixture_card_run_state_and_runs_touching() {
+    var runs = fixtureRuns()
+    var open = Runs.cardRunState(runs, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(open.state, "running")
+    compare(open.runId, "20261005T021400Z-837c4431")
+    compare(open.dimmed, false)
+    compare(open.phase, "explore")
+    compare(open.attempt, 1)
+    var escalated = Runs.cardRunState(runs, "eb8b1851-8245-45c3-9a29-d1fcefaad0b9")
+    compare(escalated.state, "escalated")
+    compare(escalated.runId, "20261005T032543Z-bcc4e411")
+    compare(escalated.dimmed, true)
+    compare(escalated.phase, "review")
+    compare(escalated.attempt, 1)
+
+    var touchingOpen = Runs.runsTouching(runs, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(touchingOpen.length, 1)
+    verify(touchingOpen[0] === runs[0], "the started run")
+    var touchingReal = Runs.runsTouching(runs, "5d5114f9-8d86-4712-95f3-87dd9d56feef")
+    compare(touchingReal.length, 1)
+    verify(touchingReal[0] === runs[3], "the done-integrate run")
+    var touchingStory = Runs.runsTouching(runs, "b429248c-c69e-4df5-8f7d-52776253ea14")
+    compare(touchingStory.length, 1, "through its real story only")
+    verify(touchingStory[0] === runs[3], "the done-integrate run, through its real story")
+  }
+
+  function test_fixture_run_tree_grouping() {
+    var done = amRun("status-done.json")
+    var t = Runs.runTree(Runs.normalizeRun(done))
+    var sizes = [2, 3, 1, 4]
+    compare(t.stories.length, 4)
+    compare(JSON.stringify(t.synthetic), "[]")
+    for (var i = 0; i < t.stories.length; i++) {
+      var am = done.status.stories[i]
+      compare(t.stories[i].card_id, am.card_id, "story " + i)
+      compare(t.stories[i].other, false, "story " + i + " is not Other")
+      compare(t.stories[i].subtasks.length, sizes[i], "story " + i + " size")
+      for (var j = 0; j < t.stories[i].subtasks.length; j++)
+        compare(t.stories[i].subtasks[j].card_id, am.subtasks[j].card_id, "story " + i + " subtask " + j)
+    }
+
+    var it = Runs.runTree(Runs.normalizeRun(amRun("status-done-integrate.json")))
+    compare(it.stories.length, 2)
+    compare(it.stories[0].subtasks.length, 1)
+    compare(it.stories[1].subtasks.length, 1)
+    compare(JSON.stringify(it.synthetic), JSON.stringify([{ id: "integrate", label: "Integrate", status: "done" }]))
+    for (var k = 0; k < it.stories.length; k++) compare(it.stories[k].other, false, "no Other group " + k)
   }
 
   function test_state_running() {

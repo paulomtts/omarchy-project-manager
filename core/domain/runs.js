@@ -4,21 +4,38 @@
 // Run domain model: one `am` orchestrator run, normalised from the CLI's
 // output.
 //
-// Input shape for normalizeRun (provisional until the runs-snapshot helper
-// exists; pinned by tests/core/domain/tst_runs.qml):
+// Input of normalizeRun:
 //   raw = {
-//     row:    { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at }  // one `am runs` row
-//     status: { run: {..., workflow}, rows: [...], stories: [...], subtasks: [...],
-//               control: { lease: { pid, host, heartbeat_at, accepting, live },
-//                          requests: [{ command, requested_at, handled_at }] }, ... }  // `am status` data, may be absent
+//     row:    one `am runs` entry without its `status`:
+//             { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
+//               milestone_id, card_id, lease, progress }
+//     status: `am status` data, may be absent:
+//             { run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at },
+//               stories: [{ card_id, title, level, status, tip_branch,
+//                           subtasks: [{ card_id, branch, base_branch, status, worktree_path,
+//                                        phases: [{ name, kind, status, started_at, ended_at, detail,
+//                                                   attempts: [{ n, status, ... }] }] }] }],
+//               rows: [{ story, subtask, phase, attempt, state }],
+//               control: { lease: { pid, host, heartbeat_at, accepting, live, ... },
+//                          requests: [{ command, requested_at, handled_at }], claims },
+//               integrity }
 //   }
-// `workflow` is the row's, else the am status run's ("task" for a --card run).
-// `requests` are am's control requests in the order made; handled_at "" means
-// the run has not acted on it yet.
+// Output scalars: id, repo_dir, started_at, base_branch, branch_prefix and
+// workflow are the row's, else the am status run's; status and milestone_id are
+// the am status run's, else the row's. `lease` keeps pid, host, heartbeat_at,
+// accepting and live. `requests` are am's control requests in the order made;
+// handled_at "" means the run has not acted on it yet.
+// tree.stories: every object story in am's order, the synthetic `integrate` and
+// `bases` included; its `subtasks` is the card_id strings of its subtasks.
+// tree.subtasks: the subtasks of every other story, flattened in am's order,
+// each with `story_id`, its story's card_id.
+// rows: { story_id, card_id, phase, attempt, status } from am's story, subtask,
+// phase, attempt and state, in am's order. A row under `integrate` or `bases`
+// whose subtask is a real card id (an Integrate resolver) is dropped.
 //
-// The status always comes from `am` (am status first, then the am runs row),
-// never from a brd card. Never throws: anything missing or malformed becomes
-// its default, and a missing lease means the run is not live.
+// The status always comes from `am`, never from a brd card. The output holds
+// copies, never am's objects. Never throws: anything missing or malformed
+// becomes its default, and a missing lease means the run is not live.
 function normalizeRun(raw) {
   function isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
   function objectOr(v) { return isObject(v) ? v : {} }
@@ -26,6 +43,24 @@ function normalizeRun(raw) {
   function text(v) { return v === undefined || v === null ? "" : String(v) }
   function firstText(a, b) { var s = text(a); return s !== "" ? s : text(b) }
   function asGiven(v) { return v === undefined || v === null ? "" : v }
+  function stringOr(v) { return typeof v === "string" ? v : "" }
+  function isSyntheticStory(id) { return id === "integrate" || id === "bases" }
+  // A JSON-like deep copy of arrays and objects. An own `__proto__` key is
+  // dropped, so every copied object's prototype is Object.prototype.
+  function copyOf(v) {
+    if (Array.isArray(v)) {
+      var list = []
+      for (var a = 0; a < v.length; a++) list.push(copyOf(v[a]))
+      return list
+    }
+    if (!isObject(v)) return v
+    var out = {}
+    var keys = Object.keys(v)
+    for (var k = 0; k < keys.length; k++) {
+      if (keys[k] !== "__proto__") out[keys[k]] = copyOf(v[keys[k]])
+    }
+    return out
+  }
 
   var r = objectOr(raw)
   var row = objectOr(r.row)
@@ -53,6 +88,43 @@ function normalizeRun(raw) {
     requests.push({ command: text(q.command), requested_at: text(q.requested_at), handled_at: text(q.handled_at) })
   }
 
+  var stories = [], subtasks = []
+  var amStories = arrayOr(st.stories)
+  for (var s = 0; s < amStories.length; s++) {
+    var story = amStories[s]
+    if (!isObject(story)) continue
+    var real = !isSyntheticStory(story.card_id)
+    var ids = []
+    var amSubtasks = arrayOr(story.subtasks)
+    for (var t = 0; t < amSubtasks.length; t++) {
+      var subtask = amSubtasks[t]
+      if (!isObject(subtask)) continue
+      if (typeof subtask.card_id === "string") ids.push(subtask.card_id)
+      if (!real) continue
+      var copied = copyOf(subtask)
+      copied.story_id = stringOr(story.card_id)
+      subtasks.push(copied)
+    }
+    var storyCopy = copyOf(story)
+    storyCopy.subtasks = ids
+    stories.push(storyCopy)
+  }
+
+  var rows = []
+  var amRows = arrayOr(st.rows)
+  for (var w = 0; w < amRows.length; w++) {
+    var amRow = amRows[w]
+    if (!isObject(amRow)) continue
+    if (isSyntheticStory(amRow.story) && _isCardId(amRow.subtask)) continue
+    rows.push({
+      story_id: stringOr(amRow.story),
+      card_id: stringOr(amRow.subtask),
+      phase: stringOr(amRow.phase),
+      attempt: typeof amRow.attempt === "number" && isFinite(amRow.attempt) ? amRow.attempt : null,
+      status: stringOr(amRow.state)
+    })
+  }
+
   return {
     id: firstText(row.id, run.id),
     repo_dir: firstText(row.repo_dir, run.repo_dir),
@@ -64,8 +136,8 @@ function normalizeRun(raw) {
     workflow: firstText(row.workflow, run.workflow),
     lease: lease,
     requests: requests,
-    rows: arrayOr(st.rows),
-    tree: { stories: arrayOr(st.stories), subtasks: arrayOr(st.subtasks) }
+    rows: rows,
+    tree: { stories: stories, subtasks: subtasks }
   }
 }
 
