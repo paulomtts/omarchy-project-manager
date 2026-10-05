@@ -222,6 +222,20 @@ Panel {
     return String(path || "").replace(/^\/home\/[^\/]+/, "~")
   }
 
+  // A toast's Open: the toast goes, then the run opens from the Runs list, so
+  // Back lands there whichever view the toast was clicked on (openRun keeps
+  // the cursor it is opened from). A run that has left the snapshot cannot
+  // open -- openRun would refuse silently -- so the list says why instead.
+  function openToastRun(key, runId) {
+    appStores.runs.dismissToast(key)
+    navi.showSection("runs")
+    if (appStores.runs.runById(runId) === null) {
+      appStores.runs.flash("This run is no longer in the snapshot")
+      return
+    }
+    navi.openRun(runId, "runs")
+  }
+
   onOpenedChanged: if (opened) { appStores.projects.onPanelOpened(); root.focusForView() }
 
   visible: true
@@ -594,6 +608,22 @@ Panel {
             onCancelRequested: function(runId) { appStores.runs.openCancel(runId) }
           }
         }
+      }
+
+      // The run toasts (S2 4.4), bottom right over the screens. A sibling of
+      // the dialogs below, so their z: 100 outranks this z: 50: an open
+      // dialog's backdrop covers the toasts and takes their clicks.
+      RunToast {
+        id: runToast
+        objectName: "runToast"
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: Style.space(12)
+        z: 50
+        theme: panelTheme
+        toasts: appStores.runs.toasts
+        onDismissRequested: function(key) { appStores.runs.dismissToast(key) }
+        onOpenRequested: function(key, runId) { root.openToastRun(key, runId) }
       }
 
       // Delete confirmation: the shared typed-word modal, driven by the store.

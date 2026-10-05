@@ -31,14 +31,16 @@ TestCase {
     p.opened = true
     p.app.projects.stateLoaded = true
     p.app.projects.applyProjectsList([pA])
-    // Selecting the project starts a `brd export` and a runs snapshot that
-    // cannot run here: both are disarmed so their late replies change nothing.
+    // Selecting the project starts a `brd export`, a runs snapshot and a run
+    // settings read that cannot run here: all three are disarmed so their late
+    // replies change nothing.
     if (p.app.extras.exportProc) {
       p.app.extras.exportProc.running = false
       p.app.extras.exportProc.launchGuard = "stale"
     }
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
+    p.app.runs.settingsLoadRunner.cancel()
     p.app.runs.runs = [run("run-0000000000a1", "started", true, "alpha"),
                        run("run-0000000000b2", "escalated", null, "beta"),
                        run("run-0000000000c3", "started", false, "gamma"),
@@ -473,5 +475,105 @@ TestCase {
     compare(cancelModal(p).visible, true)
     compare(inModal(p, "runCancelField").text, "", "the old word does not carry over")
     compare(inModal(p, "confirmAccept").enabled, false)
+  }
+
+  // ---- run toasts (S2 4.4)
+
+  // The next snapshot of project A lists `entries`.
+  function feed(p, entries) {
+    p.app.runs.refresh()
+    reply(p.app.runs.snapshotRunner.current, snapOk(entries), 0)
+  }
+
+  // On `view`: a baseline snapshot (it only arms the alerts), then one where
+  // beta (b2) has escalated -- one toast.
+  function withToast(view) {
+    var p = make(); if (!p) return null
+    p.navigator.showSection(view)
+    feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha"), snapEntry("run-0000000000b2", "started", true, "beta")])
+    compare(p.app.runs.toasts.length, 0, "the baseline raises nothing")
+    feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
+    compare(p.app.runs.toasts.length, 1)
+    wait(50)
+    return p
+  }
+
+  // 26 (parent line 160: toast Open navigates)
+  function test_toast_open_navigates_to_the_run_and_back_goes_to_the_runs_list() {
+    var p = withToast("board"); if (!p) return
+    compare(p.app.nav.viewMode, "board")
+    var toast = H.find(p, "runToast0")
+    verify(toast, "the toast card")
+    compare(toast.visible, true)
+    compare(H.find(p, "runToastLine0").text, "beta escalated")
+    var kc = H.find(p, "keyCatcher")
+    var pt = toast.mapToItem(kc, 0, 0)
+    verify(pt.x + toast.width <= kc.width && pt.x + toast.width >= kc.width - 40, "against the right edge")
+    verify(pt.y + toast.height <= kc.height && pt.y + toast.height >= kc.height - 40, "against the bottom edge")
+    mouseClick(H.find(p, "runToastOpen0"))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000b2")
+    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    p.shortcuts.closeRequested()
+    compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
+    compare(p.opened, true)
+  }
+
+  // 27 (Review focus: the search field's Escape does not go through closeRequested)
+  function test_escape_in_the_empty_runs_search_dismisses_the_toast_and_keeps_the_panel_open() {
+    var p = withToast("runs"); if (!p) return
+    var field = H.find(p, "searchField")
+    field.forceActiveFocus()
+    compare(field.text, "")
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.toasts.length, 0)
+    compare(p.opened, true, "the panel stays open")
+    compare(p.app.nav.viewMode, "runs")
+  }
+
+  // 28
+  function test_dismiss_removes_only_that_toast() {
+    var p = withToast("runs"); if (!p) return
+    feed(p, [snapEntry("run-0000000000a1", "started", false, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
+    compare(p.app.runs.toasts.length, 2)
+    wait(50)
+    mouseClick(H.find(p, "runToastDismiss0"))
+    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runs.toasts[0].id, "run-0000000000a1")
+    wait(50)
+    compare(H.find(p, "runToastLine0").text, "alpha died")
+  }
+
+  // 29
+  function test_with_the_setting_on_an_escalation_also_notifies() {
+    var p = make(); if (!p) return
+    compare(p.app.runs.setNotifyOnEscalation(true), true)
+    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(p.app.runs.notifySaved, true)
+    feed(p, [snapEntry("run-0000000000b2", "started", true, "beta")])
+    feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta")])
+    compare(p.app.runs.notifyRunners.length, 1)
+    var cmd = p.app.runs.notifyRunners[0].current.command
+    compare(cmd[1], p.pluginDir + "core/backend/runs/notify.py")
+    compare(cmd[cmd.length - 2], "beta")
+    compare(cmd[cmd.length - 1], "escalated")
+    p.app.runs.setNotifyOnEscalation(false)
+    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta"), snapEntry("run-0000000000c3", "escalated", null, "gamma")])
+    compare(p.app.runs.toasts.length, 2)
+    compare(p.app.runs.notifyRunners.length, 1, "off: no new launch")
+  }
+
+  // 30
+  function test_open_on_a_toast_whose_run_left_the_snapshot_flashes_why() {
+    var p = withToast("board"); if (!p) return
+    feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha")])
+    compare(p.app.runs.toasts.length, 1, "the toast outlives its run's row")
+    wait(50)
+    mouseClick(H.find(p, "runToastOpen0"))
+    compare(p.app.runs.toasts.length, 0)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.selectedRunId, "")
+    compare(H.find(p, "runsFooter").text, "This run is no longer in the snapshot")
   }
 }
