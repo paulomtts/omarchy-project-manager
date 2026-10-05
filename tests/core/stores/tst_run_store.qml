@@ -2936,4 +2936,132 @@ TestCase {
     compare(store.dispatchState, "previewing")
     compare(store.dispatchForm.verify[0], "uv run pytest", "the next form starts from the saved values")
   }
+
+  // 31
+  function test_project_switch_resets_dispatch_and_drops_old_preview() {
+    var store = previewingStore(); if (!store) return
+    var preview = store.dispatchPreviewRunner.current
+    store.project = rootB
+    checkDispatchIdle(store, "after the switch")
+    compare(Object.keys(store.runSettings).length, 0)
+    compare(preview.running, false, "A's preview is stopped")
+    reply(preview, previewOk(dispatchDryRun()), 0)
+    checkDispatchIdle(store, "after A's late preview")
+
+    var pending = previewingStore(); if (!pending) return
+    pending.setDispatchField("prefix", "x")
+    compare(pending.dispatchDebounceTimer.running, true)
+    pending.project = rootB
+    compare(pending.dispatchDebounceTimer.running, false, "no check is left pending")
+    checkDispatchIdle(pending, "switch during a burst")
+
+    var cleared = previewingStore(); if (!cleared) return
+    cleared.project = ""
+    checkDispatchIdle(cleared, "no project")
+  }
+
+  // 32
+  function test_start_result_belongs_to_its_project() {
+    var store = readyStore(); if (!store) return
+    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
+    store.dispatchStart()
+    var runner = store.dispatchStartRunners[0]
+    var startProc = runner.current
+    store.project = rootB
+    checkDispatchIdle(store, "B after the switch from starting")
+    compare(startProc.running, true, "the start is not stopped")
+    compare(store.dispatchStartRunners.length, 1)
+    var seq = store.snapshotRunner.seq
+    reply(startProc, startOk("r-1", ""), 0)
+    checkDispatchIdle(store, "B after A's start landed")
+    compare(spy.count, 0)
+    compare(store.snapshotRunner.seq, seq, "no refresh for B")
+    compare(Object.keys(store.runSettings).length, 0, "B's settings do not take A's values")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "recorded against A")
+    reply(runner.current, "garbage\n", 1)
+    compare(store.flashText, "", "no flash about A in B")
+    compare(store.dispatchStartRunners.length, 0)
+  }
+
+  // 32b
+  function test_start_reply_after_switching_away_and_back_is_not_here() {
+    var store = readyStore(); if (!store) return
+    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
+    store.dispatchStart()
+    var runner = store.dispatchStartRunners[0]
+    store.project = rootB
+    store.project = rootA
+    checkDispatchIdle(store, "back in A")
+    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchState, "previewing")
+    reply(runner.current, startOk("r-1", ""), 0)
+    compare(store.dispatchState, "previewing", "the new dialog is not overwritten")
+    compare(store.dispatchRunId, "")
+    compare(spy.count, 0)
+    compare(store.runSettings.prefixHistory.join(","), "old")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "still recorded for A")
+  }
+
+  // 33
+  function test_start_in_other_project_does_not_stop_the_first() {
+    var store = readyStore(); if (!store) return
+    store.dispatchStart()
+    var procA = store.dispatchStartRunners[0].current
+    store.project = rootB
+    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true, "B's dispatch opens while A's start is in flight")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchStart(), true)
+    compare(store.dispatchStartRunners.length, 2)
+    compare(store.dispatchStartRunners[0].madeFor, "/home/u/my proj")
+    compare(store.dispatchStartRunners[1].madeFor, "/home/u/b")
+    compare(procA.running, true, "A's start is still running")
+    var procB = store.dispatchStartRunners[1].current
+    compare(argv(procB), tc.startCmd + "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest")
+    reply(procA, startOk("r-a", ""), 0)
+    compare(store.dispatchState, "starting", "A's reply does not land in B's dialog")
+    reply(procB, startOk("r-b", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(store.dispatchRunId, "r-b")
+  }
+
+  // 34
+  function test_panel_close_closes_dispatch_but_not_a_start() {
+    var store = activeStore(rootA); if (!store) return
+    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    var cards = dispatchCards()
+    store.openDispatch(cards.m1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    store.active = false
+    checkDispatchIdle(store, "closed from ready")
+
+    store.active = true
+    store.openDispatch(cards.m1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    store.setDispatchField("prefix", "x")
+    compare(store.dispatchDebounceTimer.running, true)
+    store.active = false
+    compare(store.dispatchDebounceTimer.running, false, "no timer while idle")
+    checkDispatchIdle(store, "closed during a burst")
+
+    store.active = true
+    store.openDispatch(cards.m1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    store.dispatchStart()
+    var proc = store.dispatchStartRunners[0].current
+    store.active = false
+    compare(store.dispatchState, "starting", "a start in flight is not closed")
+    compare(proc.running, true)
+    reply(proc, startOk("r-1", ""), 0)
+    compare(store.dispatchState, "started", "it lands normally")
+    compare(store.dispatchRunId, "r-1")
+  }
 }

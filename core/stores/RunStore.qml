@@ -180,8 +180,8 @@ Scope {
   }
 
   // The panel closed: no process and no timer is left running, and no toast
-  // outlives the opening. The runs, the selection and amStatus stay for the
-  // next opening.
+  // or dispatch outlives the opening (a start in flight runs to its end). The
+  // runs, the selection and amStatus stay for the next opening.
   function stopLive() {
     store.stopWatch()
     debounceTimer.stop()
@@ -191,6 +191,8 @@ Scope {
     store.watchWarning = ""
     store.alertsArmed = false
     store.toasts = []
+    // A start in flight refuses and lands normally.
+    store.closeDispatch()
   }
 
   // Nothing is stale yet; the 30 s clock starts again while there is something
@@ -310,6 +312,9 @@ Scope {
     store.notifySaved = false
     store.notifyTouched = false
     store.runSettings = {}
+    // The dispatch is the old project's, even mid-start: a start already
+    // launched still runs, and its reply is no longer this dispatch's.
+    store.resetDispatch()
     settingsLoadRunner.guard = store.project
     if (store.project !== "") {
       store.refresh()
