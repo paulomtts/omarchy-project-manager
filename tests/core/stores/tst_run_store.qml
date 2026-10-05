@@ -1134,7 +1134,7 @@ TestCase {
       var o = store.data[i]
       if (o && typeof o.interval === "number" && typeof o.repeat === "boolean") timers.push(o.objectName)
     }
-    compare(timers.sort().join(","), "debounceTimer,flashTimer,livenessTimer,pendingTimer,pollTimer,staleTimer,toastTimer", "the logs add no timer")
+    compare(timers.sort().join(","), "debounceTimer,dispatchDebounceTimer,flashTimer,livenessTimer,pendingTimer,pollTimer,staleTimer,toastTimer", "the logs add no timer")
     compare(store.debounceTimer.running, false)
     compare(store.livenessTimer.running, false)
     compare(store.staleTimer.running, false)
@@ -2195,5 +2195,148 @@ TestCase {
     var other = makeWithProject(rootA); if (!other) return
     reply(other.settingsLoadRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
     compare(other.runSettings.parallelism, 9)
+  }
+
+  // A milestone, its story, the story's subtask and a done milestone, as
+  // Board.indexTree() leaves them; the object is also their {id: card} map.
+  function dispatchCards() {
+    return {
+      m1: { id: "m1", title: "M3 Document runs", status: "todo", parentId: "", depth: 0 },
+      s1: { id: "s1", title: "Dispatch store", status: "todo", parentId: "m1", depth: 1 },
+      t1: { id: "t1", title: "RunStore dispatch", status: "todo", parentId: "s1", depth: 2 },
+      d1: { id: "d1", title: "M2 Monitor runs", status: "done", parentId: "", depth: 0 }
+    }
+  }
+
+  // Project A with its run settings read (dispatchSettings).
+  function dispatchStore() {
+    var store = makeWithProject(rootA); if (!store) return null
+    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    return store
+  }
+
+  // Every dispatch field at its "none" value.
+  function checkDispatchIdle(store, label) {
+    compare(store.dispatchState, "idle", label + ": state")
+    compare(store.dispatchTarget, null, label + ": target")
+    compare(store.dispatchForm, null, label + ": form")
+    compare(store.dispatchPreview, null, label + ": preview")
+    compare(store.dispatchError, "", label + ": error")
+    compare(store.dispatchErrorType, "", label + ": error type")
+    compare(store.dispatchErrors.length, 0, label + ": errors")
+    compare(store.dispatchSuggest, null, label + ": suggest")
+    compare(store.dispatchRunId, "", label + ": run id")
+    compare(store.dispatchMessage, "", label + ": message")
+    compare(store.dispatchLog, "", label + ": log")
+    compare(store.dispatchLogTail, "", label + ": log tail")
+    compare(store.dispatchExitCode, null, label + ": exit code")
+  }
+
+  // 1 (dispatchStart() from idle is checked in Task 5's test 21)
+  function test_dispatch_starts_idle() {
+    var store = make(); if (!store) return
+    checkDispatchIdle(store, "fresh")
+    compare(store.dispatchStartRunners.length, 0)
+    compare(store.dispatchDebounceTimer.running, false)
+    verify(!store.dispatchDefaultsRunner.current)
+    verify(!store.dispatchPreviewRunner.current)
+    compare(store.closeDispatch(), true, "closing an idle dispatch is fine")
+    checkDispatchIdle(store, "after close")
+  }
+
+  // 2
+  function test_open_without_project_is_refused() {
+    var store = make(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), false)
+    checkDispatchIdle(store, "no project")
+    verify(!store.dispatchDefaultsRunner.current, "no defaults lookup")
+  }
+
+  // 3
+  function test_open_milestone_goes_previewing_and_asks_defaults() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.settingsLoadRunner.current, JSON.stringify({ verify: ["uv run pytest", "  "], allowNoVerification: true,
+      notifyOnEscalation: false, prefixHistory: [], parallelism: 6, confirmDispatch: true }) + "\n", 0)
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchTarget.level, "milestone")
+    compare(store.dispatchTarget.command, "milestone")
+    var proc = store.dispatchDefaultsRunner.current
+    verify(proc, "the default branch is looked up")
+    compare(proc.command.length, 4)
+    compare(argv(proc), tc.previewCmd + "--defaults|/home/u/my proj")
+    compare(proc.command[3], "/home/u/my proj", "the root with a space is one argument")
+    compare(proc.launchGuard, "/home/u/my proj")
+    var form = store.dispatchForm
+    compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify")
+    compare(form.base, "", "no base until the lookup replies")
+    compare(form.prefix, "m3")
+    compare(form.verify.length, 1, "the stored non-blank commands")
+    compare(form.verify[0], "uv run pytest")
+    compare(form.parallelism, 6)
+    compare(form.allowNoVerification, false, "the opt-out is never pre-ticked")
+    verify(!store.dispatchPreviewRunner.current, "no preview before the default branch is known")
+    compare(store.dispatchDebounceTimer.running, false)
+  }
+
+  function test_open_before_the_settings_reply_starts_from_nothing() {
+    var store = makeWithProject(rootA); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchForm.verify.length, 0)
+    compare(store.dispatchForm.parallelism, 4)
+    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    compare(store.dispatchForm.verify.length, 0, "a late settings reply does not touch the open form")
+    compare(store.runSettings.verify[0], "uv run pytest", "but it is kept for the next opening")
+  }
+
+  // 4
+  function test_open_story_is_refused_with_its_milestone() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.s1, cards), false)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchErrorType, "Target")
+    compare(store.dispatchError, "A story is dispatched through its milestone")
+    compare(store.dispatchSuggest.id, "m1")
+    compare(store.dispatchSuggest.title, "M3 Document runs")
+    compare(store.dispatchTarget.level, "story")
+    compare(store.dispatchForm, null, "a refused target has no form")
+    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
+    verify(!store.dispatchPreviewRunner.current)
+  }
+
+  // 5
+  function test_open_done_card_is_refused() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.d1, cards), false)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchError, "The card is done")
+    compare(store.dispatchErrorType, "Target")
+    compare(store.dispatchSuggest, null)
+    compare(store.openDispatch(null, cards), false)
+    compare(store.dispatchError, "No card to dispatch")
+    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
+  }
+
+  function test_close_and_reopen_drop_the_pending_lookup() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.openDispatch(cards.m1, cards)
+    var first = store.dispatchDefaultsRunner.current
+    compare(store.closeDispatch(), true)
+    checkDispatchIdle(store, "closed")
+    compare(first.running, false, "the lookup is stopped")
+    store.openDispatch(cards.s1, cards)
+    compare(store.dispatchState, "refused")
+    compare(store.openDispatch(cards.m1, cards), true, "opening again replaces a refused target")
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchError, "")
+    compare(store.dispatchErrorType, "")
+    compare(store.dispatchSuggest, null)
+    verify(store.dispatchDefaultsRunner.current !== first, "a fresh lookup per opening")
   }
 }

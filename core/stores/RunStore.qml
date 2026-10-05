@@ -99,6 +99,29 @@ Scope {
   // The dispatch form starts from it.
   property var runSettings: ({})
 
+  // Dispatch (S3 3.1): starting an am run. The UI opens it for a target
+  // (openDispatch), edits the form (setDispatchField) and presses Start
+  // (dispatchStart); the store checks the form, previews it with
+  // dispatch-preview.py and starts it with start-run.py. `dispatchState` is
+  // idle | previewing | ready | refused | starting | started | failed. Every
+  // object here is replaced, never changed in place.
+  property string dispatchState: "idle"
+  property var dispatchTarget: null     // Runs.dispatchPlan of the opened target; null while idle
+  property var dispatchForm: null       // {base, prefix, verify, parallelism, allowNoVerification}; null while idle
+  property var dispatchPreview: null    // Runs.previewSummary of the latest good preview
+  property string dispatchError: ""     // the sentence for refused / failed
+  property string dispatchErrorType: "" // am's or the helper's error.type, "Form", "Target" or ""
+  property var dispatchErrors: []       // Runs.validateDispatch errors of a form refusal
+  property var dispatchSuggest: null    // a refused story's milestone {id, title}
+  property string dispatchRunId: ""     // the started run's id; "" when none (yet)
+  property string dispatchMessage: ""   // start-run.py's message after a start
+  property string dispatchLog: ""       // a failed start's log path
+  property string dispatchLogTail: ""   // the end of that log
+  property var dispatchExitCode: null   // a failed start's exit code, when a number
+  // A start for the current project went: the run id, or null while am does
+  // not list it yet.
+  signal dispatchStarted(var runId)
+
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
@@ -114,6 +137,10 @@ Scope {
   readonly property alias settingsLoadRunner: settingsLoadRunner
   readonly property alias settingsSaveRunner: settingsSaveRunner
   readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
+  readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
+  readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
+  readonly property alias dispatchDebounceTimer: dispatchDebounceTimer
+  readonly property alias dispatchStartRunners: dispatchBook.runners // in-flight start runners, oldest first
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -838,6 +865,73 @@ Scope {
     store.flash("Notify on escalation could not be saved")
   }
 
+  // ---- dispatch (S3 3.1)
+
+  // No refusal or failure to show.
+  function clearDispatchError() {
+    store.dispatchError = ""
+    store.dispatchErrorType = ""
+    store.dispatchErrors = []
+    store.dispatchLog = ""
+    store.dispatchLogTail = ""
+    store.dispatchExitCode = null
+  }
+
+  // Every dispatch field back to its "none" value; runSettings stays. The
+  // pending check, the preview and the defaults lookup are dropped; a start
+  // already launched runs on, but its reply is no longer this dispatch's.
+  function resetDispatch() {
+    dispatchDebounceTimer.stop()
+    dispatchPreviewRunner.cancel()
+    dispatchDefaultsRunner.cancel()
+    dispatchBook.startRunner = null
+    dispatchBook.baseTouched = false
+    dispatchBook.defaultsPending = false
+    store.dispatchState = "idle"
+    store.dispatchTarget = null
+    store.dispatchForm = null
+    store.dispatchPreview = null
+    store.clearDispatchError()
+    store.dispatchSuggest = null
+    store.dispatchRunId = ""
+    store.dispatchMessage = ""
+  }
+
+  // Opens the dispatch for a brd card (as Board.indexTree() leaves it) or
+  // "board", with its {id: card} map, and returns whether it may be started.
+  // Refused (false, nothing changes) without a project or while a start is in
+  // flight. A target dispatchPlan does not offer is `refused` at once; any
+  // other starts from dispatchDefaults with this project's runSettings and
+  // looks up the default branch before anything is checked.
+  function openDispatch(card, cardMap) {
+    if (store.project === "" || store.dispatchState === "starting") return false
+    store.resetDispatch()
+    var plan = Runs.dispatchPlan(card, cardMap)
+    store.dispatchTarget = plan
+    if (!plan.offered) {
+      store.dispatchState = "refused"
+      store.dispatchError = plan.reason
+      store.dispatchErrorType = "Target"
+      store.dispatchSuggest = plan.suggest
+      return false
+    }
+    var d = Runs.dispatchDefaults({ defaultBranch: "", settings: store.runSettings }, card, cardMap)
+    store.dispatchForm = { base: d.base, prefix: d.prefix, verify: d.verify, parallelism: d.parallelism,
+                           allowNoVerification: d.allowNoVerification }
+    store.dispatchState = "previewing"
+    dispatchBook.defaultsPending = true
+    dispatchDefaultsRunner.run(["--defaults", store.project])
+    return true
+  }
+
+  // Back to idle. Refused while a start is in flight: its outcome must land in
+  // a dialog that still shows what was started.
+  function closeDispatch() {
+    if (store.dispatchState === "starting") return false
+    store.resetDispatch()
+    return true
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -881,6 +975,22 @@ Scope {
     script: store.backendDir + "projects/viewer-state.py"
     guard: store.project
     onFinished: function(stdout, exitCode) { store.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
+  }
+
+  // dispatch-preview.py --defaults, once per opening. Guarded by the project:
+  // a reply for a project the user has left is dropped. No onGuardChanged:
+  // the snapshot runner's already runs projectSwitched().
+  HelperRunner {
+    id: dispatchDefaultsRunner
+    script: store.backendDir + "runs/dispatch-preview.py"
+    guard: store.project
+  }
+
+  // The dispatch preview; latest wins, and every form change cancels it.
+  HelperRunner {
+    id: dispatchPreviewRunner
+    script: store.backendDir + "runs/dispatch-preview.py"
+    guard: store.project
   }
 
   // A burst of changed lines costs one snapshot.
@@ -950,6 +1060,14 @@ Scope {
     onTriggered: store.expireToasts(Date.now())
   }
 
+  // only while a change waits to be checked.
+  Timer {
+    id: dispatchDebounceTimer
+    objectName: "dispatchDebounceTimer"
+    interval: 400
+    repeat: false
+  }
+
   // What the watch Process aliases read; kept apart so consumers cannot write it.
   QtObject {
     id: watchState
@@ -978,6 +1096,19 @@ Scope {
   QtObject {
     id: notifyState
     property var runners: []
+  }
+
+  // The dispatch's own bookkeeping; kept apart so consumers cannot write it.
+  // `startRunner` is the runner that put the store into `starting`, forgotten
+  // by an idle reset (and so by a project switch); `baseTouched` says the user
+  // set base since the opening; `defaultsPending` that the --defaults lookup
+  // has not replied yet.
+  QtObject {
+    id: dispatchBook
+    property var runners: []
+    property var startRunner: null
+    property bool baseTouched: false
+    property bool defaultsPending: false
   }
 
   // One HelperRunner per control request, so requests for different runs never
