@@ -70,6 +70,7 @@ TestCase {
     } catch (e) {
       verify(e instanceof Error, "not an Error: " + e)
       verify(e.message.indexOf("no-such-fixture.json") >= 0, e.message)
+      verify(e.message.indexOf("not readable") >= 0, "a failed read reported as a parse failure: " + e.message)
     }
   }
 
