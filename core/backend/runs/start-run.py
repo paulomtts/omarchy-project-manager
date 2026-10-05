@@ -157,6 +157,66 @@ def utc_now():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def list_runs(am, root):
+    """The rows of `am runs --repo-dir ROOT`, or [] when it gives none this tick
+    (a failure, a timeout, bad JSON, a refusal): the next tick asks again."""
+    try:
+        proc = subprocess.run([am, "runs", "--repo-dir", root], capture_output=True,
+                              encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
+                              timeout=RUNS_TIMEOUT)
+        envelope = json.loads(proc.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    if not isinstance(envelope, dict) or envelope.get("ok") is not True:
+        return []
+    data = envelope.get("data")
+    runs = data.get("runs") if isinstance(data, dict) else None
+    return runs if isinstance(runs, list) else []
+
+
+def parse_time(value):
+    """An ISO-8601 time (`Z` or an offset) as an aware datetime; no offset means UTC.
+    None when it does not parse."""
+    if not isinstance(value, str):
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return when
+
+
+def matches(row, target, prefix, since):
+    """Whether an `am runs` row can be the run this launch started: it has an id,
+    started at or after `since`, and carries the prefix given (the board's runs may
+    carry `<prefix>-<stem>`); with no prefix given, any."""
+    if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+        return False
+    when = parse_time(row.get("started_at"))
+    if when is None or when < since:
+        return False
+    if prefix is None:
+        return True
+    got = row.get("branch_prefix")
+    if not isinstance(got, str):
+        return False
+    return got == prefix or (target == "board" and got.startswith(prefix + "-"))
+
+
+def find_run(rows, target, prefix, since):
+    """The id of the earliest matching row (on a tie, the one listed last: the
+    oldest in am's newest-first order), else None."""
+    best = None
+    for row in rows:
+        if matches(row, target, prefix, since):
+            when = parse_time(row["started_at"])
+            if best is None or when <= best[0]:
+                best = (when, row["id"])
+    return best[1] if best else None
+
+
 def spawn(am, argv, root, log):
     """(proc, started) of the detached `am run`. started is the UTC time just before
     the spawn, floored to the second as am stamps its runs, so a run am stamps in
@@ -215,12 +275,18 @@ def early_exit(proc, launch):
                  "log_tail": log_tail(text)})
 
 
-def watch(proc, launch, deadline):
-    """Tick every POLL_INTERVAL until am exits or the window ends; one last tick
-    runs at or after the deadline."""
+def watch(proc, am, root, target, prefix, launch, started, deadline):
+    """Tick every POLL_INTERVAL until the run appears, am exits or the window ends;
+    one last tick runs at or after the deadline. Whether am has exited is read
+    before `am runs` is asked: an exit seen first means its row, if any, was
+    already written, so an exit during the query is never taken for an early exit."""
     while True:
         last = time.monotonic() >= deadline
-        if proc.poll() is not None:
+        exited = proc.poll() is not None
+        run_id = find_run(list_runs(am, root), target, prefix, started)
+        if run_id is not None:
+            return emit({"ok": True, **launch, "run_id": run_id, "message": ""})
+        if exited:
             return early_exit(proc, launch)
         if last:
             return emit({"ok": True, **launch, "run_id": None, "message": NOT_VISIBLE})
@@ -242,7 +308,7 @@ def main(argv, launch):
         return failure("SpawnFailed", "Could not start am run: " + str(e), log=log)
     deadline = time.monotonic() + POLL_WINDOW
     launch.update({"pid": proc.pid, "log": log, "started_at": started.strftime(STAMP)})
-    return watch(proc, launch, deadline)
+    return watch(proc, am, root, target, options.get("--branch-prefix"), launch, started, deadline)
 
 
 def guarded(argv):

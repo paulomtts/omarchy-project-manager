@@ -513,3 +513,209 @@ def test_early_exit_empty_log(world):
     assert out["exit_code"] == 1
     assert out["log_tail"] == ""
     assert out["error"]["type"] == "AmExited"
+
+
+# --- run-id discovery ----------------------------------------------------------------
+
+NOON = datetime.datetime(2026, 10, 5, 12, 0, 0, 700000, tzinfo=datetime.timezone.utc)
+SINCE = datetime.datetime(2026, 10, 5, 12, 0, 0, tzinfo=datetime.timezone.utc)
+
+
+def row(run_id, started_at, prefix="m3"):
+    return {"id": run_id, "workflow": "orchestrator", "repo_dir": "/p", "base_branch": "main",
+            "branch_prefix": prefix, "status": "running", "started_at": started_at}
+
+
+def serve_rows(world, rows):
+    """The fake `am run` publishes these rows once it starts ("NOW" = its start second)."""
+    (world["am"] / "run.rows").write_text(json.dumps(rows))
+
+
+def seed_runs(world, rows):
+    """`am runs` serves these rows from the start."""
+    (world["am"] / "runs.json").write_text(json.dumps(rows))
+
+
+def at_noon(helper, monkeypatch):
+    """The helper's clock reads NOON, so its started_at is 2026-10-05T12:00:00Z."""
+    monkeypatch.setattr(helper, "utc_now", lambda: NOON)
+
+
+def test_finds_run_by_prefix_and_start_time(world, monkeypatch, capsys):
+    helper = fast_helper(monkeypatch, world)
+    at_noon(helper, monkeypatch)
+    seed_runs(world, [row("other", "2026-10-05T12:00:05Z", prefix="m9"),
+                      row("mine", "2026-10-05T12:00:03Z"),
+                      row("old", "2026-10-05T11:59:00Z")])
+    (world["am"] / "run.sleep").write_text("2")
+    root = str(world["project"])
+    assert helper.guarded([root, "milestone", "m1", "--branch-prefix", "m3"]) == 0
+    out = one_line(capsys)
+    assert out == {"ok": True, "pid": read_pid(world), "log": out["log"],
+                   "started_at": "2026-10-05T12:00:00Z", "run_id": "mine", "message": ""}
+    assert ["runs", "--repo-dir", root] in calls(world)
+
+
+def test_started_at_same_second_counts(world, monkeypatch, capsys):
+    # The helper's clock is 12:00:00.7, am stamps 12:00:00: same second, so found.
+    helper = fast_helper(monkeypatch, world)
+    at_noon(helper, monkeypatch)
+    seed_runs(world, [row("same", "2026-10-05T12:00:00Z"),
+                      row("before", "2026-10-05T11:59:59Z")])
+    (world["am"] / "run.sleep").write_text("2")
+    assert helper.guarded([str(world["project"]), "milestone", "m1", "--branch-prefix", "m3"]) == 0
+    assert one_line(capsys)["run_id"] == "same"
+
+
+def test_started_at_with_offset_parsed():
+    helper = load_helper()
+    assert helper.find_run([row("a", "2026-10-05T12:00:01+00:00")], "milestone", "m3", SINCE) == "a"
+    assert helper.find_run([row("b", "2026-10-05T12:00:01")], "milestone", "m3", SINCE) == "b"
+    # 13:59:59+02:00 is 11:59:59Z: before the spawn, so the offset is applied, not dropped.
+    assert helper.find_run([row("c", "2026-10-05T13:59:59+02:00")], "milestone", "m3", SINCE) is None
+    assert helper.find_run([row("d", "yesterday")], "milestone", "m3", SINCE) is None
+    assert helper.find_run([row("e", 12345)], "milestone", "m3", SINCE) is None
+
+
+def test_board_prefix_rule():
+    helper = load_helper()
+    when = "2026-10-05T12:00:01Z"
+    assert helper.find_run([row("r", when, prefix="x-m3")], "board", "x", SINCE) == "r"
+    assert helper.find_run([row("r", when, prefix="x")], "board", "x", SINCE) == "r"
+    assert helper.find_run([row("r", when, prefix="xy-m3")], "board", "x", SINCE) is None
+    # Only the board derives <prefix>-<stem>; a milestone's prefix must be equal.
+    assert helper.find_run([row("r", when, prefix="x-m3")], "milestone", "x", SINCE) is None
+    # A row without a branch_prefix never matches a given prefix.
+    assert helper.find_run([row("r", when, prefix=None)], "board", "x", SINCE) is None
+    # No --branch-prefix given: any prefix, even none.
+    assert helper.find_run([row("r", when, prefix="anything")], "board", None, SINCE) == "r"
+    assert helper.find_run([row("r", when, prefix=None)], "board", None, SINCE) == "r"
+
+
+def test_earliest_matching_run_wins():
+    helper = load_helper()
+    # am lists newest first.
+    rows = [row("later", "2026-10-05T12:00:09Z"), row("earlier", "2026-10-05T12:00:02Z")]
+    assert helper.find_run(rows, "milestone", "m3", SINCE) == "earlier"
+    tie = [row("listed-first", "2026-10-05T12:00:02Z"), row("listed-last", "2026-10-05T12:00:02Z")]
+    assert helper.find_run(tie, "milestone", "m3", SINCE) == "listed-last"
+
+
+def test_malformed_rows_skipped():
+    helper = load_helper()
+    when = "2026-10-05T12:00:01Z"
+    rows = [None, "r", 5, [], {"id": "", "started_at": when}, {"id": 7, "started_at": when},
+            {"started_at": when}, {"id": "no-time"}]
+    assert helper.find_run(rows, "board", None, SINCE) is None
+
+
+def test_runs_errors_are_retried(world, monkeypatch, capsys):
+    helper = fast_helper(monkeypatch, world)
+    at_noon(helper, monkeypatch)
+    seed_runs(world, [row("mine", "2026-10-05T12:00:03Z")])
+    (world["am"] / "runs.fail").write_text("3")
+    (world["am"] / "run.sleep").write_text("3")
+    assert helper.guarded([str(world["project"]), "milestone", "m1", "--branch-prefix", "m3"]) == 0
+    out = one_line(capsys)
+    assert out["ok"] is True
+    assert out["run_id"] == "mine"
+    assert int((world["am"] / "runs.count").read_text()) >= 4
+
+
+@pytest.mark.parametrize("runs_out", [
+    "not json\n",
+    json.dumps({"ok": False, "error": {"type": "X", "message": "y"}}) + "\n",
+    json.dumps({"ok": True}) + "\n",
+    json.dumps({"ok": True, "data": []}) + "\n",
+    json.dumps({"ok": True, "data": {"runs": {}}}) + "\n",
+    json.dumps({"ok": True, "data": {"runs": [None, "x", {"id": ""},
+                                              {"id": 5, "started_at": "2099-01-01T00:00:00Z"},
+                                              {"id": "r", "branch_prefix": "x"}]}}) + "\n",
+    "[]\n",
+])
+def test_runs_bad_output_ignored(world, monkeypatch, capsys, runs_out):
+    helper = fast_helper(monkeypatch, world, window=0.3)
+    (world["am"] / "runs.out").write_text(runs_out)
+    (world["am"] / "run.sleep").write_text("5")
+    assert helper.guarded([str(world["project"]), "board"]) == 0
+    out = one_line(capsys)
+    assert out["ok"] is True
+    assert out["run_id"] is None
+    assert out["message"] == "started, run not visible yet"
+
+
+def test_run_found_even_if_child_exited(world):
+    serve_rows(world, [row("r-new", "NOW")])
+    code, out = run(world, [str(world["project"]), "milestone", "m1", "--branch-prefix", "m3"])
+    assert code == 0
+    assert out["ok"] is True
+    assert out["run_id"] == "r-new"
+    assert out["message"] == ""
+
+
+def test_child_exiting_during_query_is_not_early_exit(world, monkeypatch, capsys):
+    # am exits while the first `am runs` is in flight; that query does not show the
+    # row yet. The exit was not seen before the query, so the next tick looks again
+    # and finds the run instead of reporting an early exit.
+    helper = fast_helper(monkeypatch, world)
+    serve_rows(world, [row("r-new", "NOW")])
+    (world["am"] / "run.sleep").write_text("0.3")  # still running at the first tick
+    real = helper.list_runs
+    seen = []
+
+    def lagging(am, root):
+        seen.append(True)
+        if len(seen) == 1:
+            assert wait_for(world["am"] / "run.done")
+            time.sleep(0.3)  # let the fake finish exiting
+            return []
+        return real(am, root)
+
+    monkeypatch.setattr(helper, "list_runs", lagging)
+    assert helper.guarded([str(world["project"]), "milestone", "m1", "--branch-prefix", "m3"]) == 0
+    out = one_line(capsys)
+    assert out["ok"] is True
+    assert out["run_id"] == "r-new"
+
+
+def test_helper_returns_while_child_runs(world):
+    serve_rows(world, [row("r-new", "NOW")])
+    (world["am"] / "run.sleep").write_text("5")
+    began = time.monotonic()
+    code, out = run(world, [str(world["project"]), "milestone", "m1", "--branch-prefix", "m3"])
+    assert time.monotonic() - began < 4
+    assert code == 0
+    assert out["ok"] is True
+    assert out["run_id"] == "r-new"
+    assert out["message"] == ""
+    assert not (world["am"] / "run.done").exists()
+
+
+def test_child_survives_the_helper_group_being_killed(world, tmp_path):
+    # HelperRunner stopping the helper, or the panel closing, signals the helper's
+    # process group. am runs in its own session, so it must survive.
+    serve_rows(world, [row("r-new", "NOW")])
+    (world["am"] / "run.sleep").write_text("2")
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        "import importlib.util, sys, time\n"
+        "spec = importlib.util.spec_from_file_location('start_run', %r)\n"
+        "m = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(m)\n"
+        "m.POLL_INTERVAL = 0.05\n"
+        "m.guarded([%r, 'milestone', 'm1', '--branch-prefix', 'm3'])\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(30)\n" % (SCRIPT, str(world["project"])))
+    p = subprocess.Popen([sys.executable, str(driver)], stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True, env=env_for(world),
+                         start_new_session=True)
+    try:
+        ready, _, _ = select.select([p.stdout], [], [], 15)
+        assert ready, "the helper printed nothing"
+        assert json.loads(p.stdout.readline())["run_id"] == "r-new"
+        assert not (world["am"] / "run.done").exists()
+    finally:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+        p.stdout.close()
+    assert wait_for(world["am"] / "run.done")
