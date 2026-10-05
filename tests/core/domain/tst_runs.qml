@@ -1846,6 +1846,12 @@ TestCase {
     r.requests[0].command = "x"
     compare(raw.status.control.requests[0].command, "pause", "the elements are fresh objects")
     compare(Runs.normalizeRun(amRun("status-started.json")).requests.length, 0, "the capture's requests are []")
+    // synthetic: the capture's control without its requests key
+    var noRequests = amRun("status-started.json")
+    delete noRequests.status.control.requests
+    var nr = Runs.normalizeRun(noRequests)
+    compare(Array.isArray(nr.requests), true, "no requests key under control")
+    compare(nr.requests.length, 0, "no requests key under control")
   }
 
   // Review Focus 4.
