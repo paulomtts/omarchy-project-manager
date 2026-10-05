@@ -30,7 +30,7 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,rows,started_at,status,tree", label)
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow", label)
     compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
@@ -49,7 +49,7 @@ TestCase {
 
   function test_normalize_full() {
     var r = Runs.normalizeRun(fullRaw())
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,rows,started_at,status,tree")
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow")
     compare(r.started_at, "2026-10-03T10:00:00Z")
     compare(r.id, "r1")
     compare(r.repo_dir, "/home/u/repo")
@@ -1101,5 +1101,509 @@ TestCase {
     var badRuns = [undefined, null, "x", 5, {}, [null, 3, "s", []]]
     for (var j = 0; j < badRuns.length; j++)
       compare(Runs.runsTouching(badRuns[j], "m1").length, 0, "bad runs " + j)
+  }
+
+  // ---- S2 1.1: run controls ----------------------------------------------------------------
+
+  readonly property string ctlIntegrate: "Integrate is running; it cannot be paused or cancelled"
+  readonly property string ctlFinished: "The run has finished"
+  readonly property string ctlUnknown: "The run's state is unknown"
+  readonly property string ctlPauseNotRunning: "Only a running run can be paused"
+  readonly property string ctlResumeRunning: "The run is still running"
+  readonly property string ctlResumeCancelled: "A cancelled run cannot be resumed"
+  readonly property string ctlCancelCancelled: "The run is already cancelled"
+
+  // mkRun with the lease's accepting flag set; live === null still means no lease.
+  function ctlRun(status, live, accepting) {
+    var r = mkRun("rc", status, live)
+    if (r.lease !== null) r.lease.accepting = accepting
+    return r
+  }
+
+  // One action of a controls() result: exactly {enabled, reason}; enabled iff reason is "".
+  function checkAction(a, reason, label) {
+    compare(Object.keys(a).sort().join(","), "enabled,reason", label + " keys")
+    compare(a.enabled, reason === "", label + " enabled")
+    compare(a.reason, reason, label + " reason")
+  }
+
+  // A whole controls() result; "" means that action is enabled.
+  function checkControls(c, pause, resume, cancel, label) {
+    compare(Object.keys(c).sort().join(","), "cancel,pause,resume", label + " keys")
+    checkAction(c.pause, pause, label + " pause")
+    checkAction(c.resume, resume, label + " resume")
+    checkAction(c.cancel, cancel, label + " cancel")
+  }
+
+  function test_controls_shape() {
+    var run = ctlRun("started", true, true)
+    var a = Runs.controls(run)
+    checkControls(a, "", ctlResumeRunning, "", "running")
+    var b = Runs.controls(run)
+    verify(a !== b, "a fresh result per call")
+    verify(a.pause !== b.pause && a.resume !== b.resume && a.cancel !== b.cancel, "fresh actions per call")
+    verify(a.pause !== a.resume && a.resume !== a.cancel && a.pause !== a.cancel, "no action shared within a result")
+    a.pause.enabled = false
+    a.pause.reason = "changed"
+    a.resume.reason = "changed"
+    delete a.cancel
+    checkControls(Runs.controls(run), "", ctlResumeRunning, "", "after mutating an earlier result")
+
+    var u = Runs.controls(undefined)
+    verify(u.pause !== u.resume && u.resume !== u.cancel && u.pause !== u.cancel, "no action shared in an unknown result")
+    u.pause.reason = "changed"
+    u.resume.enabled = true
+    checkControls(Runs.controls(null), ctlUnknown, ctlUnknown, ctlUnknown, "after mutating an unknown result")
+
+    var d = Runs.controls(ctlRun("done", null, true))
+    d.cancel.reason = ""
+    d.cancel.enabled = true
+    checkControls(Runs.controls(ctlRun("done", null, true)), ctlFinished, ctlFinished, ctlFinished, "after mutating a done result")
+  }
+
+  function test_controls_running() {
+    compare(Runs.runState(ctlRun("started", true, true)), "running", "fixture")
+    checkControls(Runs.controls(ctlRun("started", true, true)), "", ctlResumeRunning, "", "running, accepting")
+    checkControls(Runs.controls(ctlRun("started", true, false)), ctlIntegrate, ctlResumeRunning, ctlIntegrate,
+                  "running, Integrate")
+  }
+
+  function test_controls_resumable_states() {
+    var states = [["started", "dead"], ["stopped", "parked"], ["escalated", "escalated"]]
+    for (var i = 0; i < states.length; i++) {
+      var status = states[i][0], label = states[i][1]
+      compare(Runs.runState(ctlRun(status, false, true)), label, label + " fixture")
+      compare(Runs.runState(ctlRun(status, null, true)), label, label + " fixture, no lease")
+      checkControls(Runs.controls(ctlRun(status, false, true)), ctlPauseNotRunning, "", "", label + ", accepting")
+      checkControls(Runs.controls(ctlRun(status, false, false)), ctlPauseNotRunning, "", ctlIntegrate,
+                    label + ", Integrate")
+      checkControls(Runs.controls(ctlRun(status, null, false)), ctlPauseNotRunning, "", "",
+                    label + ", no lease is not Integrate")
+    }
+  }
+
+  function test_controls_finished_states() {
+    var leases = [[false, true, "accepting"], [false, false, "Integrate"], [true, false, "live, Integrate"],
+                  [null, true, "no lease"]]
+    for (var i = 0; i < leases.length; i++) {
+      var live = leases[i][0], accepting = leases[i][1], label = leases[i][2]
+      compare(Runs.runState(ctlRun("cancelled", live, accepting)), "cancelled", "fixture " + label)
+      checkControls(Runs.controls(ctlRun("cancelled", live, accepting)),
+                    ctlFinished, ctlResumeCancelled, ctlCancelCancelled, "cancelled, " + label)
+      compare(Runs.runState(ctlRun("done", live, accepting)), "done", "fixture " + label)
+      checkControls(Runs.controls(ctlRun("done", live, accepting)),
+                    ctlFinished, ctlFinished, ctlFinished, "done, " + label)
+    }
+  }
+
+  function test_controls_unknown_and_garbage() {
+    var runs = [ctlRun("", true, true), ctlRun("weird", true, false), ctlRun("STARTED", true, true),
+                ctlRun("weird", null, true), undefined, null, 5, "x", {}, [], Object.create(null),
+                Runs.normalizeRun(undefined)]
+    for (var i = 0; i < runs.length; i++)
+      checkControls(Runs.controls(runs[i]), ctlUnknown, ctlUnknown, ctlUnknown, "unknown " + i)
+
+    // A lease that is not an object counts as no lease: never Integrate.
+    var arrayLease = []
+    arrayLease.accepting = false
+    var badLeases = ["x", 5, [], arrayLease]
+    for (var j = 0; j < badLeases.length; j++) {
+      checkControls(Runs.controls({ status: "stopped", lease: badLeases[j] }), ctlPauseNotRunning, "", "",
+                    "parked, lease " + j)
+      checkControls(Runs.controls({ status: "started", lease: badLeases[j] }), ctlPauseNotRunning, "", "",
+                    "dead, lease " + j)
+    }
+  }
+
+  function test_controls_from_normalized() {
+    function raw(lease) {
+      return { status: { run: { id: "r", status: "started" }, control: { lease: lease } } }
+    }
+    var stringTrue = Runs.normalizeRun(raw({ pid: 1, live: true, accepting: "true" }))
+    compare(stringTrue.lease.accepting, false, "normalised to false")
+    checkControls(Runs.controls(stringTrue), ctlIntegrate, ctlResumeRunning, ctlIntegrate, "accepting \"true\"")
+    checkControls(Runs.controls(Runs.normalizeRun(raw({ pid: 1, live: true }))),
+                  ctlIntegrate, ctlResumeRunning, ctlIntegrate, "accepting missing")
+    checkControls(Runs.controls(Runs.normalizeRun(raw({ pid: 1, live: true, accepting: true }))),
+                  "", ctlResumeRunning, "", "accepting true")
+    checkControls(Runs.controls(Runs.normalizeRun(raw(null))), ctlPauseNotRunning, "", "", "no lease: dead")
+  }
+
+  // [type, sentence] for every am control error controlError knows.
+  function controlErrorTable() {
+    return [
+      ["UnknownRunError", "The run no longer exists"],
+      ["NotRunningError", "The run is not running"],
+      ["DeadRunError", "The run's process has died; resume it instead"],
+      ["NotAcceptingError", ctlIntegrate],
+      ["RunIsLiveError", "The run is still live; only a dead run can be resumed"],
+      ["NotResumableError", "The run cannot be resumed"],
+      ["ClaimedError", "Another run has already claimed this work"],
+      ["LockTimeoutError", "am is busy; try again in a moment"]
+    ]
+  }
+
+  function test_control_error_table() {
+    var table = controlErrorTable()
+    compare(table.length, 8)
+    for (var i = 0; i < table.length; i++)
+      compare(Runs.controlError({ ok: false, error: { type: table[i][0], message: "am said so" } }), table[i][1],
+              table[i][0])
+    compare(Runs.controlError({ ok: false, error: { type: "NotAcceptingError", message: "m" } }),
+            "Integrate is running; it cannot be paused or cancelled", "same text as the Integrate reason")
+  }
+
+  function test_control_error_shapes() {
+    var table = controlErrorTable()
+    for (var i = 0; i < table.length; i++) {
+      compare(Runs.controlError({ type: table[i][0], message: "x" }), table[i][1], "bare " + table[i][0])
+      compare(Runs.controlError({ type: table[i][0] }), table[i][1], "bare, no message " + table[i][0])
+    }
+    compare(Runs.controlError({ ok: false, error: { type: "  ClaimedError  ", message: "m" } }),
+            "Another run has already claimed this work", "type is trimmed")
+    compare(Runs.controlError({ type: "\tLockTimeoutError\n" }), "am is busy; try again in a moment", "trimmed, bare")
+    compare(Runs.controlError({ ok: false, error: { type: "DeadRunError", message: "pid 42 is gone" } }),
+            "The run's process has died; resume it instead", "the message is not shown for a known type")
+    compare(Runs.controlError({ ok: false, error: { type: "claimederror", message: "m" } }), "claimederror: m",
+            "case-sensitive")
+    compare(Runs.controlError({ type: "CLAIMEDERROR" }), "CLAIMEDERROR", "case-sensitive, bare")
+    compare(Runs.controlError({ ok: false, type: "ClaimedError", error: { type: "Foo", message: "bar" } }), "Foo: bar",
+            "the envelope's error wins over a stray outer type, as in errorText")
+    var bare = Object.create(null)
+    bare.type = "ClaimedError"
+    compare(Runs.controlError(bare), "Another run has already claimed this work", "prototype-less bare error")
+  }
+
+  function test_control_error_fallback() {
+    compare(Runs.controlError({ ok: false, error: { type: "Foo", message: "bar" } }), "Foo: bar", "unknown type")
+    compare(Runs.controlError({ ok: false, error: { type: "Foo" } }), "Foo", "type only")
+    compare(Runs.controlError({ ok: false, error: { message: "bar" } }), "bar", "message only")
+    compare(Runs.controlError({ ok: true, error: { type: "ClaimedError", message: "m" } }), "", "ok:true with an error")
+    compare(Runs.controlError({ ok: true }), "", "ok:true")
+
+    var garbage = [undefined, null, "boom", 5, true, [], { ok: false }, {}, { ok: false, error: "ClaimedError" },
+                   { ok: false, error: { type: "", message: "  " } }, Object.create(null)]
+    for (var i = 0; i < garbage.length; i++)
+      compare(Runs.controlError(garbage[i]), "unknown error", "garbage " + i)
+
+    var protoNames = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]
+    for (var k = 0; k < protoNames.length; k++) {
+      var name = protoNames[k]
+      compare(Runs.controlError({ ok: false, error: { type: name, message: "m" } }), name + ": m", "envelope " + name)
+      compare(Runs.controlError({ type: name }), name, "bare " + name)
+      compare(typeof Runs.controlError({ type: name }), "string", "a string for " + name)
+    }
+
+    var noProto = Object.create(null)
+    compare(Runs.controlError({ ok: false, error: { type: noProto, message: "m" } }), "m",
+            "a prototype-less type object reads as no type")
+    compare(Runs.controlError({ type: noProto }), "unknown error", "a prototype-less type object alone")
+  }
+
+  // ---- S2 1.2: run alerts ------------------------------------------------------------------
+
+  // A tree whose subtask t1 failed review: escalationReason gives "escalated at review".
+  function alTree() {
+    return { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "review", status: "failed" }] }] }
+  }
+  function alRunning(id) { return mkRun(id, "started", true) }
+  function alDead(id) { return mkRun(id, "started", false) }
+  function alEscalated(id) { return mkRun(id, "escalated", null, { tree: alTree() }) }
+
+  // The alerts' ids (or states), comma-joined, in order.
+  function alIds(alerts) {
+    var out = []
+    for (var i = 0; i < alerts.length; i++) out.push(alerts[i].id)
+    return out.join(",")
+  }
+  function alStates(alerts) {
+    var out = []
+    for (var i = 0; i < alerts.length; i++) out.push(alerts[i].state)
+    return out.join(",")
+  }
+
+  function checkAlert(a, id, title, state, reason, label) {
+    compare(Object.keys(a).sort().join(","), "id,reason,state,title", label + " keys")
+    compare(a.id, id, label + " id")
+    compare(a.title, title, label + " title")
+    compare(a.state, state, label + " state")
+    compare(a.reason, reason, label + " reason")
+  }
+
+  function test_new_alerts_first_snapshot() {
+    var next = [alEscalated("r1"), alDead("r2")]
+    var prevs = [null, undefined, 5, "x", {}, Object.create(null), true]
+    for (var i = 0; i < prevs.length; i++) {
+      var a = Runs.newAlerts(prevs[i], next)
+      compare(Array.isArray(a), true, "an array for prev " + i)
+      compare(a.length, 0, "no alerts for prev " + i)
+    }
+    compare(Runs.newAlerts(null, []).length, 0, "null prev, empty next")
+  }
+
+  function test_new_alerts_entering_escalated() {
+    var id = "run-20261004-0123456789abcdef"
+    var a = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null, { tree: alTree() })])
+    compare(a.length, 1, "one alert")
+    checkAlert(a[0], id, "m1", "escalated", "escalated at review", "with milestone")
+
+    var b = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null, { milestone_id: "", tree: alTree() })])
+    compare(b.length, 1, "one alert without a milestone")
+    checkAlert(b[0], id, "…89abcdef", "escalated", "escalated at review", "short id title")
+
+    var detailTree = { stories: [], subtasks: [{ card_id: "t1",
+                       phases: [{ name: "review", status: "failed", detail: "3 tests failed" }] }] }
+    var c = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", true, { tree: detailTree })])
+    compare(c.length, 1, "one alert with a detail")
+    checkAlert(c[0], id, "m1", "escalated", "3 tests failed", "detail reason")
+
+    var d = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null)])
+    compare(d.length, 1, "one alert with no tree")
+    compare(d[0].reason, "escalated", "bare escalated reason")
+  }
+
+  function test_new_alerts_entering_dead() {
+    var a = Runs.newAlerts([alRunning("r1")], [mkRun("r1", "started", false)])
+    compare(a.length, 1, "running -> dead (live false)")
+    checkAlert(a[0], "r1", "m1", "dead", "process died", "live false")
+
+    var b = Runs.newAlerts([mkRun("r1", "stopped", null)], [mkRun("r1", "started", null)])
+    compare(b.length, 1, "parked -> dead (lease null)")
+    checkAlert(b[0], "r1", "m1", "dead", "process died", "lease null")
+
+    var c = Runs.newAlerts([alRunning("r1")], [mkRun("r1", "started", false, { tree: alTree() })])
+    compare(c.length, 1, "dead with a failed phase")
+    compare(c[0].reason, "process died", "never the escalation text")
+  }
+
+  function test_new_alerts_from_each_state() {
+    var froms = [["parked", mkRun("r", "stopped", null)], ["cancelled", mkRun("r", "cancelled", null)],
+                 ["done", mkRun("r", "done", null)], ["unknown", mkRun("r", "weird", true)],
+                 ["running", alRunning("r")]]
+    for (var i = 0; i < froms.length; i++) {
+      var e = Runs.newAlerts([froms[i][1]], [alEscalated("r")])
+      compare(e.length, 1, froms[i][0] + " -> escalated")
+      compare(e[0].state, "escalated", froms[i][0] + " -> escalated state")
+      var d = Runs.newAlerts([froms[i][1]], [alDead("r")])
+      compare(d.length, 1, froms[i][0] + " -> dead")
+      compare(d[0].state, "dead", froms[i][0] + " -> dead state")
+    }
+
+    var quiet = [["parked", mkRun("r", "stopped", null)], ["running", alRunning("r")],
+                 ["cancelled", mkRun("r", "cancelled", null)], ["done", mkRun("r", "done", null)],
+                 ["unknown", mkRun("r", "weird", true)]]
+    for (var j = 0; j < quiet.length; j++) {
+      compare(Runs.newAlerts([alRunning("r")], [quiet[j][1]]).length, 0, "running -> " + quiet[j][0])
+      compare(Runs.newAlerts([alEscalated("r")], [quiet[j][1]]).length, 0, "escalated -> " + quiet[j][0])
+      compare(Runs.newAlerts([alDead("r")], [quiet[j][1]]).length, 0, "dead -> " + quiet[j][0])
+    }
+  }
+
+  function test_new_alerts_already_in_state() {
+    compare(Runs.newAlerts([alEscalated("r")], [alEscalated("r")]).length, 0, "escalated -> escalated")
+    compare(Runs.newAlerts([mkRun("r", "escalated", null)], [alEscalated("r")]).length, 0,
+            "escalated -> escalated with a new reason")
+    compare(Runs.newAlerts([alDead("r")], [alDead("r")]).length, 0, "dead -> dead")
+    compare(Runs.newAlerts([mkRun("r", "started", false)], [mkRun("r", "started", null)]).length, 0,
+            "dead (live false) -> dead (lease null)")
+  }
+
+  function test_new_alerts_switch_between() {
+    var a = Runs.newAlerts([alEscalated("r")], [mkRun("r", "started", false, { tree: alTree() })])
+    compare(a.length, 1, "escalated -> dead")
+    checkAlert(a[0], "r", "m1", "dead", "process died", "escalated -> dead")
+
+    var b = Runs.newAlerts([alDead("r")], [alEscalated("r")])
+    compare(b.length, 1, "dead -> escalated")
+    checkAlert(b[0], "r", "m1", "escalated", "escalated at review", "dead -> escalated")
+  }
+
+  function test_new_alerts_one_per_transition() {
+    var next = [alEscalated("a"), alDead("b"), alRunning("c")]
+    compare(Runs.newAlerts(next, next).length, 0, "same snapshot twice")
+
+    var snaps = [[alRunning("r")], [alEscalated("r")], [alEscalated("r")], [alRunning("r")], [alEscalated("r")]]
+    var expected = [1, 0, 0, 1]
+    for (var i = 0; i < expected.length; i++)
+      compare(Runs.newAlerts(snaps[i], snaps[i + 1]).length, expected[i], "s" + i + " -> s" + (i + 1))
+  }
+
+  function test_new_alerts_absent_and_vanished() {
+    var e = Runs.newAlerts([], [alEscalated("r")])
+    compare(e.length, 1, "empty prev, escalated next")
+    compare(e[0].state, "escalated", "empty prev state")
+    var d = Runs.newAlerts([], [alDead("r")])
+    compare(d.length, 1, "empty prev, dead next")
+    compare(d[0].state, "dead", "empty prev dead state")
+    compare(alIds(Runs.newAlerts([alRunning("other")], [alEscalated("r")])), "r", "id not in prev")
+
+    compare(Runs.newAlerts([alEscalated("r")], []).length, 0, "vanished escalated run")
+    compare(Runs.newAlerts([alEscalated("r"), alDead("d")], [alRunning("x")]).length, 0, "vanished runs")
+
+    var mix = Runs.newAlerts([alRunning("a"), alEscalated("b"), alRunning("c")],
+                             [alEscalated("a"), alEscalated("b"), alRunning("c")])
+    compare(alIds(mix), "a", "only the entering run")
+
+    var two = Runs.newAlerts([alRunning("a"), alRunning("b"), alRunning("c")],
+                             [alDead("c"), alRunning("b"), alEscalated("a")])
+    compare(alIds(two), "c,a", "nextRuns order")
+    compare(alStates(two), "dead,escalated", "states in nextRuns order")
+  }
+
+  function test_new_alerts_ids() {
+    var names = ["__proto__", "constructor", "toString"]
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i]
+      compare(Runs.newAlerts([alEscalated(n)], [alEscalated(n)]).length, 0, n + " already escalated")
+      compare(Runs.newAlerts([alDead(n)], [alDead(n)]).length, 0, n + " already dead")
+      var entering = Runs.newAlerts([alRunning(n)], [alEscalated(n)])
+      compare(entering.length, 1, n + " entering")
+      compare(entering[0].id, n, n + " id")
+      compare(alIds(Runs.newAlerts([alEscalated("other")], [alEscalated(n)])), n, n + " absent from prev")
+    }
+
+    compare(Runs.newAlerts([], [mkRun("", "escalated", null)]).length, 0, "empty id")
+    compare(Runs.newAlerts([], [mkRun(5, "escalated", null)]).length, 0, "number id")
+    compare(Runs.newAlerts([], [mkRun(null, "started", false)]).length, 0, "null id")
+    var noId = alEscalated("x")
+    delete noId.id
+    compare(Runs.newAlerts([], [noId]).length, 0, "missing id")
+
+    var dup = Runs.newAlerts([], [alEscalated("r"), alEscalated("r")])
+    compare(dup.length, 1, "duplicate id in next")
+    var firstQualifying = Runs.newAlerts([], [alRunning("r"), alEscalated("r"), alDead("r")])
+    compare(firstQualifying.length, 1, "one alert for three occurrences")
+    compare(firstQualifying[0].state, "escalated", "from the first qualifying occurrence")
+
+    compare(Runs.newAlerts([alEscalated("r"), alRunning("r")], [alEscalated("r")]).length, 0,
+            "duplicate id in prev: first occurrence (escalated) wins")
+    compare(Runs.newAlerts([alRunning("r"), alEscalated("r")], [alEscalated("r")]).length, 1,
+            "duplicate id in prev: first occurrence (running) wins")
+  }
+
+  function test_new_alerts_garbage() {
+    var nexts = [null, undefined, 5, "x", {}, Object.create(null), true]
+    for (var i = 0; i < nexts.length; i++) {
+      var a = Runs.newAlerts([], nexts[i])
+      compare(Array.isArray(a), true, "an array for next " + i)
+      compare(a.length, 0, "no alerts for next " + i)
+    }
+
+    var bare = Object.create(null)
+    var prev = [null, 5, "x", [], bare, alRunning("a"), undefined]
+    var next = [null, alEscalated("a"), 5, "x", [], bare, alDead("b"), undefined]
+    var mixed = Runs.newAlerts(prev, next)
+    compare(alIds(mixed), "a,b", "real runs alert, garbage skipped")
+    compare(alStates(mixed), "escalated,dead", "garbage skipped, states")
+
+    var np = Object.create(null)
+    np.id = "np"
+    np.status = "escalated"
+    var fromBare = Runs.newAlerts([bare], [np])
+    compare(fromBare.length, 1, "a prototype-less run with an id alerts")
+    checkAlert(fromBare[0], "np", "…np", "escalated", "escalated", "prototype-less run")
+
+    compare(Runs.newAlerts([], [Runs.normalizeRun(undefined)]).length, 0, "normalised garbage")
+    var normalised = Runs.normalizeRun({ row: { id: "rz", status: "started" },
+                                         status: { run: { milestone_id: "m9", status: "escalated" } } })
+    var fromNormalised = Runs.newAlerts([], [normalised])
+    compare(fromNormalised.length, 1, "a normalised escalated run")
+    checkAlert(fromNormalised[0], "rz", "m9", "escalated", "escalated", "normalised run")
+  }
+
+  function test_new_alerts_fresh_and_pure() {
+    var prev = [alRunning("a"), alEscalated("b")]
+    var next = [alEscalated("a"), alEscalated("b"), alDead("c")]
+    var prevJson = JSON.stringify(prev)
+    var nextJson = JSON.stringify(next)
+
+    var x = Runs.newAlerts(prev, next)
+    var y = Runs.newAlerts(prev, next)
+    compare(alIds(x), "a,c", "first call")
+    verify(x !== y, "distinct arrays")
+    verify(x[0] !== y[0], "distinct alert objects")
+    verify(x[1] !== y[1], "distinct alert objects (second)")
+
+    x[0].title = "changed"
+    x[0].reason = "changed"
+    x.push({ id: "junk" })
+    var z = Runs.newAlerts(prev, next)
+    compare(alIds(z), "a,c", "mutating a result does not change the next one")
+    checkAlert(z[0], "a", "m1", "escalated", "escalated at review", "after mutation")
+
+    compare(JSON.stringify(prev), prevJson, "prevRuns unchanged")
+    compare(JSON.stringify(next), nextJson, "nextRuns unchanged")
+    compare(prev.length, 2, "prevRuns length")
+    compare(next.length, 3, "nextRuns length")
+  }
+
+  // ---- S2 4.1: workflow and control requests ----------------------------------------------
+
+  function test_normalize_workflow() {
+    compare(Runs.normalizeRun(fullRaw()).workflow, "orchestrator", "from the am runs row")
+    var raw = fullRaw()
+    delete raw.row.workflow
+    raw.status.run.workflow = "task"
+    compare(Runs.normalizeRun(raw).workflow, "task", "falls back to the am status run")
+    raw.row.workflow = "milestone"
+    compare(Runs.normalizeRun(raw).workflow, "milestone", "the row wins")
+    raw.row.workflow = ""
+    compare(Runs.normalizeRun(raw).workflow, "task", "an empty row value falls back")
+    delete raw.row.workflow
+    delete raw.status.run.workflow
+    compare(Runs.normalizeRun(raw).workflow, "", "neither gives empty")
+    compare(Runs.normalizeRun({ row: { workflow: null }, status: { run: { workflow: null } } }).workflow, "", "nulls")
+    compare(Runs.normalizeRun(undefined).workflow, "", "garbage")
+  }
+
+  function test_normalize_requests() {
+    var raw = fullRaw()
+    raw.status.control.requests = [
+      { command: "pause", requested_at: "2026-10-03T10:00:00Z", handled_at: "2026-10-03T10:00:05Z" },
+      { command: "resume", requested_at: "2026-10-03T11:00:00Z", handled_at: null },
+      { command: "cancel", requested_at: "2026-10-03T12:00:00Z" }
+    ]
+    var r = Runs.normalizeRun(raw)
+    compare(Array.isArray(r.requests), true)
+    compare(r.requests.length, 3)
+    compare(Object.keys(r.requests[0]).sort().join(","), "command,handled_at,requested_at")
+    compare(r.requests[0].command, "pause")
+    compare(r.requests[0].requested_at, "2026-10-03T10:00:00Z")
+    compare(r.requests[0].handled_at, "2026-10-03T10:00:05Z")
+    compare(r.requests[1].command, "resume", "order is kept")
+    compare(r.requests[1].handled_at, "", "null means not handled")
+    compare(r.requests[2].command, "cancel")
+    compare(r.requests[2].handled_at, "", "missing means not handled")
+    r.requests[0].command = "x"
+    compare(raw.status.control.requests[0].command, "pause", "the elements are fresh objects")
+    compare(Runs.normalizeRun(fullRaw()).requests.length, 0, "no requests key under control")
+  }
+
+  // Review Focus 4.
+  function test_normalize_requests_garbage() {
+    var raw = fullRaw()
+    raw.status.control.requests = [null, "pause", 7, ["pause"], true,
+                                   { command: 5, requested_at: true, handled_at: { a: 1 } }, {}]
+    var r = Runs.normalizeRun(raw)
+    compare(r.requests.length, 2, "non-object elements are skipped")
+    compare(r.requests[0].command, "5")
+    compare(r.requests[0].requested_at, "true")
+    compare(r.requests[0].handled_at, "[object Object]")
+    compare(r.requests[1].command, "")
+    compare(r.requests[1].requested_at, "")
+    compare(r.requests[1].handled_at, "")
+
+    var noControl = fullRaw()
+    delete noControl.status.control
+    compare(Runs.normalizeRun(noControl).requests.length, 0, "no control")
+    var values = ["x", { a: 1 }, null, 5]
+    for (var i = 0; i < values.length; i++) {
+      var bad = fullRaw()
+      bad.status.control.requests = values[i]
+      var out = Runs.normalizeRun(bad)
+      compare(Array.isArray(out.requests), true, "requests " + i)
+      compare(out.requests.length, 0, "requests " + i)
+    }
+    compare(Runs.normalizeRun({ status: { control: "y" } }).requests.length, 0, "control not an object")
   }
 }

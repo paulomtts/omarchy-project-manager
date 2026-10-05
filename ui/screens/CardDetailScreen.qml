@@ -4,6 +4,7 @@ import qs.Commons
 import qs.Ui
 import "../../core/domain/board.js" as Board
 import "../../core/domain/runs.js" as Runs
+import "../components/runControlFacts.js" as ControlFacts
 import "../components" as UI
 import "../theme" as T
 
@@ -21,6 +22,9 @@ Column {
 
   // The panel scrolls; a link row that takes the cursor asks for it here.
   signal revealRequested(var item)
+  // A run's Cancel was clicked. Cancelling needs a typed confirmation, which is
+  // the owner's to ask for; nothing here cancels a run.
+  signal cancelRequested(string runId)
 
   visible: detailCard.app.nav.viewMode === "entry" && !!detailCard.app.board.cardMap[detailCard.app.board.selectedCardId]
   spacing: Style.space(10)
@@ -34,6 +38,14 @@ Column {
     ? [] : Runs.runsTouching(detailCard.app.runs.runs, detailCard.card.id)
   // Ages are read against the clock once per run snapshot: there is no timer.
   readonly property real nowMs: detailCard.touchingRuns ? Date.now() : 0
+  // A run row's control button: pause and resume go straight to the store, a
+  // cancel only asks (cancelRequested).
+  function requestControl(action, run) {
+    var id = ControlFacts.runIdOf(run)
+    if (id === "") return
+    if (action === "cancel") detailCard.cancelRequested(id)
+    else detailCard.app.runs.control(action, id)
+  }
 
   DetailLink {
     visible: !!(detailCard.card && detailCard.card.parentId)
@@ -181,9 +193,10 @@ Column {
   }
 
   // One run that touches the card: its state glyph, short id, title, current
-  // phase and age. Mouse-activated only (`index` stays -1): the keyboard's link
-  // list is the card's brd links. A click opens Run detail, whose Back comes
-  // back here; a run that vanished meanwhile opens nothing.
+  // phase and age, and its RunControls under them. Mouse-activated only
+  // (`index` stays -1): the keyboard's link list is the card's brd links. A
+  // click opens Run detail, whose Back comes back here; a run that vanished
+  // meanwhile opens nothing. A click on a control button never opens the run.
   component CardRunRow: UI.ListRow {
     id: runRow
     // The model is a count, so this is the run's position in touchingRuns. The
@@ -238,6 +251,25 @@ Column {
         text: Runs.runAgeText(runRow.run, detailCard.nowMs)
       }
     }
+
+    // A story or subtask card shares its run with its siblings: the labels say
+    // so ("Pause run") and the caption spells it out. A finished run shows
+    // nothing, so a merged card's history reads as before.
+    actions: [
+      UI.RunControls {
+        objectName: "cardRunControls" + runRow.modelData
+        width: parent.width
+        theme: detailCard.theme
+        run: runRow.run
+        pendingAction: ControlFacts.pendingOf(detailCard.app.runs.pending, runRow.run)
+        waiting: ControlFacts.waitingOf(detailCard.app.runs.stillWaiting, runRow.run)
+        waitingText: detailCard.app.runs.stillWaitingText
+        errorText: ControlFacts.errorOf(detailCard.app.runs.lastControlError, detailCard.app.runs.lastControlErrorRunId, runRow.run)
+        wholeRun: !!detailCard.card && detailCard.card.depth >= 1
+        showButtons: true
+        onActionRequested: function(action) { detailCard.requestControl(action, runRow.run) }
+      }
+    ]
   }
 
   component DetailLink: UI.ListRow {

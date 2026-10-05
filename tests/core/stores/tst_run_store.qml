@@ -5,6 +5,7 @@
 // store only in 3.3) and driven through stubbed Process objects.
 import QtQuick
 import QtTest
+import "../../../core/domain/runs.js" as Runs
 
 TestCase {
   id: tc
@@ -1133,11 +1134,12 @@ TestCase {
       var o = store.data[i]
       if (o && typeof o.interval === "number" && typeof o.repeat === "boolean") timers.push(o.objectName)
     }
-    compare(timers.sort().join(","), "debounceTimer,livenessTimer,pollTimer,staleTimer", "the logs add no timer")
+    compare(timers.sort().join(","), "debounceTimer,flashTimer,livenessTimer,pendingTimer,pollTimer,staleTimer,toastTimer", "the logs add no timer")
     compare(store.debounceTimer.running, false)
     compare(store.livenessTimer.running, false)
     compare(store.staleTimer.running, false)
     compare(store.pollTimer.running, false)
+    compare(store.pendingTimer.running, false)
   }
 
   // The next snapshot of project A lists `entries`.
@@ -1184,5 +1186,974 @@ TestCase {
     verify(store.selectedAttempt, "the first attempt is picked once it exists")
     compare(store.selectedAttempt.attempt, 2)
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|implement|2")
+  }
+
+  // ---- run controls (S2 4.1)
+
+  property string ctlCmd: "python3|/plugin/core/backend/runs/run-control.py|"
+
+  // entry() for the control tests: the run's workflow ("milestone" unless
+  // given), its am control requests, and whether its lease accepts requests.
+  function ctlEntry(id, runStatus, live, workflow, requests, accepting) {
+    var e = entry(id, runStatus, live)
+    e.workflow = workflow || "milestone"
+    e.status.control.requests = requests || []
+    if (accepting === false) e.status.control.lease.accepting = false
+    return e
+  }
+
+  function running(id) { return ctlEntry(id, "started", true) }
+  function dead(id) { return ctlEntry(id, "started", false) }
+
+  // Project A whose first snapshot listed `entries`. Not active: no watch.
+  function ctlStore(entries) {
+    var store = makeWithProject(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply(entries), 0)
+    return store
+  }
+
+  function ctlOk(data) { return JSON.stringify({ ok: true, data: data }) + "\n" }
+
+  function ctlFail(type, message) {
+    return JSON.stringify({ ok: false, error: { type: type, message: message } }) + "\n"
+  }
+
+  function test_control_defaults() {
+    var store = make(); if (!store) return
+    compare(Object.keys(store.pending).length, 0)
+    compare(Object.keys(store.stillWaiting).length, 0)
+    compare(store.stillWaitingText, "still waiting — the run may be between phases or dead")
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.controlRunners.length, 0)
+  }
+
+  function test_pause_and_cancel_launch_the_exact_argv() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    compare(store.control("pause", "r1"), true)
+    compare(store.control("cancel", "r2"), true)
+    compare(store.controlRunners.length, 2)
+    compare(store.controlRunners[0].runId, "r1")
+    compare(store.controlRunners[0].action, "pause")
+    var pause = store.controlRunners[0].current
+    compare(pause.command.length, 5)
+    compare(argv(pause), tc.ctlCmd + "pause|r1|/home/u/my proj")
+    compare(pause.command[4], "/home/u/my proj", "the root with a space is one argument")
+    compare(pause.running, true)
+    compare(pause.launchGuard, "/home/u/my proj")
+    var cancel = store.controlRunners[1].current
+    compare(cancel.command.length, 5)
+    compare(argv(cancel), tc.ctlCmd + "cancel|r2|/home/u/my proj")
+  }
+
+  function test_control_sets_pending_as_a_new_object() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    var before = store.pending
+    var spy = spyC.createObject(tc, { target: store, signalName: "pendingChanged" })
+    compare(store.control("pause", "r1"), true)
+    compare(spy.count, 1)
+    compare(store.pending.r1, "pause")
+    compare(before.r1, undefined, "the old object was not changed in place")
+  }
+
+  function test_an_ok_reply_keeps_pending_and_refreshes() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    var snap = store.snapshotRunner.current
+    var seq = store.snapshotRunner.seq
+    reply(store.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", effective: true,
+      requested_at: "t1", already_requested: false, message: "pause requested" }), 0)
+    compare(store.pending.r1, "pause", "pending until a snapshot settles it")
+    compare(store.lastControlError, "")
+    compare(store.snapshotRunner.seq, seq + 1, "the runs are fetched again")
+    verify(store.snapshotRunner.current !== snap)
+    compare(store.controlRunners.length, 0)
+  }
+
+  function test_an_ok_false_reply_clears_pending_and_says_why() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("pause", "r1")
+    var seq = store.snapshotRunner.seq
+    var text = ctlFail("NotAcceptingError", "run r1 is in integrate")
+    reply(store.controlRunners[0].current, text, 0)
+    compare(store.pending.r1, undefined, "the buttons come back")
+    compare(store.lastControlError, Runs.controlError(JSON.parse(text)))
+    compare(store.lastControlError, "Integrate is running; it cannot be paused or cancelled")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastError, "", "the snapshot banner is not the control error")
+    compare(store.snapshotRunner.seq, seq + 1, "the runs are fetched again")
+
+    store.control("cancel", "r2")
+    var failed = ctlFail("AmFailed", "am: database is locked")
+    reply(store.controlRunners[0].current, failed, 0)
+    compare(store.lastControlError, Runs.controlError(JSON.parse(failed)))
+    verify(store.lastControlError !== "", "AmFailed says something")
+    compare(store.lastControlErrorRunId, "r2")
+  }
+
+  function test_garbled_control_output_names_the_exit_code() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("cancel", "r1")
+    var seq = store.snapshotRunner.seq
+    reply(store.controlRunners[0].current, "Traceback (most recent call last):\nboom\n", 1)
+    compare(store.pending.r1, undefined)
+    compare(store.lastControlError, "The run control gave no usable result (exit 1).")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.snapshotRunner.seq, seq + 1)
+  }
+
+  function test_an_unknown_run_error_survives_the_snapshot_that_drops_the_row() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("cancel", "r1")
+    reply(store.controlRunners[0].current, ctlFail("UnknownRunError", "no run r1"), 0)
+    compare(store.lastControlError, "The run no longer exists")
+    reply(store.snapshotRunner.current, okReply([running("r2")]), 0)
+    compare(store.runs.length, 1)
+    compare(store.runs[0].id, "r2", "the row is dropped")
+    compare(store.lastControlError, "The run no longer exists", "a snapshot never clears the control error")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastError, "")
+    snapshot(store, [running("r2")])
+    compare(store.lastControlError, "The run no longer exists")
+    compare(store.lastError, "")
+  }
+
+  function test_control_refusals_launch_nothing() {
+    var bare = make(); if (!bare) return
+    compare(bare.control("pause", "r1"), false, "no project")
+    compare(bare.controlRunners.length, 0)
+
+    var store = ctlStore([running("r1"), ctlEntry("r2", "stopped", false),
+                          ctlEntry("r3", "started", true, "milestone", [], false)]); if (!store) return
+    compare(store.control("stop", "r1"), false, "unknown action")
+    compare(store.control("Pause", "r1"), false, "actions are exact")
+    compare(store.control("", "r1"), false, "empty action")
+    compare(store.control("pause", ""), false, "empty id")
+    compare(store.control("pause", 7), false, "an id that is not a string")
+    compare(store.control("pause", "nope"), false, "a run not in the snapshot")
+    compare(store.control("pause", "r2"), false, "pause on a parked run is disabled")
+    compare(store.control("cancel", "r3"), false, "cancel during Integrate is disabled")
+    compare(store.control("pause", "r3"), false, "pause during Integrate is disabled")
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.control("pause", "r1"), true)
+    compare(store.control("pause", "r1"), false, "no double fire")
+    compare(store.control("cancel", "r1"), false, "one request per run at a time")
+    compare(store.controlRunners.length, 1)
+    compare(Object.keys(store.pending).join(","), "r1")
+  }
+
+  function test_two_runs_in_flight_at_once_both_apply() {
+    var store = ctlStore([running("a"), running("b")]); if (!store) return
+    store.control("pause", "a")
+    store.control("cancel", "b")
+    compare(store.controlRunners.length, 2)
+    var ra = store.controlRunners[0], rb = store.controlRunners[1]
+    compare(ra.current.running, true, "cancelling b did not stop a's pause")
+    compare(rb.current.running, true)
+    reply(ra.current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.controlRunners.length, 1)
+    compare(store.controlRunners[0].runId, "b")
+    compare(store.pending.a, "pause")
+    compare(store.pending.b, "cancel")
+    reply(rb.current, ctlFail("NotRunningError", "not running"), 0)
+    compare(store.controlRunners.length, 0)
+    compare(store.pending.a, "pause")
+    compare(store.pending.b, undefined)
+    compare(store.lastControlError, "The run is not running")
+    compare(store.lastControlErrorRunId, "b")
+  }
+
+  function test_a_finished_request_leaves_control_runners() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.controlRunners.length, 0, "an applied reply")
+
+    var other = ctlStore([running("r1")]); if (!other) return
+    other.control("pause", "r1")
+    var proc = other.controlRunners[0].current
+    other.project = rootB
+    compare(other.controlRunners.length, 1, "a launched request still completes in am")
+    var seq = other.snapshotRunner.seq
+    reply(proc, ctlOk({ requested_at: "t1" }), 0)
+    compare(other.controlRunners.length, 0, "a reply dropped by the guard still removes its runner")
+    compare(other.snapshotRunner.seq, seq, "a dropped reply does not re-snapshot")
+  }
+
+  function test_a_new_request_and_dismiss_clear_the_control_error() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
+    compare(store.lastControlError, "am is busy; try again in a moment")
+    compare(store.control("pause", "r1"), true, "the failed request no longer blocks the run")
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
+    compare(store.lastControlErrorRunId, "r1")
+    store.dismissControlError()
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+  }
+
+  property string settingsCmd: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/my proj"
+  property string noVerifySentence: "Resume needs verify commands: none are stored for this project, and running without verification was not chosen."
+
+  // viewer-state.py get-run-settings: one bare object, not an envelope.
+  function settingsReply(verify, allow) {
+    return JSON.stringify({ verify: verify, allowNoVerification: allow, notifyOnEscalation: false }) + "\n"
+  }
+
+  function test_milestone_resume_reads_the_settings_then_passes_the_verify_set() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    compare(store.control("resume", "r1"), true)
+    compare(store.controlRunners.length, 1)
+    var runner = store.controlRunners[0]
+    compare(argv(runner.current), tc.settingsCmd)
+    compare(runner.current.command.length, 4)
+    compare(store.pending.r1, "resume")
+    reply(runner.current, settingsReply(["a", "-b c"], true), 0)
+    compare(store.controlRunners.length, 1, "the same request goes on to run-control")
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a|--verify|-b c")
+    compare(proc.command.length, 9, "each verify command is one argument")
+    compare(proc.command[8], "-b c")
+    compare(proc.command.indexOf("--allow-no-verification"), -1, "a stored verify set wins over the opt-out")
+    compare(store.pending.r1, "resume")
+  }
+
+  function test_milestone_resume_with_the_opt_out_passes_allow_no_verification() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    reply(store.controlRunners[0].current, settingsReply([], true), 0)
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--allow-no-verification")
+    compare(proc.command.length, 6)
+  }
+
+  function test_milestone_resume_with_nothing_stored_launches_nothing() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    var runner = store.controlRunners[0]
+    var seq = store.snapshotRunner.seq
+    reply(runner.current, settingsReply([], false), 0)
+    compare(runner.seq, 1, "run-control was never launched")
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.lastControlError, tc.noVerifySentence)
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.snapshotRunner.seq, seq, "nothing was asked of am, so no snapshot")
+  }
+
+  function test_garbled_run_settings_end_the_resume() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    var runner = store.controlRunners[0]
+    reply(runner.current, "oops\n", 2)
+    compare(runner.seq, 1, "run-control was never launched")
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.lastControlError, "The run settings gave no usable result (exit 2).")
+    compare(store.lastControlErrorRunId, "r1")
+  }
+
+  function test_a_card_run_resume_skips_the_settings() {
+    var store = ctlStore([ctlEntry("r1", "started", false, "task"),
+                          ctlEntry("r2", "started", false, "orchestrator")]); if (!store) return
+    compare(store.control("resume", "r1"), true)
+    compare(store.controlRunners.length, 1)
+    var runner = store.controlRunners[0]
+    compare(runner.seq, 1, "one launch only")
+    compare(argv(runner.current), tc.ctlCmd + "resume|r1|/home/u/my proj")
+    compare(runner.current.command.length, 5)
+    compare(store.control("resume", "r2"), true)
+    compare(argv(store.controlRunners[1].current), tc.settingsCmd, "any workflow but task follows the milestone rule")
+  }
+
+  // Review Focus 3.
+  function test_a_verify_set_with_a_non_string_is_not_used() {
+    var store = ctlStore([dead("r1"), dead("r2")]); if (!store) return
+    store.control("resume", "r1")
+    var runner = store.controlRunners[0]
+    reply(runner.current, settingsReply(["a", 5], false), 0)
+    compare(runner.seq, 1, "run-control was never launched")
+    compare(store.lastControlError, tc.noVerifySentence)
+    store.control("resume", "r2")
+    reply(store.controlRunners[0].current, settingsReply(["a", 5], true), 0)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r2|/home/u/my proj|--allow-no-verification")
+  }
+
+  // One am control request row.
+  function amRequest(command, requestedAt, handledAt) {
+    return { command: command, requested_at: requestedAt, handled_at: handledAt }
+  }
+
+  // A pause of `id` that am acknowledged; requestedAt "" leaves it out of the reply.
+  function pauseAcked(store, id, requestedAt) {
+    compare(store.control("pause", id), true)
+    var data = { run_id: id, command: "pause" }
+    if (requestedAt !== "") data.requested_at = requestedAt
+    reply(store.controlRunners[store.controlRunners.length - 1].current, ctlOk(data), 0)
+  }
+
+  function test_a_pause_settles_when_its_request_is_handled() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    pauseAcked(store, "r1", "t1")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone", [amRequest("pause", "t1", null)])])
+    compare(store.pending.r1, "pause", "not handled yet")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+                              [amRequest("pause", "t0", "t0h"), amRequest("pause", "t1", "")])])
+    compare(store.pending.r1, "pause", "an older handled pause is another request")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+                              [amRequest("pause", "t0", "t0h"), amRequest("pause", "t1", "t1h")])])
+    compare(store.pending.r1, undefined, "handled")
+  }
+
+  function test_without_requested_at_the_last_request_of_that_command_decides() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    pauseAcked(store, "r1", "")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+      [amRequest("pause", "t0", "t0h"), amRequest("cancel", "t1", "t1h"), amRequest("pause", "t2", null)])])
+    compare(store.pending.r1, "pause", "the last pause is not handled; a handled cancel is another request")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+      [amRequest("pause", "t0", "t0h"), amRequest("pause", "t2", "t2h")])])
+    compare(store.pending.r1, undefined)
+  }
+
+  // Review Focus 2.
+  function test_a_resume_settles_when_the_run_state_changes() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    reply(store.controlRunners[0].current, settingsReply(["make test"], false), 0)
+    reply(store.controlRunners[0].current, ctlOk({ action: "resume", run_id: "r1", detached: true }), 0)
+    compare(store.pending.r1, "resume", "a detached resume is acknowledged, not failed")
+    compare(store.lastControlError, "")
+    snapshot(store, [ctlEntry("r1", "started", false, "milestone", [amRequest("resume", "t1", "t1h")])])
+    compare(store.pending.r1, "resume", "still dead; resume never reads a request row")
+    snapshot(store, [running("r1")])
+    compare(store.pending.r1, undefined, "dead -> running")
+  }
+
+  function test_a_request_settles_when_its_run_vanishes() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    pauseAcked(store, "r1", "t1")
+    snapshot(store, [running("r2")])
+    compare(store.pending.r1, undefined)
+  }
+
+  // D5.
+  function test_a_snapshot_never_settles_a_request_in_flight() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    var runner = store.controlRunners[0]
+    snapshot(store, [ctlEntry("r1", "stopped", false)])
+    compare(store.pending.r1, "pause", "the reply has not come back yet")
+    snapshot(store, [])
+    compare(store.pending.r1, "pause", "not even when the run vanished")
+    reply(runner.current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.pending.r1, "pause")
+    snapshot(store, [ctlEntry("r1", "stopped", false)])
+    compare(store.pending.r1, undefined, "settled once acknowledged")
+  }
+
+  function test_a_failed_snapshot_settles_nothing() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    pauseAcked(store, "r1", "t1")
+    store.refresh()
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "AmFailed", message: "boom" } }) + "\n", 0)
+    compare(store.pending.r1, "pause")
+    store.refresh()
+    reply(store.snapshotRunner.current, "garbage\n", 1)
+    compare(store.pending.r1, "pause")
+  }
+
+  function test_a_project_switch_empties_the_control_state_and_drops_the_old_reply() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("pause", "r1")
+    store.control("cancel", "r2")
+    var proc = store.controlRunners[0].current
+    reply(store.controlRunners[1].current, ctlFail("NotRunningError", "x"), 0)
+    compare(store.lastControlErrorRunId, "r2")
+    store.stillWaiting = { r1: true }
+    store.project = rootB
+    compare(Object.keys(store.pending).length, 0)
+    compare(Object.keys(store.stillWaiting).length, 0)
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.controlRunners.length, 1, "the launched request is not stopped")
+    var seq = store.snapshotRunner.seq
+    reply(proc, ctlFail("NotAcceptingError", "x"), 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.lastControlError, "", "the old reply changes nothing")
+    compare(store.snapshotRunner.seq, seq, "no extra snapshot for B")
+    compare(store.controlRunners.length, 0)
+  }
+
+  // Review Focus 1: A -> B -> A before the old reply lands.
+  function test_an_old_reply_after_returning_to_the_project_changes_nothing() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.control("pause", "r1")
+    var oldProc = store.controlRunners[0].current
+    store.project = rootB
+    store.project = rootA
+    reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
+    compare(store.control("pause", "r1"), true, "pending was emptied, so the run can be asked again")
+    compare(store.controlRunners.length, 2)
+    var seq = store.snapshotRunner.seq
+    reply(oldProc, ctlFail("NotAcceptingError", "x"), 0)
+    compare(store.pending.r1, "pause", "the old reply does not settle the new request")
+    compare(store.lastControlError, "")
+    compare(store.snapshotRunner.seq, seq, "and does not re-snapshot")
+    compare(store.controlRunners.length, 1)
+    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t2" }), 0)
+    compare(store.pending.r1, "pause")
+    compare(store.controlRunners.length, 0)
+  }
+
+  function test_a_request_is_still_waiting_after_30_seconds() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("pause", "r1")
+    store.checkWaiting(Date.now() + 29000)
+    compare(store.stillWaiting.r1, undefined, "29 s is not yet")
+    store.checkWaiting(Date.now() + 30000)
+    compare(store.stillWaiting.r1, true)
+    compare(store.stillWaiting.r2, undefined, "only pending runs")
+    compare(store.stillWaitingText, "still waiting — the run may be between phases or dead")
+    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.stillWaiting.r1, true, "acknowledged but not settled: still waiting")
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone", [amRequest("pause", "t1", "t1h")]), running("r2")])
+    compare(store.stillWaiting.r1, undefined, "settling removes it")
+    compare(Object.keys(store.stillWaiting).length, 0)
+  }
+
+  // Review Focus 5 and D6.
+  function test_the_pending_timer_runs_only_while_active_with_something_pending() {
+    var store = activeStore(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
+    compare(store.pendingTimer.running, false, "nothing pending")
+    compare(store.pendingTimer.interval, 1000)
+    compare(store.pendingTimer.repeat, true)
+    store.control("pause", "r1")
+    compare(store.pendingTimer.running, true)
+    store.pendingTimer.triggered()
+    compare(store.stillWaiting.r1, undefined, "a fresh request is not waiting yet")
+    store.active = false
+    compare(store.pendingTimer.running, false, "no timer while the panel is closed")
+    compare(store.pending.r1, "pause", "closing the panel keeps pending")
+    compare(store.controlRunners.length, 1, "and the request in flight")
+    store.active = true
+    compare(store.pendingTimer.running, true, "reopening starts it again")
+    reply(store.controlRunners[0].current, ctlFail("NotRunningError", "x"), 0)
+    compare(store.pendingTimer.running, false, "nothing pending any more")
+
+    var idle = ctlStore([running("r1")]); if (!idle) return
+    idle.control("pause", "r1")
+    compare(idle.pendingTimer.running, false, "an inactive store runs no timer")
+  }
+
+  // ---- cancel confirmation and the footer flash (S2 4.3)
+
+  property string integrateReason: "Integrate is running; it cannot be paused or cancelled"
+
+  // A running run whose lease is not accepting requests: am is in Integrate.
+  function integrate(id) { return ctlEntry(id, "started", true, "milestone", [], false) }
+
+  // 1 (and Review Focus 4)
+  function test_refusal_of_says_why_a_control_would_not_start() {
+    var bare = make(); if (!bare) return
+    compare(bare.refusalOf("pause", "r1"), "This run is no longer in the snapshot", "no project")
+    var store = ctlStore([running("r1"), ctlEntry("r2", "stopped", false), integrate("r3"),
+                          ctlEntry("r4", "done", false), running("r5"), running("constructor")]); if (!store) return
+    compare(store.refusalOf("pause", "r1"), "")
+    compare(store.refusalOf("cancel", "r1"), "")
+    compare(store.refusalOf("resume", "r2"), "")
+    compare(store.refusalOf("cancel", "r2"), "")
+    compare(store.refusalOf("pause", "nope"), "This run is no longer in the snapshot")
+    compare(store.refusalOf("pause", ""), "This run is no longer in the snapshot")
+    compare(store.refusalOf("pause", "r3"), tc.integrateReason)
+    compare(store.refusalOf("cancel", "r3"), tc.integrateReason)
+    compare(store.refusalOf("cancel", "r4"), "The run has finished")
+    compare(store.refusalOf("resume", "r1"), "The run is still running")
+    compare(store.refusalOf("bogus", "r1"), "Unknown control")
+    compare(store.refusalOf("pause", "constructor"), "", "an id like constructor is not pending")
+    compare(store.refusalOf("resume", "constructor"), "The run is still running")
+    compare(store.control("pause", "r5"), true)
+    compare(store.refusalOf("pause", "r5"), "A request for this run is pending")
+    compare(store.refusalOf("resume", "r5"), "A request for this run is pending", "pending wins over the state's reason")
+    compare(store.controlRunners.length, 1, "refusalOf starts nothing")
+  }
+
+  // 2
+  function test_a_flash_clears_itself_and_a_new_one_restarts_the_clock() {
+    var store = make(); if (!store) return
+    compare(store.flashText, "")
+    compare(store.flashTimer.interval, 3000)
+    compare(store.flashTimer.repeat, false)
+    compare(store.flashTimer.running, false)
+    store.flashTimer.interval = 500
+    store.flash("first")
+    compare(store.flashText, "first")
+    compare(store.flashTimer.running, true)
+    wait(300)
+    store.flash("second")
+    compare(store.flashText, "second", "the new text replaces the old")
+    wait(300)
+    compare(store.flashText, "second", "the clock restarted with the second flash")
+    tryCompare(store, "flashText", "", 2000)
+    compare(store.flashTimer.running, false)
+    store.flash("third")
+    store.flash("")
+    compare(store.flashText, "")
+    compare(store.flashTimer.running, false, "flash(\"\") stops the clock")
+  }
+
+  // 3
+  function test_open_cancel_opens_only_for_a_cancellable_run() {
+    var store = ctlStore([running("r1"), integrate("r3")]); if (!store) return
+    compare(store.cancelOpen, false)
+    compare(store.cancelRunId, "")
+    compare(store.cancelText, "")
+    compare(store.cancelError, "")
+    store.cancelText = "left over"
+    store.cancelError = "old"
+    compare(store.openCancel("r1"), true)
+    compare(store.cancelOpen, true)
+    compare(store.cancelRunId, "r1")
+    compare(store.cancelText, "", "the dialog opens empty")
+    compare(store.cancelError, "")
+    compare(store.flashText, "")
+    store.closeCancel()
+    compare(store.cancelOpen, false)
+    compare(store.openCancel("r3"), false)
+    compare(store.cancelOpen, false, "an Integrate run gets no dialog")
+    compare(store.flashText, tc.integrateReason)
+    compare(store.controlRunners.length, 0)
+  }
+
+  // 4 (and Review Focus 1)
+  function test_confirm_cancel_needs_the_word_then_starts_the_cancel_and_closes() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    compare(store.confirmCancel(), false, "nothing is open")
+    store.openCancel("r1")
+    store.cancelText = "cancle"
+    compare(store.confirmCancel(), false)
+    compare(store.controlRunners.length, 0)
+    compare(store.cancelOpen, true)
+    compare(store.cancelError, "", "a wrong word is not an error")
+    store.cancelText = " Cancel "
+    compare(store.confirmCancel(), true)
+    compare(store.pending.r1, "cancel")
+    compare(store.controlRunners.length, 1)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "cancel|r1|/home/u/my proj")
+    compare(store.cancelOpen, false)
+    compare(store.cancelRunId, "")
+    compare(store.cancelText, "")
+    compare(store.cancelError, "")
+    compare(store.confirmCancel(), false, "a second confirm finds the dialog closed")
+    compare(store.controlRunners.length, 1)
+  }
+
+  // 5 (D6, Review Focus 2)
+  function test_a_run_that_changed_under_the_open_dialog_refuses_the_confirm() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.openCancel("r2")
+    store.cancelText = "cancel"
+    store.control("pause", "r2")
+    compare(store.confirmCancel(), false)
+    compare(store.cancelError, "A request for this run is pending")
+    compare(store.cancelOpen, true)
+    compare(store.controlRunners.length, 1, "only the pause")
+    store.closeCancel()
+
+    store.openCancel("r1")
+    store.cancelText = "cancel"
+    snapshot(store, [ctlEntry("r1", "done", false)])
+    compare(store.confirmCancel(), false)
+    compare(store.cancelError, "The run has finished")
+    compare(store.cancelOpen, true, "the dialog stays for the user to read why")
+    compare(store.cancelRunId, "r1")
+    compare(store.pending.r1, undefined)
+    snapshot(store, [])
+    compare(store.confirmCancel(), false)
+    compare(store.cancelError, "This run is no longer in the snapshot")
+    compare(store.cancelOpen, true)
+    compare(store.controlRunners.length, 1, "no cancel was ever launched")
+  }
+
+  // 6
+  function test_a_project_switch_closes_the_dialog_and_clears_the_flash() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    store.openCancel("r1")
+    store.cancelText = "can"
+    store.cancelError = "x"
+    store.flash("The run has finished")
+    store.project = rootB
+    compare(store.cancelOpen, false)
+    compare(store.cancelRunId, "")
+    compare(store.cancelText, "")
+    compare(store.cancelError, "")
+    compare(store.flashText, "")
+    compare(store.flashTimer.running, false)
+  }
+
+  // ---- alerts: the toasts (S2 4.4)
+
+  function escalated(id) { return entry(id, "escalated", false) }
+  function toastIds(store) { return store.toasts.map(function(t) { return t.id }).join(",") }
+
+  // An active store on project A whose first snapshot listed `entries`: that
+  // snapshot only armed the alerts.
+  function armedStore(entries) {
+    var store = activeStore(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply(entries), 0)
+    compare(store.alertsArmed, true, "the first good snapshot while open arms the alerts")
+    compare(store.toasts.length, 0, "and raises nothing")
+    return store
+  }
+
+  // 1
+  function test_no_toast_while_the_panel_is_closed() {
+    var store = makeWithProject(rootA); if (!store) return
+    compare(store.alertsArmed, false)
+    compare(store.toasts.length, 0)
+    reply(store.snapshotRunner.current, okReply([running("a")]), 0)
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 0)
+    compare(store.alertsArmed, false, "a closed panel never arms")
+  }
+
+  // 2
+  function test_a_run_that_turns_escalated_raises_one_toast() {
+    var store = activeStore(rootA); if (!store) return
+    compare(store.toastMs, 8000)
+    reply(store.snapshotRunner.current, okReply([escalated("a"), running("b")]), 0)
+    compare(store.toasts.length, 0, "the first snapshot after opening never replays history")
+    compare(store.alertsArmed, true)
+    var before = Date.now()
+    snapshot(store, [escalated("a"), escalated("b")])
+    compare(store.toasts.length, 1)
+    var t = store.toasts[0]
+    compare(t.id, "b")
+    compare(t.title, "m-b")
+    compare(t.state, "escalated")
+    compare(t.reason, Runs.escalationReason(store.runById("b")))
+    compare(t.reason, "escalated")
+    compare(typeof t.key, "number")
+    verify(t.expiresMs >= before + 8000 && t.expiresMs <= Date.now() + 8000, "it expires 8 s from now")
+  }
+
+  // 3
+  function test_a_run_still_escalated_raises_nothing_again() {
+    var store = armedStore([running("a")]); if (!store) return
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 1)
+    var key = store.toasts[0].key
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 1)
+    compare(store.toasts[0].key, key, "the same toast, not a new one")
+  }
+
+  // 4 (Review focus: reopening never replays history)
+  function test_closing_empties_the_toasts_and_reopening_raises_nothing_at_first() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    snapshot(store, [escalated("a"), running("b")])
+    compare(store.toasts.length, 1)
+    store.active = false
+    compare(store.toasts.length, 0, "a toast never outlives the panel opening")
+    compare(store.alertsArmed, false)
+    store.active = true
+    compare(store.alertsArmed, false)
+    reply(store.snapshotRunner.current, okReply([escalated("a"), dead("b")]), 0)
+    compare(store.toasts.length, 0, "b died while the panel was closed: not replayed")
+    compare(store.alertsArmed, true)
+    snapshot(store, [escalated("a"), dead("b"), escalated("c")])
+    compare(toastIds(store), "c")
+  }
+
+  // Review Focus 1 (D3)
+  function test_a_snapshot_landing_after_the_panel_closed_raises_nothing_and_does_not_arm() {
+    var store = armedStore([running("a")]); if (!store) return
+    store.refresh()
+    var late = store.snapshotRunner.current
+    store.active = false
+    reply(late, okReply([escalated("a")]), 0)
+    compare(store.runs[0].status, "escalated", "the snapshot itself is still applied")
+    compare(store.toasts.length, 0)
+    compare(store.alertsArmed, false)
+  }
+
+  // 5
+  function test_am_missing_disarms_and_a_failed_snapshot_does_not() {
+    var store = armedStore([running("a")]); if (!store) return
+    store.refresh()
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "AmMissing", message: "am is not installed" } }) + "\n", 1)
+    compare(store.runs.length, 0)
+    compare(store.alertsArmed, false)
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 0, "the first good snapshot after am came back raises nothing")
+    compare(store.alertsArmed, true)
+    snapshot(store, [escalated("a"), escalated("b")])
+    compare(toastIds(store), "b", "the one after that compares normally")
+
+    var other = armedStore([running("x")]); if (!other) return
+    other.refresh()
+    reply(other.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }) + "\n", 1)
+    compare(other.alertsArmed, true, "a failed snapshot keeps the baseline")
+    other.refresh()
+    reply(other.snapshotRunner.current, "garbage\n", 1)
+    compare(other.alertsArmed, true)
+    snapshot(other, [escalated("x")])
+    compare(toastIds(other), "x")
+  }
+
+  // 6
+  function test_five_alerts_in_one_snapshot_leave_the_last_three_toasts() {
+    var store = armedStore([]); if (!store) return
+    snapshot(store, [escalated("r1"), escalated("r2"), dead("r3"), escalated("r4"), dead("r5")])
+    compare(toastIds(store), "r3,r4,r5")
+    verify(store.toasts[0].key < store.toasts[1].key && store.toasts[1].key < store.toasts[2].key, "keys only grow")
+    compare(store.toasts[0].state, "dead")
+    compare(store.toasts[0].reason, "process died")
+  }
+
+  // 7
+  function test_a_run_that_alerts_again_replaces_its_own_toast() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    snapshot(store, [escalated("a"), escalated("b")])
+    compare(toastIds(store), "a,b")
+    var oldKey = store.toasts[0].key
+    snapshot(store, [dead("a"), escalated("b")])
+    compare(toastIds(store), "b,a", "a's old toast went and its new one is the newest")
+    compare(store.toasts[1].state, "dead")
+    compare(store.toasts[1].reason, "process died")
+    verify(store.toasts[1].key > oldKey, "a new key")
+  }
+
+  // 8
+  function test_toasts_expire_and_the_timer_runs_only_while_open_with_toasts() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    var timer = store.toastTimer
+    compare(timer.objectName, "toastTimer")
+    compare(timer.interval, 250)
+    compare(timer.repeat, true)
+    compare(timer.running, false, "no toast: no timer")
+    snapshot(store, [escalated("a"), running("b")])
+    compare(timer.running, true)
+    var aExpires = store.toasts[0].expiresMs
+    store.toastMs = 60000
+    snapshot(store, [escalated("a"), escalated("b")])
+    compare(toastIds(store), "a,b")
+    store.expireToasts(aExpires - 1)
+    compare(toastIds(store), "a,b", "not yet")
+    store.expireToasts(aExpires)
+    compare(toastIds(store), "b", "expiresMs <= now goes")
+    store.dismissAllToasts()
+    compare(timer.running, false, "nothing left: no timer")
+    store.toastMs = 50
+    snapshot(store, [escalated("a"), dead("b")])
+    compare(store.toasts.length, 1)
+    tryVerify(function() { return store.toasts.length === 0 }, 2000, "the timer dropped the expired toast")
+    compare(timer.running, false)
+  }
+
+  // 9 (and Review Focus 2)
+  function test_dismiss_removes_one_toast_by_key_and_dismiss_all_empties() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    snapshot(store, [escalated("a"), escalated("b")])
+    var keyA = store.toasts[0].key
+    store.dismissToast(-12345)
+    compare(toastIds(store), "a,b", "an unknown key changes nothing")
+    store.dismissToast(keyA)
+    compare(toastIds(store), "b")
+    snapshot(store, [dead("a"), escalated("b")])
+    compare(toastIds(store), "b,a")
+    store.dismissToast(keyA)
+    compare(toastIds(store), "b,a", "a's stale key leaves its newer toast")
+    store.dismissAllToasts()
+    compare(store.toasts.length, 0)
+  }
+
+  // 10 (the toast half; Task 2 pins the setting half)
+  function test_a_project_switch_empties_the_toasts_and_disarms() {
+    var store = armedStore([running("a")]); if (!store) return
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 1)
+    store.project = rootB
+    compare(store.toasts.length, 0)
+    compare(store.alertsArmed, false)
+    reply(store.snapshotRunner.current, okReply([escalated("z")]), 0)
+    compare(store.toasts.length, 0, "B's first snapshot raises nothing")
+    compare(store.alertsArmed, true)
+  }
+
+  // ---- alerts: the setting and the desktop notifications (S2 4.4)
+
+  property string notifyCmd: "python3|/plugin/core/backend/runs/notify.py|"
+  property string viewerCmd: "python3|/plugin/core/backend/projects/viewer-state.py|"
+
+  function runSettings(notify) {
+    return JSON.stringify({ verify: [], allowNoVerification: false, notifyOnEscalation: notify }) + "\n"
+  }
+
+  // 10 (the setting half)
+  function test_a_project_switch_resets_the_switch_and_loads_the_new_projects_setting() {
+    var store = makeWithProject(rootA); if (!store) return
+    var loadA = store.settingsLoadRunner.current
+    verify(loadA, "selecting a project loads its run settings")
+    compare(argv(loadA), tc.viewerCmd + "get-run-settings|/home/u/my proj")
+    compare(loadA.command.length, 4)
+    compare(loadA.launchGuard, "/home/u/my proj")
+    reply(loadA, runSettings(true), 0)
+    compare(store.notifyOnEscalation, true)
+    store.project = rootB
+    compare(store.notifyOnEscalation, false, "off until B's own reply")
+    compare(store.notifySaved, false)
+    compare(store.notifyTouched, false)
+    var loadB = store.settingsLoadRunner.current
+    verify(loadB !== loadA, "a new load")
+    compare(argv(loadB), tc.viewerCmd + "get-run-settings|/home/u/b")
+    compare(loadB.launchGuard, "/home/u/b", "the launch is guarded by the NEW project")
+    var seq = store.settingsLoadRunner.seq
+    store.project = ""
+    compare(store.settingsLoadRunner.seq, seq, "no project: nothing is loaded")
+    compare(store.settingsLoadRunner.guard, "")
+  }
+
+  // 11
+  function test_the_load_reply_sets_the_switch_and_a_garbled_one_leaves_it_off() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.settingsLoadRunner.current, runSettings(true), 0)
+    compare(store.notifyOnEscalation, true)
+    compare(store.notifySaved, true)
+    var other = makeWithProject(rootA); if (!other) return
+    reply(other.settingsLoadRunner.current, "Traceback: boom\n", 1)
+    compare(other.notifyOnEscalation, false)
+    compare(other.notifySaved, false)
+    var third = makeWithProject(rootA); if (!third) return
+    reply(third.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: "yes" }) + "\n", 0)
+    compare(third.notifyOnEscalation, false, "only a real true turns it on")
+  }
+
+  // Review Focus 3
+  function test_a_late_load_reply_for_the_old_project_is_dropped() {
+    var store = makeWithProject(rootA); if (!store) return
+    var loadA = store.settingsLoadRunner.current
+    store.project = rootB
+    reply(loadA, runSettings(true), 0)
+    compare(store.notifyOnEscalation, false, "A's setting never shows in B")
+    compare(store.notifySaved, false)
+  }
+
+  // 12
+  function test_with_the_setting_on_each_alert_launches_its_own_notification() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    compare(store.notifyRunners.length, 0)
+    store.notifyOnEscalation = true
+    snapshot(store, [escalated("a"), dead("b")])
+    compare(store.notifyRunners.length, 2, "one runner per alert")
+    var first = store.notifyRunners[0].current, second = store.notifyRunners[1].current
+    compare(argv(first), tc.notifyCmd + "m-a|escalated")
+    compare(argv(second), tc.notifyCmd + "m-b|process died")
+    compare(first.running, true, "the second launch did not stop the first")
+    compare(second.running, true)
+    compare(first.launchGuard, "")
+    reply(first, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
+    compare(store.notifyRunners.length, 1)
+    reply(second, "garbage\n", 1)
+    compare(store.notifyRunners.length, 0, "a failed notification goes too")
+    compare(toastIds(store), "a,b", "the replies change nothing else")
+    compare(store.flashText, "")
+
+    snapshot(store, [escalated("a"), dead("b"), escalated("c")])
+    compare(store.notifyRunners.length, 1)
+    var proc = store.notifyRunners[0].current
+    store.project = rootB
+    compare(proc.running, true, "a project switch does not stop a launched notification")
+    reply(proc, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
+    compare(store.notifyRunners.length, 0)
+
+    var off = armedStore([running("a")]); if (!off) return
+    snapshot(off, [escalated("a")])
+    compare(off.toasts.length, 1)
+    compare(off.notifyRunners.length, 0, "setting off: toasts only")
+
+    var five = armedStore([]); if (!five) return
+    five.notifyOnEscalation = true
+    snapshot(five, [escalated("r1"), escalated("r2"), dead("r3"), escalated("r4"), dead("r5")])
+    compare(five.toasts.length, 3)
+    compare(five.notifyRunners.length, 5, "every alert notifies, even those whose toast was capped away")
+  }
+
+  // 1 (the notification half)
+  function test_no_notification_while_the_panel_is_closed() {
+    var store = makeWithProject(rootA); if (!store) return
+    store.notifyOnEscalation = true
+    reply(store.snapshotRunner.current, okReply([running("a")]), 0)
+    snapshot(store, [escalated("a")])
+    compare(store.notifyRunners.length, 0)
+    compare(store.toasts.length, 0)
+  }
+
+  // 13
+  function test_the_switch_saves_at_once_and_a_failed_save_puts_it_back() {
+    var store = makeWithProject(rootA); if (!store) return
+    compare(store.setNotifyOnEscalation(true), true)
+    compare(store.notifyOnEscalation, true, "the switch flips at once")
+    compare(store.notifyTouched, true)
+    var save = store.settingsSaveRunner.current
+    verify(save, "a save was launched")
+    compare(save.command.length, 5)
+    compare(argv(save), tc.viewerCmd + 'set-run-settings|/home/u/my proj|{"notifyOnEscalation":true}')
+    compare(save.launchGuard, "/home/u/my proj")
+    reply(save, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.notifySaved, true)
+    compare(store.flashText, "")
+    compare(store.setNotifyOnEscalation(false), true)
+    compare(store.notifyOnEscalation, false)
+    compare(argv(store.settingsSaveRunner.current), tc.viewerCmd + 'set-run-settings|/home/u/my proj|{"notifyOnEscalation":false}')
+    reply(store.settingsSaveRunner.current, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(store.notifyOnEscalation, true, "back to the value last saved")
+    compare(store.notifySaved, true)
+    compare(store.flashText, "Notify on escalation could not be saved")
+    store.flash("")
+    store.setNotifyOnEscalation(false)
+    reply(store.settingsSaveRunner.current, "garbage\n", 1)
+    compare(store.notifyOnEscalation, true, "an unreadable reply is a failure too")
+    compare(store.flashText, "Notify on escalation could not be saved")
+  }
+
+  // Review Focus 4
+  function test_a_save_reply_for_a_project_the_user_left_changes_nothing() {
+    var store = makeWithProject(rootA); if (!store) return
+    store.setNotifyOnEscalation(true)
+    var save = store.settingsSaveRunner.current
+    store.project = rootB
+    reply(save, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(store.notifyOnEscalation, false)
+    compare(store.notifySaved, false)
+    compare(store.flashText, "", "no flash about A in B")
+  }
+
+  // 14
+  function test_a_load_reply_after_the_user_toggled_is_ignored() {
+    var store = makeWithProject(rootA); if (!store) return
+    var load = store.settingsLoadRunner.current
+    store.setNotifyOnEscalation(true)
+    reply(load, runSettings(false), 0)
+    compare(store.notifyOnEscalation, true)
+  }
+
+  // 15
+  function test_without_a_project_the_switch_does_nothing() {
+    var store = make(); if (!store) return
+    compare(store.notifyOnEscalation, false)
+    compare(store.notifySaved, false)
+    compare(store.notifyTouched, false)
+    compare(store.notifyRunners.length, 0)
+    compare(store.setNotifyOnEscalation(true), false)
+    compare(store.notifyOnEscalation, false)
+    compare(store.notifyTouched, false)
+    verify(!store.settingsSaveRunner.current, "nothing was launched")
+    verify(!store.settingsLoadRunner.current, "nothing was loaded")
   }
 }

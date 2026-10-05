@@ -1,7 +1,6 @@
 import QtQuick
 import qs.Commons
 import qs.Ui
-import "../../core/domain/projects.js" as Projects
 import "../components" as UI
 import "../theme" as T
 
@@ -29,8 +28,17 @@ Item {
   // The one input for every colour and font: Panel passes its Theme down,
   // and a standalone instance renders with the shell defaults.
   property var theme: T.Theme {}
+  // The word the user has to type, matched trimmed and case-blind; it is also
+  // the field's placeholder. A blank word never confirms.
+  property string confirmWord: "delete"
+  // The safe button's text. A run cancel says "Keep running", so the way out
+  // never reads like the destructive "Cancel run" beside it.
+  property string dismissLabel: "Cancel"
   readonly property Item focusItem: field
-  readonly property bool confirmed: Projects.isDeleteConfirmed(field.text)
+  readonly property bool confirmed: {
+    var word = dialog.confirmWord.trim().toLowerCase()
+    return word !== "" && String(field.text).trim().toLowerCase() === word
+  }
 
   signal confirmRequested()
   signal cancelRequested()
@@ -75,7 +83,7 @@ Item {
       objectName: dialog.fieldObjectName
       width: parent.width
       foreground: dialog.theme.foreground
-      placeholderText: "delete"
+      placeholderText: dialog.confirmWord
       enabled: !dialog.busy
       text: dialog.typedText
 
@@ -108,7 +116,7 @@ Item {
 
       UI.ActionButton {
         objectName: "confirmCancel"
-        text: "Cancel"
+        text: dialog.dismissLabel
         enabled: !dialog.busy
         opacity: 1
         theme: dialog.theme

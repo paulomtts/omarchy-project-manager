@@ -11,6 +11,7 @@ import "../domain/runs.js" as Runs
 // long-lived runs-watch.py that says which runs changed; each burst of changes
 // costs one debounced snapshot. Logs are fetched on a selection, on Refresh and
 // when a snapshot changes the selected attempt's status -- never on a timer.
+// Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // The project root and the backend directory are handed to it from outside --
 // it never reaches for another store. App composes it as `app.runs` and binds
 // `active` to the panel being open.
@@ -56,6 +57,44 @@ Scope {
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
 
+  // Run controls (S2 4.1). `pending` holds the requests not yet settled,
+  // {runId: action}; `stillWaiting` the pending ones 30 s or more old,
+  // {runId: true}. Both are replaced, never changed in place, so bindings see
+  // every change. The control error is its own pair of fields: a snapshot never
+  // touches it, and the snapshot's lastError never carries a control refusal.
+  property var pending: ({})
+  property var stillWaiting: ({})
+  readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
+  property string lastControlError: ""      // Runs.controlError sentence of the last failed request
+  property string lastControlErrorRunId: "" // the run that sentence is about
+
+  // The cancel confirmation (S2 4.3). Panel renders it; the store keeps the
+  // run it asks about ("" = closed), the typed word and why the last confirm
+  // was refused.
+  property string cancelRunId: ""
+  readonly property bool cancelOpen: store.cancelRunId !== ""
+  property string cancelText: ""
+  property string cancelError: ""
+  // The footer flash: why a run key was refused. flashTimer clears it.
+  property string flashText: ""
+
+  // Alerts (S2 4.4): a toast for every run that newly needs a human while the
+  // panel is open. `alertsArmed` says the current `runs` may be compared
+  // against: the first good snapshot after an opening, a project switch or an
+  // am-missing spell only arms, so history is never replayed. `toasts` is
+  // {key, id, title, state, reason, expiresMs}, oldest first, at most 3, and
+  // is replaced, never changed in place.
+  property bool alertsArmed: false
+  property var toasts: []
+  property int toastMs: 8000
+  // "Notify on escalation", per project and off by default: the switch's
+  // value, the last value read from or written to viewer-state.py, and
+  // whether the user changed it since the project was selected (a late load
+  // reply then changes nothing).
+  property bool notifyOnEscalation: false
+  property bool notifySaved: false
+  property bool notifyTouched: false
+
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
@@ -64,6 +103,13 @@ Scope {
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
+  readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
+  readonly property alias pendingTimer: pendingTimer
+  readonly property alias flashTimer: flashTimer
+  readonly property alias toastTimer: toastTimer
+  readonly property alias settingsLoadRunner: settingsLoadRunner
+  readonly property alias settingsSaveRunner: settingsSaveRunner
+  readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -93,16 +139,18 @@ Scope {
     else store.stopLive()
   }
 
-  // The panel opened: fetch now; the first good snapshot starts the watch, and
-  // the stale clock counts from now.
+  // The panel opened: fetch now; the first good snapshot starts the watch and
+  // arms the alerts, and the stale clock counts from now.
   function startLive() {
     store.watchTried = false
+    store.alertsArmed = false
     store.restartStale()
     store.refresh()
   }
 
-  // The panel closed: no process and no timer is left running. The runs, the
-  // selection and amStatus stay for the next opening.
+  // The panel closed: no process and no timer is left running, and no toast
+  // outlives the opening. The runs, the selection and amStatus stay for the
+  // next opening.
   function stopLive() {
     store.stopWatch()
     debounceTimer.stop()
@@ -110,6 +158,8 @@ Scope {
     staleTimer.stop()
     store.stale = false
     store.watchWarning = ""
+    store.alertsArmed = false
+    store.toasts = []
   }
 
   // Nothing is stale yet; the 30 s clock starts again while there is something
@@ -213,7 +263,26 @@ Scope {
     store.runFilter = ""
     store.lastError = ""
     store.amStatus = "ok"
-    if (store.project !== "") store.refresh()
+    // Control requests already launched still complete in am; their replies
+    // are dropped by their runners' guard. Nothing of the old project's stays.
+    store.pending = {}
+    store.stillWaiting = {}
+    controlState.requests = {}
+    store.dismissControlError()
+    store.closeCancel()
+    store.flash("")
+    store.alertsArmed = false
+    store.toasts = []
+    // The switch reads off until this project's own reply. Notifications
+    // already launched still run.
+    store.notifyOnEscalation = false
+    store.notifySaved = false
+    store.notifyTouched = false
+    settingsLoadRunner.guard = store.project
+    if (store.project !== "") {
+      store.refresh()
+      settingsLoadRunner.run(["get-run-settings", store.project])
+    }
   }
 
   // ---- attempt logs (5.2)
@@ -369,7 +438,10 @@ Scope {
         if (e === null || typeof e !== "object" || Array.isArray(e)) continue
         out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
       }
+      // Compared before the runs are replaced; raised below only while open.
+      var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, out)
       store.runs = out
+      store.settleAfterSnapshot()
       store.logsAfterSnapshot()
       if (pollTimer.running && store.watchSchemaError !== "") {
         // The watch's schema banner outlives the polling snapshots.
@@ -383,6 +455,8 @@ Scope {
       if (store.active) {
         staleTimer.restart()
         if (!store.watchTried) store.startWatch()
+        store.raiseAlerts(alerts)
+        store.alertsArmed = true
       }
       return
     }
@@ -393,6 +467,9 @@ Scope {
       if (type === "AmMissing") {
         store.runs = []
         store.amStatus = "missing"
+        // Comparing the next good snapshot against [] would alert every
+        // escalated run again.
+        store.alertsArmed = false
       } else {
         store.amStatus = "error"
       }
@@ -400,6 +477,357 @@ Scope {
     }
     store.amStatus = "error"
     store.lastError = "The runs snapshot gave no usable result (exit " + exitCode + ")."
+  }
+
+  // ---- run controls (S2 4.1)
+
+  // A copy of a {key: value} map, so a change is a new object.
+  function copyMap(map) {
+    var out = {}
+    for (var key in map) {
+      if (Object.prototype.hasOwnProperty.call(map, key)) out[key] = map[key]
+    }
+    return out
+  }
+
+  function hasKey(map, key) {
+    return Object.prototype.hasOwnProperty.call(map, key)
+  }
+
+  // Starts a pause, resume or cancel of one run of this project and returns
+  // whether it started. Refused: no project, an unknown action, a run that is
+  // not in the snapshot, an action Runs.controls says is disabled, or a run
+  // that already has a request pending. Confirming a cancel is the caller's job.
+  function control(action, runId) {
+    if (store.project === "") return false
+    if (action !== "pause" && action !== "resume" && action !== "cancel") return false
+    if (typeof runId !== "string" || runId === "") return false
+    var run = store.runById(runId)
+    if (run === null) return false
+    if (!Runs.controls(run)[action].enabled) return false
+    if (store.hasKey(store.pending, runId)) return false
+    store.dismissControlError()
+    controlState.nextToken += 1
+    var requests = store.copyMap(controlState.requests)
+    requests[runId] = { token: controlState.nextToken, action: action, baseline: Runs.runState(run),
+                        launchedMs: Date.now(), acknowledged: false, requestedAt: "" }
+    controlState.requests = requests
+    var p = store.copyMap(store.pending)
+    p[runId] = action
+    store.pending = p
+    var runner = controlC.createObject(store, { runId: runId, action: action,
+                                                token: controlState.nextToken, madeFor: store.project })
+    controlState.runners = controlState.runners.concat([runner])
+    if (action === "resume" && run.workflow !== "task") {
+      // A milestone resume reuses the project's stored verify set: read it first.
+      runner.settingsStep = true
+      runner.script = store.backendDir + "projects/viewer-state.py"
+      runner.run(["get-run-settings", store.project])
+    } else {
+      store.launchControl(runner, [])
+    }
+    return true
+  }
+
+  // The request's run-control.py launch on its own runner: ACTION RUN REPO,
+  // then `extra` (a resume's verify arguments).
+  function launchControl(runner, extra) {
+    runner.script = store.backendDir + "runs/run-control.py"
+    runner.run([runner.action, runner.runId, store.project].concat(extra))
+  }
+
+  // The request this runner was launched for, while it is still the one
+  // pending for its run; null once it was settled, emptied by a project switch
+  // or replaced by a newer request.
+  function requestOf(runner) {
+    if (!store.hasKey(controlState.requests, runner.runId)) return null
+    var req = controlState.requests[runner.runId]
+    return req.token === runner.token ? req : null
+  }
+
+  // The request for runId is over: its pending entry, its still-waiting mark
+  // and its bookkeeping go.
+  function settle(runId) {
+    if (store.hasKey(store.pending, runId)) {
+      var p = store.copyMap(store.pending)
+      delete p[runId]
+      store.pending = p
+    }
+    if (store.hasKey(store.stillWaiting, runId)) {
+      var w = store.copyMap(store.stillWaiting)
+      delete w[runId]
+      store.stillWaiting = w
+    }
+    if (store.hasKey(controlState.requests, runId)) {
+      var r = store.copyMap(controlState.requests)
+      delete r[runId]
+      controlState.requests = r
+    }
+  }
+
+  // A request ended without am taking it: the buttons come back and the
+  // sentence shows under that run.
+  function failControl(runId, sentence) {
+    store.settle(runId)
+    store.lastControlError = sentence
+    store.lastControlErrorRunId = runId
+  }
+
+  function dismissControlError() {
+    store.lastControlError = ""
+    store.lastControlErrorRunId = ""
+  }
+
+  // A runner's request is over: it leaves controlRunners and is destroyed.
+  function dropRunner(runner) {
+    controlState.runners = controlState.runners.filter(function(r) { return r !== runner })
+    runner.destroy()
+  }
+
+  // One run-control.py reply, for the project the request was made in. ok:true
+  // means am has the request: pending stays until a snapshot settles it, and
+  // the requested_at am gave it is remembered. Anything else ends it with a
+  // sentence. Either way the runs are fetched again. A reply for a request that
+  // is no longer the pending one changes nothing.
+  function controlReplied(runner, stdout, exitCode) {
+    var req = store.requestOf(runner)
+    if (req === null) {
+      store.dropRunner(runner)
+      return
+    }
+    if (runner.settingsStep) {
+      runner.settingsStep = false
+      store.resumeWithSettings(runner, stdout, exitCode)
+      return
+    }
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true) {
+      var data = envelope.data
+      var requestedAt = data !== null && typeof data === "object" && typeof data.requested_at === "string" ? data.requested_at : ""
+      var requests = store.copyMap(controlState.requests)
+      requests[runner.runId] = { token: req.token, action: req.action, baseline: req.baseline,
+                                 launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
+      controlState.requests = requests
+    } else if (envelope !== null && envelope.ok === false) {
+      store.failControl(runner.runId, Runs.controlError(envelope))
+    } else {
+      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").")
+    }
+    store.dropRunner(runner)
+    store.refresh()
+  }
+
+  // The run settings' reply for a milestone resume. A stored verify set (a
+  // non-empty list of strings) goes to run-control as --verify pairs in its
+  // order; otherwise the stored opt-out as --allow-no-verification; with
+  // neither, or no readable reply, run-control is never launched and the
+  // request ends with a sentence -- no re-snapshot, nothing was asked of am.
+  function resumeWithSettings(runner, stdout, exitCode) {
+    var settings = store.parseEnvelope(stdout)
+    if (settings === null) {
+      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").")
+      store.dropRunner(runner)
+      return
+    }
+    var verify = Array.isArray(settings.verify) ? settings.verify : []
+    var usable = verify.length > 0
+    for (var i = 0; i < verify.length; i++) {
+      if (typeof verify[i] !== "string") usable = false
+    }
+    if (usable) {
+      var extra = []
+      for (var j = 0; j < verify.length; j++) extra.push("--verify", verify[j])
+      store.launchControl(runner, extra)
+    } else if (settings.allowNoVerification === true) {
+      store.launchControl(runner, ["--allow-no-verification"])
+    } else {
+      store.failControl(runner.runId, "Resume needs verify commands: none are stored for this project, and running without verification was not chosen.")
+      store.dropRunner(runner)
+    }
+  }
+
+  // After every good snapshot: an acknowledged request is settled when its run
+  // is gone, when the run's state moved since the request started, or (pause,
+  // cancel) when am marks its request handled. A request still in flight is
+  // never settled by a snapshot: its buttons stay off until the reply.
+  function settleAfterSnapshot() {
+    var ids = Object.keys(store.pending)
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i]
+      if (!store.hasKey(controlState.requests, id)) continue
+      var req = controlState.requests[id]
+      if (!req.acknowledged) continue
+      var run = store.runById(id)
+      if (run === null || Runs.runState(run) !== req.baseline
+          || (req.action !== "resume" && store.isHandled(run, req))) store.settle(id)
+    }
+  }
+
+  // The run's am request row for this request has a handled_at: the row with
+  // the requested_at am's reply gave, else the last row of the same command.
+  function isHandled(run, req) {
+    var list = Array.isArray(run.requests) ? run.requests : []
+    var match = null
+    for (var i = 0; i < list.length; i++) {
+      var row = list[i]
+      if (req.requestedAt !== "" ? row.requested_at === req.requestedAt : row.command === req.action) match = row
+    }
+    return match !== null && match.handled_at !== ""
+  }
+
+  // Marks the pending requests launched 30 s or more before nowMs (the timer
+  // passes Date.now()); the UI shows stillWaitingText for them.
+  function checkWaiting(nowMs) {
+    var out = {}
+    var ids = Object.keys(store.pending)
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i]
+      if (store.hasKey(controlState.requests, id) && nowMs - controlState.requests[id].launchedMs >= 30000) out[id] = true
+    }
+    store.stillWaiting = out
+  }
+
+  // ---- cancel confirmation and the footer flash (S2 4.3)
+
+  // "" when control(action, runId) would start a request; otherwise why not:
+  // a run that is not in the snapshot (or no project), then a request already
+  // pending for it, then the reason Runs.controls gives. Changes nothing.
+  function refusalOf(action, runId) {
+    if (action !== "pause" && action !== "resume" && action !== "cancel") return "Unknown control"
+    var run = store.project === "" || typeof runId !== "string" || runId === "" ? null : store.runById(runId)
+    if (run === null) return "This run is no longer in the snapshot"
+    if (store.hasKey(store.pending, runId)) return "A request for this run is pending"
+    return Runs.controls(run)[action].reason
+  }
+
+  // Shows text in the footers for 3 s; a new flash replaces it and restarts
+  // the clock, flash("") clears it.
+  function flash(text) {
+    store.flashText = String(text || "")
+    if (store.flashText === "") flashTimer.stop()
+    else flashTimer.restart()
+  }
+
+  // Opens the cancel confirmation for a run that can be cancelled now;
+  // otherwise flashes why not and leaves any dialog as it is.
+  function openCancel(runId) {
+    var reason = store.refusalOf("cancel", runId)
+    if (reason !== "") {
+      store.flash(reason)
+      return false
+    }
+    store.cancelText = ""
+    store.cancelError = ""
+    store.cancelRunId = runId
+    return true
+  }
+
+  function closeCancel() {
+    store.cancelRunId = ""
+    store.cancelText = ""
+    store.cancelError = ""
+  }
+
+  // The dialog's confirm. The typed word is checked again here (the dialog
+  // gates it too), then the run is checked again: one that changed under the
+  // open dialog keeps it open with the reason. A started cancel closes it.
+  function confirmCancel() {
+    if (store.cancelRunId === "") return false
+    if (String(store.cancelText).trim().toLowerCase() !== "cancel") return false
+    var reason = store.refusalOf("cancel", store.cancelRunId)
+    if (reason !== "") {
+      store.cancelError = reason
+      return false
+    }
+    if (!store.control("cancel", store.cancelRunId)) {
+      store.cancelError = "The run could not be cancelled"
+      return false
+    }
+    store.closeCancel()
+    return true
+  }
+
+  // ---- alerts (S2 4.4)
+
+  // One toast per alert, newest last: a run's older toast goes first, then the
+  // oldest beyond three. With the setting on, each alert also notifies.
+  // Called from applySnapshot only while active.
+  function raiseAlerts(alerts) {
+    var list = Array.isArray(alerts) ? alerts : []
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i]
+      toastState.nextKey += 1
+      var next = store.toasts.filter(function(t) { return t.id !== a.id })
+      next.push({ key: toastState.nextKey, id: a.id, title: a.title, state: a.state, reason: a.reason,
+                  expiresMs: Date.now() + store.toastMs })
+      while (next.length > 3) next.shift()
+      store.toasts = next
+      if (store.notifyOnEscalation) store.notify(a)
+    }
+  }
+
+  // Drops every toast whose time is up at nowMs (the timer passes Date.now()).
+  function expireToasts(nowMs) {
+    var next = store.toasts.filter(function(t) { return t.expiresMs > nowMs })
+    if (next.length !== store.toasts.length) store.toasts = next
+  }
+
+  // The toast with this key goes; an unknown key changes nothing.
+  function dismissToast(key) {
+    var next = store.toasts.filter(function(t) { return t.key !== key })
+    if (next.length !== store.toasts.length) store.toasts = next
+  }
+
+  function dismissAllToasts() {
+    if (store.toasts.length > 0) store.toasts = []
+  }
+
+  // One notify.py launch for an alert, on a runner of its own so two never
+  // stop each other. The reply is not read: a failed or skipped notification
+  // changes nothing here.
+  function notify(alert) {
+    var runner = notifyC.createObject(store)
+    notifyState.runners = notifyState.runners.concat([runner])
+    runner.run([String(alert.title), String(alert.reason)])
+  }
+
+  function dropNotifyRunner(runner) {
+    notifyState.runners = notifyState.runners.filter(function(r) { return r !== runner })
+    runner.destroy()
+  }
+
+  // The switch changed: shown at once, written in the background. Refused
+  // (false, nothing changes) without a project.
+  function setNotifyOnEscalation(on) {
+    if (store.project === "") return false
+    var value = !!on
+    store.notifyOnEscalation = value
+    store.notifyTouched = true
+    settingsSaveRunner.sent = value
+    settingsSaveRunner.run(["set-run-settings", store.project, JSON.stringify({ notifyOnEscalation: value })])
+    return true
+  }
+
+  // get-run-settings: one bare object. Only a real true turns the switch on;
+  // an unreadable reply leaves it off. Too late once the user changed it.
+  function applyRunSettings(stdout, exitCode) {
+    if (store.notifyTouched) return
+    var settings = store.parseEnvelope(stdout)
+    var on = settings !== null && settings.notifyOnEscalation === true
+    store.notifyOnEscalation = on
+    store.notifySaved = on
+  }
+
+  // set-run-settings: {"ok": true} means `sent` is stored; anything else puts
+  // the switch back to what is stored and says so.
+  function notifySaveReplied(stdout, exitCode, sent) {
+    var reply = store.parseEnvelope(stdout)
+    if (reply !== null && reply.ok === true) {
+      store.notifySaved = sent
+      return
+    }
+    store.notifyOnEscalation = store.notifySaved
+    store.flash("Notify on escalation could not be saved")
   }
 
   // The guard is the project root, so a snapshot launched for a project the
@@ -424,6 +852,27 @@ Scope {
     script: store.backendDir + "runs/runs-logs.py"
     guard: store.project
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
+  }
+
+  // get-run-settings on a project switch. Its guard is set by projectSwitched()
+  // itself rather than bound to `project`: projectSwitched() runs from the
+  // snapshot runner's guard change, before a binding here is sure to have
+  // followed the project, and this launch must carry the NEW project.
+  HelperRunner {
+    id: settingsLoadRunner
+    script: store.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { store.applyRunSettings(stdout, exitCode) }
+  }
+
+  // set-run-settings on a change of the switch; latest wins. Bound to the
+  // project like the logs: it is launched by a click, long after the binding
+  // followed the project. `sent` is the value the latest launch writes.
+  HelperRunner {
+    id: settingsSaveRunner
+    property bool sent: false
+    script: store.backendDir + "projects/viewer-state.py"
+    guard: store.project
+    onFinished: function(stdout, exitCode) { store.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
   }
 
   // A burst of changed lines costs one snapshot.
@@ -463,11 +912,99 @@ Scope {
     onTriggered: store.refresh()
   }
 
+  // Only while the panel is open and a control request is pending: closing the
+  // panel keeps `pending` but leaves no timer running.
+  Timer {
+    id: pendingTimer
+    objectName: "pendingTimer"
+    interval: 1000
+    repeat: true
+    running: store.active && Object.keys(store.pending).length > 0
+    onTriggered: store.checkWaiting(Date.now())
+  }
+
+  // Clears the footer flash 3 s after the last flash().
+  Timer {
+    id: flashTimer
+    objectName: "flashTimer"
+    interval: 3000
+    repeat: false
+    onTriggered: store.flashText = ""
+  }
+
+  // Only while the panel is open and a toast shows: no timer while idle.
+  Timer {
+    id: toastTimer
+    objectName: "toastTimer"
+    interval: 250
+    repeat: true
+    running: store.active && store.toasts.length > 0
+    onTriggered: store.expireToasts(Date.now())
+  }
+
   // What the watch Process aliases read; kept apart so consumers cannot write it.
   QtObject {
     id: watchState
     property var proc: null
     property bool watching: false
+  }
+
+  // The control requests' own state; kept apart so consumers cannot write it.
+  // `requests` is {runId: {token, action, baseline, launchedMs, acknowledged,
+  // requestedAt}}: the run's state when the request started, when it started,
+  // whether am acknowledged it, and the requested_at am gave it.
+  QtObject {
+    id: controlState
+    property var runners: []
+    property var requests: ({})
+    property int nextToken: 0
+  }
+
+  // The toast keys only grow, so a stale Dismiss never removes a newer toast.
+  QtObject {
+    id: toastState
+    property int nextKey: 0
+  }
+
+  // The notify.py runners in flight; kept apart so consumers cannot write it.
+  QtObject {
+    id: notifyState
+    property var runners: []
+  }
+
+  // One HelperRunner per control request, so requests for different runs never
+  // stop each other. Guarded by the project like the others: a reply for a
+  // project the user has left is dropped, and its runner goes when its process
+  // exits (the runner clears `busy` on that exit but emits no `finished`). No
+  // onGuardChanged: the snapshot runner's already runs projectSwitched(). A
+  // milestone resume uses its runner twice: viewer-state.py, then run-control.py.
+  Component {
+    id: controlC
+
+    HelperRunner {
+      id: cr
+      property string runId: ""
+      property string action: ""
+      property int token: 0
+      property string madeFor: ""         // the project the request was made in
+      property bool settingsStep: false   // reading the run settings; run-control comes next
+      guard: store.project
+      onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
+      onBusyChanged: if (!cr.busy && cr.guard !== cr.madeFor) store.dropRunner(cr)
+    }
+  }
+
+  // One HelperRunner per notification. Guard "": a project switch does not
+  // stop a notification already launched. It goes when its process exits.
+  Component {
+    id: notifyC
+
+    HelperRunner {
+      id: nr
+      script: store.backendDir + "runs/notify.py"
+      guard: ""
+      onFinished: store.dropNotifyRunner(nr)
+    }
   }
 
   // One Process per watch launch, so each carries what it was launched with.

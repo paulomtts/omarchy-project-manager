@@ -7,9 +7,13 @@
 // exists; pinned by tests/core/domain/tst_runs.qml):
 //   raw = {
 //     row:    { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at }  // one `am runs` row
-//     status: { run: {...}, rows: [...], stories: [...], subtasks: [...],
-//               control: { lease: { pid, host, heartbeat_at, accepting, live } }, ... }  // `am status` data, may be absent
+//     status: { run: {..., workflow}, rows: [...], stories: [...], subtasks: [...],
+//               control: { lease: { pid, host, heartbeat_at, accepting, live },
+//                          requests: [{ command, requested_at, handled_at }] }, ... }  // `am status` data, may be absent
 //   }
+// `workflow` is the row's, else the am status run's ("task" for a --card run).
+// `requests` are am's control requests in the order made; handled_at "" means
+// the run has not acted on it yet.
 //
 // The status always comes from `am` (am status first, then the am runs row),
 // never from a brd card. Never throws: anything missing or malformed becomes
@@ -40,6 +44,14 @@ function normalizeRun(raw) {
     }
   }
 
+  var requests = []
+  var rawRequests = arrayOr(control.requests)
+  for (var i = 0; i < rawRequests.length; i++) {
+    var q = rawRequests[i]
+    if (!isObject(q)) continue
+    requests.push({ command: text(q.command), requested_at: text(q.requested_at), handled_at: text(q.handled_at) })
+  }
+
   return {
     id: firstText(row.id, run.id),
     repo_dir: firstText(row.repo_dir, run.repo_dir),
@@ -48,7 +60,9 @@ function normalizeRun(raw) {
     started_at: firstText(row.started_at, run.started_at),
     base_branch: firstText(row.base_branch, run.base_branch),
     branch_prefix: firstText(row.branch_prefix, run.branch_prefix),
+    workflow: firstText(row.workflow, run.workflow),
     lease: lease,
+    requests: requests,
     rows: arrayOr(st.rows),
     tree: { stories: arrayOr(st.stories), subtasks: arrayOr(st.subtasks) }
   }
@@ -620,4 +634,141 @@ function attemptStatus(run, cardId, phase, attempt) {
     if (_attemptNumber(tries[i]) === attempt) return _stringOr(tries[i].status)
   }
   return ""
+}
+
+// ---- Run controls (S2 1.1) ---------------------------------------------------------------
+//
+// Which of pause / resume / cancel a run allows, and the sentence for an am
+// control error. Pure and never throwing, like the rest of this file. Whether a
+// request is already outstanding is the store's business, not these functions'.
+
+var _REASON_INTEGRATE = "Integrate is running; it cannot be paused or cancelled"
+var _REASON_FINISHED = "The run has finished"
+var _REASON_UNKNOWN = "The run's state is unknown"
+var _REASON_PAUSE_NOT_RUNNING = "Only a running run can be paused"
+var _REASON_RESUME_RUNNING = "The run is still running"
+var _REASON_RESUME_CANCELLED = "A cancelled run cannot be resumed"
+var _REASON_CANCEL_CANCELLED = "The run is already cancelled"
+
+// A fresh {enabled, reason}: enabled exactly when there is no reason.
+function _action(reason) { return { enabled: reason === "", reason: reason } }
+
+// Integrate: the run holds a lease (an object) that is not accepting requests.
+// With no lease, accepting is unknown, so the run is not treated as in Integrate.
+function _inIntegrate(run) {
+  return _isObject(run) && _isObject(run.lease) && run.lease.accepting !== true
+}
+
+// {pause, resume, cancel}, each a fresh {enabled, reason}; reason is "" when
+// enabled. Pause needs a running run outside Integrate; resume needs dead,
+// parked or escalated and never looks at accepting; cancel needs a run that has
+// not finished and is not in Integrate. The state's reason wins over Integrate's.
+function controls(run) {
+  var state = runState(run)
+  var integrate = _inIntegrate(run)
+  var pause, resume, cancel
+  if (state === "running") {
+    pause = integrate ? _REASON_INTEGRATE : ""
+    resume = _REASON_RESUME_RUNNING
+    cancel = integrate ? _REASON_INTEGRATE : ""
+  } else if (state === "dead" || state === "parked" || state === "escalated") {
+    pause = _REASON_PAUSE_NOT_RUNNING
+    resume = ""
+    cancel = integrate ? _REASON_INTEGRATE : ""
+  } else if (state === "cancelled") {
+    pause = _REASON_FINISHED
+    resume = _REASON_RESUME_CANCELLED
+    cancel = _REASON_CANCEL_CANCELLED
+  } else if (state === "done") {
+    pause = _REASON_FINISHED
+    resume = _REASON_FINISHED
+    cancel = _REASON_FINISHED
+  } else {
+    pause = _REASON_UNKNOWN
+    resume = _REASON_UNKNOWN
+    cancel = _REASON_UNKNOWN
+  }
+  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel) }
+}
+
+// [type, sentence] for each am control error, matched with === by linear scan so
+// a type such as `constructor` or `__proto__` is just an unknown type.
+var _CONTROL_ERRORS = [
+  ["UnknownRunError", "The run no longer exists"],
+  ["NotRunningError", "The run is not running"],
+  ["DeadRunError", "The run's process has died; resume it instead"],
+  ["NotAcceptingError", _REASON_INTEGRATE],
+  ["RunIsLiveError", "The run is still live; only a dead run can be resumed"],
+  ["NotResumableError", "The run cannot be resumed"],
+  ["ClaimedError", "Another run has already claimed this work"],
+  ["LockTimeoutError", "am is busy; try again in a moment"]
+]
+
+// The sentence for a failed pause / resume / cancel. Reads the type the way
+// errorText does (envelope or bare, trimmed, case-sensitive); a known type gives
+// its sentence without am's message, anything else gives errorText(error).
+function controlError(error) {
+  if (_isObject(error) && error.ok !== true) {
+    var e = _isObject(error.error) ? error.error : error
+    var type = _textOf(e.type)
+    for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
+      if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
+    }
+  }
+  return errorText(error)
+}
+
+
+// ---- Run alerts (S2 1.2) -----------------------------------------------------------------
+//
+// Which runs newly need a human between two snapshots, for the toast and the
+// desktop notification. Pure and never throwing, like the rest of this file.
+// Keeping the previous snapshot (and resetting it to null) is the store's job.
+
+var _REASON_DEAD = "process died"
+
+// A run id a run can be matched by: a non-empty string.
+function _isRunId(id) { return typeof id === "string" && id !== "" }
+
+// runState of the first object run in list with this id, or "" when there is
+// none. Linear === scan, so ids such as `__proto__` match like any other id.
+function _previousState(list, id) {
+  for (var i = 0; i < list.length; i++) {
+    if (_isObject(list[i]) && list[i].id === id) return runState(list[i])
+  }
+  return ""
+}
+
+// Has an alert for this id already been raised in this call?
+function _hasAlert(alerts, id) {
+  for (var i = 0; i < alerts.length; i++) {
+    if (alerts[i].id === id) return true
+  }
+  return false
+}
+
+// One fresh {id, title, state, reason} for each run in nextRuns, in its order,
+// that is now escalated or dead and was not in that same state in prevRuns (a
+// run absent from prevRuns was neither). A non-array prevRuns -- null is the
+// store's "no previous snapshot" -- or nextRuns gives []. At most one alert per
+// id; the first prevRuns occurrence of an id is its previous state. A dead
+// run's reason is always "process died".
+function newAlerts(prevRuns, nextRuns) {
+  if (!Array.isArray(prevRuns) || !Array.isArray(nextRuns)) return []
+  var out = []
+  for (var i = 0; i < nextRuns.length; i++) {
+    var run = nextRuns[i]
+    if (!_isObject(run) || !_isRunId(run.id)) continue
+    var state = runState(run)
+    if (state !== "escalated" && state !== "dead") continue
+    if (_previousState(prevRuns, run.id) === state) continue
+    if (_hasAlert(out, run.id)) continue
+    out.push({
+      id: run.id,
+      title: runTitle(run),
+      state: state,
+      reason: state === "dead" ? _REASON_DEAD : escalationReason(run)
+    })
+  }
+  return out
 }
