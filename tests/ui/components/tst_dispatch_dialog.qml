@@ -17,6 +17,8 @@ TestCase {
   SignalSpy { id: edits; signalName: "fieldEdited" }
   SignalSpy { id: starts; signalName: "startRequested" }
   SignalSpy { id: cancels; signalName: "cancelRequested" }
+  SignalSpy { id: chosen; signalName: "targetChosen" }
+  SignalSpy { id: offers; signalName: "suggestionRequested" }
 
   function milestoneForm(over) {
     return Object.assign({ base: "main", prefix: "m3", verify: ["uv run pytest"], parallelism: 4,
@@ -35,8 +37,8 @@ TestCase {
   }
   function make(over) {
     var d = createTemporaryObject(dialogC, tc, milestone(over))
-    edits.target = d; starts.target = d; cancels.target = d
-    edits.clear(); starts.clear(); cancels.clear()
+    edits.target = d; starts.target = d; cancels.target = d; chosen.target = d; offers.target = d
+    edits.clear(); starts.clear(); cancels.clear(); chosen.clear(); offers.clear()
     d.shown = true
     wait(30)
     return d
@@ -703,5 +705,146 @@ TestCase {
       verify(p.y >= 0 && p.y + button.height <= card.height,
              names[i] + " ends at " + (p.y + button.height) + ", the card at " + card.height)
     }
+  }
+
+  // ---- the Runs entry's target row (S3 4.2) ------------------------------
+
+  property var boardChoices: [{ id: "board", label: "Whole board" }, { id: "m1", label: "M one" }]
+
+  // 1
+  function test_the_target_row_is_hidden_without_choices() {
+    var d = make()
+    var row = H.find(d, "dispatchTargetChoices")
+    verify(row, "the target row")
+    compare(row.visible, false)
+  }
+
+  // 1
+  function test_the_target_row_shows_the_choices_and_emits_another_one() {
+    var d = make({ target: { level: "board" }, targetTitle: "", targetChoices: tc.boardChoices, targetChoice: "board" })
+    compare(H.find(d, "dispatchTargetChoices").visible, true)
+    var board = H.find(d, "dispatchTargetChoiceboard")
+    var m1 = H.find(d, "dispatchTargetChoicem1")
+    verify(board && m1, "both chips")
+    compare(board.text, "Whole board")
+    compare(m1.text, "M one")
+    compare(board.active, true)
+    compare(m1.active, false)
+    click(board)
+    compare(chosen.count, 0, "the active chip emits nothing")
+    click(m1)
+    compare(chosen.count, 1)
+    compare(chosen.signalArguments[0][0], "m1")
+    compare(starts.count, 0)
+  }
+
+  // 1
+  function test_the_target_row_is_busy_while_starting() {
+    var d = make({ target: { level: "board" }, targetChoices: tc.boardChoices, targetChoice: "board" })
+    d.dispatchState = "starting"
+    var m1 = H.find(d, "dispatchTargetChoicem1")
+    compare(m1.busy, true)
+    click(m1)
+    compare(chosen.count, 0)
+  }
+
+  // ---- the story's milestone offer (S3 4.2) -------------------------------
+
+  function storyRefusal(over) {
+    return Object.assign({ dispatchState: "refused", target: { level: "story", offered: false }, targetTitle: "Story one",
+                           form: null, preview: null, error: "A story is dispatched through its milestone",
+                           suggestion: { id: "m1", title: "M one" } }, over || {})
+  }
+
+  // 2
+  function test_a_refused_story_offers_its_milestone() {
+    var d = make(storyRefusal())
+    var offer = H.find(d, "dispatchSuggest")
+    verify(offer, "the offer button")
+    compare(offer.visible, true)
+    compare(offer.text, "Dispatch its milestone \"M one\"")
+    click(offer)
+    compare(offers.count, 1)
+    compare(starts.count, 0)
+    compare(cancels.count, 0)
+  }
+
+  // 2
+  function test_the_offer_shows_only_for_a_refusal_with_a_milestone_id_data() {
+    return [
+      { tag: "ready", over: { dispatchState: "ready" } },
+      { tag: "no-suggestion", over: { suggestion: null } },
+      { tag: "empty-id", over: { suggestion: { id: "", title: "M one" } } },
+      { tag: "non-string-id", over: { suggestion: { id: 7, title: "M one" } } }
+    ]
+  }
+
+  function test_the_offer_shows_only_for_a_refusal_with_a_milestone_id(data) {
+    var d = make(storyRefusal(data.over))
+    var offer = H.find(d, "dispatchSuggest")
+    compare(offer.visible, false)
+    offer.clicked()
+    compare(offers.count, 0, "a hidden offer emits nothing")
+  }
+
+  // 2
+  function test_an_untitled_milestone_offer_reads_without_a_title() {
+    var d = make(storyRefusal({ suggestion: { id: "m1", title: "" } }))
+    compare(H.find(d, "dispatchSuggest").text, "Dispatch its milestone")
+  }
+
+  // ---- the subtask's two-click Start (S3 4.2) -----------------------------
+
+  function subtask(over) {
+    return Object.assign({ target: { level: "subtask", offered: true }, targetTitle: "Do it", preview: null,
+                           confirmFirst: true }, over || {})
+  }
+
+  // 3
+  function test_confirm_first_needs_a_second_click() {
+    var d = make(subtask())
+    var start = H.find(d, "dispatchStart")
+    var note = H.find(d, "dispatchConfirmNote")
+    verify(note, "the confirm note")
+    compare(d.armed, false)
+    compare(note.visible, false)
+    click(start)
+    compare(starts.count, 0, "the first click only arms")
+    compare(d.armed, true)
+    compare(start.text, "Confirm start")
+    compare(note.visible, true)
+    compare(note.text, "Click Confirm start to start this subtask.")
+    click(start)
+    compare(starts.count, 1)
+  }
+
+  // 4
+  function test_the_arming_is_dropped_data() {
+    return [{ tag: "new-form" }, { tag: "re-preview" }, { tag: "hidden" }, { tag: "confirm-off" }, { tag: "new-target" }]
+  }
+
+  function test_the_arming_is_dropped(data) {
+    var d = make(subtask())
+    var start = H.find(d, "dispatchStart")
+    click(start)
+    compare(d.armed, true)
+    if (data.tag === "new-form") d.form = milestoneForm({ prefix: "m4" })
+    else if (data.tag === "re-preview") { d.dispatchState = "previewing"; d.dispatchState = "ready" }
+    else if (data.tag === "hidden") { d.shown = false; d.shown = true }
+    else if (data.tag === "confirm-off") d.confirmFirst = false
+    else d.target = { level: "subtask", offered: true }
+    compare(d.armed, false)
+    compare(start.text, "Start run")
+    compare(H.find(d, "dispatchConfirmNote").visible, false)
+    compare(starts.count, 0)
+    compare(edits.count, 0, "a new form echoes nothing")
+  }
+
+  // 5
+  function test_without_confirm_first_one_click_starts() {
+    var d = make(subtask({ confirmFirst: false }))
+    click(H.find(d, "dispatchStart"))
+    compare(starts.count, 1)
+    compare(d.armed, false)
   }
 }

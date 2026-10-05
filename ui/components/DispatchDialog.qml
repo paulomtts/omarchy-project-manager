@@ -8,7 +8,9 @@ import "../theme" as T
 // checks, what am would do, and what it costs. Renders and emits only -- the
 // owner passes RunStore's dispatch values in and maps fieldEdited,
 // startRequested and cancelRequested onto setDispatchField, dispatchStart and
-// closeDispatch. Only a click on Start starts a run: Return never does.
+// closeDispatch. Only a click on Start starts a run: Return never does. The
+// owner may add a row of targets (targetChosen), a refused story's milestone
+// (suggestionRequested) and a Start that takes two clicks (confirmFirst).
 Item {
   id: dialog
   objectName: "dispatchDialog"
@@ -36,6 +38,16 @@ Item {
   // am has no dry run for one subtask, so the owner composes these instead.
   property string storyTitle: ""
   property string blockedText: ""
+  // The Runs entry's targets, [{id, label}]; [] hides the row. targetChoice is
+  // the active one's id.
+  property var targetChoices: []
+  property string targetChoice: ""
+  // A refused story's milestone {id, title}, offered as a target of its own.
+  property var suggestion: null
+  // Start takes two clicks: the first only arms it (a subtask has no preview,
+  // so ready alone is not an explicit confirm).
+  property bool confirmFirst: false
+  readonly property bool armed: arming.armed
 
   readonly property Item focusItem: dialog.form ? baseField : cancelButton
   readonly property bool canStart: dialog.dispatchState === "ready"
@@ -47,6 +59,14 @@ Item {
   // The verify rows are counted, not listed: typing in a row sends a list of
   // the same length, so the row (its focus, its cursor) is never recreated.
   readonly property int verifyRows: Math.max(1, dialog.storedVerify().length)
+  readonly property bool hasChoices: !!dialog.targetChoices && typeof dialog.targetChoices.length === "number"
+    && dialog.targetChoices.length > 0
+  readonly property bool canOffer: dialog.dispatchState === "refused" && !!dialog.suggestion
+    && typeof dialog.suggestion.id === "string" && dialog.suggestion.id !== ""
+  readonly property string offerText: {
+    var title = dialog.suggestion && typeof dialog.suggestion.title === "string" ? dialog.suggestion.title : ""
+    return title !== "" ? "Dispatch its milestone \"" + title + "\"" : "Dispatch its milestone"
+  }
 
   // Every object prop is read guarded: a refused target has no form, and
   // tearing a view down nulls them while these bindings still run once.
@@ -92,11 +112,33 @@ Item {
   signal fieldEdited(string name, var value)
   signal startRequested()
   signal cancelRequested()
+  signal targetChosen(string id)
+  signal suggestionRequested()
 
   visible: shown
-  onShownChanged: dialog.syncFields()
-  onFormChanged: dialog.syncFields()
+  // Any change to what Start would start drops the first click.
+  onShownChanged: { arming.armed = false; dialog.syncFields() }
+  onFormChanged: { arming.armed = false; dialog.syncFields() }
+  onDispatchStateChanged: arming.armed = false
+  onTargetChanged: arming.armed = false
+  onConfirmFirstChanged: arming.armed = false
   Component.onCompleted: dialog.syncFields()
+
+  QtObject {
+    id: arming
+    property bool armed: false
+  }
+
+  // A click on Start: from ready only; with confirmFirst the first click arms
+  // and only the second starts.
+  function start() {
+    if (!dialog.canStart) return
+    if (dialog.confirmFirst && !arming.armed) {
+      arming.armed = true
+      return
+    }
+    dialog.startRequested()
+  }
 
   function cancel() {
     if (!dialog.busy) dialog.cancelRequested()
@@ -204,6 +246,19 @@ Item {
       width: parent.width
       text: "Target   " + dialog.targetText
       elide: Text.ElideRight
+    }
+
+    // The Runs entry's targets; a click on the active one says nothing.
+    UI.ChipRow {
+      objectName: "dispatchTargetChoices"
+      width: parent.width
+      visible: dialog.hasChoices
+      chipPrefix: "dispatchTargetChoice"
+      theme: dialog.theme
+      model: dialog.hasChoices ? dialog.targetChoices : []
+      active: dialog.targetChoice
+      busy: dialog.busy
+      onChosen: function(id) { if (id !== dialog.targetChoice) dialog.targetChosen(id) }
     }
 
     Column {
@@ -372,6 +427,15 @@ Item {
       wrapMode: Text.WordWrap
     }
 
+    // A story is dispatched through its milestone: offer it.
+    UI.ActionButton {
+      objectName: "dispatchSuggest"
+      visible: dialog.canOffer
+      text: dialog.offerText
+      theme: dialog.theme
+      onClicked: if (dialog.canOffer) dialog.suggestionRequested()
+    }
+
     UI.ThemedText {
       objectName: "dispatchExitCode"
       variant: "caption"
@@ -471,6 +535,16 @@ Item {
       wrapMode: Text.WordWrap
     }
 
+    UI.ThemedText {
+      objectName: "dispatchConfirmNote"
+      variant: "caption"
+      theme: dialog.theme
+      visible: arming.armed
+      width: parent.width
+      text: "Click Confirm start to start this subtask."
+      wrapMode: Text.WordWrap
+    }
+
     Row {
       spacing: Style.spacing.md
 
@@ -486,10 +560,10 @@ Item {
       UI.ActionButton {
         objectName: "dispatchStart"
         iconText: "▶"
-        text: dialog.busy ? "Starting…" : "Start run"
+        text: dialog.busy ? "Starting…" : arming.armed ? "Confirm start" : "Start run"
         enabled: dialog.canStart
         theme: dialog.theme
-        onClicked: if (dialog.canStart) dialog.startRequested()
+        onClicked: dialog.start()
       }
     }
   }
