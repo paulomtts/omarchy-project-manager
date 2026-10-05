@@ -432,7 +432,6 @@ def test_usage_shapes(world, args):
     assert calls(world) == []
 
 
-
 # --- defaults: the repo's default branch (real git) --------------------------------
 # Real throwaway repos: the behaviour under test *is* what git's symbolic-ref does.
 # The user's git config never leaks in, and discovery never climbs above tmp.
