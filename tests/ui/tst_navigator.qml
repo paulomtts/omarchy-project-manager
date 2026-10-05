@@ -361,4 +361,102 @@ TestCase {
       compare(n.app.runs.selectedRunId, "", "id " + i)
     }
   }
+
+  // ---- After a dispatch (S3 4.2)
+
+  // The board of project A, with run-a in the snapshot.
+  function startedRuns() {
+    var n = make(); if (!n) return null
+    n.app.runs.snapshotRunner.cancel()
+    n.app.runs.runs = [runOf("run-a", "started", true, "m1")]
+    n.showSection("board")
+    return n
+  }
+
+  // 11
+  function test_a_start_without_a_run_id_goes_to_the_runs_list_and_says_so() {
+    var n = startedRuns(); if (!n) return
+    n.openStartedRun(null)
+    compare(n.app.nav.viewMode, "runs")
+    compare(n.app.runs.flashText, "Started — waiting for the run to appear")
+    compare(n.awaitedRunId, "")
+  }
+
+  // 12
+  function test_a_listed_run_opens_at_once_and_back_lands_on_the_runs_list() {
+    var n = startedRuns(); if (!n) return
+    n.openStartedRun("run-a")
+    compare(n.app.nav.viewMode, "run")
+    compare(n.app.runs.selectedRunId, "run-a")
+    compare(n.awaitedRunId, "")
+    n.goBack()
+    compare(n.app.nav.viewMode, "runs")
+  }
+
+  // 13
+  function test_an_unlisted_run_is_awaited_and_opens_when_a_snapshot_lists_it() {
+    var n = startedRuns(); if (!n) return
+    n.openStartedRun("run-b")
+    compare(n.app.nav.viewMode, "runs")
+    compare(n.app.runs.flashText, "Started — opening the run when it appears")
+    compare(n.awaitedRunId, "run-b")
+    compare(n.awaitedProject, "/home/u/a")
+    n.app.runs.runs = n.app.runs.runs.concat([runOf("run-b", "started", true, "m1")])
+    n.openAwaitedRun()
+    compare(n.app.nav.viewMode, "run")
+    compare(n.app.runs.selectedRunId, "run-b")
+    compare(n.awaitedRunId, "")
+    n.goBack()
+    compare(n.app.nav.viewMode, "runs")
+  }
+
+  // 14
+  function test_leaving_the_runs_list_forgets_the_awaited_run() {
+    var n = startedRuns(); if (!n) return
+    n.openStartedRun("run-b")
+    n.showSection("board")
+    n.app.runs.runs = n.app.runs.runs.concat([runOf("run-b", "started", true, "m1")])
+    n.openAwaitedRun()
+    compare(n.app.nav.viewMode, "board")
+    compare(n.app.runs.selectedRunId, "")
+    compare(n.awaitedRunId, "")
+    n.showSection("runs")
+    n.openAwaitedRun()
+    compare(n.app.nav.viewMode, "runs", "forgotten for good")
+  }
+
+  // 15
+  function test_a_snapshot_without_the_run_keeps_waiting() {
+    var n = startedRuns(); if (!n) return
+    n.openStartedRun("run-b")
+    n.app.runs.runs = [runOf("run-c", "started", true, "m1")]
+    n.openAwaitedRun()
+    compare(n.app.nav.viewMode, "runs")
+    compare(n.awaitedRunId, "run-b")
+  }
+
+  function test_another_project_forgets_the_awaited_run() {
+    var n = startedRuns(); if (!n) return
+    n.openStartedRun("run-b")
+    n.chooseProject(tc.pB)
+    n.showSection("runs")
+    n.app.runs.snapshotRunner.cancel()
+    n.app.runs.runs = [runOf("run-b", "started", true, "m1")]
+    n.openAwaitedRun()
+    compare(n.app.nav.viewMode, "runs")
+    compare(n.app.runs.selectedRunId, "")
+    compare(n.awaitedRunId, "")
+  }
+
+  // Review Focus 3
+  function test_a_second_start_replaces_the_awaited_run() {
+    var n = startedRuns(); if (!n) return
+    n.openStartedRun("run-b")
+    n.openStartedRun(null)
+    compare(n.awaitedRunId, "")
+    n.app.runs.runs = n.app.runs.runs.concat([runOf("run-b", "started", true, "m1")])
+    n.openAwaitedRun()
+    compare(n.app.nav.viewMode, "runs")
+    compare(n.app.runs.selectedRunId, "")
+  }
 }
