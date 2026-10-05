@@ -78,6 +78,16 @@ Scope {
   // The footer flash: why a run key was refused. flashTimer clears it.
   property string flashText: ""
 
+  // Alerts (S2 4.4): a toast for every run that newly needs a human while the
+  // panel is open. `alertsArmed` says the current `runs` may be compared
+  // against: the first good snapshot after an opening, a project switch or an
+  // am-missing spell only arms, so history is never replayed. `toasts` is
+  // {key, id, title, state, reason, expiresMs}, oldest first, at most 3, and
+  // is replaced, never changed in place.
+  property bool alertsArmed: false
+  property var toasts: []
+  property int toastMs: 8000
+
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
@@ -89,6 +99,7 @@ Scope {
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
+  readonly property alias toastTimer: toastTimer
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -118,16 +129,18 @@ Scope {
     else store.stopLive()
   }
 
-  // The panel opened: fetch now; the first good snapshot starts the watch, and
-  // the stale clock counts from now.
+  // The panel opened: fetch now; the first good snapshot starts the watch and
+  // arms the alerts, and the stale clock counts from now.
   function startLive() {
     store.watchTried = false
+    store.alertsArmed = false
     store.restartStale()
     store.refresh()
   }
 
-  // The panel closed: no process and no timer is left running. The runs, the
-  // selection and amStatus stay for the next opening.
+  // The panel closed: no process and no timer is left running, and no toast
+  // outlives the opening. The runs, the selection and amStatus stay for the
+  // next opening.
   function stopLive() {
     store.stopWatch()
     debounceTimer.stop()
@@ -135,6 +148,8 @@ Scope {
     staleTimer.stop()
     store.stale = false
     store.watchWarning = ""
+    store.alertsArmed = false
+    store.toasts = []
   }
 
   // Nothing is stale yet; the 30 s clock starts again while there is something
@@ -246,6 +261,8 @@ Scope {
     store.dismissControlError()
     store.closeCancel()
     store.flash("")
+    store.alertsArmed = false
+    store.toasts = []
     if (store.project !== "") store.refresh()
   }
 
@@ -402,6 +419,8 @@ Scope {
         if (e === null || typeof e !== "object" || Array.isArray(e)) continue
         out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
       }
+      // Compared before the runs are replaced; raised below only while open.
+      var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, out)
       store.runs = out
       store.settleAfterSnapshot()
       store.logsAfterSnapshot()
@@ -417,6 +436,8 @@ Scope {
       if (store.active) {
         staleTimer.restart()
         if (!store.watchTried) store.startWatch()
+        store.raiseAlerts(alerts)
+        store.alertsArmed = true
       }
       return
     }
@@ -427,6 +448,9 @@ Scope {
       if (type === "AmMissing") {
         store.runs = []
         store.amStatus = "missing"
+        // Comparing the next good snapshot against [] would alert every
+        // escalated run again.
+        store.alertsArmed = false
       } else {
         store.amStatus = "error"
       }
@@ -704,6 +728,39 @@ Scope {
     return true
   }
 
+  // ---- alerts (S2 4.4)
+
+  // One toast per alert, newest last: a run's older toast goes first, then the
+  // oldest beyond three. Called from applySnapshot only while active.
+  function raiseAlerts(alerts) {
+    var list = Array.isArray(alerts) ? alerts : []
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i]
+      toastState.nextKey += 1
+      var next = store.toasts.filter(function(t) { return t.id !== a.id })
+      next.push({ key: toastState.nextKey, id: a.id, title: a.title, state: a.state, reason: a.reason,
+                  expiresMs: Date.now() + store.toastMs })
+      while (next.length > 3) next.shift()
+      store.toasts = next
+    }
+  }
+
+  // Drops every toast whose time is up at nowMs (the timer passes Date.now()).
+  function expireToasts(nowMs) {
+    var next = store.toasts.filter(function(t) { return t.expiresMs > nowMs })
+    if (next.length !== store.toasts.length) store.toasts = next
+  }
+
+  // The toast with this key goes; an unknown key changes nothing.
+  function dismissToast(key) {
+    var next = store.toasts.filter(function(t) { return t.key !== key })
+    if (next.length !== store.toasts.length) store.toasts = next
+  }
+
+  function dismissAllToasts() {
+    if (store.toasts.length > 0) store.toasts = []
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -785,6 +842,16 @@ Scope {
     onTriggered: store.flashText = ""
   }
 
+  // Only while the panel is open and a toast shows: no timer while idle.
+  Timer {
+    id: toastTimer
+    objectName: "toastTimer"
+    interval: 250
+    repeat: true
+    running: store.active && store.toasts.length > 0
+    onTriggered: store.expireToasts(Date.now())
+  }
+
   // What the watch Process aliases read; kept apart so consumers cannot write it.
   QtObject {
     id: watchState
@@ -801,6 +868,12 @@ Scope {
     property var runners: []
     property var requests: ({})
     property int nextToken: 0
+  }
+
+  // The toast keys only grow, so a stale Dismiss never removes a newer toast.
+  QtObject {
+    id: toastState
+    property int nextKey: 0
   }
 
   // One HelperRunner per control request, so requests for different runs never

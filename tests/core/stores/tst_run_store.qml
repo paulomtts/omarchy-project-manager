@@ -1134,7 +1134,7 @@ TestCase {
       var o = store.data[i]
       if (o && typeof o.interval === "number" && typeof o.repeat === "boolean") timers.push(o.objectName)
     }
-    compare(timers.sort().join(","), "debounceTimer,flashTimer,livenessTimer,pendingTimer,pollTimer,staleTimer", "the logs add no timer")
+    compare(timers.sort().join(","), "debounceTimer,flashTimer,livenessTimer,pendingTimer,pollTimer,staleTimer,toastTimer", "the logs add no timer")
     compare(store.debounceTimer.running, false)
     compare(store.livenessTimer.running, false)
     compare(store.staleTimer.running, false)
@@ -1794,5 +1794,195 @@ TestCase {
     compare(store.cancelError, "")
     compare(store.flashText, "")
     compare(store.flashTimer.running, false)
+  }
+
+  // ---- alerts: the toasts (S2 4.4)
+
+  function escalated(id) { return entry(id, "escalated", false) }
+  function toastIds(store) { return store.toasts.map(function(t) { return t.id }).join(",") }
+
+  // An active store on project A whose first snapshot listed `entries`: that
+  // snapshot only armed the alerts.
+  function armedStore(entries) {
+    var store = activeStore(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply(entries), 0)
+    compare(store.alertsArmed, true, "the first good snapshot while open arms the alerts")
+    compare(store.toasts.length, 0, "and raises nothing")
+    return store
+  }
+
+  // 1
+  function test_no_toast_while_the_panel_is_closed() {
+    var store = makeWithProject(rootA); if (!store) return
+    compare(store.alertsArmed, false)
+    compare(store.toasts.length, 0)
+    reply(store.snapshotRunner.current, okReply([running("a")]), 0)
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 0)
+    compare(store.alertsArmed, false, "a closed panel never arms")
+  }
+
+  // 2
+  function test_a_run_that_turns_escalated_raises_one_toast() {
+    var store = activeStore(rootA); if (!store) return
+    compare(store.toastMs, 8000)
+    reply(store.snapshotRunner.current, okReply([escalated("a"), running("b")]), 0)
+    compare(store.toasts.length, 0, "the first snapshot after opening never replays history")
+    compare(store.alertsArmed, true)
+    var before = Date.now()
+    snapshot(store, [escalated("a"), escalated("b")])
+    compare(store.toasts.length, 1)
+    var t = store.toasts[0]
+    compare(t.id, "b")
+    compare(t.title, "m-b")
+    compare(t.state, "escalated")
+    compare(t.reason, Runs.escalationReason(store.runById("b")))
+    compare(t.reason, "escalated")
+    compare(typeof t.key, "number")
+    verify(t.expiresMs >= before + 8000 && t.expiresMs <= Date.now() + 8000, "it expires 8 s from now")
+  }
+
+  // 3
+  function test_a_run_still_escalated_raises_nothing_again() {
+    var store = armedStore([running("a")]); if (!store) return
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 1)
+    var key = store.toasts[0].key
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 1)
+    compare(store.toasts[0].key, key, "the same toast, not a new one")
+  }
+
+  // 4 (Review focus: reopening never replays history)
+  function test_closing_empties_the_toasts_and_reopening_raises_nothing_at_first() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    snapshot(store, [escalated("a"), running("b")])
+    compare(store.toasts.length, 1)
+    store.active = false
+    compare(store.toasts.length, 0, "a toast never outlives the panel opening")
+    compare(store.alertsArmed, false)
+    store.active = true
+    compare(store.alertsArmed, false)
+    reply(store.snapshotRunner.current, okReply([escalated("a"), dead("b")]), 0)
+    compare(store.toasts.length, 0, "b died while the panel was closed: not replayed")
+    compare(store.alertsArmed, true)
+    snapshot(store, [escalated("a"), dead("b"), escalated("c")])
+    compare(toastIds(store), "c")
+  }
+
+  // Review Focus 1 (D3)
+  function test_a_snapshot_landing_after_the_panel_closed_raises_nothing_and_does_not_arm() {
+    var store = armedStore([running("a")]); if (!store) return
+    store.refresh()
+    var late = store.snapshotRunner.current
+    store.active = false
+    reply(late, okReply([escalated("a")]), 0)
+    compare(store.runs[0].status, "escalated", "the snapshot itself is still applied")
+    compare(store.toasts.length, 0)
+    compare(store.alertsArmed, false)
+  }
+
+  // 5
+  function test_am_missing_disarms_and_a_failed_snapshot_does_not() {
+    var store = armedStore([running("a")]); if (!store) return
+    store.refresh()
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "AmMissing", message: "am is not installed" } }) + "\n", 1)
+    compare(store.runs.length, 0)
+    compare(store.alertsArmed, false)
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 0, "the first good snapshot after am came back raises nothing")
+    compare(store.alertsArmed, true)
+    snapshot(store, [escalated("a"), escalated("b")])
+    compare(toastIds(store), "b", "the one after that compares normally")
+
+    var other = armedStore([running("x")]); if (!other) return
+    other.refresh()
+    reply(other.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }) + "\n", 1)
+    compare(other.alertsArmed, true, "a failed snapshot keeps the baseline")
+    other.refresh()
+    reply(other.snapshotRunner.current, "garbage\n", 1)
+    compare(other.alertsArmed, true)
+    snapshot(other, [escalated("x")])
+    compare(toastIds(other), "x")
+  }
+
+  // 6
+  function test_five_alerts_in_one_snapshot_leave_the_last_three_toasts() {
+    var store = armedStore([]); if (!store) return
+    snapshot(store, [escalated("r1"), escalated("r2"), dead("r3"), escalated("r4"), dead("r5")])
+    compare(toastIds(store), "r3,r4,r5")
+    verify(store.toasts[0].key < store.toasts[1].key && store.toasts[1].key < store.toasts[2].key, "keys only grow")
+    compare(store.toasts[0].state, "dead")
+    compare(store.toasts[0].reason, "process died")
+  }
+
+  // 7
+  function test_a_run_that_alerts_again_replaces_its_own_toast() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    snapshot(store, [escalated("a"), escalated("b")])
+    compare(toastIds(store), "a,b")
+    var oldKey = store.toasts[0].key
+    snapshot(store, [dead("a"), escalated("b")])
+    compare(toastIds(store), "b,a", "a's old toast went and its new one is the newest")
+    compare(store.toasts[1].state, "dead")
+    compare(store.toasts[1].reason, "process died")
+    verify(store.toasts[1].key > oldKey, "a new key")
+  }
+
+  // 8
+  function test_toasts_expire_and_the_timer_runs_only_while_open_with_toasts() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    var timer = store.toastTimer
+    compare(timer.objectName, "toastTimer")
+    compare(timer.interval, 250)
+    compare(timer.repeat, true)
+    compare(timer.running, false, "no toast: no timer")
+    snapshot(store, [escalated("a"), running("b")])
+    compare(timer.running, true)
+    var aExpires = store.toasts[0].expiresMs
+    store.toastMs = 60000
+    snapshot(store, [escalated("a"), escalated("b")])
+    compare(toastIds(store), "a,b")
+    store.expireToasts(aExpires - 1)
+    compare(toastIds(store), "a,b", "not yet")
+    store.expireToasts(aExpires)
+    compare(toastIds(store), "b", "expiresMs <= now goes")
+    store.dismissAllToasts()
+    compare(timer.running, false, "nothing left: no timer")
+    store.toastMs = 50
+    snapshot(store, [escalated("a"), dead("b")])
+    compare(store.toasts.length, 1)
+    tryVerify(function() { return store.toasts.length === 0 }, 2000, "the timer dropped the expired toast")
+    compare(timer.running, false)
+  }
+
+  // 9 (and Review Focus 2)
+  function test_dismiss_removes_one_toast_by_key_and_dismiss_all_empties() {
+    var store = armedStore([running("a"), running("b")]); if (!store) return
+    snapshot(store, [escalated("a"), escalated("b")])
+    var keyA = store.toasts[0].key
+    store.dismissToast(-12345)
+    compare(toastIds(store), "a,b", "an unknown key changes nothing")
+    store.dismissToast(keyA)
+    compare(toastIds(store), "b")
+    snapshot(store, [dead("a"), escalated("b")])
+    compare(toastIds(store), "b,a")
+    store.dismissToast(keyA)
+    compare(toastIds(store), "b,a", "a's stale key leaves its newer toast")
+    store.dismissAllToasts()
+    compare(store.toasts.length, 0)
+  }
+
+  // 10 (the toast half; Task 2 pins the setting half)
+  function test_a_project_switch_empties_the_toasts_and_disarms() {
+    var store = armedStore([running("a")]); if (!store) return
+    snapshot(store, [escalated("a")])
+    compare(store.toasts.length, 1)
+    store.project = rootB
+    compare(store.toasts.length, 0)
+    compare(store.alertsArmed, false)
+    reply(store.snapshotRunner.current, okReply([escalated("z")]), 0)
+    compare(store.toasts.length, 0, "B's first snapshot raises nothing")
+    compare(store.alertsArmed, true)
   }
 }
