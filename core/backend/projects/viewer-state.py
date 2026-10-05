@@ -29,7 +29,9 @@ from common.json_line import emit  # noqa: E402
 
 USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"
          " | set-run-settings <root_path> <json>")
-RUN_SETTINGS_DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False}
+PREFIX_HISTORY_CAP = 20
+RUN_SETTINGS_DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False,
+                         "prefixHistory": [], "parallelism": 4, "confirmDispatch": True}
 
 
 def state_base():
@@ -66,6 +68,24 @@ def valid_verify(value):
     return isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)
 
 
+def valid_prefix_history(value):
+    return valid_verify(value) and len(value) <= PREFIX_HISTORY_CAP
+
+
+def valid_parallelism(value):
+    # type(), not isinstance(): True is an int, and 2.0, NaN and Infinity are floats.
+    return type(value) is int and value >= 1
+
+
+def valid_boolean(value):
+    return isinstance(value, bool)
+
+
+RUN_SETTINGS_VALID = {"verify": valid_verify, "allowNoVerification": valid_boolean,
+                      "notifyOnEscalation": valid_boolean, "prefixHistory": valid_prefix_history,
+                      "parallelism": valid_parallelism, "confirmDispatch": valid_boolean}
+
+
 def run_settings_entry(data, root_path):
     settings = data.get("run_settings")
     entry = settings.get(root_path) if isinstance(settings, dict) else None
@@ -74,11 +94,10 @@ def run_settings_entry(data, root_path):
 
 def cmd_get_run_settings(root_path):
     entry = run_settings_entry(load(), root_path)
-    verify = entry.get("verify")
-    result = {"verify": verify if valid_verify(verify) else []}
-    for key in ("allowNoVerification", "notifyOnEscalation"):
+    result = {}
+    for key, default in RUN_SETTINGS_DEFAULTS.items():
         value = entry.get(key)
-        result[key] = value if isinstance(value, bool) else RUN_SETTINGS_DEFAULTS[key]
+        result[key] = value if RUN_SETTINGS_VALID[key](value) else default
     return emit(result, 0)
 
 

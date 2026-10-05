@@ -114,7 +114,8 @@ def test_a_newly_created_state_file_is_private(env):
 
 USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"
          " | set-run-settings <root_path> <json>")
-DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False}
+DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False,
+            "prefixHistory": [], "parallelism": 4, "confirmDispatch": True}
 
 
 def write_state(env, content):
@@ -152,6 +153,27 @@ def test_get_run_settings_treats_bad_files_as_defaults(env, content):
     ({"allowNoVerification": None, "verify": ["a"]}, {**DEFAULTS, "verify": ["a"]}),
     ({"notifyOnEscalation": 0, "allowNoVerification": True}, {**DEFAULTS, "allowNoVerification": True}),
     ({"notifyOnEscalation": "yes", "allowNoVerification": True}, {**DEFAULTS, "allowNoVerification": True}),
+    ({"prefixHistory": "m3", "confirmDispatch": False}, {**DEFAULTS, "confirmDispatch": False}),
+    ({"prefixHistory": ["m3", 5], "confirmDispatch": False}, {**DEFAULTS, "confirmDispatch": False}),
+    ({"prefixHistory": ["m3", ""], "confirmDispatch": False}, {**DEFAULTS, "confirmDispatch": False}),
+    ({"prefixHistory": ["  "], "confirmDispatch": False}, {**DEFAULTS, "confirmDispatch": False}),
+    ({"prefixHistory": None, "confirmDispatch": False}, {**DEFAULTS, "confirmDispatch": False}),
+    ({"prefixHistory": ["m%d" % i for i in range(21)], "confirmDispatch": False},
+     {**DEFAULTS, "confirmDispatch": False}),
+    ({"parallelism": 0, "prefixHistory": ["m3"]}, {**DEFAULTS, "prefixHistory": ["m3"]}),
+    ({"parallelism": -2, "prefixHistory": ["m3"]}, {**DEFAULTS, "prefixHistory": ["m3"]}),
+    ({"parallelism": 1.5, "prefixHistory": ["m3"]}, {**DEFAULTS, "prefixHistory": ["m3"]}),
+    ({"parallelism": 2.0, "prefixHistory": ["m3"]}, {**DEFAULTS, "prefixHistory": ["m3"]}),
+    ({"parallelism": "4", "prefixHistory": ["m3"]}, {**DEFAULTS, "prefixHistory": ["m3"]}),
+    ({"parallelism": True, "prefixHistory": ["m3"]}, {**DEFAULTS, "prefixHistory": ["m3"]}),
+    ({"parallelism": None, "prefixHistory": ["m3"]}, {**DEFAULTS, "prefixHistory": ["m3"]}),
+    ({"parallelism": [4], "prefixHistory": ["m3"]}, {**DEFAULTS, "prefixHistory": ["m3"]}),
+    ({"confirmDispatch": 0, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"confirmDispatch": 1, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"confirmDispatch": "false", "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"confirmDispatch": None, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"verify": "x", "parallelism": 8, "confirmDispatch": False},
+     {**DEFAULTS, "parallelism": 8, "confirmDispatch": False}),
 ])
 def test_get_run_settings_coerces_each_bad_field_independently(env, entry, expected):
     write_state(env, {"run_settings": {"/p": entry}})
@@ -169,7 +191,52 @@ def test_get_run_settings_reads_the_legacy_file(env):
     old.parent.mkdir(parents=True)
     old.write_text(json.dumps({"run_settings": {"/p": {"verify": ["make check"], "allowNoVerification": True}}}))
     assert run(env, "get-run-settings", "/p") == (
-        0, {"verify": ["make check"], "allowNoVerification": True, "notifyOnEscalation": False})
+        0, {**DEFAULTS, "verify": ["make check"], "allowNoVerification": True, "notifyOnEscalation": False})
+
+
+def test_get_run_settings_dispatch_defaults(env):
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0
+    # JSON text, so a 1 cannot pass for true nor 4.0 for 4.
+    assert json.dumps([result["prefixHistory"], result["parallelism"], result["confirmDispatch"]]) == '[[], 4, true]'
+
+
+def test_get_run_settings_reads_a_2_2_entry(env):
+    write_state(env, {"run_settings": {"/p": {"verify": ["a"], "allowNoVerification": True,
+                                              "notifyOnEscalation": True}}})
+    code, result = run(env, "get-run-settings", "/p")
+    expected = {"verify": ["a"], "allowNoVerification": True, "notifyOnEscalation": True,
+                "prefixHistory": [], "parallelism": 4, "confirmDispatch": True}
+    assert code == 0 and json.dumps(result, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+
+def test_get_run_settings_accepts_a_history_of_exactly_twenty(env):
+    twenty = ["m%d" % i for i in range(20)]
+    write_state(env, {"run_settings": {"/p": {"prefixHistory": twenty}}})
+    assert run(env, "get-run-settings", "/p") == (0, {**DEFAULTS, "prefixHistory": twenty})
+
+
+def test_get_run_settings_with_every_field_damaged_is_defaults(env):
+    write_state(env, {"run_settings": {"/p": {
+        "verify": 1, "allowNoVerification": "x", "notifyOnEscalation": None,
+        "prefixHistory": [None], "parallelism": True, "confirmDispatch": 0}}})
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and json.dumps(result, sort_keys=True) == json.dumps(DEFAULTS, sort_keys=True)
+
+
+def reject_token(token):
+    raise ValueError("not strict JSON: %s" % token)
+
+
+# A stored NaN, Infinity or float must not reach QML's JSON.parse: the output is
+# parsed here with every non-standard constant and every float refused.
+@pytest.mark.parametrize("stored", ["NaN", "Infinity", "-Infinity", "1e400", "2.0"])
+def test_get_run_settings_output_is_strict_json(env, stored):
+    write_state(env, '{"run_settings": {"/p": {"parallelism": %s}}}' % stored)
+    proc = subprocess.run([sys.executable, SCRIPT, "get-run-settings", "/p"], env=env, capture_output=True, text=True)
+    assert proc.returncode == 0
+    result = json.loads(proc.stdout, parse_constant=reject_token, parse_float=reject_token)
+    assert result == DEFAULTS
 
 
 @pytest.mark.parametrize("args", [
@@ -185,17 +252,17 @@ def test_run_settings_bad_usage_is_rejected(env, args):
 def test_set_then_get_run_settings_round_trips(env):
     settings = {"verify": ["uv run pytest", "npm test -- --ci"], "allowNoVerification": True, "notifyOnEscalation": True}
     assert run(env, "set-run-settings", "/p", json.dumps(settings)) == (0, {"ok": True})
-    assert run(env, "get-run-settings", "/p") == (0, settings)
+    assert run(env, "get-run-settings", "/p") == (0, {**DEFAULTS, **settings})
 
 
 def test_set_run_settings_is_partial(env):
     assert run(env, "set-run-settings", "/p", '{"verify": ["a"]}') == (0, {"ok": True})
     assert run(env, "set-run-settings", "/p", '{"notifyOnEscalation": true}') == (0, {"ok": True})
     assert run(env, "get-run-settings", "/p") == (
-        0, {"verify": ["a"], "allowNoVerification": False, "notifyOnEscalation": True})
+        0, {**DEFAULTS, "verify": ["a"], "allowNoVerification": False, "notifyOnEscalation": True})
     assert run(env, "set-run-settings", "/p", '{"verify": []}') == (0, {"ok": True})
     assert run(env, "get-run-settings", "/p") == (
-        0, {"verify": [], "allowNoVerification": False, "notifyOnEscalation": True})
+        0, {**DEFAULTS, "verify": [], "allowNoVerification": False, "notifyOnEscalation": True})
 
 
 def test_set_run_settings_empty_object_is_accepted(env):
@@ -208,9 +275,9 @@ def test_run_settings_are_per_root(env):
     assert run(env, "set-run-settings", "/a", '{"verify": ["make a"], "notifyOnEscalation": true}')[0] == 0
     assert run(env, "set-run-settings", "/home/u/my proj", '{"verify": ["make b"], "allowNoVerification": true}')[0] == 0
     assert run(env, "get-run-settings", "/a") == (
-        0, {"verify": ["make a"], "allowNoVerification": False, "notifyOnEscalation": True})
+        0, {**DEFAULTS, "verify": ["make a"], "allowNoVerification": False, "notifyOnEscalation": True})
     assert run(env, "get-run-settings", "/home/u/my proj") == (
-        0, {"verify": ["make b"], "allowNoVerification": True, "notifyOnEscalation": False})
+        0, {**DEFAULTS, "verify": ["make b"], "allowNoVerification": True, "notifyOnEscalation": False})
     assert run(env, "get-run-settings", "/c") == (0, DEFAULTS)
     assert run(env, "get-run-settings", "/a/") == (0, DEFAULTS)
 
@@ -229,7 +296,7 @@ def test_set_project_preserves_run_settings(env):
     stored = {"verify": ["a"], "allowNoVerification": False, "notifyOnEscalation": True}
     assert run(env, "set-run-settings", "/p", json.dumps(stored)) == (0, {"ok": True})
     assert run(env, "set-project", "/p") == (0, {"ok": True})
-    assert run(env, "get-run-settings", "/p") == (0, stored)
+    assert run(env, "get-run-settings", "/p") == (0, {**DEFAULTS, **stored})
     assert run(env, "get") == (0, {"last_project": "/p"})
     assert run(env, "set-run-settings", "/p", '{"allowNoVerification": true}') == (0, {"ok": True})
     assert run(env, "get") == (0, {"last_project": "/p"})
