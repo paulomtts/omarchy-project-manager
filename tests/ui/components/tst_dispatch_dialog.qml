@@ -571,4 +571,137 @@ TestCase {
     d.destroy()
     wait(0)
   }
+
+  // ---- verify rows ------------------------------------------------------
+
+  function test_editing_a_verify_row_sends_the_whole_list() {
+    var d = make()
+    var row0 = H.find(d, "dispatchVerify0")
+    compare(row0.text, "uv run pytest")
+    compare(row0.placeholderText, "uv run pytest")
+    compare(edits.count, 0)
+    row0.text = "uv run pytest -x"
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][0], "verify")
+    compare(edits.signalArguments[0][1], ["uv run pytest -x"])
+  }
+
+  function test_plus_adds_an_empty_command() {
+    var d = make()
+    click(H.find(d, "dispatchVerifyAdd"))
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][0], "verify")
+    compare(edits.signalArguments[0][1], ["uv run pytest", ""])
+    d.form = milestoneForm({ verify: ["uv run pytest", ""] })
+    verify(H.find(d, "dispatchVerify1"), "the new row")
+    compare(H.find(d, "dispatchVerify1").text, "")
+    verify(H.find(d, "dispatchVerifyRemove0").visible)
+    verify(H.find(d, "dispatchVerifyRemove1").visible)
+    compare(edits.count, 1, "the new row echoes nothing")
+  }
+
+  function test_an_empty_set_shows_one_empty_row_and_plus_gives_two() {
+    var d = make({ form: null })
+    d.form = milestoneForm({ verify: [] })
+    compare(H.find(d, "dispatchVerify0").text, "")
+    verify(!H.find(d, "dispatchVerify1"), "one row only")
+    verify(!H.find(d, "dispatchVerifyRemove0").visible, "no remove on the only row")
+    click(H.find(d, "dispatchVerifyAdd"))
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][1], ["", ""])
+  }
+
+  function test_remove_drops_that_row() {
+    var d = make()
+    d.form = milestoneForm({ verify: ["a", "b"] })
+    compare(edits.count, 0)
+    compare(H.find(d, "dispatchVerify0").text, "a")
+    compare(H.find(d, "dispatchVerify1").text, "b")
+    click(H.find(d, "dispatchVerifyRemove1"))
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][1], ["a"])
+    click(H.find(d, "dispatchVerifyRemove0"))
+    compare(edits.count, 2)
+    compare(edits.signalArguments[1][1], ["b"])
+  }
+
+  function test_editing_the_second_row_keeps_the_first() {
+    var d = make()
+    d.form = milestoneForm({ verify: ["a", "b"] })
+    H.find(d, "dispatchVerify1").text = "b2"
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][1], ["a", "b2"])
+  }
+
+  function test_one_row_has_no_remove_button() {
+    var d = make()
+    var remove = H.find(d, "dispatchVerifyRemove0")
+    verify(!remove || !remove.visible)
+  }
+
+  function test_a_verify_row_survives_the_owner_feeding_its_edit_back() {
+    var d = make()
+    var row0 = H.find(d, "dispatchVerify0")
+    row0.forceActiveFocus()
+    row0.text = "uv run pytest -x"
+    compare(edits.count, 1)
+    d.form = milestoneForm({ verify: ["uv run pytest -x"] })
+    verify(H.find(d, "dispatchVerify0") === row0, "the same row, not a new one")
+    compare(row0.text, "uv run pytest -x")
+    verify(row0.activeFocus, "still focused")
+    compare(edits.count, 1)
+  }
+
+  function test_a_missing_or_malformed_verify_reads_as_one_empty_row_data() {
+    return [
+      { tag: "missing", form: { base: "main", prefix: "m3", parallelism: 4 } },
+      { tag: "a-string", form: { base: "main", verify: "uv run pytest" } },
+      { tag: "null", form: { base: "main", verify: null } }
+    ]
+  }
+
+  function test_a_missing_or_malformed_verify_reads_as_one_empty_row(data) {
+    var d = make({ form: null })
+    d.form = data.form
+    compare(H.find(d, "dispatchVerify0").text, "")
+    verify(!H.find(d, "dispatchVerify1"), "one row only")
+    compare(edits.count, 0)
+    click(H.find(d, "dispatchVerifyAdd"))
+    compare(edits.signalArguments[0][1], ["", ""])
+  }
+
+  function test_escape_in_a_verify_row_cancels() {
+    var d = make()
+    H.find(d, "dispatchVerify0").forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 1)
+  }
+
+  function test_starting_disables_the_verify_rows_and_plus() {
+    var d = make()
+    d.form = milestoneForm({ verify: ["a", "b"] })
+    d.dispatchState = "starting"
+    compare(H.find(d, "dispatchVerify0").enabled, false)
+    compare(H.find(d, "dispatchVerifyRemove0").enabled, false)
+    compare(H.find(d, "dispatchVerifyAdd").enabled, false)
+    click(H.find(d, "dispatchVerifyAdd"))
+    compare(edits.count, 0)
+  }
+
+  // ---- the card's fit ---------------------------------------------------
+
+  function test_the_buttons_stay_inside_the_card_with_four_commands_and_a_failure() {
+    var d = make({ dispatchState: "failed", error: "am exited before the run appeared", exitCode: 2,
+                   logPath: "/tmp/x.log", logTail: "one\ntwo\nthree",
+                   form: milestoneForm({ verify: ["a", "b", "c", "d"] }) })
+    verify(H.find(d, "dispatchVerify3"), "four rows")
+    var card = H.find(d, "dispatchCard")
+    var names = ["dispatchStart", "dispatchCancel"]
+    for (var i = 0; i < names.length; i++) {
+      var button = H.find(d, names[i])
+      var p = button.mapToItem(card, 0, 0)
+      verify(p.y >= 0 && p.y + button.height <= card.height,
+             names[i] + " ends at " + (p.y + button.height) + ", the card at " + card.height)
+    }
+  }
 }
