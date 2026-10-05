@@ -19,6 +19,14 @@ TestCase {
 
   readonly property string startedRun: "20261005T021400Z-837c4431"
   readonly property string doneRun: "20261004T204141Z-cb11063d"
+  readonly property string milestone: "837c4431-7a24-4531-96a8-881698ea8c5e"
+  readonly property string storyDone: "1c665cfd-9a72-4a9d-a539-4c83f0f6ddc1"
+  readonly property string storyStarted: "d3d879b9-cb74-41ca-9a37-63f477de9711"
+  readonly property string storyPending1: "3d877d1f-e4f8-49c8-8910-7475c541bba2"
+  readonly property string storyPending2: "c56468c7-ade1-4b28-9450-78e480149003"
+  readonly property string subDone: "a19ca446-659e-4735-86ed-5a583c1730bf"
+  readonly property string subRunning: "299ec9c0-b935-4c44-a7a0-982a104cbfe5"
+  readonly property string subPending: "fdb5feb1-0907-40b2-9937-d9b4cc2875f0"
 
   function make() {
     var host = createTemporaryObject(hostC, tc)
@@ -66,6 +74,20 @@ TestCase {
 
   // The argv after the interpreter and the helper path, joined by "|".
   function argv(proc) { return proc.command.slice(2).join("|") }
+
+  function card(id, status, children, blockedBy) {
+    return { id: id, title: "T " + id, description: "", status: status, blocked_by: blockedBy || [],
+             created_at: "", updated_at: "", children: children || [] }
+  }
+
+  // The brd cards of the started run's milestone.
+  function boardCards() {
+    return [card(milestone, "in_progress", [
+      card(storyDone, "done"),
+      card(storyStarted, "in_progress", [card(subDone, "done"), card(subRunning, "in_progress"), card(subPending, "todo")]),
+      card(storyPending1, "todo"),
+      card(storyPending2, "todo")])]
+  }
 
   // The panel on the done run's detail view, its default attempt's logs in flight.
   function openDoneRun() {
@@ -165,5 +187,52 @@ TestCase {
             { card_id: "299ec9c0-b935-4c44-a7a0-982a104cbfe5", phase: "explore", attempt: 1 })
     compare(argv(p.app.runs.logsRunner.current),
             "/home/u/a|" + startedRun + "|299ec9c0-b935-4c44-a7a0-982a104cbfe5|explore|1")
+  }
+
+  function test_the_graph_story_node_shows_the_started_runs_rollup_and_rings_the_running_subtask() {
+    var p = make(); if (!p) return
+    p.app.board.applyTreeData(boardCards())
+    feedFixtures(p)
+    p.navigator.showSection("graph")
+    H.find(p, "graphViewChips").chosen("story")
+    wait(200)
+    var node = H.find(p, "graphNode" + storyStarted)
+    verify(node, "the started story's node")
+    var mark = H.find(node, "runMark")
+    compare(mark.visible, true)
+    compare(H.find(mark, "runBadge").text, "⟳ 1 ✔ 1")
+    var bar = H.find(node, "runRollupBar")
+    compare(bar.visible, true)
+    compare(H.find(bar, "runRollupRunning").text, "⟳ 1")
+    compare(H.find(bar, "runRollupDone").text, "✔ 1")
+    compare(H.find(bar, "runRollupPending").text, "1 pending")
+    compare(H.find(bar, "runRollupParked").visible, false)
+    compare(H.find(bar, "runRollupEscalated").visible, false)
+    compare(H.find(node, "statusPip" + subRunning).ringed, true)
+    compare(H.find(node, "statusPip" + subDone).ringed, false)
+    compare(H.find(node, "statusPip" + subPending).ringed, false)
+    var done = H.find(p, "graphNode" + storyDone)
+    verify(done, "the done story's node")
+    compare(H.find(done, "runBadge").text, "✔ 2")
+    compare(H.find(done, "runRollupRunning").visible, false)
+    compare(H.find(done, "runRollupDone").text, "✔ 2")
+  }
+
+  function test_the_running_subtasks_card_lists_the_started_run_at_its_phase() {
+    var p = make(); if (!p) return
+    p.app.board.applyTreeData(boardCards())
+    feedFixtures(p)
+    p.navigator.showSection("runs")
+    wait(50)
+    var shortId = String(H.find(p, "runRowId0").text)
+    verify(shortId !== "", "the Runs list names the started run")
+    p.navigator.openCard(subRunning)
+    wait(50)
+    compare(p.app.nav.viewMode, "entry")
+    compare(H.find(p, "cardRunsHeader").visible, true)
+    verify(H.find(p, "cardRunRow0"), "the started run's row")
+    verify(!H.find(p, "cardRunRow1"), "only the started run touches the card")
+    compare(H.find(p, "cardRunId0").text, shortId)
+    compare(H.find(p, "cardRunPhase0").text, "explore")
   }
 }
