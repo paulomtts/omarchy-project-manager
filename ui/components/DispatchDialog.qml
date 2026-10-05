@@ -37,9 +37,13 @@ Item {
   property string storyTitle: ""
   property string blockedText: ""
 
-  readonly property Item focusItem: cancelButton
+  readonly property Item focusItem: dialog.form ? baseField : cancelButton
   readonly property bool canStart: dialog.dispatchState === "ready"
   readonly property bool busy: dialog.dispatchState === "starting"
+  // The store takes edits in these states (setDispatchField); never while a
+  // start is in flight, and never without a form.
+  readonly property bool editable: !!dialog.form
+    && ["previewing", "ready", "refused", "failed"].indexOf(dialog.dispatchState) >= 0
 
   // Every object prop is read guarded: a refused target has no form, and
   // tearing a view down nulls them while these bindings still run once.
@@ -47,6 +51,7 @@ Item {
     ? dialog.target.level : ""
   readonly property color foregroundColor: dialog.theme ? dialog.theme.foreground : Color.foreground
   readonly property color urgentColor: dialog.theme ? dialog.theme.urgent : Color.urgent
+  readonly property color dimColor: dialog.theme ? dialog.theme.dim : Color.foreground
   readonly property string targetText: {
     var quoted = "\"" + dialog.targetTitle + "\""
     switch (dialog.targetLevel) {
@@ -86,9 +91,43 @@ Item {
   signal cancelRequested()
 
   visible: shown
+  onShownChanged: dialog.syncFields()
+  onFormChanged: dialog.syncFields()
+  Component.onCompleted: dialog.syncFields()
 
   function cancel() {
     if (!dialog.busy) dialog.cancelRequested()
+  }
+
+  // Escape in any field cancels (not while starting); Return is left alone,
+  // so it never starts a run.
+  function fieldKey(event) {
+    if (event.key !== Qt.Key_Escape) return
+    dialog.cancel()
+    event.accepted = true
+  }
+
+  // A form value as its field shows it; a missing key reads as "".
+  function formText(name) {
+    var value = dialog.form ? dialog.form[name] : undefined
+    return value === undefined || value === null ? "" : String(value)
+  }
+
+  // All digits is the number; anything else goes out as the trimmed text, and
+  // the store's validateDispatch refuses it with its own sentence.
+  function parallelValue(text) {
+    var trimmed = String(text).trim()
+    return /^[0-9]+$/.test(trimmed) ? parseInt(trimmed, 10) : trimmed
+  }
+
+  // Owner -> fields, never bound: a field emits only when it says something
+  // other than the form, and these assignments make the two agree, so a new
+  // form from the owner echoes nothing.
+  function syncFields() {
+    if (baseField.text !== dialog.formText("base")) baseField.text = dialog.formText("base")
+    if (prefixField.text !== dialog.formText("prefix")) prefixField.text = dialog.formText("prefix")
+    if (dialog.parallelValue(parallelField.text) !== dialog.parallelValue(dialog.formText("parallelism")))
+      parallelField.text = dialog.formText("parallelism")
   }
 
   UI.ModalCard {
@@ -116,6 +155,97 @@ Item {
       width: parent.width
       text: "Target   " + dialog.targetText
       elide: Text.ElideRight
+    }
+
+    Column {
+      objectName: "dispatchForm"
+      visible: !!dialog.form
+      width: parent.width
+      spacing: Style.space(8)
+
+      Row {
+        width: parent.width
+        spacing: Style.space(8)
+
+        UI.ThemedText {
+          id: baseLabel
+          variant: "caption"
+          theme: dialog.theme
+          text: "Base"
+        }
+
+        TextField {
+          id: baseField
+          objectName: "dispatchBase"
+          width: Math.max(0, (parent.width - baseLabel.width - prefixLabel.width - 3 * parent.spacing) / 2)
+          foreground: dialog.foregroundColor
+          placeholderText: "main"
+          enabled: dialog.editable
+          // Verbatim: the store trims.
+          onTextChanged: if (text !== dialog.formText("base")) dialog.fieldEdited("base", text)
+          Keys.onPressed: function(event) { dialog.fieldKey(event) }
+        }
+
+        UI.ThemedText {
+          id: prefixLabel
+          variant: "caption"
+          theme: dialog.theme
+          text: "Prefix"
+        }
+
+        TextField {
+          id: prefixField
+          objectName: "dispatchPrefix"
+          width: baseField.width
+          foreground: dialog.foregroundColor
+          enabled: dialog.editable
+          onTextChanged: if (text !== dialog.formText("prefix")) dialog.fieldEdited("prefix", text)
+          Keys.onPressed: function(event) { dialog.fieldKey(event) }
+        }
+      }
+
+      // The opt-out from verification is a chip, so the form adds no checkbox.
+      UI.Chip {
+        id: noVerifyChip
+        objectName: "dispatchNoVerify"
+        theme: dialog.theme
+        text: "run without any verification"
+        active: !!dialog.form && dialog.form.allowNoVerification === true
+        busy: !dialog.editable
+        tint: noVerifyChip.active ? dialog.urgentColor : dialog.dimColor
+        onClicked: dialog.fieldEdited("allowNoVerification", !noVerifyChip.active)
+      }
+
+      Row {
+        spacing: Style.space(8)
+
+        UI.ThemedText {
+          variant: "caption"
+          theme: dialog.theme
+          text: "Parallel"
+        }
+
+        TextField {
+          id: parallelField
+          objectName: "dispatchParallel"
+          width: Style.space(48)
+          foreground: dialog.foregroundColor
+          enabled: dialog.editable
+          // Compared as values, so the owner's 6 agrees with a typed " 6 ".
+          onTextChanged: {
+            var value = dialog.parallelValue(text)
+            if (value !== dialog.parallelValue(dialog.formText("parallelism")))
+              dialog.fieldEdited("parallelism", value)
+          }
+          Keys.onPressed: function(event) { dialog.fieldKey(event) }
+        }
+
+        UI.ThemedText {
+          variant: "caption"
+          theme: dialog.theme
+          text: "stories at once"
+        }
+      }
     }
 
     UI.ThemedText {

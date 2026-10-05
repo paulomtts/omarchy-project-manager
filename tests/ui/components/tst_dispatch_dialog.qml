@@ -353,4 +353,222 @@ TestCase {
     verify(H.find(d, "dispatchSubtaskNote").visible)
     verify(!H.find(d, "dispatchChecking").visible)
   }
+
+  // ---- base and prefix --------------------------------------------------
+
+  function test_base_and_prefix_show_the_form_and_report_edits() {
+    var d = make()
+    var base = H.find(d, "dispatchBase"), prefix = H.find(d, "dispatchPrefix")
+    verify(base.visible, "the base field")
+    compare(base.text, "main")
+    compare(base.placeholderText, "main")
+    compare(prefix.text, "m3")
+    compare(edits.count, 0, "showing the form echoes nothing")
+    base.text = "dev"
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][0], "base")
+    compare(edits.signalArguments[0][1], "dev")
+    prefix.text = "m4"
+    compare(edits.count, 2)
+    compare(edits.signalArguments[1][0], "prefix")
+    compare(edits.signalArguments[1][1], "m4")
+  }
+
+  function test_edits_go_out_verbatim_the_store_trims() {
+    var d = make()
+    H.find(d, "dispatchBase").text = " dev "
+    compare(edits.signalArguments[0][1], " dev ")
+  }
+
+  function test_a_new_form_from_the_owner_updates_the_fields_and_echoes_nothing() {
+    var d = make()
+    d.form = milestoneForm({ base: "release", prefix: "m9", parallelism: 2 })
+    compare(H.find(d, "dispatchBase").text, "release")
+    compare(H.find(d, "dispatchPrefix").text, "m9")
+    compare(H.find(d, "dispatchParallel").text, "2")
+    compare(edits.count, 0)
+  }
+
+  function test_the_owner_feeding_an_edit_back_changes_nothing() {
+    var d = make()
+    var base = H.find(d, "dispatchBase")
+    base.text = "dev"
+    compare(edits.count, 1)
+    d.form = milestoneForm({ base: "dev" })
+    compare(base.text, "dev")
+    compare(edits.count, 1)
+  }
+
+  function test_opening_a_form_into_a_mounted_dialog_echoes_nothing() {
+    var d = make({ dispatchState: "idle", form: null })
+    d.dispatchState = "ready"
+    d.form = milestoneForm()
+    compare(H.find(d, "dispatchBase").text, "main")
+    compare(H.find(d, "dispatchPrefix").text, "m3")
+    compare(H.find(d, "dispatchParallel").text, "4")
+    compare(edits.count, 0)
+  }
+
+  function test_a_partial_form_reads_as_empty_fields() {
+    var d = make({ form: null })
+    d.form = {}
+    compare(H.find(d, "dispatchBase").text, "")
+    compare(H.find(d, "dispatchPrefix").text, "")
+    compare(H.find(d, "dispatchParallel").text, "")
+    compare(H.find(d, "dispatchNoVerify").active, false)
+    compare(edits.count, 0)
+  }
+
+  // ---- the no-verification chip -----------------------------------------
+
+  function test_the_no_verification_chip_flips_the_opt_out() {
+    var d = make()
+    var chip = H.find(d, "dispatchNoVerify")
+    compare(chip.text, "run without any verification")
+    compare(chip.active, false)
+    click(chip)
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][0], "allowNoVerification")
+    compare(edits.signalArguments[0][1], true)
+    d.form = milestoneForm({ allowNoVerification: true })
+    compare(chip.active, true)
+    compare(chip.tint, d.theme.urgent)
+    click(chip)
+    compare(edits.count, 2)
+    compare(edits.signalArguments[1][0], "allowNoVerification")
+    compare(edits.signalArguments[1][1], false)
+  }
+
+  // ---- parallelism ------------------------------------------------------
+
+  function test_parallelism_is_a_number_when_it_is_all_digits() {
+    var d = make()
+    var field = H.find(d, "dispatchParallel")
+    compare(field.text, "4")
+    field.text = "6"
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][0], "parallelism")
+    compare(edits.signalArguments[0][1], 6)
+    compare(typeof edits.signalArguments[0][1], "number")
+    field.text = "abc"
+    compare(edits.count, 2)
+    compare(edits.signalArguments[1][1], "abc")
+    compare(typeof edits.signalArguments[1][1], "string")
+    field.text = ""
+    compare(edits.count, 3)
+    compare(edits.signalArguments[2][1], "")
+  }
+
+  function test_a_padded_number_is_sent_trimmed_and_kept_as_typed() {
+    var d = make()
+    var field = H.find(d, "dispatchParallel")
+    field.text = " 6 "
+    compare(edits.count, 1)
+    compare(edits.signalArguments[0][1], 6)
+    d.form = milestoneForm({ parallelism: 6 })
+    compare(field.text, " 6 ", "the owner's 6 agrees, so the typing stays")
+    compare(edits.count, 1)
+  }
+
+  function test_a_parallelism_the_owner_holds_as_text_echoes_nothing() {
+    var d = make({ form: null })
+    d.form = milestoneForm({ parallelism: "6" })
+    compare(H.find(d, "dispatchParallel").text, "6")
+    compare(edits.count, 0)
+  }
+
+  // ---- keys -------------------------------------------------------------
+
+  function test_escape_in_a_field_cancels() {
+    var d = make()
+    H.find(d, "dispatchPrefix").forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 1)
+    H.find(d, "dispatchParallel").forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 2)
+    compare(starts.count, 0)
+  }
+
+  function test_return_in_a_field_never_starts_data() {
+    return [{ tag: "base", name: "dispatchBase" }, { tag: "prefix", name: "dispatchPrefix" },
+            { tag: "parallel", name: "dispatchParallel" }]
+  }
+
+  function test_return_in_a_field_never_starts(data) {
+    var d = make()
+    compare(d.canStart, true)
+    H.find(d, data.name).forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(starts.count, 0)
+    compare(cancels.count, 0)
+  }
+
+  // ---- editable ---------------------------------------------------------
+
+  function test_fields_are_editable_only_where_the_store_takes_edits_data() {
+    return [
+      { tag: "idle", state: "idle", editable: false },
+      { tag: "previewing", state: "previewing", editable: true },
+      { tag: "ready", state: "ready", editable: true },
+      { tag: "refused", state: "refused", editable: true },
+      { tag: "starting", state: "starting", editable: false },
+      { tag: "started", state: "started", editable: false },
+      { tag: "failed", state: "failed", editable: true }
+    ]
+  }
+
+  function test_fields_are_editable_only_where_the_store_takes_edits(data) {
+    var d = make({ dispatchState: data.state })
+    compare(d.editable, data.editable)
+    compare(H.find(d, "dispatchBase").enabled, data.editable)
+    compare(H.find(d, "dispatchPrefix").enabled, data.editable)
+    compare(H.find(d, "dispatchParallel").enabled, data.editable)
+    compare(H.find(d, "dispatchNoVerify").busy, !data.editable)
+  }
+
+  function test_without_a_form_nothing_is_editable() {
+    var d = make({ form: null, dispatchState: "refused" })
+    compare(d.editable, false)
+  }
+
+  function test_starting_disables_the_fields_the_chip_and_escape() {
+    var d = make()
+    var prefix = H.find(d, "dispatchPrefix")
+    prefix.forceActiveFocus()
+    d.dispatchState = "starting"
+    compare(H.find(d, "dispatchBase").enabled, false)
+    compare(prefix.enabled, false)
+    compare(H.find(d, "dispatchParallel").enabled, false)
+    var chip = H.find(d, "dispatchNoVerify")
+    compare(chip.busy, true)
+    click(chip)
+    compare(edits.count, 0)
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 0)
+  }
+
+  // ---- focus and teardown -----------------------------------------------
+
+  function test_with_a_form_the_focus_goes_to_base() {
+    var d = make()
+    compare(d.focusItem, H.find(d, "dispatchBase"))
+    d.form = null
+    compare(d.focusItem, H.find(d, "dispatchCancel"))
+  }
+
+  function test_nulling_every_object_prop_and_destroying_is_quiet() {
+    var d = make()
+    d.theme = null
+    d.target = null
+    d.form = null
+    d.preview = null
+    wait(0)
+    compare(edits.count, 0)
+    verify(H.find(d, "dispatchWarning").visible)
+    compare(H.find(d, "dispatchTarget").text, "Target   \"Document milestone runs\"")
+    d.destroy()
+    wait(0)
+  }
 }
