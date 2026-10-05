@@ -1,4 +1,5 @@
 .pragma library
+.import "board.js" as Board
 
 // Run domain model: one `am` orchestrator run, normalised from the CLI's
 // output.
@@ -771,4 +772,65 @@ function newAlerts(prevRuns, nextRuns) {
     })
   }
   return out
+}
+
+
+// ---- Dispatch (S3 1.1) -------------------------------------------------------------------
+//
+// What the dispatch dialog may start, and the form's starting values. Pure and
+// never throwing, like the rest of this file. The one exception to "every input
+// comes from am": these read a brd card as Board.indexTree() leaves it
+// ({id, title, status, parentId, depth}) and its {id: card} cardMap. Ids are
+// compared with === and looked up only as own keys of cardMap, so ids such as
+// `__proto__` behave like any absent id.
+
+var _DISPATCH_NO_CARD = "No card to dispatch"
+var _DISPATCH_UNKNOWN_LEVEL = "The card's level is unknown"
+var _DISPATCH_STORY = "A story is dispatched through its milestone"
+
+// A card id am can take as a target: a non-empty string that cannot be read as a flag.
+function _isDispatchId(id) { return typeof id === "string" && id !== "" && id.charAt(0) !== "-" }
+
+// A finite number with no fractional part.
+function _isWholeNumber(v) { return _isFiniteNumber(v) && Math.floor(v) === v }
+
+// cardMap[id] when cardMap is an object that owns the string key id and the
+// entry is an object, else null. Inherited keys never count.
+function _ownCard(cardMap, id) {
+  if (!_isObject(cardMap) || typeof id !== "string") return null
+  if (!Object.prototype.hasOwnProperty.call(cardMap, id)) return null
+  return _isObject(cardMap[id]) ? cardMap[id] : null
+}
+
+// A fresh plan the dialog may start.
+function _offeredPlan(level, command, flags) {
+  return { command: command, flags: flags, level: level, offered: true, reason: "", suggest: null }
+}
+
+// A fresh plan the dialog must refuse, with the sentence that says why.
+function _refusedPlan(level, reason, suggest) {
+  return { command: "", flags: [], level: level, offered: false, reason: reason, suggest: suggest }
+}
+
+// What the dispatch dialog may start for card. "board" is the whole board;
+// otherwise card is a brd card: depth 0 milestone, 1 story, 2+ subtask. A
+// finished card is refused; a story is refused with its milestone as the
+// suggestion (title from cardMap when it owns the parent, else ""). Decision
+// order and sentences are pinned in docs/superpowers/specs/1-1-runs-js-5eb7ec0c.md.
+function dispatchPlan(card, cardMap) {
+  if (card === "board") return _offeredPlan("board", "board", ["--board"])
+  if (!_isObject(card) || !_isDispatchId(card.id)) return _refusedPlan("", _DISPATCH_NO_CARD, null)
+  if (!_isWholeNumber(card.depth) || card.depth < 0) return _refusedPlan("", _DISPATCH_UNKNOWN_LEVEL, null)
+  var level = card.depth === 0 ? "milestone" : (card.depth === 1 ? "story" : "subtask")
+  if (Board.isFinishedStatus(card.status)) return _refusedPlan(level, "The card is " + card.status, null)
+  if (level === "story") {
+    var suggest = null
+    if (typeof card.parentId === "string" && card.parentId !== "") {
+      var parent = _ownCard(cardMap, card.parentId)
+      suggest = { id: card.parentId, title: parent !== null ? _textOf(parent.title) : "" }
+    }
+    return _refusedPlan("story", _DISPATCH_STORY, suggest)
+  }
+  if (level === "milestone") return _offeredPlan("milestone", "milestone", ["--milestone", card.id])
+  return _offeredPlan("subtask", "card", ["--card", card.id])
 }

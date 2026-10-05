@@ -1606,4 +1606,170 @@ TestCase {
     }
     compare(Runs.normalizeRun({ status: { control: "y" } }).requests.length, 0, "control not an object")
   }
+
+  // ---- S3 1.1: dispatch -------------------------------------------------------------------
+
+  function mkCard(id, depth, status, parentId, title) {
+    return { id: id, depth: depth, status: status, parentId: parentId, title: title }
+  }
+
+  // Asserts a dispatchPlan result field by field; suggest compared as JSON.
+  function checkPlan(p, offered, level, command, flags, reason, suggest, label) {
+    compare(Object.keys(p).sort().join(","), "command,flags,level,offered,reason,suggest", label + " keys")
+    compare(p.offered, offered, label + " offered")
+    compare(p.level, level, label + " level")
+    compare(p.command, command, label + " command")
+    compare(Array.isArray(p.flags), true, label + " flags is array")
+    compare(JSON.stringify(p.flags), JSON.stringify(flags), label + " flags")
+    compare(p.reason, reason, label + " reason")
+    compare(JSON.stringify(p.suggest), JSON.stringify(suggest), label + " suggest")
+  }
+
+  function test_dispatchPlan_shape() {
+    var inputs = [mkCard("m1", 0, "todo", null, "M3 Document runs"), mkCard("s1", 1, "todo", "m1", "S"), undefined]
+    for (var i = 0; i < inputs.length; i++) {
+      var a = Runs.dispatchPlan(inputs[i])
+      var b = Runs.dispatchPlan(inputs[i])
+      compare(Object.keys(a).sort().join(","), "command,flags,level,offered,reason,suggest", "keys " + i)
+      verify(a !== b, "distinct objects " + i)
+      verify(a.flags !== b.flags, "distinct flags arrays " + i)
+    }
+    var first = Runs.dispatchPlan(inputs[0])
+    first.flags.push("--evil")
+    first.flags[1] = "x"
+    compare(JSON.stringify(Runs.dispatchPlan(inputs[0]).flags), JSON.stringify(["--milestone", "m1"]), "mutation does not leak")
+    var board = Runs.dispatchPlan("board")
+    board.flags.push("--evil")
+    compare(JSON.stringify(Runs.dispatchPlan("board").flags), JSON.stringify(["--board"]), "board flags fresh")
+  }
+
+  function test_dispatchPlan_milestone() {
+    var statuses = ["todo", "in_progress", "blocked", undefined]
+    for (var i = 0; i < statuses.length; i++) {
+      checkPlan(Runs.dispatchPlan(mkCard("m1", 0, statuses[i], null, "M3")),
+                true, "milestone", "milestone", ["--milestone", "m1"], "", null, "status " + statuses[i])
+    }
+  }
+
+  function test_dispatchPlan_subtask() {
+    checkPlan(Runs.dispatchPlan(mkCard("c1", 2, "todo", "s1", "C")),
+              true, "subtask", "card", ["--card", "c1"], "", null, "depth 2")
+    checkPlan(Runs.dispatchPlan(mkCard("c2", 3, "in_progress", "c1", "D")),
+              true, "subtask", "card", ["--card", "c2"], "", null, "depth 3")
+  }
+
+  function test_dispatchPlan_board() {
+    checkPlan(Runs.dispatchPlan("board"), true, "board", "board", ["--board"], "", null, "board")
+    checkPlan(Runs.dispatchPlan("board", { m1: mkCard("m1", 0, "todo", null, "M") }),
+              true, "board", "board", ["--board"], "", null, "board ignores cardMap")
+    var near = ["Board", " board", "board "]
+    for (var i = 0; i < near.length; i++) {
+      checkPlan(Runs.dispatchPlan(near[i]), false, "", "", [], "No card to dispatch", null, "near '" + near[i] + "'")
+    }
+  }
+
+  function test_dispatchPlan_story() {
+    var story = mkCard("s1", 1, "todo", "m1", "Story")
+    var map = { m1: mkCard("m1", 0, "todo", null, "M3 Document runs"), s1: story }
+    var reason = "A story is dispatched through its milestone"
+    checkPlan(Runs.dispatchPlan(story, map), false, "story", "", [], reason,
+              { id: "m1", title: "M3 Document runs" }, "with cardMap")
+    checkPlan(Runs.dispatchPlan(story), false, "story", "", [], reason, { id: "m1", title: "" }, "no cardMap")
+    checkPlan(Runs.dispatchPlan(story, { s1: story }), false, "story", "", [], reason,
+              { id: "m1", title: "" }, "cardMap missing m1")
+    checkPlan(Runs.dispatchPlan(story, { m1: "M3" }), false, "story", "", [], reason,
+              { id: "m1", title: "" }, "m1 not an object")
+    checkPlan(Runs.dispatchPlan(story, { m1: mkCard("m1", 0, "todo", null, "  M3 x \n") }), false, "story", "", [], reason,
+              { id: "m1", title: "M3 x" }, "title trimmed")
+    var parents = [null, "", 5]
+    for (var i = 0; i < parents.length; i++) {
+      checkPlan(Runs.dispatchPlan(mkCard("s1", 1, "todo", parents[i], "S"), map), false, "story", "", [], reason,
+                null, "parentId " + parents[i])
+    }
+    var a = Runs.dispatchPlan(story, map)
+    var b = Runs.dispatchPlan(story, map)
+    verify(a.suggest !== b.suggest, "suggest is fresh")
+    a.suggest.title = "x"
+    compare(Runs.dispatchPlan(story, map).suggest.title, "M3 Document runs", "mutation does not leak")
+    compare(map.m1.title, "M3 Document runs", "cardMap unchanged")
+  }
+
+  function test_dispatchPlan_finished() {
+    var statuses = ["done", "merged", "canceled", "archived"]
+    var levels = ["milestone", "story", "subtask"]
+    var map = { m1: mkCard("m1", 0, "todo", null, "M3") }
+    for (var i = 0; i < statuses.length; i++) {
+      for (var d = 0; d < 3; d++) {
+        checkPlan(Runs.dispatchPlan(mkCard("x1", d, statuses[i], "m1", "X"), map), false, levels[d], "", [],
+                  "The card is " + statuses[i], null, statuses[i] + " depth " + d)
+      }
+    }
+    compare(Runs.dispatchPlan(mkCard("s1", 1, "done", "m1", "S"), map).reason, "The card is done", "exact sentence")
+    checkPlan(Runs.dispatchPlan(mkCard("m1", 0, "Done", null, "M")), true, "milestone", "milestone",
+              ["--milestone", "m1"], "", null, "Done is not finished")
+    checkPlan(Runs.dispatchPlan(mkCard("m1", 0, " done", null, "M")), true, "milestone", "milestone",
+              ["--milestone", "m1"], "", null, "' done' is not finished")
+  }
+
+  function test_dispatchPlan_bad_id() {
+    var ids = [undefined, "", 5, null, {}, "-x", "--board"]
+    for (var i = 0; i < ids.length; i++) {
+      checkPlan(Runs.dispatchPlan(mkCard(ids[i], 0, "todo", null, "M")), false, "", "", [],
+                "No card to dispatch", null, "id " + i)
+    }
+    var noId = { depth: 0, status: "todo", parentId: null, title: "M" }
+    checkPlan(Runs.dispatchPlan(noId), false, "", "", [], "No card to dispatch", null, "id missing")
+    checkPlan(Runs.dispatchPlan(mkCard("a b", 2, "todo", "s1", "C")), true, "subtask", "card",
+              ["--card", "a b"], "", null, "id used verbatim")
+    checkPlan(Runs.dispatchPlan(mkCard(" m1 ", 0, "todo", null, "M")), true, "milestone", "milestone",
+              ["--milestone", " m1 "], "", null, "id not trimmed")
+  }
+
+  function test_dispatchPlan_unknown_level() {
+    var depths = [undefined, -1, 1.5, NaN, Infinity, "0", null]
+    for (var i = 0; i < depths.length; i++) {
+      checkPlan(Runs.dispatchPlan(mkCard("x1", depths[i], "todo", null, "X")), false, "", "", [],
+                "The card's level is unknown", null, "depth " + depths[i])
+    }
+    var noDepth = { id: "x1", status: "todo" }
+    checkPlan(Runs.dispatchPlan(noDepth), false, "", "", [], "The card's level is unknown", null, "depth missing")
+    checkPlan(Runs.dispatchPlan(mkCard("x1", -1, "done", null, "X")), false, "", "", [],
+              "The card's level is unknown", null, "level checked before status")
+  }
+
+  function test_dispatchPlan_garbage() {
+    var cards = [undefined, null, 0, true, "x", [], {}, Object.create(null)]
+    for (var i = 0; i < cards.length; i++) {
+      checkPlan(Runs.dispatchPlan(cards[i]), false, "", "", [], "No card to dispatch", null, "card " + i)
+    }
+    checkPlan(Runs.dispatchPlan(), false, "", "", [], "No card to dispatch", null, "no arguments")
+    var story = mkCard("s1", 1, "todo", "m1", "S")
+    var maps = [null, "x", [], Object.create(null)]
+    for (var j = 0; j < maps.length; j++) {
+      checkPlan(Runs.dispatchPlan(story, maps[j]), false, "story", "", [],
+                "A story is dispatched through its milestone", { id: "m1", title: "" }, "cardMap " + j)
+    }
+    var bare = Object.create(null)
+    bare.m1 = mkCard("m1", 0, "todo", null, "M3 Document runs")
+    compare(Runs.dispatchPlan(story, bare).suggest.title, "M3 Document runs", "prototype-less cardMap is read")
+  }
+
+  function test_dispatchPlan_proto_ids() {
+    var ids = ["__proto__", "constructor", "toString"]
+    for (var i = 0; i < ids.length; i++) {
+      checkPlan(Runs.dispatchPlan(mkCard("s1", 1, "todo", ids[i], "S"), { m1: mkCard("m1", 0, "todo", null, "M") }),
+                false, "story", "", [], "A story is dispatched through its milestone",
+                { id: ids[i], title: "" }, "parentId " + ids[i])
+    }
+  }
+
+  // Review Focus 4.
+  function test_dispatchPlan_odd_titles() {
+    var story = mkCard("s1", 1, "todo", "m1", "S")
+    var bareTitle = mkCard("m1", 0, "todo", null, Object.create(null))
+    checkPlan(Runs.dispatchPlan(story, { m1: bareTitle }), false, "story", "", [],
+              "A story is dispatched through its milestone", { id: "m1", title: "" }, "unconvertible title")
+    compare(Runs.dispatchPlan(story, { m1: mkCard("m1", 0, "todo", null, 7) }).suggest.title, "7", "number title")
+    compare(Runs.dispatchPlan(story, { m1: mkCard("m1", 0, "todo", null, null) }).suggest.title, "", "null title")
+  }
 }
