@@ -1243,7 +1243,7 @@ TestCase {
     compare(argv(procB), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b|r1|" + tc.openCard + "|explore|1")
   }
 
-  // Review Focus 1-3: Refresh, selectAttempt and a snapshot's refetch under B
+  // Refresh, selectAttempt and a snapshot's refetch under B
   // carry B's root; back on A, A's root again.
   function test_every_logs_launch_after_a_switch_carries_the_new_root() {
     var bCmd = "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b|"
@@ -1269,7 +1269,7 @@ TestCase {
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1", "back on A")
   }
 
-  // Review Focus 4: the root reaches the runner byte-for-byte.
+  // The root reaches the runner byte-for-byte.
   function test_logs_argv_keeps_an_odd_root_verbatim() {
     var odd = "/home/u/o'dd; $x/"
     var store = makeWithProject(odd); if (!store) return
