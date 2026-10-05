@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Preview a dispatch: an `am run --dry-run` passthrough.
+"""Preview a dispatch: an `am run --dry-run` passthrough, and the repo's default branch.
 
     dispatch-preview.py ROOT (milestone ID | board) [--base-branch B] [--branch-prefix P]
                         [--max-concurrent N] [--verify CMD]... [--allow-no-verification]
+    dispatch-preview.py --defaults ROOT
 
-Runs `am run (--milestone ID | --board) --dry-run --repo-dir ROOT`, then the
-options given in a fixed order (--base-branch, --branch-prefix,
+Preview runs `am run (--milestone ID | --board) --dry-run --repo-dir ROOT`,
+then the options given in a fixed order (--base-branch, --branch-prefix,
 --max-concurrent, every --verify pair in the order given,
 --allow-no-verification), as an argv list (no shell, stdin /dev/null, 60 s
 timeout). Every value is the next argument verbatim, even if it starts with
@@ -13,8 +14,14 @@ timeout). Every value is the next argument verbatim, even if it starts with
 A dry run writes nothing, so am is not detached: the store SIGTERMs this helper
 when a newer preview starts, and am finishing alone harms nothing.
 
+--defaults never runs am. It asks git, read-only (stdin /dev/null, 10 s timeout
+each): `git -C ROOT symbolic-ref refs/remotes/origin/HEAD` names the default
+branch (source "origin"), else `git -C ROOT symbolic-ref --short HEAD` names
+the checked-out one, unborn included (source "current"). It never fetches and
+never writes to the repo.
+
 Prints exactly one JSON line on EVERY path:
-- am's envelope, unchanged, whether {"ok": true, "data": ...} or
+- preview: am's envelope, unchanged, whether {"ok": true, "data": ...} or
   {"ok": false, "error": ...}. The envelope's `ok` decides, not am's exit code;
   `data` is never inspected (previewSummary in runs.js reads it);
 - {"ok": false, "error": {"type": "AmFailed", ...}} when am exited non-zero
@@ -22,6 +29,9 @@ Prints exactly one JSON line on EVERY path:
 - {"ok": false, "error": {"type": "AmBadOutput", ...}} when am exited 0
   without an envelope;
 - {"ok": false, "error": {"type": "AmMissing", ...}} when am is not on PATH;
+- defaults: {"ok": true, "data": {"default_branch": B, "source": S}}, or an
+  error of type NotAGitRepo, NoDefaultBranch (detached HEAD, no origin/HEAD)
+  or GitMissing;
 - {"ok": false, "error": {"type": "HelperError", ...}} on any unexpected
   failure (a timeout, an am that cannot start);
 - {"ok": false, "error": {"type": "Usage", ...}} for any other command line.
@@ -42,8 +52,10 @@ USAGE = ("usage: dispatch-preview.py ROOT (milestone ID | board) [--base-branch 
          " [--allow-no-verification] | dispatch-preview.py --defaults ROOT")
 VALUED = ("--base-branch", "--branch-prefix", "--max-concurrent")
 AM_TIMEOUT = 60
+GIT_TIMEOUT = 10
 TAIL_LINES = 20
 TAIL_CHARS = 2000
+ORIGIN = "refs/remotes/origin/"
 
 
 class BadOutput(Exception):
@@ -59,12 +71,17 @@ def good_root(root):
 
 
 def parse(argv):
-    """("preview", root, milestone, options) for a command line USAGE allows, else None.
+    """("defaults", root) or ("preview", root, milestone, options) for a command
+    line USAGE allows, else None.
 
     milestone is None for the board. options always maps "--verify" to the list
     of commands in the order given, maps each given VALUED flag to its value and
     "--allow-no-verification" to True when given; a once-only flag given twice
     is a usage error."""
+    if argv[:1] == ["--defaults"]:
+        if len(argv) != 2 or not good_root(argv[1]):
+            return None
+        return "defaults", argv[1]
     if len(argv) < 2 or not good_root(argv[0]):
         return None
     root, target, rest = argv[0], argv[1], argv[2:]
@@ -153,16 +170,41 @@ def preview(root, milestone, options):
     return report(*run_am(am, preview_argv(root, milestone, options)))
 
 
+def git(exe, root, *args):
+    """(returncode, stripped stdout) of one read-only `git -C ROOT ARGS`."""
+    proc = subprocess.run([exe, "-C", root, *args], capture_output=True, encoding="utf-8",
+                          errors="replace", stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT)
+    return proc.returncode, proc.stdout.strip()
+
+
+def defaults(root):
+    """The branch a dispatch should start from: origin/HEAD's, else the checked-out one."""
+    exe = shutil.which("git")
+    if exe is None:
+        return failure("GitMissing", "git is not installed.")
+    if git(exe, root, "rev-parse", "--git-dir")[0] != 0:
+        return failure("NotAGitRepo", root + " is not a git repository.")
+    code, ref = git(exe, root, "symbolic-ref", ORIGIN + "HEAD")
+    if code == 0 and ref.startswith(ORIGIN) and ref[len(ORIGIN):]:
+        return emit({"ok": True, "data": {"default_branch": ref[len(ORIGIN):], "source": "origin"}})
+    code, branch = git(exe, root, "symbolic-ref", "--short", "HEAD")
+    if code == 0 and branch:
+        return emit({"ok": True, "data": {"default_branch": branch, "source": "current"}})
+    return failure("NoDefaultBranch", "No origin/HEAD and HEAD is detached; enter a base branch.")
+
+
 def main(argv):
     parsed = parse(argv)
     if parsed is None:
         return failure("Usage", USAGE, 2)
+    if parsed[0] == "defaults":
+        return defaults(parsed[1])
     return preview(*parsed[1:])
 
 
 def guarded(argv):
     """The store parses stdout for exactly one JSON line, so no path - not even an
-    unexpected exception (a timeout, an am that cannot start) - may end without one."""
+    unexpected exception (a timeout, an am or git that cannot start) - may end without one."""
     try:
         return main(argv)
     except SystemExit:

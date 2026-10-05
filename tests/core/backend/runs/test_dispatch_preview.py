@@ -430,3 +430,166 @@ def test_usage_shapes(world, args):
     assert code == 2
     assert out == USAGE_LINE
     assert calls(world) == []
+
+
+
+# --- defaults: the repo's default branch (real git) --------------------------------
+# Real throwaway repos: the behaviour under test *is* what git's symbolic-ref does.
+# The user's git config never leaks in, and discovery never climbs above tmp.
+
+def git_env(world):
+    config = world["tmp"] / "gitconfig"
+    config.touch()
+    return {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CEILING_DIRECTORIES": str(world["tmp"]),
+            "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com"}
+
+
+def sh_git(world, repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], env=env_for(world, **git_env(world)),
+                   check=True, capture_output=True, timeout=30)
+
+
+def make_repo(world, branch, name="repo", commit=True):
+    repo = world["tmp"] / name
+    repo.mkdir()
+    sh_git(world, repo, "init", "-q", "-b", branch)
+    if commit:
+        sh_git(world, repo, "commit", "-q", "--allow-empty", "-m", "init")
+    return repo
+
+
+def set_origin_head(world, repo, branch):
+    """origin/HEAD -> origin/<branch>, without a network or a remote."""
+    sh_git(world, repo, "update-ref", "refs/remotes/origin/" + branch, "HEAD")
+    sh_git(world, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/" + branch)
+
+
+def ask_defaults(world, root, **extra):
+    """Run --defaults ROOT; assert am was never called; return (exit, payload)."""
+    env = git_env(world)
+    env.update(extra)
+    code, out = run(world, ["--defaults", str(root)], **env)
+    assert calls(world) == []
+    return code, out
+
+
+def found(branch, source):
+    return {"ok": True, "data": {"default_branch": branch, "source": source}}
+
+
+NO_DEFAULT = {"ok": False, "error": {"type": "NoDefaultBranch", "message":
+              "No origin/HEAD and HEAD is detached; enter a base branch."}}
+
+
+def test_defaults_origin_head(world):
+    repo = make_repo(world, "main")
+    set_origin_head(world, repo, "main")
+    sh_git(world, repo, "checkout", "-q", "-b", "feature")
+    code, out = ask_defaults(world, repo)
+    assert code == 0
+    assert out == found("main", "origin")
+
+
+def test_defaults_origin_head_with_slash(world):
+    repo = make_repo(world, "main")
+    set_origin_head(world, repo, "release/2")
+    code, out = ask_defaults(world, repo)
+    assert code == 0
+    assert out == found("release/2", "origin")
+
+
+def test_defaults_no_origin_falls_back_to_current(world):
+    repo = make_repo(world, "trunk")
+    code, out = ask_defaults(world, repo)
+    assert code == 0
+    assert out == found("trunk", "current")
+
+
+def test_defaults_unborn_branch(world):
+    repo = make_repo(world, "dev", commit=False)
+    code, out = ask_defaults(world, repo)
+    assert code == 0
+    assert out == found("dev", "current")
+
+
+def test_defaults_detached_no_origin(world):
+    repo = make_repo(world, "main")
+    sh_git(world, repo, "checkout", "-q", "--detach")
+    code, out = ask_defaults(world, repo)
+    assert code == 0
+    assert out == NO_DEFAULT
+
+
+def test_defaults_detached_with_origin(world):
+    # Step 1 does not need HEAD at all.
+    repo = make_repo(world, "main")
+    set_origin_head(world, repo, "main")
+    sh_git(world, repo, "checkout", "-q", "--detach")
+    code, out = ask_defaults(world, repo)
+    assert code == 0
+    assert out == found("main", "origin")
+
+
+def test_defaults_root_with_spaces(world):
+    repo = make_repo(world, "main", name="my repo; $x")
+    code, out = ask_defaults(world, repo)
+    assert code == 0
+    assert out == found("main", "current")
+
+
+def test_defaults_not_a_repo(world):
+    plain = world["tmp"] / "plain"
+    plain.mkdir()
+    afile = world["tmp"] / "a-file"
+    afile.write_text("not a repo\n")
+    for root in (plain, world["tmp"] / "does-not-exist", afile):
+        code, out = ask_defaults(world, root)
+        assert code == 0
+        assert out == {"ok": False, "error": {"type": "NotAGitRepo",
+                                              "message": str(root) + " is not a git repository."}}
+
+
+def test_defaults_git_missing(world):
+    repo = make_repo(world, "main")
+    only_python = world["tmp"] / "only-python"
+    only_python.mkdir()
+    (only_python / "python3").symlink_to(sys.executable)
+    code, out = ask_defaults(world, repo, PATH=str(only_python))
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "GitMissing", "message": "git is not installed."}}
+
+
+def test_defaults_git_timeout_is_helper_error(world, monkeypatch, capsys):
+    # A git that hangs is cut off after GIT_TIMEOUT (shortened here).
+    write_exec(world["bin"] / "git", "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n")
+    helper = load_helper()
+    assert helper.GIT_TIMEOUT == 10
+    monkeypatch.setattr(helper, "GIT_TIMEOUT", 0.5)
+    use_world(world, monkeypatch)
+    code = helper.guarded(["--defaults", str(world["tmp"])])
+    out = one_line(capsys)
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The dispatch preview failed: ")
+
+
+def tree_of(path):
+    """Every file under path, by relative name, with its bytes."""
+    return {str(p.relative_to(path)): p.read_bytes()
+            for p in sorted(path.rglob("*")) if p.is_file()}
+
+
+def test_defaults_writes_nothing(world):
+    # One repo answered from origin/HEAD, one that falls through to HEAD: all three
+    # git calls run, and neither repo's .git changes.
+    with_origin = make_repo(world, "main", name="with-origin")
+    set_origin_head(world, with_origin, "main")
+    without_origin = make_repo(world, "trunk", name="without-origin")
+    for repo in (with_origin, without_origin):
+        before = tree_of(repo / ".git")
+        code, _ = ask_defaults(world, repo)
+        assert code == 0
+        assert tree_of(repo / ".git") == before
