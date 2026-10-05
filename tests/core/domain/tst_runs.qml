@@ -1710,7 +1710,8 @@ TestCase {
                  ["ok", "done"], ["gate_failed", "dead"],
                  // synthetic: no capture contains schema_invalid or harness_error.
                  ["schema_invalid", "dead"], ["harness_error", "dead"],
-                 ["OK", ""], [" ok", ""], ["Gate_Failed", ""], ["canceled", ""], ["__proto__", ""]]
+                 ["OK", ""], [" ok", ""], ["Gate_Failed", ""], ["canceled", "cancelled"], ["Canceled", ""],
+                 [" canceled", ""], ["__proto__", ""]]
     for (var i = 0; i < cases.length; i++) compare(Runs.glyphStateOf(cases[i][0]), cases[i][1], String(cases[i][0]))
   }
 
