@@ -8,6 +8,8 @@ import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
 import "../../../ui/components/runGlyphs.js" as RG
+import "../../helpers/amFixtures.js" as F
+import "../../../core/domain/runs.js" as Runs
 
 TestCase {
   id: tc
@@ -117,6 +119,21 @@ TestCase {
 
   function detail() { return [run("run-20261004-19efcddc", "started", true, { tree: detailTree() })] }
   function sel(card, phase, n) { return { card_id: card, phase: phase, attempt: n } }
+
+  // One am run as RunStore hands it to normalizeRun, fresh on every call: the
+  // fixture's `am runs` row (runs.json's entry with the same run id, else the
+  // fixture's own _am_runs_row) without `status`, and the fixture's `am status`
+  // data.
+  function amRun(name) {
+    var fixture = F.load(name)
+    var runs = F.load("runs.json").data.runs
+    var row = fixture._am_runs_row
+    for (var i = 0; i < runs.length; i++) {
+      if (runs[i].id === fixture.data.run.id) row = runs[i]
+    }
+    delete row.status
+    return { row: row, status: fixture.data }
+  }
 
   // ---- header
 
@@ -232,6 +249,32 @@ TestCase {
     verify(Qt.colorEqual(H.find(s.screen, "runAttemptLabel0_0_0").color, urgent), "a failed attempt")
     verify(Qt.colorEqual(H.find(s.screen, "runAttemptLabel0_0_1").color, fg), "a started attempt is not urgent")
     verify(Qt.colorEqual(H.find(s.screen, "runSynthetic0").color, urgent), "a dead bookkeeping row")
+  }
+
+  // Real am: review.1 of eb8b1851 is the gate_failed attempt that escalated
+  // status-escalated.json; explore.1 of the same subtask is ok.
+  function test_a_gate_failed_attempt_of_real_am_shows_the_dead_glyph_in_urgent() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var card = "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+    var key = ""
+    var stories = Runs.runTree(run).stories
+    for (var si = 0; si < stories.length; si++) {
+      for (var ti = 0; ti < stories[si].subtasks.length; ti++) {
+        var t = stories[si].subtasks[ti]
+        if (t.card_id !== card) continue
+        for (var ai = 0; ai < t.attempts.length; ai++) {
+          if (t.attempts[ai].phase === "review" && t.attempts[ai].attempt === 1) key = si + "_" + ti + "_" + ai
+        }
+      }
+    }
+    compare(key, "1_0_6", "where the capture puts review.1 of " + card)
+    var s = make([run], run.id, sel(card, "review", 1)); if (!s) return
+    var failed = H.find(s.screen, "runAttemptLabel" + key)
+    compare(failed.text, "› " + RG.glyphOf("dead") + " review.1 gate_failed")
+    verify(Qt.colorEqual(failed.color, s.screen.theme.urgent), "a gate_failed attempt is urgent")
+    var ok = H.find(s.screen, "runAttemptLabel1_0_0")
+    compare(ok.text, "  " + RG.glyphOf("done") + " explore.1 ok")
+    verify(Qt.colorEqual(ok.color, s.screen.theme.foreground), "an ok attempt is not urgent")
   }
 
   // Review Focus 3.

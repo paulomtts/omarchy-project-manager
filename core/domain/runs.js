@@ -535,15 +535,17 @@ function snapshotAgeText(fetchedMs, nowMs) {
 }
 
 // The run-state name (a runGlyphs.js key) an am story, subtask, phase, attempt
-// or row status is drawn with -- the mapping PhaseTimeline uses (started is
-// running, failed is dead). "" for anything else, which shows no glyph.
+// or row status is drawn with: started is running; failed and the attempt
+// failures gate_failed, schema_invalid, harness_error are dead; the attempt
+// outcome ok is done. "" for anything else, which shows no glyph.
 function glyphStateOf(status) {
   if (status === "started" || status === "running") return "running"
   if (status === "stopped" || status === "parked") return "parked"
   if (status === "escalated") return "escalated"
-  if (status === "failed" || status === "dead") return "dead"
+  if (status === "failed" || status === "dead" || status === "gate_failed" ||
+      status === "schema_invalid" || status === "harness_error") return "dead"
   if (status === "cancelled") return "cancelled"
-  if (status === "done") return "done"
+  if (status === "done" || status === "ok") return "done"
   return ""
 }
 

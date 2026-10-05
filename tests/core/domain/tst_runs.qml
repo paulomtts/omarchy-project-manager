@@ -1565,8 +1565,42 @@ TestCase {
   function test_glyph_state_of() {
     var cases = [["started", "running"], ["running", "running"], ["stopped", "parked"], ["parked", "parked"],
                  ["escalated", "escalated"], ["failed", "dead"], ["dead", "dead"], ["cancelled", "cancelled"],
-                 ["done", "done"], ["pending", ""], ["", ""], [undefined, ""], [null, ""], [5, ""], ["constructor", ""]]
+                 ["done", "done"], ["pending", ""], ["", ""], [undefined, ""], [null, ""], [5, ""], ["constructor", ""],
+                 ["ok", "done"], ["gate_failed", "dead"],
+                 // synthetic: no capture contains schema_invalid or harness_error.
+                 ["schema_invalid", "dead"], ["harness_error", "dead"],
+                 ["OK", ""], [" ok", ""], ["Gate_Failed", ""], ["canceled", ""], ["__proto__", ""]]
     for (var i = 0; i < cases.length; i++) compare(Runs.glyphStateOf(cases[i][0]), cases[i][1], String(cases[i][0]))
+  }
+
+  // Every attempt and row status of a real capture maps per `expected`; a
+  // status missing from it fails, naming the status.
+  function test_fixture_glyph_state_of_attempt_outcomes() {
+    var expected = { ok: "done", done: "done", gate_failed: "dead", failed: "dead", escalated: "escalated",
+                     started: "running", pending: "" }
+    function walk(name) {
+      var r = Runs.normalizeRun(amRun(name))
+      var seen = []
+      for (var i = 0; i < r.tree.subtasks.length; i++) {
+        var phases = r.tree.subtasks[i].phases || []
+        for (var j = 0; j < phases.length; j++) {
+          var tries = phases[j].attempts || []
+          for (var k = 0; k < tries.length; k++) seen.push(tries[k].status)
+        }
+      }
+      for (var w = 0; w < r.rows.length; w++) seen.push(r.rows[w].status)
+      for (var s = 0; s < seen.length; s++) {
+        var st = seen[s]
+        verify(typeof st === "string" && Object.prototype.hasOwnProperty.call(expected, st),
+               name + ": status " + String(st) + " has no expected glyph state")
+        compare(Runs.glyphStateOf(st), expected[st], name + ": " + st)
+      }
+      return seen
+    }
+    var escalated = walk("status-escalated.json")
+    verify(escalated.indexOf("gate_failed") >= 0, "status-escalated.json has a gate_failed status")
+    verify(escalated.indexOf("ok") >= 0, "status-escalated.json has an ok status")
+    verify(walk("status-done.json").indexOf("ok") >= 0, "status-done.json has an ok status")
   }
 
   function test_run_tree() {
