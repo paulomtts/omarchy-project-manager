@@ -224,3 +224,36 @@ def test_status_fixtures_reach_attempts_and_a_control_lease():
 def test_status_vocabularies(name):
     for where, status, vocabulary in status_statuses(load(name)["data"]):
         assert status in vocabulary, f"{name} {where}: {status!r} not in {sorted(vocabulary)}"
+
+
+def test_logs_key_sets():
+    data = load("logs-attempt.json")["data"]
+    assert_keys("logs-attempt.json", "data", data, LOGS_KEYS)
+    assert_keys("logs-attempt.json", "data.artifacts", data["artifacts"], ARTIFACTS_KEYS)
+    for kind, artifact in data["artifacts"].items():
+        assert_keys("logs-attempt.json", f"data.artifacts.{kind}", artifact, ARTIFACT_KEYS)
+
+
+def test_watch_event_key_sets():
+    data = load("watch-events.json")["data"]
+    assert_keys("watch-events.json", "data", data, WATCH_DATA_KEYS)
+    assert data["events"], "watch-events.json: no events"
+    for i, event in enumerate(data["events"]):
+        assert_keys("watch-events.json", f"events[{i}]", event, EVENT_KEYS)
+
+
+def test_hello_key_sets_and_schemas():
+    hellos = load("watch-hello.json")
+    assert_keys("watch-hello.json", "top level", hellos, HELLO_FILE_KEYS)
+    for key, schema in (("schema_1", 1), ("schema_2", 2)):
+        hello = hellos[key]
+        assert_keys("watch-hello.json", key, hello, HELLO_KEYS)
+        assert hello["schema"] == schema, f"watch-hello.json {key}: schema {hello['schema']!r}"
+        assert hello["event"] == "watch", f"watch-hello.json {key}: event {hello['event']!r}"
+
+
+def test_note_is_on_exactly_the_annotated_captures():
+    noted = sorted(name for name in FIXTURE_NAMES if "_note" in load(name))
+    assert noted == sorted(NOTED_FIXTURES), noted
+    with_row = sorted(name for name in FIXTURE_NAMES if "_am_runs_row" in load(name))
+    assert with_row == sorted(E2E_FIXTURES), with_row
