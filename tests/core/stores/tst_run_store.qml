@@ -2156,4 +2156,44 @@ TestCase {
     verify(!store.settingsSaveRunner.current, "nothing was launched")
     verify(!store.settingsLoadRunner.current, "nothing was loaded")
   }
+
+  // ---- dispatch (S3 3.1)
+
+  property string previewCmd: "python3|/plugin/core/backend/runs/dispatch-preview.py|"
+  property string startCmd: "python3|/plugin/core/backend/runs/start-run.py|"
+
+  // get-run-settings with every key, as viewer-state.py prints it.
+  function dispatchSettings() {
+    return JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false, notifyOnEscalation: false,
+                            prefixHistory: ["old"], parallelism: 4, confirmDispatch: true }) + "\n"
+  }
+
+  // 35
+  function test_run_settings_kept_even_after_notify_touched() {
+    var store = makeWithProject(rootA); if (!store) return
+    compare(Object.keys(store.runSettings).length, 0, "{} until the reply")
+    var load = store.settingsLoadRunner.current
+    store.setNotifyOnEscalation(true)
+    reply(load, dispatchSettings(), 0)
+    compare(store.notifyOnEscalation, true, "the switch keeps the user's value")
+    compare(store.runSettings.prefixHistory.length, 1)
+    compare(store.runSettings.prefixHistory[0], "old")
+    compare(store.runSettings.parallelism, 4)
+    compare(store.runSettings.confirmDispatch, true)
+    compare(store.runSettings.verify[0], "uv run pytest")
+    compare(store.runSettings.notifyOnEscalation, false, "the object is kept as it was read")
+  }
+
+  function test_run_settings_follow_the_project() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    compare(store.runSettings.parallelism, 4)
+    store.project = rootB
+    compare(Object.keys(store.runSettings).length, 0, "a project switch forgets A's settings")
+    reply(store.settingsLoadRunner.current, "Traceback: boom\n", 1)
+    compare(Object.keys(store.runSettings).length, 0, "an unreadable reply is {}")
+    var other = makeWithProject(rootA); if (!other) return
+    reply(other.settingsLoadRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
+    compare(other.runSettings.parallelism, 9)
+  }
 }

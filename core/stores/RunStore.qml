@@ -94,6 +94,10 @@ Scope {
   property bool notifyOnEscalation: false
   property bool notifySaved: false
   property bool notifyTouched: false
+  // The current project's last get-run-settings object, as it was read: {}
+  // until its reply, when the reply is unreadable, and after a project switch.
+  // The dispatch form starts from it.
+  property var runSettings: ({})
 
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
@@ -278,6 +282,7 @@ Scope {
     store.notifyOnEscalation = false
     store.notifySaved = false
     store.notifyTouched = false
+    store.runSettings = {}
     settingsLoadRunner.guard = store.project
     if (store.project !== "") {
       store.refresh()
@@ -808,11 +813,14 @@ Scope {
     return true
   }
 
-  // get-run-settings: one bare object. Only a real true turns the switch on;
-  // an unreadable reply leaves it off. Too late once the user changed it.
+  // get-run-settings: one bare object, kept whole as runSettings ({} when
+  // unreadable) on every reply. Only a real true turns the switch on; an
+  // unreadable reply leaves it off. Too late for the switch once the user
+  // changed it.
   function applyRunSettings(stdout, exitCode) {
-    if (store.notifyTouched) return
     var settings = store.parseEnvelope(stdout)
+    store.runSettings = settings !== null ? settings : {}
+    if (store.notifyTouched) return
     var on = settings !== null && settings.notifyOnEscalation === true
     store.notifyOnEscalation = on
     store.notifySaved = on
