@@ -103,17 +103,22 @@ def run_row_levels(where, row):
             yield f"{where}.progress.current", progress["current"], CURRENT_KEYS
 
 
+def check_runs_row(source, where, row, extra_allowed=None):
+    """A row's key sets and status; extra_allowed maps an expected set to keys also accepted."""
+    for level, obj, expected in run_row_levels(where, row):
+        assert_keys(source, level, obj, expected, (extra_allowed or {}).get(expected, frozenset()))
+    assert row["status"] in RUN_STATUSES, f"{source} {where}.status: {row['status']!r}"
+
+
 def check_runs_rows(source, rows, extra_allowed=None):
-    """Every row's key sets and status; extra_allowed maps an expected set to keys also accepted."""
     for i, row in enumerate(rows):
-        for where, obj, expected in run_row_levels(f"runs[{i}]", row):
-            assert_keys(source, where, obj, expected, (extra_allowed or {}).get(expected, frozenset()))
-        assert row["status"] in RUN_STATUSES, f"{source} runs[{i}].status: {row['status']!r}"
+        check_runs_row(source, f"runs[{i}]", row, extra_allowed)
 
 
 def runs_rows_of_fixtures():
-    rows = [(f"runs.json runs[{i}]", row) for i, row in enumerate(load("runs.json")["data"]["runs"])]
-    return rows + [(f"{name} _am_runs_row", load(name)["_am_runs_row"]) for name in E2E_FIXTURES]
+    """(source, where, row) for every runs.json row and every e2e capture's _am_runs_row."""
+    rows = [("runs.json", f"runs[{i}]", row) for i, row in enumerate(load("runs.json")["data"]["runs"])]
+    return rows + [(name, "_am_runs_row", load(name)["_am_runs_row"]) for name in E2E_FIXTURES]
 
 
 def status_levels(data):
@@ -227,13 +232,13 @@ def test_runs_rows_key_sets():
     assert any(row["lease"] is not None for row in rows), "runs.json: no row has a lease"
     assert any(row["progress"]["current"] is not None for row in rows), \
         "runs.json: no row has a progress.current"
-    for source, row in runs_rows_of_fixtures():
-        check_runs_rows(source, [row])
+    for source, where, row in runs_rows_of_fixtures():
+        check_runs_row(source, where, row)
 
 
 def test_runs_row_statuses_are_in_the_run_vocabulary():
-    for source, row in runs_rows_of_fixtures():
-        assert row["status"] in RUN_STATUSES, f"{source}.status: {row['status']!r}"
+    for source, where, row in runs_rows_of_fixtures():
+        assert row["status"] in RUN_STATUSES, f"{source} {where}.status: {row['status']!r}"
 
 
 @pytest.mark.parametrize("name", STATUS_FIXTURES)
@@ -316,3 +321,11 @@ def test_live_check_reads_the_main_checkout_not_a_worktree():
     if main is None:
         pytest.skip("git could not name the main checkout")
     assert (main / ".git").is_dir(), f"{main}: not a main checkout (no .git directory)"
+
+
+def test_runs_row_failures_name_the_fixture_and_the_row_once():
+    row = dict(load("status-escalated.json")["_am_runs_row"], progress=None)
+    with pytest.raises(AssertionError, match=r"^status-escalated\.json _am_runs_row\.progress: expected"):
+        check_runs_row("status-escalated.json", "_am_runs_row", row)
+    labels = [(source, where) for source, where, _ in runs_rows_of_fixtures()]
+    assert labels[0] == ("runs.json", "runs[0]"), labels
