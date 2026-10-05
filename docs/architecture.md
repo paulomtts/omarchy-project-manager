@@ -96,7 +96,12 @@ manifest entry point.
 
 Other `ui/` pieces: `Navigator.qml` (screen switching; `openRun(id, from)` opens Run detail and records where Back goes in `runReturnMode`: from a card's RUNS row (`from` `"entry"`) the card stays open behind it and Back returns to it through `restoreCardFromRun()`, from the Runs list Back restores the list through `restoreRunsList()`), `Shortcuts.qml` (key
 events to store calls; Ctrl+1..6 follow the sidebar's order: Board, Graph,
-Documents, Memories, Issues, Runs), `theme/Theme.qml` (colours and fonts from the shell).
+Documents, Memories, Issues, Runs; `handleRunKey` makes a bare `p` / `r` / `c`
+pause, resume or cancel the run on Run detail, and the cursor row on the Runs
+list while its search is empty -- a refused key flashes `refusalOf`'s sentence,
+`c` only opens the cancel confirmation; `modalOpen()` is the one guard both the
+chords and the run keys obey, and Escape closes the cancel confirmation before
+the dropdown), `theme/Theme.qml` (colours and fonts from the shell).
 
 Not every process goes through `HelperRunner`: `listProc` (`brd projects`), `treeProc` (`brd tree`), `issueProc` (`brd issue list`), `exportProc` (`brd export`), `brdDocsProc` (`brd doc list`), `saveStateProc`, `resolveDbPathProc` and `deleteProc` stay plain `Process` objects because they run the `brd` CLI or are fire-and-forget/single-owner with their own exit handling. `HelperRunner.run()` SIGTERMs a previous run of the same helper instead of letting it finish and dropping its reply (reachable for list-docs/list-memories refetches, and a set-doc-tag started in another project mid-flight); helpers write atomically, so at worst a stray `docs/.tmp-*` remains.
 
