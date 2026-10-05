@@ -2,6 +2,7 @@ import QtQuick
 import qs.Commons
 import "../../core/domain/runs.js" as Runs
 import "../components/runGlyphs.js" as RunGlyphs
+import "../components/runControlFacts.js" as ControlFacts
 import "../components" as UI
 import "../theme" as T
 
@@ -21,6 +22,9 @@ Column {
 
   // The panel scrolls; a row that takes the cursor asks for it here.
   signal revealRequested(var item)
+  // A run's Cancel was clicked. Cancelling needs a typed confirmation, which is
+  // the owner's to ask for; nothing here cancels a run.
+  signal cancelRequested(string runId)
 
   // Re-read whenever the list changes, i.e. with every snapshot.
   readonly property real nowMs: screen.app.runs.filteredRuns ? Date.now() : 0
@@ -42,6 +46,15 @@ Column {
       return age === "" ? "dead - lease lost" : age === "just now" ? "dead - lease lost just now" : "dead - lease lost " + age + " ago"
     if (state === "parked") return age === "" ? "parked" : "parked " + age
     return ""
+  }
+
+  // A row's control button: pause and resume go straight to the store, a
+  // cancel only asks (cancelRequested).
+  function requestControl(action, run) {
+    var id = ControlFacts.runIdOf(run)
+    if (id === "") return
+    if (action === "cancel") screen.cancelRequested(id)
+    else screen.app.runs.control(action, id)
   }
 
   UI.ThemedText {
@@ -217,5 +230,24 @@ Column {
       color: screen.theme.urgent
       wrapMode: Text.WordWrap
     }
+
+    // Under the row: the buttons while it has the cursor (hover moves the
+    // cursor, so that is hover or selected) or a request is pending, and the
+    // waiting and error lines whenever they apply.
+    actions: [
+      UI.RunControls {
+        objectName: "runRowControls" + row.index
+        width: parent.width
+        theme: screen.theme
+        run: row.run
+        pendingAction: ControlFacts.pendingOf(screen.app.runs.pending, row.run)
+        waiting: ControlFacts.waitingOf(screen.app.runs.stillWaiting, row.run)
+        waitingText: screen.app.runs.stillWaitingText
+        errorText: ControlFacts.errorOf(screen.app.runs.lastControlError, screen.app.runs.lastControlErrorRunId, row.run)
+        wholeRun: false
+        showButtons: row.hasCursor
+        onActionRequested: function(action) { screen.requestControl(action, row.run) }
+      }
+    ]
   }
 }

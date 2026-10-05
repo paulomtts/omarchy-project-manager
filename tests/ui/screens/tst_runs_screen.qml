@@ -38,6 +38,17 @@ TestCase {
       property string watchSchemaError: ""
       readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(rs.runs, rs.runFilter), rs.searchQuery)
       function toggleRunFilter(id) { rs.runFilter = id === "all" || id === rs.runFilter ? "" : id }
+      // The control surface the rows read (S2 4.2). `control` only records.
+      property var pending: ({})
+      property var stillWaiting: ({})
+      readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
+      property string lastControlError: ""
+      property string lastControlErrorRunId: ""
+      property var controlCalls: []
+      function control(action, id) {
+        rs.controlCalls = rs.controlCalls.concat([action + "|" + id])
+        return true
+      }
     }
   }
 
@@ -365,5 +376,97 @@ TestCase {
     s.nav.viewMode = "runs"
     s.app.projects = { selectedProject: null }
     compare(s.screen.visible, false)
+  }
+
+  // ---- run controls (S2 4.2)
+
+  SignalSpy { id: cancelSpy; signalName: "cancelRequested" }
+
+  // A part of row i's RunControls; search inside the row's controls, since
+  // every row has a runControlPause.
+  function ctl(s, i, name) { return H.find(H.find(s.screen, "runRowControls" + i), "runControl" + name) }
+
+  // 13
+  function test_a_rows_buttons_show_only_while_it_has_the_cursor() {
+    var s = make(sample()); if (!s) return
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(ctl(s, 0, "Pause").visible, true)
+    compare(ctl(s, 0, "Cancel").visible, true)
+    compare(ctl(s, 3, "Resume").visible, false, "the parked row has no cursor")
+    s.nav.cursorIndex = 3
+    wait(20)
+    compare(ctl(s, 0, "Pause").visible, false)
+    compare(ctl(s, 3, "Resume").visible, true)
+    s.runs.pending = { "run-20261004-live0001": "pause" }
+    compare(ctl(s, 0, "Pause").visible, true, "a pending request keeps its button")
+    compare(ctl(s, 0, "Pause").text, "Pause requested…")
+    compare(ctl(s, 0, "Pause").enabled, false)
+    s.nav.cursorIndex = 5
+    wait(20)
+    compare(H.find(s.screen, "runRowControls5").height, 0, "a done run shows nothing under the cursor")
+  }
+
+  // 14
+  function test_pause_and_resume_go_to_the_store_and_do_not_open_the_run() {
+    var s = make(sample()); if (!s) return
+    s.nav.cursorIndex = 0
+    wait(20)
+    tap(ctl(s, 0, "Pause"))
+    compare(s.runs.controlCalls.join(","), "pause|run-20261004-live0001")
+    compare(s.navi.opened, "", "the button is not the row")
+    s.nav.cursorIndex = 3
+    wait(20)
+    tap(ctl(s, 3, "Resume"))
+    compare(s.runs.controlCalls.join(","), "pause|run-20261004-live0001,resume|run-20261004-park0004")
+    compare(s.navi.opened, "")
+  }
+
+  // 15
+  function test_cancel_asks_the_owner_and_never_the_store() {
+    var s = make(sample()); if (!s) return
+    cancelSpy.target = s.screen
+    cancelSpy.clear()
+    s.nav.cursorIndex = 0
+    wait(20)
+    tap(ctl(s, 0, "Cancel"))
+    compare(cancelSpy.count, 1)
+    compare(cancelSpy.signalArguments[0][0], "run-20261004-live0001")
+    compare(s.runs.controlCalls.length, 0)
+    compare(s.navi.opened, "")
+  }
+
+  // 16
+  function test_the_error_and_waiting_lines_show_under_their_own_run_only() {
+    var s = make(sample()); if (!s) return
+    s.nav.cursorIndex = -1
+    s.runs.lastControlError = "The run is not running"
+    s.runs.lastControlErrorRunId = "run-20261004-escl0002"
+    wait(20)
+    compare(ctl(s, 1, "Error").visible, true, "whether or not the row has the cursor")
+    compare(ctl(s, 1, "Error").text, "The run is not running")
+    compare(ctl(s, 0, "Error").visible, false)
+    compare(ctl(s, 2, "Error").visible, false)
+    s.runs.pending = { "run-20261004-dead0003": "resume" }
+    s.runs.stillWaiting = { "run-20261004-dead0003": true }
+    compare(ctl(s, 2, "Waiting").visible, true)
+    compare(ctl(s, 2, "Waiting").text, "still waiting — the run may be between phases or dead")
+    compare(ctl(s, 2, "Resume").text, "Resume requested…")
+    compare(ctl(s, 0, "Waiting").visible, false)
+  }
+
+  // Review Focus 2.
+  function test_a_run_id_like_constructor_is_not_pending() {
+    var s = make([run("constructor", "started", true, {}), run("__proto__", "stopped", null, {})]); if (!s) return
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(ctl(s, 0, "Pause").text, "Pause")
+    compare(ctl(s, 0, "Pause").enabled, true)
+    compare(ctl(s, 0, "Waiting").visible, false)
+    compare(ctl(s, 0, "Error").visible, false)
+    s.nav.cursorIndex = 1
+    wait(20)
+    compare(ctl(s, 1, "Resume").text, "Resume")
+    compare(ctl(s, 1, "Resume").enabled, true)
   }
 }
