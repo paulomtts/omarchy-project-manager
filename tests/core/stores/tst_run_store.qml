@@ -2339,4 +2339,169 @@ TestCase {
     compare(store.dispatchSuggest, null)
     verify(store.dispatchDefaultsRunner.current !== first, "a fresh lookup per opening")
   }
+
+  function defaultsOk(branch) {
+    return JSON.stringify({ ok: true, data: { default_branch: branch, source: "origin/HEAD" } }) + "\n"
+  }
+
+  function previewOk(data) { return JSON.stringify({ ok: true, data: data }) + "\n" }
+
+  // `am run --milestone m1 --dry-run` data: 2 levels, 3 subtasks, 1 story already done.
+  function dispatchDryRun() {
+    return {
+      max_concurrent: 4,
+      levels: [
+        { level: 0, concurrent: 1, stories: [{ story: "s1", title: "Dispatch store", root: "main", subtasks: [
+          { id: "t1", title: "RunStore dispatch", status: "todo", branch: "m3-t1", base: "main" },
+          { id: "t2", title: "Docs", status: "todo", branch: "m3-t2", base: "m3-t1" }] }] },
+        { level: 1, concurrent: 1, stories: [{ story: "s2", title: "Dialog", root: "m3-s2", subtasks: [
+          { id: "t3", title: "Dialog", status: "todo", branch: "m3-t3", base: "m3-s2" }] }] }
+      ],
+      already_done: [{ kind: "story", id: "s0", title: "Done story" }],
+      integrate: { branch: "m3-integrate", worktree: "/repo/.worktrees/m3-integrate", order: [] }
+    }
+  }
+
+  // Project A with milestone m1 opened and its default branch `main` read: the
+  // first preview is in flight.
+  function previewingStore() {
+    var store = dispatchStore(); if (!store) return null
+    var cards = dispatchCards()
+    store.openDispatch(cards.m1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    return store
+  }
+
+  property string previewArgs: "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest"
+
+  // 6
+  function test_defaults_reply_sets_base_and_launches_preview() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.openDispatch(cards.m1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchForm.base, "main")
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchDebounceTimer.running, false, "the check runs at once, no debounce")
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc, "a preview was launched")
+    compare(argv(proc), tc.previewCmd + tc.previewArgs)
+    compare(proc.command.length, 13)
+    compare(proc.command[2], "/home/u/my proj", "the root with a space is one argument")
+    compare(proc.command[12], "uv run pytest", "a command with spaces is one argument")
+    compare(proc.launchGuard, "/home/u/my proj")
+  }
+
+  // 8 + Review Focus 2
+  function test_defaults_failure_sends_no_base() {
+    var replies = [JSON.stringify({ ok: false, error: { type: "NoDefaultBranch", message: "detached HEAD" } }) + "\n",
+                   "Traceback: boom\n",
+                   defaultsOk("   "),
+                   JSON.stringify({ ok: true, data: { default_branch: null, source: "" } }) + "\n",
+                   JSON.stringify({ ok: true }) + "\n"]
+    for (var i = 0; i < replies.length; i++) {
+      var store = dispatchStore(); if (!store) return
+      var cards = dispatchCards()
+      store.openDispatch(cards.m1, cards)
+      reply(store.dispatchDefaultsRunner.current, replies[i], 1)
+      compare(store.dispatchForm.base, "", "reply " + i + " leaves base blank")
+      var proc = store.dispatchPreviewRunner.current
+      verify(proc, "reply " + i + ": the check still runs")
+      compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest",
+              "reply " + i + ": no --base-branch pair")
+    }
+    var padded = dispatchStore(); if (!padded) return
+    var map = dispatchCards()
+    padded.openDispatch(map.m1, map)
+    reply(padded.dispatchDefaultsRunner.current, defaultsOk("  main \n"), 0)
+    compare(padded.dispatchForm.base, "main", "the branch is trimmed")
+    compare(padded.dispatchPreviewRunner.current.command[6], "main")
+  }
+
+  // 10
+  function test_preview_ok_goes_ready_with_summary() {
+    var store = previewingStore(); if (!store) return
+    compare(store.dispatchPreview, null)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchPreview.summary, "2 levels · 3 subtasks · 1 story already done")
+    compare(store.dispatchPreview.integrate, "Integrate → m3-integrate")
+    compare(store.dispatchPreview.board, false)
+    compare(store.dispatchError, "")
+    compare(store.dispatchErrorType, "")
+  }
+
+  // 11
+  function test_preview_refusal_goes_refused_verbatim() {
+    var store = previewingStore(); if (!store) return
+    var message = "milestone m1 is claimed by run 20261005T010000Z-abcd (pid 77)"
+    reply(store.dispatchPreviewRunner.current, ctlFail("ClaimedError", message), 0)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchError, message, "am's sentence, verbatim")
+    compare(store.dispatchErrorType, "ClaimedError")
+    compare(store.dispatchPreview, null)
+    var untyped = previewingStore(); if (!untyped) return
+    reply(untyped.dispatchPreviewRunner.current,
+          JSON.stringify({ ok: false, error: { type: 7, message: "dependency cycle: s1 -> s2 -> s1" } }) + "\n", 0)
+    compare(untyped.dispatchState, "refused")
+    compare(untyped.dispatchError, "dependency cycle: s1 -> s2 -> s1")
+    compare(untyped.dispatchErrorType, "", "a type that is not a string is unknown")
+  }
+
+  // 12
+  function test_preview_unreadable_goes_refused() {
+    var replies = ["", "Traceback: boom\n", "[1, 2]\n",
+                   JSON.stringify({ ok: false, error: { type: "X", message: "  " } }) + "\n",
+                   JSON.stringify({ ok: false, error: "boom" }) + "\n",
+                   JSON.stringify({ ok: false, error: null }) + "\n",
+                   JSON.stringify({ ok: "yes" }) + "\n"]
+    for (var i = 0; i < replies.length; i++) {
+      var store = previewingStore(); if (!store) return
+      reply(store.dispatchPreviewRunner.current, replies[i], 1)
+      compare(store.dispatchState, "refused", "reply " + i)
+      compare(store.dispatchError, "The preview could not be read", "reply " + i)
+      compare(store.dispatchErrorType, "", "reply " + i)
+      compare(store.dispatchPreview, null, "reply " + i)
+    }
+  }
+
+  // 14
+  function test_invalid_form_is_refused_without_launch() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch("board", cards), true)
+    compare(store.dispatchTarget.level, "board")
+    compare(store.dispatchForm.prefix, "", "the board has no milestone title to stem")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchErrorType, "Form")
+    compare(store.dispatchErrors.length, 1)
+    compare(store.dispatchErrors[0].field, "prefix")
+    compare(store.dispatchError, "Enter a branch prefix")
+    verify(!store.dispatchPreviewRunner.current, "no preview process")
+  }
+
+  // 20 (the preview half)
+  function test_subtask_goes_ready_without_preview() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.t1, cards), true)
+    compare(store.dispatchTarget.level, "subtask")
+    compare(store.dispatchForm.prefix, "m3", "the stem of the subtask's milestone")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchPreview, null, "am has no dry run for one card")
+    verify(!store.dispatchPreviewRunner.current, "no preview process")
+  }
+
+  function test_a_closed_dispatch_drops_the_late_defaults_reply() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.openDispatch(cards.m1, cards)
+    var lookup = store.dispatchDefaultsRunner.current
+    store.closeDispatch()
+    reply(lookup, defaultsOk("main"), 0)
+    checkDispatchIdle(store, "after the late reply")
+    verify(!store.dispatchPreviewRunner.current, "no preview")
+  }
 }

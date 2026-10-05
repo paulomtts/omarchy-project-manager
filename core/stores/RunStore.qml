@@ -932,6 +932,98 @@ Scope {
     return true
   }
 
+  // A copy of the form with one field set as given; verify is copied as a
+  // fresh array when it is one. The store converts nothing else.
+  function withField(form, name, value) {
+    var next = store.copyMap(form)
+    next[name] = name === "verify" && Array.isArray(value) ? value.slice() : value
+    return next
+  }
+
+  // The helpers' target words: milestone ID, card ID or board.
+  function dispatchTargetArgs() {
+    var plan = store.dispatchTarget
+    return plan.command === "board" ? ["board"] : [plan.command, plan.flags[1]]
+  }
+
+  // The form's verify commands that are non-blank strings, verbatim, in order.
+  function dispatchCommands(form) {
+    var list = Array.isArray(form.verify) ? form.verify : []
+    return list.filter(function(c) { return typeof c === "string" && c.trim() !== "" })
+  }
+
+  // The options the preview and the start share. A blank base is left out, so
+  // am uses its own default; each verify command is one argument.
+  function dispatchOptionArgs() {
+    var form = store.dispatchForm
+    var args = []
+    var base = typeof form.base === "string" ? form.base.trim() : ""
+    if (base !== "") args.push("--base-branch", base)
+    args.push("--branch-prefix", form.prefix.trim(), "--max-concurrent", String(form.parallelism))
+    var commands = store.dispatchCommands(form)
+    for (var i = 0; i < commands.length; i++) args.push("--verify", commands[i])
+    if (form.allowNoVerification === true) args.push("--allow-no-verification")
+    return args
+  }
+
+  // The --defaults reply: a non-blank default branch becomes base unless the
+  // user set base since the opening; anything else leaves base as it is.
+  // Then the form is checked at once.
+  function dispatchDefaultsReplied(stdout) {
+    if (!dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
+    dispatchBook.defaultsPending = false
+    var envelope = store.parseEnvelope(stdout)
+    var data = envelope !== null && envelope.ok === true ? envelope.data : null
+    var branch = data !== null && typeof data === "object" && typeof data.default_branch === "string"
+        ? data.default_branch.trim() : ""
+    if (branch !== "" && !dispatchBook.baseTouched) store.dispatchForm = store.withField(store.dispatchForm, "base", branch)
+    store.checkDispatch()
+  }
+
+  // The form is checked: an invalid one is refused and launches nothing, a
+  // subtask is ready (am has no dry run for one card), a milestone or the
+  // board is previewed. Waits for the defaults lookup, whose reply checks.
+  function checkDispatch() {
+    if (dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
+    dispatchDebounceTimer.stop()
+    var result = Runs.validateDispatch(store.dispatchForm)
+    if (!result.ok) {
+      store.dispatchState = "refused"
+      store.dispatchErrors = result.errors
+      store.dispatchError = result.errors[0].message
+      store.dispatchErrorType = "Form"
+      return
+    }
+    if (store.dispatchTarget.level === "subtask") {
+      store.dispatchState = "ready"
+      return
+    }
+    dispatchPreviewRunner.run([store.project].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
+  }
+
+  // The newest preview's reply for this project and these values (a form
+  // change cancels the runner). ok: ready with its summary; am's refusal:
+  // its message verbatim; anything else cannot be read.
+  function dispatchPreviewReplied(stdout) {
+    if (store.dispatchState !== "previewing") return
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true) {
+      store.dispatchPreview = Runs.previewSummary(envelope.data)
+      store.dispatchState = "ready"
+      return
+    }
+    var err = envelope !== null && envelope.ok === false ? envelope.error : null
+    var message = err !== null && typeof err === "object" && typeof err.message === "string" ? err.message : ""
+    store.dispatchState = "refused"
+    if (message.trim() !== "") {
+      store.dispatchError = message
+      store.dispatchErrorType = typeof err.type === "string" ? err.type : ""
+    } else {
+      store.dispatchError = "The preview could not be read"
+      store.dispatchErrorType = ""
+    }
+  }
+
   // The guard is the project root, so a snapshot launched for a project the
   // user has since left is dropped. The project-change reaction hangs off the
   // guard, not off `project`: the guard has already followed the project by the
@@ -984,6 +1076,7 @@ Scope {
     id: dispatchDefaultsRunner
     script: store.backendDir + "runs/dispatch-preview.py"
     guard: store.project
+    onFinished: function(stdout, exitCode) { store.dispatchDefaultsReplied(stdout) }
   }
 
   // The dispatch preview; latest wins, and every form change cancels it.
@@ -991,6 +1084,7 @@ Scope {
     id: dispatchPreviewRunner
     script: store.backendDir + "runs/dispatch-preview.py"
     guard: store.project
+    onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
   }
 
   // A burst of changed lines costs one snapshot.
