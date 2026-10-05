@@ -550,4 +550,17 @@ TestCase {
     compare(s.handleRunKey(plain(Qt.Key_P)), false)
     compare(Object.keys(s.app.runs.pending).length, 0)
   }
+
+  // A run key needs a project: with none, the letter is left alone.
+  function test_without_a_project_the_run_keys_are_left_alone() {
+    var s = inRunKeys(); if (!s) return
+    s.app.projects.selectedProject = null
+    s.app.runs.runs = [normRun("run-0000000000a1", "started", true)]
+    compare(s.app.nav.viewMode, "runs")
+    compare(s.handleRunKey(plain(Qt.Key_P)), false)
+    compare(s.handleRunKey(plain(Qt.Key_C)), false)
+    compare(s.app.runs.cancelOpen, false)
+    compare(s.app.runs.flashText, "")
+    compare(Object.keys(s.app.runs.pending).length, 0)
+  }
 }
