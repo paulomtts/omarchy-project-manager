@@ -159,6 +159,43 @@ def check_status_data(source, data, extra_allowed=None):
         assert status in vocabulary, f"{source} {where}: {status!r} not in {sorted(vocabulary)}"
 
 
+def git_main_checkout():
+    """The main checkout's root, or None when git is absent or fails here."""
+    try:
+        proc = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                              cwd=HERE, capture_output=True, text=True, timeout=AM_TIMEOUT)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip()).parent
+
+
+def am_json(*args):
+    # A hung am fails the test (TimeoutExpired) instead of hanging the suite.
+    proc = subprocess.run(["am", *args], capture_output=True, text=True, timeout=AM_TIMEOUT)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def test_installed_am_prints_the_fixture_key_sets():
+    if shutil.which("am") is None:
+        pytest.skip("am is not installed here")
+    main = git_main_checkout()
+    if main is None:
+        pytest.skip("git could not name the main checkout")
+    code, out, err = am_json("runs", "--repo-dir", str(main))
+    if code != 0:
+        pytest.skip(f"am runs --repo-dir {main} exited {code}: {err.strip()}")
+    rows = json.loads(out).get("data", {}).get("runs") or []
+    if not rows:
+        pytest.skip(f"am has no runs for {main}")
+    check_runs_rows("live am runs", rows, LIVE_EXTRA)
+    newest = max(rows, key=lambda row: row["started_at"])
+    code, out, err = am_json("status", newest["id"], "--repo-dir", str(main))
+    assert code == 0, f"am status {newest['id']} exited {code}: {out}{err}"
+    check_status_data(f"live am status {newest['id']}", json.loads(out)["data"], LIVE_EXTRA)
+
+
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
 def test_every_fixture_exists_and_parses(name):
     path = FIXTURES / name
@@ -257,3 +294,25 @@ def test_note_is_on_exactly_the_annotated_captures():
     assert noted == sorted(NOTED_FIXTURES), noted
     with_row = sorted(name for name in FIXTURE_NAMES if "_am_runs_row" in load(name))
     assert with_row == sorted(E2E_FIXTURES), with_row
+
+
+def test_live_allowance_is_story_id_on_the_runs_row_and_status_run_only():
+    assert set(LIVE_EXTRA) == {RUN_ROW_KEYS, STATUS_RUN_KEYS}
+    run = dict.fromkeys(STATUS_RUN_KEYS | {"story_id"})
+    assert_keys("live", "data.run", run, STATUS_RUN_KEYS, LIVE_EXTRA[STATUS_RUN_KEYS])
+    story = dict.fromkeys(STORY_KEYS | {"story_id"})
+    with pytest.raises(pytest.fail.Exception, match=r"extra \['story_id'\]"):
+        assert_keys("live", "stories[0]", story, STORY_KEYS, LIVE_EXTRA.get(STORY_KEYS, frozenset()))
+
+
+def test_live_check_skips_when_am_is_not_on_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(pytest.skip.Exception, match="am is not installed here"):
+        test_installed_am_prints_the_fixture_key_sets()
+
+
+def test_live_check_reads_the_main_checkout_not_a_worktree():
+    main = git_main_checkout()
+    if main is None:
+        pytest.skip("git could not name the main checkout")
+    assert (main / ".git").is_dir(), f"{main}: not a main checkout (no .git directory)"
