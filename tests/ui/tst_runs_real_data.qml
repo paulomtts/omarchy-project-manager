@@ -61,6 +61,12 @@ TestCase {
     reply(p.app.runs.snapshotRunner.current, snapshot(), 0)
   }
 
+  // The captured `am logs` reply, unedited, as one JSON line.
+  function logsReply() { return JSON.stringify(F.load("logs-attempt.json")) + "\n" }
+
+  // The argv after the interpreter and the helper path, joined by "|".
+  function argv(proc) { return proc.command.slice(2).join("|") }
+
   // The panel on the done run's detail view, its default attempt's logs in flight.
   function openDoneRun() {
     var p = make(); if (!p) return null
@@ -104,5 +110,60 @@ TestCase {
     var label = String(H.find(p, "runSubtaskLabel0_0").text)
     verify(label.indexOf("adff6c85-ba42-4586-8066-b93e8ac877bb") >= 0, label)
     verify(label.endsWith("· review.1"), label)
+  }
+
+  // A finished run has no started phase; its default attempt is its newest row.
+  function test_opening_the_done_run_fetches_its_default_attempt_under_the_project_root() {
+    var p = openDoneRun(); if (!p) return
+    compare(p.app.runs.selectedAttempt,
+            { card_id: "22153f5f-9632-4b5f-a7dd-664c39d89e5c", phase: "review", attempt: 1 })
+    var proc = p.app.runs.logsRunner.current
+    verify(proc, "the default attempt's logs were asked for")
+    verify(String(proc.command[1]).indexOf("core/backend/runs/runs-logs.py") > 0, String(proc.command[1]))
+    compare(argv(proc), "/home/u/a|" + doneRun + "|22153f5f-9632-4b5f-a7dd-664c39d89e5c|review|1")
+  }
+
+  // The default fetch is still in flight when the row is activated: the second
+  // launch is the one answered, and the pane shows only its attempt. A late
+  // answer of the first launch and the same snapshot again change nothing.
+  function test_a_subtask_row_fetches_its_attempt_and_the_pane_shows_the_captured_output() {
+    var p = openDoneRun(); if (!p) return
+    var first = p.app.runs.logsRunner.current
+    verify(first, "the default fetch is in flight")
+    H.find(p, "runSubtask0_0").activated()
+    compare(p.app.runs.selectedAttempt,
+            { card_id: "adff6c85-ba42-4586-8066-b93e8ac877bb", phase: "review", attempt: 1 })
+    var proc = p.app.runs.logsRunner.current
+    verify(proc && proc !== first, "a new launch for the new attempt")
+    compare(argv(proc), "/home/u/a|" + doneRun + "|adff6c85-ba42-4586-8066-b93e8ac877bb|review|1")
+    reply(proc, logsReply(), 0)
+    wait(50)
+    compare(H.find(p, "runOutputHeading").text, "Output · adff6c85-ba42-4586-8066-b93e8ac877bb review.1")
+    var stdout = F.load("logs-attempt.json").data.artifacts.stdout.text
+    compare(H.find(p, "runOutputText").text, stdout.slice(0, stdout.length - 1))
+    compare(H.find(p, "runOutputError").visible, false)
+    compare(p.app.runs.logsTruncated, false)
+    var envelope = F.load("logs-attempt.json")
+    // synthetic: the superseded launch answers late with text of its own.
+    envelope.data.artifacts.stdout.text = "late\n"
+    reply(first, JSON.stringify(envelope) + "\n", 0)
+    compare(p.app.runs.logsText, stdout.slice(0, stdout.length - 1), "the superseded fetch changes nothing")
+    feedFixtures(p)
+    compare(p.app.runs.selectedAttempt,
+            { card_id: "adff6c85-ba42-4586-8066-b93e8ac877bb", phase: "review", attempt: 1 })
+    compare(p.app.runs.logsLoading, false, "the same capture again fetches nothing")
+    compare(H.find(p, "runOutputText").text, stdout.slice(0, stdout.length - 1))
+  }
+
+  function test_opening_the_started_run_fetches_its_running_attempt() {
+    var p = make(); if (!p) return
+    feedFixtures(p)
+    p.navigator.showSection("runs")
+    p.navigator.openRun(startedRun)
+    wait(50)
+    compare(p.app.runs.selectedAttempt,
+            { card_id: "299ec9c0-b935-4c44-a7a0-982a104cbfe5", phase: "explore", attempt: 1 })
+    compare(argv(p.app.runs.logsRunner.current),
+            "/home/u/a|" + startedRun + "|299ec9c0-b935-4c44-a7a0-982a104cbfe5|explore|1")
   }
 }
