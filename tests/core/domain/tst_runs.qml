@@ -1080,20 +1080,115 @@ TestCase {
     ] }
   }
 
-  function test_run_progress() {
-    var p = Runs.runProgress(mkRun("r", "started", true, { tree: progressTree() }))
-    compare(Object.keys(p).sort().join(","), "done,total")
-    compare(p.done, 1, "only t1 has every phase done")
-    compare(p.total, 5)
-    var none = Runs.runProgress(mkRun("r", "started", true))
-    compare(none.done + "/" + none.total, "0/0")
+  // "done/total" of a runProgress result.
+  function progressText(p) { return p.done + "/" + p.total }
+
+  // The subtask of a normalized run with this card id, else null.
+  function subtaskOf(run, cardId) {
+    var subtasks = run.tree.subtasks
+    for (var i = 0; i < subtasks.length; i++) {
+      if (subtasks[i].card_id === cardId) return subtasks[i]
+    }
+    return null
+  }
+
+  function test_run_progress_fixtures() {
+    var cases = [
+      ["status-started.json", "3/8"],
+      ["status-done.json", "10/10"],
+      ["status-escalated.json", "2/4"],
+      ["status-escalated-integrate.json", "2/2"],
+      ["status-done-integrate.json", "2/2"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var p = Runs.runProgress(Runs.normalizeRun(amRun(cases[i][0])))
+      compare(Object.keys(p).sort().join(","), "done,total", cases[i][0])
+      compare(progressText(p), cases[i][1], cases[i][0])
+    }
+  }
+
+  function test_run_progress_reads_status_not_phases() {
+    // synthetic: between two phases -- the started subtask's phases cut to its first, `worktree` done
+    var started = Runs.normalizeRun(amRun("status-started.json"))
+    var between = subtaskOf(started, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(between.status, "started")
+    compare(between.phases.length, 2)
+    between.phases = [between.phases[0]]
+    compare(between.phases[0].name + ":" + between.phases[0].status, "worktree:done")
+    compare(progressText(Runs.runProgress(started)), "3/8", "every recorded phase done, status started")
+
+    // synthetic: a done subtask's status set to started, its phases left all done
+    var stalled = Runs.normalizeRun(amRun("status-done.json"))
+    var restarted = subtaskOf(stalled, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
+    compare(restarted.status, "done")
+    restarted.status = "started"
+    compare(progressText(Runs.runProgress(stalled)), "9/10", "status started is not done")
+
+    // synthetic: a done subtask's phases emptied
+    var bare = Runs.normalizeRun(amRun("status-done.json"))
+    var emptied = subtaskOf(bare, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
+    compare(emptied.status, "done")
+    emptied.phases = []
+    compare(progressText(Runs.runProgress(bare)), "10/10", "status done without phases is done")
+
+    // synthetic: every subtask's phases replaced by a string
+    var garbled = Runs.normalizeRun(amRun("status-escalated.json"))
+    for (var i = 0; i < garbled.tree.subtasks.length; i++) garbled.tree.subtasks[i].phases = "x"
+    compare(progressText(Runs.runProgress(garbled)), "2/4", "phases not a list")
+  }
+
+  function test_run_progress_status_spelling() {
+    var cases = [
+      ["done", "1/1"],
+      ["started", "0/1"], ["pending", "0/1"], ["failed", "0/1"], ["escalated", "0/1"],
+      ["stopped", "0/1"], ["cancelled", "0/1"],
+      ["Done", "0/1"], ["DONE", "0/1"], [" done", "0/1"], ["", "0/1"],
+      [5, "0/1"], [true, "0/1"], [null, "0/1"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      // synthetic: one subtask t1 in the given status, every recorded phase done
+      var run = mkRun("r1", "started", true, { tree: { stories: [], subtasks: [
+        { card_id: "t1", status: cases[i][0], phases: [{ name: "spec", status: "done" }] }] } })
+      compare(progressText(Runs.runProgress(run)), cases[i][1], "status " + JSON.stringify(cases[i][0]))
+    }
+    // synthetic: one subtask t1 with no status, every recorded phase done
+    var missing = mkRun("r1", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "t1", phases: [{ name: "spec", status: "done" }] }] } })
+    compare(progressText(Runs.runProgress(missing)), "0/1", "missing status")
+    // synthetic: one done subtask t1 with no phases key
+    var noPhases = mkRun("r1", "done", null, { tree: { stories: [], subtasks: [{ card_id: "t1", status: "done" }] } })
+    compare(progressText(Runs.runProgress(noPhases)), "1/1", "done without phases")
+  }
+
+  function test_run_progress_counts_real_subtasks_only() {
+    // synthetic: garbage, id-less and synthetic-id subtasks beside a real done t1 and a real started t2
+    var mixed = mkRun("r1", "started", true, { tree: { stories: [], subtasks: [
+      null, "x", 5, [], {}, { status: "done" }, { card_id: "", status: "done" },
+      { card_id: 7, status: "done" }, { card_id: "integrate", status: "done" },
+      { card_id: "bases", status: "done" }, { card_id: "base-s1", status: "done" },
+      { card_id: "t1", status: "done" }, { card_id: "t2", status: "started" }] } })
+    compare(progressText(Runs.runProgress(mixed)), "1/2", "only t1 and t2 count")
+
+    // synthetic: only synthetic-id subtasks, all done
+    var bookkeeping = mkRun("r1", "done", null, { tree: { stories: [], subtasks: [
+      { card_id: "integrate", status: "done" }, { card_id: "bases", status: "done" },
+      { card_id: "base-s1", status: "done" }] } })
+    compare(progressText(Runs.runProgress(bookkeeping)), "0/0", "bookkeeping ids are no subtasks")
+
+    // synthetic: junk subtasks only
     var junk = Runs.runProgress({ tree: { subtasks: [null, "x", 5, { phases: "x" }] } })
-    compare(junk.done, 0, "junk subtasks are never done")
-    compare(junk.total, 1, "only object subtasks count")
-    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" }, { tree: { subtasks: "y" } }]
+    compare(progressText(junk), "0/0", "junk subtasks never count")
+  }
+
+  function test_run_progress_garbage() {
+    // synthetic: a hand-built run with no subtasks
+    compare(progressText(Runs.runProgress(mkRun("r", "started", true))), "0/0", "no subtasks")
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" }, { tree: { subtasks: "y" } },
+               { tree: { subtasks: null } }, { tree: null }]
     for (var i = 0; i < bad.length; i++) {
-      var r = Runs.runProgress(bad[i])
-      compare(r.done + "/" + r.total, "0/0", "garbage " + i)
+      var p = Runs.runProgress(bad[i])
+      compare(Object.keys(p).sort().join(","), "done,total", "garbage " + i)
+      compare(progressText(p), "0/0", "garbage " + i)
     }
   }
 

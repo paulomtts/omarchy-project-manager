@@ -392,18 +392,16 @@ function runTitle(run) {
   return milestone !== "" ? milestone : shortId(run)
 }
 
-// How many of the run's subtasks are through. A subtask is done when it has
-// phases and every one of them is `done`; only object subtasks count at all.
+// Counts of the run's real subtasks (an object with a real card id) and of those whose own
+// `status` is `done`.
 function runProgress(run) {
   var subtasks = _subtasksOf(run)
   var done = 0, total = 0
   for (var i = 0; i < subtasks.length; i++) {
-    if (!_isObject(subtasks[i])) continue
+    var subtask = subtasks[i]
+    if (!_isObject(subtask) || !_isCardId(subtask.card_id)) continue
     total += 1
-    var phases = _arrayOr(subtasks[i].phases)
-    var allDone = phases.length > 0
-    for (var j = 0; allDone && j < phases.length; j++) allDone = _isObject(phases[j]) && phases[j].status === "done"
-    if (allDone) done += 1
+    if (subtask.status === "done") done += 1
   }
   return { done: done, total: total }
 }

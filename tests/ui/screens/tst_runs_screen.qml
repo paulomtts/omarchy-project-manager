@@ -121,10 +121,10 @@ TestCase {
   function sample() {
     return [
       run("run-20261004-live0001", "started", true, { milestone: "alpha", started_at: ago(5 * tc.minute), tree: { stories: [], subtasks: [
-        { card_id: "t1", phases: [{ name: "spec", status: "done" }] },
-        { card_id: "t2", phases: [{ name: "spec", status: "done" }, { name: "implement", status: "started" }] }] } }),
+        { card_id: "t1", status: "done", phases: [{ name: "spec", status: "done" }] },
+        { card_id: "t2", status: "started", phases: [{ name: "spec", status: "done" }, { name: "implement", status: "started" }] }] } }),
       run("run-20261004-escl0002", "escalated", null, { milestone: "beta", tree: { stories: [], subtasks: [
-        { card_id: "t3", phases: [{ name: "review", status: "failed", detail: "tests red after 3 attempts" }] }] } }),
+        { card_id: "t3", status: "escalated", phases: [{ name: "review", status: "failed", detail: "tests red after 3 attempts" }] }] } }),
       run("run-20261004-dead0003", "started", false, { milestone: "gamma", started_at: ago(180 * tc.minute),
                                                        heartbeat_at: ago(7 * tc.minute) }),
       run("run-20261004-park0004", "stopped", null, { milestone: "delta", started_at: ago(120 * tc.minute) }),
