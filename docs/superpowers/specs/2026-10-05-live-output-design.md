@@ -1,11 +1,16 @@
 # Live run output — design
 
-Status: proposed. Builds on `2026-10-03-am-run-monitor-design.md` (S1: Run detail and its
+Status: proposed; the follow stream is unchanged by the new `am` (`am logs` is unchanged there;
+only the dependency notes below follow `2026-10-06-am-snapshots-cursors-design.md`, row liv).
+Builds on `2026-10-03-am-run-monitor-design.md` (S1: Run detail and its
 output pane) and on the queued milestones before it: **Align the run model with real am**
 (the normalized run shape and the `tests/fixtures/am/*` fixtures), **Runs: a global
-destination** (a run of any project, `run.repo_dir`), **Run events timeline** (the
-`EventsPane` follow/Jump list) and **Split RunStore** (`RunStore` holds snapshot, watch,
-selection and events; `RunControlStore`, `RunAlertsStore`, `RunDispatchStore` the rest).
+destination** (a run of any project, `run.repo_dir`; the snapshot is one `am runs
+--all-projects` call), **Run events timeline** (the `EventsPane` follow/Jump list, fed by
+`am events` pages and watch nudges) and **Split RunStore** (`RunStore` holds snapshot, watch,
+selection and events; `RunControlStore`, `RunAlertsStore`, `RunDispatchStore` the rest). The
+watch is now a nudge feed (`changed: [{run, seq}]`, one global stream), not a stream of
+journal lines; this spec only reads it through `RunStore`'s snapshot refresh.
 Written against the post-split store names.
 
 ## Problem
@@ -84,7 +89,9 @@ snapshot and says so.
 - No search, copy or save in the pane; no ANSI colour rendering (control sequences are
   removed, not interpreted).
 - One followed attempt at a time, panel-wide. No background tails.
-- No change to the Events pane, the snapshot's 200-line cap or the watch.
+- No change to the Events pane (it reads `am events` pages and nudges after the retarget, not
+  this spec's concern), the snapshot's 200-line cap or the watch (a nudge feed after the
+  retarget).
 
 ## Design
 

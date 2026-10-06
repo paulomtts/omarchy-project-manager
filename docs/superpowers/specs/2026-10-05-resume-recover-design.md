@@ -1,6 +1,7 @@
 # Resume and recover from runs — design
 
-Status: proposed. Builds on the controls spec (`2026-10-03-am-run-controls-design.md`, S2),
+Status: proposed; retargeted to the new `am` (a run carries its project, `am status RUN` needs no
+`--repo-dir`; `2026-10-06-am-snapshots-cursors-design.md`, row rsm). Builds on the controls spec (`2026-10-03-am-run-controls-design.md`, S2),
 the dispatch spec (`2026-10-03-am-run-dispatch-design.md`, S3), story dispatch
 (`2026-10-05-dispatch-story-level-design.md`, S7), global runs
 (`2026-10-05-runs-all-projects-design.md`, S6) and dispatch from the Runs screen
@@ -163,8 +164,9 @@ For a run in state `escalated`, `parked`, `dead` or `cancelled`, Run detail show
 
 ### Resume asks for the verify commands
 
-- `RunStore.control("resume", id)` (`:501-530`) on a non-`task` run reads the run settings
-  of the run's project (S6: `run.project.root`) as today. With a usable stored set or the
+- `RunStore.control("resume", id)` (`:501-530`) on a non-`task` run reads the run from
+  `am status RUN` without `--repo-dir` (the run carries its project, `project.repo_dir`) and the
+  run settings of that project (S6: `run.project.root`) as today. With a usable stored set or the
   stored opt-out it resumes at once, as today (`resumeWithSettings`, `:625-647`).
 - With neither, it no longer fails (the sentence at `:644`): nothing is asked of am, no
   request stays pending, and the **Resume dialog** opens for that run (`resumeRunId`,
@@ -249,11 +251,18 @@ domain subtask keeps its diff to its own functions.
     `am-key: <runId>/…`; `{createdAt, kind, fields: [{key, value}]}` with the `reason`,
     `detail`, `next` and `why` lines in that order (backticks stripped), or null.
 - `core/backend/runs/runs-logs.py`: `ATTEMPT` `0` sends no `--attempt` (am's newest of that
-  phase). Everything else unchanged.
+  phase). Everything else unchanged (`am logs` keeps `--repo-dir`).
+- `core/backend/runs/run-control.py` and the resume path read the run through `am status RUN`
+  with no `--repo-dir` (the new `am` makes it optional when RUN is given); the root they pass to
+  `am pause`, `am cancel` and `am resume` is the run's own `project.repo_dir`. Whether those
+  three commands still need `--repo-dir` is not in the `am` contract (only `status` is made
+  optional there): keep passing it until verified. Resume and the Why-it-stopped block depend
+  on no event: they read the status snapshot only.
 - `RunStore` (one store until the split; sections as in the table above):
   - selection: `selectAttempt` accepts attempt 0 for a phase (today it refuses
     `attempt <= 0`, `:306`); when a run is selected (and after a snapshot that moves its
     state) a run with a `stopReport` opens its `attempt` instead of `Runs.defaultAttempt`.
+    The failed attempt is chosen from the `am status RUN` snapshot, never from events.
   - control: `lastControlErrorType` beside the control error pair; the no-stored-set branch
     of `resumeWithSettings` settles the request and calls `resumeOpenFor(runId)` instead of
     `failControl`.

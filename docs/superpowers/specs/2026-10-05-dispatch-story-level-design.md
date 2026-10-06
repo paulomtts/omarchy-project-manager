@@ -2,8 +2,12 @@
 
 Status: proposed. Extends `2026-10-03-am-run-dispatch-design.md` (S3, merged before this
 starts). Depends on `am run --story` in agent-manager (spec: `docs/superpowers/specs/2026-10-05-run-story-design.md`
-in that repo), which must be merged AND installed first (`am` is a `uv tool` install, not
-editable: reinstall after the merge).
+in that repo), which must be merged AND installed first. `am` is a `uv tool` install and, today, an EDITABLE
+one (the tool receipt says `editable = "/home/mtts/Code/agent-manager"`): merging into the
+main checkout changes the `am` that runs, with no reinstall. That is a hazard, not a feature,
+and the install becomes a regular non-editable one once the `agent-manager` stack's prerequisite
+P1 (`2026-10-06-single-store-events-design.md`, "Dev safety") is done; from then on reinstall
+after the merge (`uv tool install --reinstall .` from a clean checkout of the verified commit).
 
 ## Precondition (checked, not assumed)
 
@@ -87,8 +91,9 @@ S3's code is merged on main when this starts; read it before changing it.
 
 - `tests/contract/test_am_shapes.py`: the installed `am` has `--story` (fails loudly when it
   does not), the `--story --dry-run` payload (`integrate: null`, one level), `story_id` on the
-  `am runs` row, and the `StoryBlockedError` refusal, recorded from the real `am` against a
-  throwaway board.
+  `am runs` row (it stays on the row after the store change; the row also gains `project:
+  {id, repo_dir}`, which these tests include), and the `StoryBlockedError` refusal, recorded
+  from the real `am` against a throwaway board.
 - `tst_runs.qml`: `dispatchPlan` for a story (and for terminal-status stories),
   `previewSummary` story variant, the four-step prefix default.
 - Backend pytest with a fake `am`: `--story` argv for preview and start, refusal

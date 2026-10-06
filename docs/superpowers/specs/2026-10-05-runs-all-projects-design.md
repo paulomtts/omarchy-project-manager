@@ -1,6 +1,7 @@
 # Runs as a global destination (S6) — design
 
-Status: proposed; supersedes the earlier "This project | All projects" scope-switch
+Status: proposed; retargeted to the new `am` (single store, `am runs --all-projects`, one global
+watch; `2026-10-06-am-snapshots-cursors-design.md`, row glb); supersedes the earlier "This project | All projects" scope-switch
 version of this spec (never built). Builds on `2026-10-03-am-run-monitor-design.md`
 (S1) and the controls spec (S2). Lands BEFORE `2026-10-05-run-events-timeline-design.md`
 (S5): this milestone removes the project guards from `RunStore` and adds the
@@ -14,6 +15,10 @@ store.
   must give a populated tree. A milestone that builds on a model that reads nothing from
   real `am` data cannot be verified; the cards say to stop and escalate when it does.
 - Fixtures are recorded from the installed `am`, not hand-shaped.
+- The installed `am` is the new one (single store): `am runs --all-projects` exists, each row
+  carries `project: {id, repo_dir}` and the envelope carries `as_of_seq`. With an older `am` the
+  panel shows the schema banner (the plugin needs the newer `am`); there is no per-project
+  fallback.
 
 ## Problem
 
@@ -71,21 +76,24 @@ global view is the view, and a project filter narrows it.
   `set-global-settings`; the first read, when nothing is stored, is true when any project's
   stored value is true. The per-project value is no longer read or written. The switch is
   shown on the Runs screen with no project open too.
-- **Alerts arm per project.** A project's first good snapshot only arms that project; a project
-  whose first reply comes late, or whose reply failed, never alerts its history. A project
-  whose snapshot fails keeps its previous runs and its armed state.
+- **Alerts arm on the first good snapshot.** That snapshot only arms; it never alerts its
+  history. A project registered later is armed by the first snapshot that lists it. A failed
+  snapshot keeps the previous runs and the armed state. Alerts while the panel is closed are the
+  alerts spec's persisted cursor, not this arming.
 - **Dispatch stays project-bound** (S3, S7): it starts from a card or a board of one project.
   The Runs toolbar's **Start run** works on the open project when one is open and is
   disabled with the tooltip "Open a project to dispatch" otherwise.
 - **Card marks on Board and Graph** are unchanged: a run maps to a card by card id, so runs
   of other projects never match.
-- A project whose snapshot fails (`am` missing, an `am` refusal, a vanished root) shows an
-  inline error on its own group; the others still load.
+- The snapshot is one call, so a failure (`am` missing, an `am` refusal) is the list's error, not
+  a group's. A registered project whose root has vanished still lists its runs: they come from
+  `am`, not from the path.
 
 ## Non-goals
 
 - No project is added to the registry (`brd projects` stays the registry).
-- No `am` change: `am runs` stays per repository and the plugin fans out per project.
+- No per-project fan-out: one `am runs --all-projects` call returns every project's runs and the
+  plugin filters by the registry.
 - Runs of repositories that are not registered stay invisible.
 - No milestone titles for runs of other projects (Limits).
 
@@ -94,93 +102,90 @@ global view is the view, and a project filter narrows it.
 - `Runs.runTitle` is the run's milestone id (a UUID) or the short run id: `am` records no
   milestone title and only stories carry one. Rows therefore read `…shortid` plus the
   project group; a title lookup per project is a separate piece of work.
-- Each project lists its non-terminal runs plus its 10 newest terminal ones; older runs are
-  invisible, and the All chip means "all listed".
+- The snapshot lists every non-terminal run plus the newest terminal ones (`--limit`, same
+  selection rule as `runs-snapshot.py`); older runs are invisible here (run history pages them),
+  and the All chip means "all listed".
 
 ## Architecture
 
 Same layering as S1/S2 (`docs/architecture.md`).
 
-- `core/backend/common/am_runs.py` (new, shared): the per-project snapshot logic now in
-  `runs-snapshot.py` (`am runs --repo-dir R`, then `am status` per selected run), moved
-  as is so one implementation serves both helpers; the one change is that its terminal-status
-  set accepts `cancelled` and `canceled` (the pending spelling migration). `runs-snapshot.py`
-  keeps its exact CLI contract and output.
-- `core/backend/runs/runs-snapshot-all.py <root> [<root> ...]` (new): the shared snapshot
-  for each root, up to 4 roots at a time, 60 s per `am` call, one JSON line
-  `{ok, projects:[{root, ok, runs?, error?}], data_dir}` with the projects in argv order.
-  One project's failure does not fail the others.
-- `core/backend/runs/runs-watch.py`: accepts several roots. Arguments that begin with `/`
-  are roots, any other argument is a run id (run ids never begin with `/`); at least one
-  root is required and a single root behaves exactly as today. The watched set is the
-  argv run ids plus every run whose `run_upsert` `repo_dir` is any root.
-- `core/domain/runs.js`: `withProject(run, root, name)`, `filterByProject(runs, root)` and
+- No `core/backend/common/am_runs.py` and no `runs-snapshot-all.py`: there is no per-root fan-out
+  to share. `core/backend/runs/runs-snapshot.py` runs `am runs --all-projects --limit N`, then
+  `am status RUN` per selected run (every non-terminal run plus the newest K terminal ones), and
+  forwards `as_of_seq`; its `<project_root>` argument becomes an optional filter (milestone 4,
+  story 4.1.3). Its terminal-status set accepts `cancelled` and `canceled`.
+- `core/backend/runs/runs-watch.py` takes no roots and no run ids: it follows
+  `am watch --all-projects --follow` and prints nudges and a cursor (milestone 4, story 4.1.1;
+  the nudge contract is in `2026-10-06-am-snapshots-cursors-design.md`). The registry filter
+  happens in the store, from `project.repo_dir`.
+- `core/domain/runs.js`: `withProject(run, root, name)` (resolved from the row's
+  `project.repo_dir` and the registry name), `filterByProject(runs, root)` and
   `groupByProject(runs)` (ordering above; flattening into display order).
   `Runs.attention(runs)` already works over a list that spans projects, so there is no
   `attentionAcross`.
 - `RunStore.qml` becomes project-independent. `projectRoots` (`[{root, name}]`, set by
   `App.qml` from the registry through an explicit property; the store never reaches into
-  `ProjectStore`) drives the snapshot and the watch. `project` KEEPS its meaning, the open
+  `ProjectStore`) is the registry filter: the store shows only runs whose `project.repo_dir` is a
+  registered root. `project` KEEPS its meaning, the open
   project's root (`""` when none): S3's dispatch state machine, the `This project` chip
   and Start run read it, and it is no longer a guard for anything about runs. The snapshot,
   logs, settings and control runners drop their `guard: store.project`; `projectSwitched()`
-  no longer resets runs, selection, watch, toasts, pending requests or the filter. State per
-  project: `runsByProject` (`{root: runs[]}`), `projectErrors` (`{root: message}`);
-  `runs` is their concatenation in registry order, de-duplicated by run id (first root wins:
-  two registrations can name one repository). `changedRunIds` is announced as a signal
-  (`runsChanged(ids)`) for the events pane.
+  no longer resets runs, selection, watch, toasts, pending requests or the filter. `runs` is the
+  filtered snapshot; `runsByProject` (`{root: runs[]}`) is derived by grouping on
+  `project.repo_dir` (two registrations naming one repository share one group, named by the
+  first); there is one list error, no per-project errors. `changedRunIds` is announced as a
+  signal (`runsChanged(ids)`) for the events pane; it comes from the watch nudges
+  (`changed: [{run, seq}]`), which refresh that run's snapshot, never fold into state.
 - UI: no-project Runs, project filter chips, group headers, **Open project** action,
   project name on toasts; `RunIndicator` mounted, and it and the sidebar count read
   `Runs.attention` / run counts over the global list.
 
 ## Refresh cost
 
-N registered projects cost N `am runs` calls plus one `am status` per selected run
-(non-terminal plus 10 terminal per project); measured on this machine one `am` call is about
-0.25 s, so five projects with a full history are about 14 s sequentially. Two rules keep that
-off the hot path:
+A full refresh is one `am runs --all-projects` call plus one `am status` per selected run
+(non-terminal plus the newest terminal ones); the list refresh is one call regardless of the
+number of projects. Two rules keep the hot path small:
 
-1. **A change refreshes only its projects.** A watch line names run ids; the store maps them
-   to the roots that listed them and runs `runs-snapshot-all.py` for those roots only. An id
-   it does not know, a registry change, the panel opening and the fallback poll refresh every
-   root. The 10 s liveness re-read covers only the projects that have a running run.
+1. **A nudge refreshes one run.** A watch line names run ids and seqs; the store runs
+   `am status RUN` for a run whose nudge seq is above the `as_of_seq` it already holds, and the
+   list call only for an unknown run, a registry change, the panel opening and the fallback
+   poll. The 10 s liveness re-read is the list call.
 2. **A snapshot in flight is never killed by a change.** The store allows one in flight and
-   one pending request per root set (the request asks for the union of roots wanted); the
-   pending request starts when the running one ends. Today's latest-wins `HelperRunner`
-   would restart a long snapshot on every journal burst and apply nothing.
+   one pending request; the pending request starts when the running one ends. A latest-wins
+   `HelperRunner` would restart a long snapshot on every nudge burst and apply nothing.
 
-Results merge per project; a project not refreshed keeps its runs. The `stale` flag is
-global: set when no project has had a good reply for 30 s while the panel is open.
+The `stale` flag is set when no good reply has arrived for 30 s while the panel is open.
 
 ## Errors and edge cases
 
 | case | behaviour |
 |---|---|
-| a registered root no longer exists | its group shows the error; others load |
+| a registered root no longer exists | its runs still list (they come from `am`); nothing special |
 | `am` missing | the Runs screen's single `missing` state, as today |
 | no project registered | "No projects registered" empty state |
-| project registry changes | the next snapshot uses the new list; a removed project's runs leave the list and its group goes |
+| project registry changes | the filter uses the new list at once; a removed project's runs leave the list and its group goes |
 | two registered roots name one repository | its runs are listed once, under the first |
 | a control request for a run of another project | goes to that run's repo; the result and error show on that run's row, never against the open project |
 | a filtered project disappears from the registry | the filter falls back to All projects |
 | the run open in Run detail leaves the snapshot (its project was removed, or `am` dropped it) | Run detail shows its missing state and Back returns to the list |
-| the first snapshot of a project fails | that project is not armed; alerts for it start with its first good snapshot, which only arms it |
-| a project snapshot runs longer than the liveness interval | the next liveness request waits as the pending one; it never stacks |
+| the first snapshot fails | alerts start with the first good snapshot, which only arms |
+| `am` too old (no `as_of_seq` or `project` in the reply) | the schema banner; no list |
+| a snapshot runs longer than the liveness interval | the next liveness request waits as the pending one; it never stacks |
 
 ## Testing
 
 - `tst_runs.qml`: `withProject`, `filterByProject`, `groupByProject` ordering (attention
   first, live second, then name; ties by root; empty projects omitted; display-order
   flattening).
-- Backend pytest with a fake `am`: `am_runs` moved unchanged (the existing
-  `runs-snapshot.py` tests stay green untouched), `runs-snapshot-all.py` (partial failure,
-  empty project, missing `am`, per-root timeout, argv order, concurrency bound),
-  `runs-watch.py` with several roots (argv roots versus run ids, a stream spanning two
-  repos), `viewer-state.py` global settings (default, migration read, round trip).
-- `tst_run_store.qml`: per-project merge and errors, partial refresh by changed ids, no
-  kill of a snapshot in flight, a project switch changes nothing, registry change,
-  per-project arming, control passes the run's `repo_dir`, resume reads the run's project
-  settings, a request for another project's run survives a project switch.
+- Backend pytest with a fake `am`: `runs-snapshot.py --all-projects` (rows with `project`,
+  `as_of_seq` forwarded, missing `am`, an old `am`), `runs-watch.py` global argv (no roots, no
+  run ids; a stream spanning two repos), `viewer-state.py` global settings (default, migration
+  read, round trip).
+- `tst_run_store.qml`: grouping by `project.repo_dir` with registry filtering, refresh of one
+  run on a nudge, no kill of a snapshot in flight, a project switch changes nothing, registry
+  change, arming on the first good snapshot, control passes the run's `repo_dir`, resume reads
+  the run's project settings, a request for another project's run survives a project switch.
 - `tst_app_runs.qml`: `projectRoots` follows the registry.
 - `tests/ui/`: Runs reachable with no project open (sidebar, Ctrl+6, toast Open, p / r / c),
   the chips and their default and reset on close, grouping and cursor order, **Open

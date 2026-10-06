@@ -1,9 +1,10 @@
 # Run history and titles — design
 
-Status: proposed. Last of the queued run milestones. Builds on **Align the run model with
+Status: proposed; retargeted to the new `am` (a keyset-paged `am runs --all-projects`;
+`2026-10-06-am-snapshots-cursors-design.md`, row hst). Last of the queued run milestones. Builds on **Align the run model with
 real am** (normalized run shape, `tests/fixtures/am/*`), **Runs: a global destination**
 (`2026-10-05-runs-all-projects-design.md`: `projectRoots`, `runsByProject`, the grouped
-list, `common/am_runs.py`), **Dispatch at story level** (`story_id` on an `am runs` row),
+list, `am runs --all-projects`), **Dispatch at story level** (`story_id` on an `am runs` row),
 **Run events timeline** (its `titles` input) and **Split RunStore** (`RunStore`: snapshot,
 watch, selection, events; `RunAlertsStore`: alerts and notifications). Written against the
 post-split store names.
@@ -12,8 +13,8 @@ post-split store names.
 
 1. **History is capped and cannot be widened.** The snapshot takes every non-terminal run
    plus the 10 newest terminal ones per project (`core/backend/runs/runs-snapshot.py:33-34`
-   `TERMINAL`/`TERMINAL_LIMIT`, `select_runs` at `:95-104`; moved as is into
-   `common/am_runs.py` by the global milestone). Older runs are invisible, and `stopped`
+   `TERMINAL`/`TERMINAL_LIMIT`, `select_runs` at `:95-104`; after the global milestone the same
+   selection runs over `am runs --all-projects --limit`, there is no `common/am_runs.py`). Older runs are invisible, and `stopped`
    counts toward the cap although it is a parked, resumable run: the 11th-newest parked run
    disappears from the list.
 2. **No filter by final state or age.** The chips are Needs attention / Live / Parked / All
@@ -52,7 +53,8 @@ cards, descriptions included); `am runs` 0.22–0.45 s; one `am status` about 0.
 
 ## Non-goals
 
-- No `am` or `brd` change. No reading brd's or am's database.
+- No `am` or `brd` change beyond the new `am` this spec targets. No reading brd's or am's
+  database.
 - No persisted history settings; no history for unregistered repositories.
 - No title editing; no brd status shown for another project's cards.
 
@@ -116,16 +118,21 @@ desktop notification, the cancel dialog's detail, and the card RUNS rows.
 
 ### Data: `core/backend/runs/runs-history.py`
 
-`runs-history.py ROOT --before ISO [--limit K] [--status S,…] [--since ISO]`: runs `am runs
---repo-dir ROOT` (newest first), keeps the rows whose status is in `--status` (default every
-terminal-for-the-cap status: `done, escalated, stopped, cancelled, canceled`), whose
-`started_at` is strictly before `--before` and, with `--since`, not before `--since`; takes
-the first `K` (default 10, at most 25); runs `am status ID --repo-dir ROOT` for each (60 s per
-call, as the snapshot); prints `{"ok": true, "runs": [{<am runs row>, "status": <am status
-data>}], "more": bool}` — the same run shape as the snapshot, so `Runs.normalizeRun` and Run
-detail work unchanged. Errors as the snapshot (`AmMissing`, `AmBadOutput`, am's envelope,
-`HelperError`, `Usage`). Shares `common/am_runs.py`'s `call_am` and run-list check; nothing
-is duplicated. Cost: one page is one `am runs` plus at most 10 `am status`, about 2.75 s.
+`runs-history.py --before RUN [--limit K] [--status S,…] [--since ISO]`: runs
+`am runs --all-projects --limit K --before RUN` (a keyset page on `(started_at, id)`, newest
+first; `RUN` is the last row of the previous page); keeps the rows whose status is in
+`--status` (default every terminal-for-the-cap status: `done, escalated, stopped, cancelled,
+canceled`) and, with `--since`, whose `started_at` is not before `--since` (the status and age
+filters are applied here: `am runs` has no such flags in the contract, unverified); there is no
+client-side cap: `K` (default 10) goes to `am` as `--limit` and the page is not cut again;
+runs `am status ID` (no `--repo-dir`) for each kept row (60 s per call, as the snapshot);
+prints `{"ok": true, "runs": [{<am runs row>, "status": <am status data>}], "more": bool,
+"cursor": "<last run id of the page>"}` — the same run shape as the snapshot, so
+`Runs.normalizeRun` and Run detail work unchanged. `more` is true when `am` returned a full
+page. Rows of projects outside the registry are dropped by the store, so a page can show fewer
+than `K` rows. Errors as the snapshot (`AmMissing`, `AmBadOutput`, am's envelope,
+`HelperError`, `Usage`). `common/am_runs.py` is not used (it is not created). Cost: one page is
+one `am runs` plus at most `K` `am status`, about 2.75 s for 10.
 
 ### Filters: `core/domain/runs.js`
 
@@ -140,24 +147,27 @@ is duplicated. Cost: one page is one `am runs` plus at most 10 `am status`, abou
 - Age and finished-state filters never hide a run that is not finished (live, parked, dead).
 - `historyStatuses(filter, finishedState)`: the `--status` list for a page under the
   current chips (All: all five; Parked: `stopped`; Needs attention: `escalated`; Finished: the
-  chip's states). `historyCursor(runs, root)`: the oldest `started_at` among the listed
-  terminal runs of that project.
+  chip's states). `historyCursor(runs)`: the id of the oldest listed terminal run, the first
+  page's `--before`; later pages use the `cursor` the helper returned.
 
 ### Store: `core/stores/RunHistoryStore.qml` (new)
 
-`App` hands it `backendDir`, `active`, `snapshotByProject` (`RunStore.runsByProject`) and the
-filter values. State per root: `historyByProject` (`{root: {runs, more, loading, error}}`).
+`App` hands it `backendDir`, `active`, `snapshotRuns` (`RunStore.runs`) and the filter values.
+State: `historyRuns`, `historyMore`, `historyCursor` (run id), `historyLoading`, `historyError`;
+one global keyset, not one per project.
 
-- `showOlder(root)`: one page with `--before historyCursor`, the filter's `--status` and
-  `--since`, latest wins per root. Rows already listed are dropped (snapshot wins).
-- A terminal run that leaves a project's snapshot window (a newer run finished) while that
-  project has history loaded moves into its history list; am never deletes a run, so it is
-  still there and the list never gains a hole.
+- `showOlder()`: one page with `--before historyCursor`, the filter's `--status` and `--since`,
+  latest wins. Rows already listed are dropped (snapshot wins), as are rows of unregistered
+  projects.
+- A terminal run that leaves the snapshot window (a newer run finished) while history is loaded
+  moves into the history list; am never deletes a run, so it is still there and the list never
+  gains a hole.
 - A changed state or age filter drops every loaded page (they were fetched under the old
-  filter); the panel closing drops them all; a registry change drops removed roots. The
-  project filter keeps them.
+  filter); the panel closing drops them all. The project filter keeps them (it only narrows the
+  display).
 - `runs` reach `RunStore.filteredRuns` through App (`historyRuns`): the display order puts a
-  project's history after its snapshot runs, newest first. History runs are never compared
+  project's history after its snapshot runs, newest first (the global page is grouped by
+  `project.repo_dir` like the snapshot). History runs are never compared
   by `RunAlertsStore` (alerts read the snapshot only), and the watch's changed ids never
   refetch history; a resumed history run shows up in the snapshot, which wins.
 
@@ -169,14 +179,14 @@ filter values. State per root: `historyByProject` (`{root: {runs, more, loading,
  ── omarchy-project-manager ───────────────── ⟳1 ‼1 ─────
  ✔ am run controls and alerts          10/10 · 14h      …cb11063d
  ✔ am run monitor (read-only)          15/15 · 1d       …9c0be3a1
-                                   [Show older]
+
  ── ori ───────────────────── titles unavailable ────────
  ✔ milestone …4f8e21aa                 6/6 · 3d         …77a1d0c2
+                                   [Show older]
 ```
 
-- **Show older** sits at the end of each project's group (one at the end of a flat,
-  filtered list) when that project listed `TERMINAL_LIMIT` terminal runs or its last page
-  said `more`; it reads `Loading older runs…` while a page is in flight and the error sentence
+- **Show older** sits once, at the end of the list (grouped or flat), when the snapshot listed
+  `TERMINAL_LIMIT` terminal runs or the last page said `more`; it reads `Loading older runs…` while a page is in flight and the error sentence
   in `urgent` on failure. It is a button, not a cursor row.
 - **Refresh titles** in the Runs footer calls `refreshTitles()`.
 - Run detail of a history run is the same screen; its controls follow `Runs.controls`.
@@ -188,6 +198,7 @@ filter values. State per root: `historyByProject` (`{root: {runs, more, loading,
 | a project's board unreachable | ids, dim `titles unavailable` on its group, no retry until Refresh titles / reopen / registry change |
 | a card id brd no longer has | short id; asked once per fetch |
 | a history page fails | its button shows the error; loaded rows stay |
+| `am` too old (no `--before` on `am runs`, or no `project` on the rows) | the schema banner; no history |
 | a filter change during a page | the reply is dropped (latest wins), pages cleared |
 | `am` missing | Runs' missing state; no history, no title fetches |
 | a project with no runs | no title fetch |
@@ -197,17 +208,18 @@ filter values. State per root: `historyByProject` (`{root: {runs, more, loading,
 - `tests/core/backend/boards/test_board_titles.py` (fake `brd`): argv and `cwd`, nested
   cards flattened, descriptions dropped, brd's envelope passthrough, missing brd, missing
   root, bad output, one line on every path.
-- `tests/core/backend/runs/test_runs_history.py` (fake `am`): `--before`, `--since`,
-  `--status` with both cancel spellings, limit and `more`, `am status` per row, envelope
-  passthrough, missing `am`; `test_runs_snapshot.py` stays green untouched.
+- `tests/core/backend/runs/test_runs_history.py` (fake `am`): argv
+  `am runs --all-projects --limit K --before RUN`, `--since`, `--status` with both cancel
+  spellings, limit passed through with no client-side cap, `more` and `cursor`, `am status`
+  per row without `--repo-dir`, envelope passthrough, missing `am`.
 - `tests/core/domain/tst_runs.qml`: `titlesFromCards`, `runTitle` for milestone, story and
   card runs with and without titles, `cardTitle`, title search, alert titles; `filterRuns`
   finished, `withinAge` at fixed offsets around midnight, `historyStatuses`, `historyCursor`,
   non-finished runs never hidden. Fixtures from `tests/fixtures/am/`.
 - `tests/core/stores/tst_run_titles_store.qml`: open project from `openCardMap`, queue one at
   a time, missing-id refetch once, unreachable stays quiet, Refresh, panel reopen, registry
-  change. `tst_run_history_store.qml`: page cursor, dedupe, window overflow moves runs into
-  history, filter change and close drop pages, latest wins. `tst_run_store.qml`: history in
+  change. `tst_run_history_store.qml`: page cursor (run id), dedupe, unregistered projects dropped,
+  window overflow moves runs into history, filter change and close drop pages, latest wins. `tst_run_store.qml`: history in
   the display order, chips. `tst_run_alerts_store.qml`: titled toasts.
 - `tests/ui/`: titled rows with the short id, the Finished chip and its two rows, Show
   older (visible, loading, error, gone when exhausted), `titles unavailable`, Refresh
