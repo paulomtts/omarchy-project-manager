@@ -5,8 +5,8 @@
 
 Runs `am runs --repo-dir R` (newest first), keeps am's order and selects every
 non-terminal run plus the first 10 terminal ones (terminal: done, escalated,
-stopped, cancelled), then runs `am status <id> --repo-dir R` for each selected
-run.
+stopped, cancelled, canceled), then runs `am status <id> --repo-dir R` for each
+selected run.
 
 Prints exactly one JSON line on EVERY path:
 {"ok": true, "runs": [{<am runs summary fields>, "status": <am status data>}],
@@ -28,9 +28,10 @@ from common.json_line import emit  # noqa: E402
 
 USAGE = "usage: runs-snapshot.py <project_root>"
 AM_TIMEOUT = 60
-# The monitor spec's finished list. `stopped` is "parked" (resumable) in the domain
-# table, but for the snapshot it is terminal and counts toward the cap.
-TERMINAL = frozenset({"done", "escalated", "stopped", "cancelled"})
+# The finished statuses, matched exactly. A cancelled run is terminal under either
+# spelling, `cancelled` or `canceled`. `stopped` is "parked" (resumable) in the
+# domain table, but for the snapshot it is terminal and counts toward the cap.
+TERMINAL = frozenset({"done", "escalated", "stopped", "cancelled", "canceled"})
 TERMINAL_LIMIT = 10
 
 

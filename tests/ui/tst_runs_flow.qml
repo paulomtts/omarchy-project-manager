@@ -6,6 +6,7 @@
 import QtQuick
 import QtTest
 import "../helpers/find.js" as H
+import "../helpers/amFixtures.js" as F
 
 TestCase {
   id: tc
@@ -198,7 +199,14 @@ TestCase {
     return p
   }
 
-  function logsOk(text) { return JSON.stringify({ ok: true, data: { stdout: text, stderr: "" } }) + "\n" }
+  // A fresh logs-attempt.json `am logs` reply, as one JSON line, whose stdout
+  // artifact text is `text`.
+  function logsOk(text) {
+    var envelope = F.load("logs-attempt.json")
+    // synthetic: the text is the test's; the envelope is the capture's.
+    envelope.data.artifacts.stdout.text = text
+    return JSON.stringify(envelope) + "\n"
+  }
 
   function test_opening_a_run_shows_it_and_fetches_its_default_attempt() {
     var p = openDetail(); if (!p) return
@@ -211,7 +219,7 @@ TestCase {
     var proc = p.app.runs.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
     verify(String(proc.command[1]).indexOf("core/backend/runs/runs-logs.py") > 0, String(proc.command[1]))
-    compare(proc.command.slice(2).join("|"), "run-0000000000e5|t1|implement|2")
+    compare(proc.command.slice(2).join("|"), "/home/u/a|run-0000000000e5|t1|implement|2")
     proc.outText = logsOk("3 passed\n")
     proc.exited(0)
     compare(H.find(p, "runOutputHeading").text, "Output · t1 implement.2")

@@ -26,7 +26,7 @@ status=0
 while IFS= read -r test; do
   case "$test" in *"$filter"*) ;; *) continue ;; esac
   echo "== ${test#$repo/}"
-  out=$(QT_QPA_PLATFORM=offscreen "$runner" -import "$work/repo/tests/stubs" -input "$work/repo/${test#$repo/}" 2>&1) || status=1
+  out=$(QT_QPA_PLATFORM=offscreen QML_XHR_ALLOW_FILE_READ=1 "$runner" -import "$work/repo/tests/stubs" -input "$work/repo/${test#$repo/}" 2>&1) || status=1
   echo "$out" | grep -E "^(FAIL|Totals)|^   Loc" || true
   bad=$(echo "$out" | grep -E "TypeError|ReferenceError|non-existent|Unable to assign|anchors on an item|is not a function" | grep -v "width' of null" || true)
   if [ -n "$bad" ]; then echo "$bad"; status=1; fi

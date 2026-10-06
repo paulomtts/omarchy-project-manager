@@ -2,31 +2,32 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../helpers/amFixtures.js" as F
 
-// Input shape for Runs.normalizeRun (provisional until the runs-snapshot helper exists):
-//   raw = {
-//     row:    { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at }  // one `am runs` row
-//     status: { run: {...}, rows: [...], stories: [...], subtasks: [...],
-//               control: { lease: { pid, host, heartbeat_at, accepting, live } }, ... }  // `am status` data, may be absent
-//   }
+// normalizeRun's input is built from tests/fixtures/am/ via amRun.
 TestCase {
   name: "DomainRuns"
 
-  function fullRaw() {
-    return {
-      row: { id: "r1", workflow: "orchestrator", repo_dir: "/home/u/repo", base_branch: "main",
-             branch_prefix: "mon/", status: "started", started_at: "2026-10-03T10:00:00Z" },
-      status: {
-        run: { id: "r1", repo_dir: "/home/u/repo", milestone_id: "m-4bf4", status: "started" },
-        rows: [{ card_id: "c1", phase: "implement" }],
-        stories: [{ card_id: "s1", subtasks: [] }],
-        subtasks: [{ card_id: "c1", phases: [{ name: "implement", attempts: [] }] }],
-        control: { lease: { pid: 4242, host: "box", heartbeat_at: "2026-10-03T10:05:00Z",
-                            accepting: true, live: true } },
-        requests: [],
-        claims: []
-      }
+  // One am run as RunStore hands it to normalizeRun, fresh on every call: the
+  // fixture's `am runs` row (runs.json's entry with the same run id, else the
+  // fixture's own _am_runs_row) without `status`, and the fixture's `am status`
+  // data.
+  function amRun(name) {
+    var fixture = F.load(name)
+    var runs = F.load("runs.json").data.runs
+    var row = fixture._am_runs_row
+    for (var i = 0; i < runs.length; i++) {
+      if (runs[i].id === fixture.data.run.id) row = runs[i]
     }
+    delete row.status
+    return { row: row, status: fixture.data }
+  }
+
+  // The four captures, normalized, in this order: started, done, escalated,
+  // done-integrate.
+  function fixtureRuns() {
+    return [Runs.normalizeRun(amRun("status-started.json")), Runs.normalizeRun(amRun("status-done.json")),
+            Runs.normalizeRun(amRun("status-escalated.json")), Runs.normalizeRun(amRun("status-done-integrate.json"))]
   }
 
   function checkDefaults(r, label) {
@@ -47,50 +48,31 @@ TestCase {
     compare(r.tree.subtasks.length, 0, label)
   }
 
-  function test_normalize_full() {
-    var r = Runs.normalizeRun(fullRaw())
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow")
-    compare(r.started_at, "2026-10-03T10:00:00Z")
-    compare(r.id, "r1")
-    compare(r.repo_dir, "/home/u/repo")
-    compare(r.milestone_id, "m-4bf4")
-    compare(r.status, "started")
-    compare(Object.keys(r.lease).sort().join(","), "accepting,heartbeat_at,host,live,pid")
-    compare(r.lease.pid, 4242)
-    compare(r.lease.host, "box")
-    compare(r.lease.heartbeat_at, "2026-10-03T10:05:00Z")
-    compare(r.lease.accepting, true)
-    compare(r.lease.live, true)
-    compare(r.rows.length, 1)
-    compare(r.rows[0].card_id, "c1")
-    compare(r.tree.stories.length, 1)
-    compare(r.tree.stories[0].card_id, "s1")
-    compare(r.tree.subtasks.length, 1)
-    compare(r.tree.subtasks[0].card_id, "c1")
-    compare(r.tree.subtasks[0].phases[0].name, "implement")
-  }
-
   function test_normalize_status_prefers_am_status() {
-    var raw = fullRaw()
+    // synthetic: the row's and am status's run statuses edited to disagree
+    var raw = amRun("status-started.json")
     raw.row.status = "stopped"
     raw.status.run.status = "done"
     compare(Runs.normalizeRun(raw).status, "done")
 
+    // synthetic: a bare am runs row
     compare(Runs.normalizeRun({ row: { id: "r1", status: "stopped" } }).status, "stopped")
 
-    var noRun = fullRaw()
+    // synthetic: am status without its run
+    var noRun = amRun("status-started.json")
     noRun.row.status = "escalated"
     delete noRun.status.run
     compare(Runs.normalizeRun(noRun).status, "escalated")
 
-    // An empty am-status value is not fresher detail: fall back to the row.
-    var blank = fullRaw()
+    // synthetic: an empty am status run status. It is not fresher detail: fall back to the row.
+    var blank = amRun("status-started.json")
     blank.row.status = "stopped"
     blank.status.run.status = ""
     compare(Runs.normalizeRun(blank).status, "stopped")
   }
 
   function test_normalize_ids_fallback_and_coercion() {
+    // synthetic: bare am runs rows and am status runs, one or two fields each
     compare(Runs.normalizeRun({ row: { id: 7 } }).id, "7")
 
     var fromStatus = Runs.normalizeRun({ status: { run: { id: "r9", repo_dir: "/r", milestone_id: "m9" } } })
@@ -107,10 +89,12 @@ TestCase {
   }
 
   function test_normalize_missing_lease() {
-    var noControl = fullRaw()
+    // synthetic: am status without control
+    var noControl = amRun("status-started.json")
     delete noControl.status.control
     compare(Runs.normalizeRun(noControl).lease, null, "no control")
 
+    // synthetic: the capture's control replaced by each malformed shape
     var cases = [
       { label: "empty control", control: {} },
       { label: "null control", control: null },
@@ -119,16 +103,18 @@ TestCase {
       { label: "array lease", control: { lease: [] } }
     ]
     for (var i = 0; i < cases.length; i++) {
-      var raw = fullRaw()
+      var raw = amRun("status-started.json")
       raw.status.control = cases[i].control
       compare(Runs.normalizeRun(raw).lease, null, cases[i].label)
     }
 
+    // synthetic: a bare am runs row
     compare(Runs.normalizeRun({ row: { id: "r1", status: "started" } }).lease, null, "no status at all")
   }
 
   function test_normalize_lease_live_strict() {
-    var empty = fullRaw()
+    // synthetic: the capture's lease replaced by empty, null, string and numeric values
+    var empty = amRun("status-started.json")
     empty.status.control.lease = {}
     var e = Runs.normalizeRun(empty).lease
     compare(e.live, false)
@@ -137,7 +123,7 @@ TestCase {
     compare(e.host, "")
     compare(e.heartbeat_at, "")
 
-    var nulls = fullRaw()
+    var nulls = amRun("status-started.json")
     nulls.status.control.lease = { pid: null, host: null, heartbeat_at: null, live: null, accepting: null }
     var n = Runs.normalizeRun(nulls).lease
     compare(n.pid, "", "null pid")
@@ -146,25 +132,27 @@ TestCase {
     compare(n.live, false, "null live")
     compare(n.accepting, false, "null accepting")
 
-    var stringy = fullRaw()
+    var stringy = amRun("status-started.json")
     stringy.status.control.lease = { live: "true", accepting: "true" }
     compare(Runs.normalizeRun(stringy).lease.live, false)
     compare(Runs.normalizeRun(stringy).lease.accepting, false)
 
-    var numeric = fullRaw()
+    var numeric = amRun("status-started.json")
     numeric.status.control.lease = { live: 1, accepting: 1 }
     compare(Runs.normalizeRun(numeric).lease.live, false)
     compare(Runs.normalizeRun(numeric).lease.accepting, false)
   }
 
-  function test_normalize_missing_rows_tree() {
+  function test_normalize_tree_garbage() {
+    // synthetic: am status with only a run
     var bare = Runs.normalizeRun({ status: { run: { status: "started" } } })
     compare(Array.isArray(bare.rows), true)
     compare(bare.rows.length, 0)
     compare(bare.tree.stories.length, 0)
     compare(bare.tree.subtasks.length, 0)
 
-    var raw = fullRaw()
+    // synthetic: rows, stories and a top-level subtasks that are not arrays
+    var raw = amRun("status-started.json")
     raw.status.rows = { a: 1 }
     raw.status.stories = {}
     raw.status.subtasks = "x"
@@ -176,12 +164,40 @@ TestCase {
     compare(Array.isArray(r.tree.subtasks), true)
     compare(r.tree.subtasks.length, 0)
 
-    var strRows = fullRaw()
+    // synthetic: rows as a string
+    var strRows = amRun("status-started.json")
     strRows.status.rows = "x"
     compare(Runs.normalizeRun(strRows).rows.length, 0)
+
+    // synthetic: a top-level subtasks list, which am never prints
+    var topLevel = amRun("status-started.json")
+    topLevel.status.subtasks = [{ card_id: "zz", phases: [] }]
+    var t = Runs.normalizeRun(topLevel)
+    compare(t.tree.subtasks.length, 8, "a top-level subtasks is ignored")
+    for (var i = 0; i < t.tree.subtasks.length; i++) verify(t.tree.subtasks[i].card_id !== "zz", "no zz at " + i)
+
+    // synthetic: garbage elements in place of the capture's stories and rows
+    var junk = amRun("status-started.json")
+    junk.status.stories = [null, 5, "s", [], { card_id: "s9" }, { card_id: "s8", subtasks: "x" },
+                           { card_id: "s7", subtasks: [null, 3, { card_id: 4 }, { card_id: "t7" }] }]
+    junk.status.rows = [null, "r", 7, {}, { story: 1, subtask: "t7", phase: [], attempt: "2", state: {} }]
+    var g = Runs.normalizeRun(junk)
+    compare(cardIds(g.tree.stories), "s9,s8,s7", "only object stories are kept")
+    compare(JSON.stringify(g.tree.stories[0].subtasks), "[]", "missing subtasks")
+    compare(JSON.stringify(g.tree.stories[1].subtasks), "[]", "subtasks not an array")
+    compare(JSON.stringify(g.tree.stories[2].subtasks), "[\"t7\"]", "only string ids of object subtasks")
+    compare(g.tree.subtasks.length, 2, "the two object subtasks of s7")
+    compare(g.tree.subtasks[0].card_id, 4)
+    compare(g.tree.subtasks[0].story_id, "s7")
+    compare(g.tree.subtasks[1].card_id, "t7")
+    compare(g.tree.subtasks[1].story_id, "s7")
+    compare(g.rows.length, 2, "only object rows are kept")
+    compare(JSON.stringify(g.rows[0]), JSON.stringify({ story_id: "", card_id: "", phase: "", attempt: null, status: "" }))
+    compare(JSON.stringify(g.rows[1]), JSON.stringify({ story_id: "", card_id: "t7", phase: "", attempt: null, status: "" }))
   }
 
   function test_normalize_garbage() {
+    // synthetic: garbage in place of a run
     checkDefaults(Runs.normalizeRun(undefined), "undefined")
     checkDefaults(Runs.normalizeRun(null), "null")
     checkDefaults(Runs.normalizeRun("x"), "string")
@@ -193,20 +209,337 @@ TestCase {
     checkDefaults(Runs.normalizeRun({ status: { run: "x", control: "y" } }), "non-object run and control")
   }
 
+  // ---- 2.1: normalizeRun over the am captures ----------------------------------------------
+
+  function test_normalize_fixture_counts() {
+    var expected = [
+      ["status-started.json", 4, 8, 44],
+      ["status-done.json", 4, 10, 140],
+      ["status-escalated.json", 3, 4, 40],
+      ["status-done-integrate.json", 3, 2, 28]
+    ]
+    for (var i = 0; i < expected.length; i++) {
+      var r = Runs.normalizeRun(amRun(expected[i][0]))
+      compare(r.tree.stories.length, expected[i][1], expected[i][0] + " stories")
+      compare(r.tree.subtasks.length, expected[i][2], expected[i][0] + " subtasks")
+      compare(r.rows.length, expected[i][3], expected[i][0] + " rows")
+    }
+  }
+
+  function test_normalize_scalars_from_fixture() {
+    var r = Runs.normalizeRun(amRun("status-started.json"))
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow")
+    compare(r.id, "20261005T021400Z-837c4431")
+    compare(r.repo_dir, "/home/user/Code/omarchy-project-manager")
+    compare(r.milestone_id, "837c4431-7a24-4531-96a8-881698ea8c5e", "only the am runs row carries it")
+    compare(r.status, "started")
+    compare(r.workflow, "milestone")
+    compare(r.base_branch, "main")
+    compare(r.branch_prefix, "dsp")
+    compare(r.started_at, "2026-10-05 02:14:00.590972+00:00")
+    compare(Object.keys(r.lease).sort().join(","), "accepting,heartbeat_at,host,live,pid", "acquired_at is not kept")
+    compare(r.lease.pid, 3736962)
+    compare(r.lease.host, "mtts-desktop")
+    compare(r.lease.heartbeat_at, "2026-10-05T03:30:22.281942+00:00")
+    compare(r.lease.accepting, true)
+    compare(r.lease.live, true)
+    compare(Array.isArray(r.requests), true)
+    compare(r.requests.length, 0)
+  }
+
+  function test_normalize_stories_are_id_lists() {
+    var raw = amRun("status-started.json")
+    var am = raw.status.stories[1]
+    var s = Runs.normalizeRun(raw).tree.stories[1]
+    compare(s.card_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
+    compare(JSON.stringify(s.subtasks), JSON.stringify(["a19ca446-659e-4735-86ed-5a583c1730bf",
+                                                        "299ec9c0-b935-4c44-a7a0-982a104cbfe5",
+                                                        "fdb5feb1-0907-40b2-9937-d9b4cc2875f0"]))
+    for (var i = 0; i < s.subtasks.length; i++) compare(typeof s.subtasks[i], "string", "id " + i)
+    compare(s.title, am.title)
+    compare(s.level, am.level)
+    compare(s.status, am.status)
+    compare(s.tip_branch, am.tip_branch)
+    compare(Object.keys(s).sort().join(","), "card_id,level,status,subtasks,tip_branch,title")
+  }
+
+  function test_normalize_subtasks_flatten_with_story_id() {
+    var raw = amRun("status-started.json")
+    var r = Runs.normalizeRun(raw)
+    var ids = [], storyIds = []
+    for (var i = 0; i < raw.status.stories.length; i++) {
+      var story = raw.status.stories[i]
+      for (var j = 0; j < story.subtasks.length; j++) {
+        ids.push(story.subtasks[j].card_id)
+        storyIds.push(story.card_id)
+      }
+    }
+    compare(cardIds(r.tree.subtasks), ids.join(","), "am's flattened order")
+    for (var k = 0; k < r.tree.subtasks.length; k++) compare(r.tree.subtasks[k].story_id, storyIds[k], "story_id " + k)
+    var open = r.tree.subtasks[3]
+    compare(open.card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(open.story_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
+    compare(Object.keys(open).sort().join(","), "base_branch,branch,card_id,phases,status,story_id,worktree_path")
+    compare(open.phases[1].name, "explore")
+    compare(open.phases[1].attempts[0].n, 1)
+  }
+
+  function test_normalize_rows_renamed() {
+    var r = Runs.normalizeRun(amRun("status-started.json"))
+    compare(Object.keys(r.rows[0]).sort().join(","), "attempt,card_id,phase,status,story_id")
+    compare(r.rows[0].story_id, "1c665cfd-9a72-4a9d-a539-4c83f0f6ddc1")
+    compare(r.rows[0].card_id, "5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff")
+    compare(r.rows[0].phase, "worktree")
+    compare(r.rows[0].attempt, null)
+    compare(r.rows[0].status, "done")
+    compare(r.rows[43].story_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
+    compare(r.rows[43].card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(r.rows[43].phase, "explore")
+    compare(r.rows[43].attempt, 1)
+    compare(r.rows[43].status, "started")
+  }
+
+  function test_normalize_integrate_story_kept_resolver_dropped() {
+    var r = Runs.normalizeRun(amRun("status-done-integrate.json"))
+    var integrate = r.tree.stories[2]
+    compare(integrate.card_id, "integrate")
+    compare(JSON.stringify(integrate.subtasks), JSON.stringify(["b429248c-c69e-4df5-8f7d-52776253ea14"]))
+    compare(integrate.status, "done")
+    for (var i = 0; i < r.tree.subtasks.length; i++) {
+      verify(r.tree.subtasks[i].story_id !== "integrate", "no subtask of integrate at " + i)
+      verify(r.tree.subtasks[i].card_id !== "b429248c-c69e-4df5-8f7d-52776253ea14", "no resolver subtask at " + i)
+    }
+    compare(r.rows.length, 28, "the two resolver rows are dropped")
+    for (var j = 0; j < r.rows.length; j++) verify(r.rows[j].story_id !== "integrate", "no integrate row at " + j)
+  }
+
+  function test_normalize_base_rows_kept() {
+    // synthetic: a bases story, which no capture contains
+    var raw = amRun("status-done-integrate.json")
+    var baseId = "base-2f88f774-d2b6-4c8d-adc1-6ac9eb978017"
+    raw.status.stories.push({ card_id: "bases", title: "Bases", level: 0, status: "done", tip_branch: "m3-bases",
+                              subtasks: [{ card_id: baseId, branch: "m3-" + baseId, base_branch: "main", status: "done",
+                                           worktree_path: "/tmp/m3-bases", phases: [] }] })
+    raw.status.rows.push({ story: "bases", subtask: baseId, phase: "verify", attempt: null, state: "done" })
+    var r = Runs.normalizeRun(raw)
+    compare(r.tree.stories.length, 4)
+    compare(r.tree.stories[3].card_id, "bases")
+    compare(JSON.stringify(r.tree.stories[3].subtasks), JSON.stringify([baseId]))
+    compare(r.tree.subtasks.length, 2, "the base subtask is not a tree subtask")
+    for (var i = 0; i < r.tree.subtasks.length; i++) verify(r.tree.subtasks[i].card_id !== baseId, "no base subtask at " + i)
+    compare(r.rows.length, 29, "28 real rows and the base row")
+    var last = r.rows[28]
+    compare(last.story_id, "bases")
+    compare(last.card_id, baseId)
+    compare(last.phase, "verify")
+    compare(last.attempt, null)
+    compare(last.status, "done")
+    for (var j = 0; j < r.rows.length; j++) verify(r.rows[j].story_id !== "integrate", "resolver rows still dropped at " + j)
+  }
+
+  function test_normalize_copies_never_am_objects() {
+    var raw = amRun("status-started.json")
+    var before = JSON.stringify(raw)
+    var r = Runs.normalizeRun(raw)
+    verify(r.tree.stories[1] !== raw.status.stories[1], "story is a copy")
+    verify(r.tree.subtasks[3] !== raw.status.stories[1].subtasks[1], "subtask is a copy")
+    verify(r.tree.subtasks[3].phases !== raw.status.stories[1].subtasks[1].phases, "phases are a copy")
+    verify(r.tree.subtasks[3].phases[1].attempts[0] !== raw.status.stories[1].subtasks[1].phases[1].attempts[0],
+           "attempt is a copy")
+    verify(r.rows[0] !== raw.status.rows[0], "row is a copy")
+    r.tree.stories[1].title = "changed"
+    r.tree.subtasks[3].phases[1].attempts[0].status = "changed"
+    r.rows[0].phase = "changed"
+    r.tree.stories[1].subtasks[0] = "changed"
+    compare(JSON.stringify(raw), before, "changing the output leaves the input unchanged")
+
+    var later = amRun("status-started.json")
+    var out = Runs.normalizeRun(later)
+    var outBefore = JSON.stringify(out)
+    later.status.stories[1].title = "later"
+    later.status.stories[1].subtasks[1].phases[1].attempts[0].status = "later"
+    later.status.stories[1].subtasks.push({ card_id: "later" })
+    later.status.rows[0].phase = "later"
+    compare(JSON.stringify(out), outBefore, "changing the input after the call leaves the output unchanged")
+  }
+
+  function test_normalize_own_proto_key_never_sets_prototype() {
+    // synthetic: an own __proto__ key, which no capture contains
+    function withProto(o) { return JSON.parse('{"__proto__": {"x": 1}, ' + JSON.stringify(o).slice(1)) }
+    var raw = amRun("status-started.json")
+    var amStory = raw.status.stories[1]
+    var phase = withProto(amStory.subtasks[1].phases[1])
+    var subtask = withProto(amStory.subtasks[1])
+    subtask.phases[1] = phase
+    var story = withProto(amStory)
+    story.subtasks[1] = subtask
+    raw.status.stories[1] = story
+    verify(Object.prototype.hasOwnProperty.call(story, "__proto__"), "the input carries an own __proto__ key")
+
+    var r = Runs.normalizeRun(raw)
+    var copies = [["story", r.tree.stories[1]], ["subtask", r.tree.subtasks[3]], ["phase", r.tree.subtasks[3].phases[1]]]
+    for (var i = 0; i < copies.length; i++) {
+      compare(Object.getPrototypeOf(copies[i][1]) === Object.prototype, true, copies[i][0] + " prototype")
+      compare(copies[i][1].x, undefined, copies[i][0] + " x")
+    }
+    compare(r.tree.subtasks[3].card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5", "the rest is copied")
+    compare(r.tree.subtasks[3].phases[1].name, "explore")
+  }
+
+  function test_fixture_current_phase_and_default_attempt() {
+    var expected = [
+      ["explore", "299ec9c0-b935-4c44-a7a0-982a104cbfe5/explore/1"],
+      ["", "22153f5f-9632-4b5f-a7dd-664c39d89e5c/review/1"],
+      ["", "eb8b1851-8245-45c3-9a29-d1fcefaad0b9/review/1"],
+      ["", "5d5114f9-8d86-4712-95f3-87dd9d56feef/review/1"]
+    ]
+    var runs = fixtureRuns()
+    for (var i = 0; i < runs.length; i++) {
+      compare(Runs.currentPhase(runs[i]), expected[i][0], "currentPhase " + runs[i].id)
+      compare(at(Runs.defaultAttempt(runs[i])), expected[i][1], "defaultAttempt " + runs[i].id)
+    }
+  }
+
+  function test_fixture_card_run_state_and_runs_touching() {
+    var runs = fixtureRuns()
+    var open = Runs.cardRunState(runs, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(open.state, "running")
+    compare(open.runId, "20261005T021400Z-837c4431")
+    compare(open.dimmed, false)
+    compare(open.phase, "explore")
+    compare(open.attempt, 1)
+    var escalated = Runs.cardRunState(runs, "eb8b1851-8245-45c3-9a29-d1fcefaad0b9")
+    compare(escalated.state, "escalated")
+    compare(escalated.runId, "20261005T032543Z-bcc4e411")
+    compare(escalated.dimmed, true)
+    compare(escalated.phase, "review")
+    compare(escalated.attempt, 1)
+
+    var touchingOpen = Runs.runsTouching(runs, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(touchingOpen.length, 1)
+    verify(touchingOpen[0] === runs[0], "the started run")
+    var touchingReal = Runs.runsTouching(runs, "5d5114f9-8d86-4712-95f3-87dd9d56feef")
+    compare(touchingReal.length, 1)
+    verify(touchingReal[0] === runs[3], "the done-integrate run")
+    var touchingStory = Runs.runsTouching(runs, "b429248c-c69e-4df5-8f7d-52776253ea14")
+    compare(touchingStory.length, 1, "through its real story only")
+    verify(touchingStory[0] === runs[3], "the done-integrate run, through its real story")
+  }
+
+  function test_fixture_run_tree_grouping() {
+    var done = amRun("status-done.json")
+    var t = Runs.runTree(Runs.normalizeRun(done))
+    var sizes = [2, 3, 1, 4]
+    compare(t.stories.length, 4)
+    compare(JSON.stringify(t.synthetic), "[]")
+    for (var i = 0; i < t.stories.length; i++) {
+      var am = done.status.stories[i]
+      compare(t.stories[i].card_id, am.card_id, "story " + i)
+      compare(t.stories[i].other, false, "story " + i + " is not Other")
+      compare(t.stories[i].subtasks.length, sizes[i], "story " + i + " size")
+      for (var j = 0; j < t.stories[i].subtasks.length; j++)
+        compare(t.stories[i].subtasks[j].card_id, am.subtasks[j].card_id, "story " + i + " subtask " + j)
+    }
+
+    var it = Runs.runTree(Runs.normalizeRun(amRun("status-done-integrate.json")))
+    compare(it.stories.length, 2)
+    compare(it.stories[0].subtasks.length, 1)
+    compare(it.stories[1].subtasks.length, 1)
+    compare(JSON.stringify(it.synthetic), JSON.stringify([{ id: "integrate", label: "Integrate", status: "done" }]))
+    for (var k = 0; k < it.stories.length; k++) compare(it.stories[k].other, false, "no Other group " + k)
+  }
+
+  // The node with this card id in any group of a runTree result, else null.
+  function treeNode(tree, cardId) {
+    for (var i = 0; i < tree.stories.length; i++) {
+      var subtasks = tree.stories[i].subtasks
+      for (var j = 0; j < subtasks.length; j++) {
+        if (subtasks[j].card_id === cardId) return subtasks[j]
+      }
+    }
+    return null
+  }
+
+  // "phase/attempt" a tree node opens on.
+  function opensOn(node) { return node === null ? "null" : node.currentPhase + "/" + node.currentAttempt }
+
+  function test_fixture_run_tree_open_attempt() {
+    var done = Runs.runTree(Runs.normalizeRun(amRun("status-done.json")))
+    var count = 0
+    for (var i = 0; i < done.stories.length; i++) {
+      for (var j = 0; j < done.stories[i].subtasks.length; j++) {
+        var node = done.stories[i].subtasks[j]
+        compare(node.status, "done", node.card_id)
+        compare(node.phases.length, 14, node.card_id + " phases")
+        compare(node.attempts.length, 7, node.card_id + " attempts")
+        compare(opensOn(node), "review/1", node.card_id + ": the last phase with a numbered attempt, past verify and mark_done")
+        count++
+      }
+    }
+    compare(count, 10, "every done subtask is a node")
+
+    var started = Runs.runTree(Runs.normalizeRun(amRun("status-started.json")))
+    var expected = [
+      ["5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff", "review/1"],
+      ["45cc9067-d6b3-441f-b8d2-6602a81311d2", "review/1"],
+      ["a19ca446-659e-4735-86ed-5a583c1730bf", "review/1"],
+      ["299ec9c0-b935-4c44-a7a0-982a104cbfe5", "explore/1"],
+      ["fdb5feb1-0907-40b2-9937-d9b4cc2875f0", "/0"],
+      ["66a6b6c0-5032-4598-b80c-0afb0d0d46b5", "/0"],
+      ["dfc0ac87-978b-4419-87c2-61f10b9d0cd1", "/0"],
+      ["46141e11-da16-4aa2-8e1a-10e0e23e6980", "/0"]
+    ]
+    for (var k = 0; k < expected.length; k++)
+      compare(opensOn(treeNode(started, expected[k][0])), expected[k][1], "started run " + expected[k][0])
+
+    var escalated = Runs.runTree(Runs.normalizeRun(amRun("status-escalated.json")))
+    var expectedEscalated = [
+      ["c5e41536-7e1b-448b-aa2d-55e9550e63b2", "review/1"],
+      ["231a23cc-91bc-4516-924d-5b19476d5237", "review/1"],
+      ["eb8b1851-8245-45c3-9a29-d1fcefaad0b9", "review/1"],
+      ["ca31fde7-d22a-43a3-b3da-b1d2d6f9f41e", "/0"]
+    ]
+    for (var e = 0; e < expectedEscalated.length; e++)
+      compare(opensOn(treeNode(escalated, expectedEscalated[e][0])), expectedEscalated[e][1], "escalated run " + expectedEscalated[e][0])
+  }
+
+  function test_fixture_run_tree_started_deterministic_phase() {
+    var raw = amRun("status-started.json")
+    var subtask = null
+    for (var i = 0; i < raw.status.stories.length; i++) {
+      var list = raw.status.stories[i].subtasks
+      for (var j = 0; j < list.length; j++) {
+        if (list[j].card_id === "299ec9c0-b935-4c44-a7a0-982a104cbfe5") subtask = list[j]
+      }
+    }
+    verify(subtask !== null, "the started subtask is in the capture")
+    compare(subtask.phases.length, 2)
+    compare(subtask.phases[1].name + ":" + subtask.phases[1].status, "explore:started")
+    // synthetic: a deterministic phase in flight after a finished agent phase -- no capture has one
+    subtask.phases[1].status = "done"
+    var added = { name: "mark_in_progress", kind: "deterministic", status: "started", started_at: "", ended_at: null, detail: null, attempts: [] }
+    compare(Object.keys(added).sort().join(","), Object.keys(subtask.phases[0]).sort().join(","), "same keys as its neighbours")
+    subtask.phases.push(added)
+
+    var node = treeNode(Runs.runTree(Runs.normalizeRun(raw)), "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(opensOn(node), "mark_in_progress/0", "a started phase wins over an earlier numbered one, attempt 0 without attempts")
+  }
+
   function test_state_running() {
     compare(Runs.runState({ status: "started", lease: { live: true } }), "running")
-    compare(Runs.runState(Runs.normalizeRun(fullRaw())), "running")
+    compare(Runs.runState(Runs.normalizeRun(amRun("status-started.json"))), "running")
   }
 
   function test_state_dead_not_live() {
     compare(Runs.runState({ status: "started", lease: { live: false } }), "dead")
 
-    var raw = fullRaw()
+    // synthetic: the capture's lease edited to not live
+    var raw = amRun("status-started.json")
     raw.status.control.lease.live = false
     compare(Runs.runState(Runs.normalizeRun(raw)), "dead")
 
-    // A sloppy "true" string is not liveness.
-    var stringy = fullRaw()
+    // synthetic: the capture's lease live as a string. A sloppy "true" string is not liveness.
+    var stringy = amRun("status-started.json")
     stringy.status.control.lease.live = "true"
     compare(Runs.runState(Runs.normalizeRun(stringy)), "dead")
 
@@ -221,9 +554,11 @@ TestCase {
   function test_state_dead_missing_lease() {
     compare(Runs.runState({ status: "started", lease: null }), "dead")
     compare(Runs.runState({ status: "started" }), "dead")
+    // synthetic: a bare am runs row
     compare(Runs.runState(Runs.normalizeRun({ row: { id: "r1", status: "started" } })), "dead")
 
-    var noLease = fullRaw()
+    // synthetic: am status without control
+    var noLease = amRun("status-started.json")
     delete noLease.status.control
     compare(Runs.runState(Runs.normalizeRun(noLease)), "dead")
   }
@@ -233,6 +568,7 @@ TestCase {
       ["stopped", "parked"],
       ["escalated", "escalated"],
       ["cancelled", "cancelled"],
+      ["canceled", "cancelled"],
       ["done", "done"]
     ]
     for (var i = 0; i < expected.length; i++) {
@@ -246,7 +582,8 @@ TestCase {
   }
 
   function test_state_unknown() {
-    var statuses = ["weird", "", "stale", "STARTED", "Done", "running", "dead"]
+    var statuses = ["weird", "", "stale", "STARTED", "Done", "running", "dead",
+                    "Canceled", "CANCELED", " canceled", "cancel", "constructor", "__proto__", 5, null]
     for (var i = 0; i < statuses.length; i++) {
       compare(Runs.runState({ status: statuses[i], lease: { live: true } }), "unknown", "status " + statuses[i])
     }
@@ -256,6 +593,56 @@ TestCase {
     compare(Runs.runState(undefined), "unknown", "undefined")
     compare(Runs.runState("x"), "unknown", "string run")
     compare(Runs.runState(Runs.normalizeRun(undefined)), "unknown", "normalised garbage")
+  }
+
+  // The two spellings am gives a cancelled run.
+  function cancelSpellings() { return ["cancelled", "canceled"] }
+
+  // The status-done.json run, normalized, with am's run status set to spelling.
+  // Its control.lease is null, so no Integrate reason interferes.
+  function cancelledRun(spelling) {
+    // status-done.json copy, run.status set to spelling (cancelled or canceled)
+    var raw = amRun("status-done.json")
+    raw.status.run.status = spelling
+    return Runs.normalizeRun(raw)
+  }
+
+  function test_fixture_cancel_spellings_run_state() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      var run = cancelledRun(spellings[i])
+      compare(run.status, spellings[i], spellings[i] + ": normalizeRun keeps am's spelling")
+      compare(Runs.runState(run), "cancelled", spellings[i] + ": runState")
+    }
+  }
+
+  // A cancelled run in either spelling is found by its state name and sits in
+  // no chip but `all`.
+  function test_fixture_cancel_spellings_filters_and_search() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      var run = cancelledRun(spellings[i])
+      var counts = Runs.runFilterCounts([run])
+      compare([counts.attention, counts.live, counts.parked, counts.all].join(","), "0,0,0,1",
+              spellings[i] + ": chip counts")
+      compare(Runs.searchRuns([run], "cancelled").length, 1, spellings[i] + ": found by its state name")
+      compare(Runs.searchRuns([run], "unknown").length, 0, spellings[i] + ": not unknown")
+    }
+  }
+
+  // A newer cancelled run, in either spelling, never outranks an older running
+  // run for a card; alone, it leaves the card with no run state, dimmed.
+  function test_card_run_state_cancel_spellings() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      var cancelled = mkRun("rx", spellings[i], null, { started_at: "2026-10-05 10:00:00+00:00" })
+      var running = mkRun("rr", "started", true, { started_at: "2026-10-04 10:00:00+00:00" })
+      var both = Runs.cardRunState([cancelled, running], "m1")
+      compare(both.state + "/" + both.runId + "/" + both.dimmed, "running/rr/false",
+              spellings[i] + ": beside an older running run")
+      var alone = Runs.cardRunState([cancelled], "m1")
+      compare(alone.state + "/" + alone.runId + "/" + alone.dimmed, "none/rx/true", spellings[i] + ": alone")
+    }
   }
 
   // ---- 1.2: card mapping ------------------------------------------------------------------
@@ -486,103 +873,179 @@ TestCase {
     compare(Runs.cardRunState(junk, "m1").runId, "k")
     checkNone(Runs.cardRunState(junk, "j"), "run id is not a card id")
 
+    // synthetic: a bare am runs row among hand-built normalized runs
     var withBlank = [good, mkRun("blank", "started", true, { milestone_id: "" }),
                      Runs.normalizeRun({ row: { id: "z", status: "started" } })]
     var ids = [null, undefined, "", 0, 5, {}, []]
     for (var k = 0; k < ids.length; k++) checkNone(Runs.cardRunState(withBlank, ids[k]), "cardId " + k)
   }
 
-  // ---- 1.2: rollups -----------------------------------------------------------------------
-
-  // Milestone m1; story s1 owns t1 (string entry) and t2 ({card_id} entry); t3 belongs to s2
-  // via story_id; t4 belongs to no story; "integrate" is a synthetic subtask.
-  function rollupRun(id, status, live) {
-    return mkRun(id, status, live, {
-      tree: {
-        stories: [{ card_id: "s1", subtasks: ["t1", { card_id: "t2" }] }, { card_id: "s2", subtasks: [] }],
-        subtasks: [
-          { card_id: "t1", phases: [] }, { card_id: "t2", phases: [] }, { card_id: "t3", story_id: "s2", phases: [] },
-          { card_id: "t4", phases: [] }, { card_id: "integrate", phases: [] }
-        ]
-      },
-      rows: [
-        { card_id: "t1", status: "running" }, { card_id: "t1", status: "started" },
-        { card_id: "t2", status: "parked" }, { card_id: "t2", status: "stopped" },
-        { card_id: "t3", status: "escalated" }, { card_id: "t3", status: "failed" },
-        { card_id: "t4", status: "done" },
-        { card_id: "t4", status: "queued" }, { card_id: "t4" },
-        { card_id: "s1", status: "running" },
-        { card_id: "integrate", status: "running" },
-        { card_id: "bases", status: "running" },
-        { card_id: "zz", status: "running" },
-        null, "x"
-      ]
-    })
-  }
+  // ---- 2.2: rollups -----------------------------------------------------------------------
 
   function counts(r) {
     return [r.running, r.parked, r.escalated, r.done, r.pending, r.total].join(",")
   }
 
-  function test_rollup_milestone() {
-    var r = Runs.rollup([rollupRun("r1", "started", true)], { id: "m1" })
-    compare(Object.keys(r).sort().join(","), "done,escalated,parked,pending,running,total")
-    // story row s1, synthetic integrate/bases, unknown zz and junk rows are excluded
-    compare(counts(r), "2,2,2,1,2,9")
+  function test_rollup_fixture_milestones() {
+    var cases = [
+      ["status-started.json", "837c4431-7a24-4531-96a8-881698ea8c5e", "1,0,0,3,4,8"],
+      ["status-done.json", "cb11063d-78b9-4537-8569-fb5c249519f8", "0,0,0,10,0,10"],
+      ["status-escalated.json", "bcc4e411-504c-48f4-8712-198a5c04ec8b", "0,0,1,2,1,4"],
+      ["status-escalated-integrate.json", "5a2d70ff-b0c8-4bb8-8a87-1cb2c679a754", "0,0,0,2,0,2"],
+      ["status-done-integrate.json", "2f6878ac-7e83-449f-9b6c-3b1f65acd30e", "0,0,0,2,0,2"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var name = cases[i][0]
+      var run = Runs.normalizeRun(amRun(name))
+      compare(run.milestone_id, cases[i][1], name + " milestone id")
+      var r = Runs.rollup([run], { id: run.milestone_id })
+      compare(Object.keys(r).sort().join(","), "done,escalated,parked,pending,running,total", name)
+      compare(counts(r), cases[i][2], name)
+    }
+  }
 
-    var odd = mkRun("r2", "started", true, {
-      tree: { stories: [], subtasks: [{ card_id: "t1" }] },
-      rows: [{ card_id: "t1", status: "RUNNING" }, { card_id: "t1", status: "Done" }, { card_id: "t1", status: 5 }]
+  function test_rollup_fixture_stories_and_subtasks() {
+    var started = [Runs.normalizeRun(amRun("status-started.json"))]
+    var done = [Runs.normalizeRun(amRun("status-done.json"))]
+    var escalated = [Runs.normalizeRun(amRun("status-escalated.json"))]
+    var doneIntegrate = [Runs.normalizeRun(amRun("status-done-integrate.json"))]
+    var cases = [
+      [started, "d3d879b9-cb74-41ca-9a37-63f477de9711", "1,0,0,1,1,3", "started: story"],
+      [started, "299ec9c0-b935-4c44-a7a0-982a104cbfe5", "1,0,0,0,0,1", "started: subtask with 2 rows"],
+      [done, "f03629a7-5912-4b36-82b2-12f3b567294a", "0,0,0,4,0,4", "done: story"],
+      [done, "22153f5f-9632-4b5f-a7dd-664c39d89e5c", "0,0,0,1,0,1", "done: subtask with 14 rows"],
+      [escalated, "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9", "0,0,1,0,0,1", "escalated: story"],
+      [escalated, "eb8b1851-8245-45c3-9a29-d1fcefaad0b9", "0,0,1,0,0,1", "escalated: subtask with 12 rows"],
+      [doneIntegrate, "b429248c-c69e-4df5-8f7d-52776253ea14", "0,0,0,1,0,1",
+       "done-integrate: real story whose id the Integrate resolver carries"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      compare(counts(Runs.rollup(cases[i][0], { id: cases[i][1] })), cases[i][2], cases[i][3])
+    }
+  }
+
+  function test_rollup_never_reads_rows() {
+    var run = Runs.normalizeRun(amRun("status-done.json"))
+    compare(run.milestone_id, "cb11063d-78b9-4537-8569-fb5c249519f8")
+    var milestone = { id: run.milestone_id }
+    compare(run.rows.length, 140, "rows are per attempt")
+    compare(counts(Runs.rollup([run], milestone)), "0,0,0,10,0,10", "one count per subtask")
+
+    // synthetic: every row of the normalized capture set to started
+    for (var i = 0; i < run.rows.length; i++) run.rows[i].status = "started"
+    compare(counts(Runs.rollup([run], milestone)), "0,0,0,10,0,10", "row status ignored")
+
+    // synthetic: the normalized capture with no subtasks, its 140 rows kept
+    run.tree.subtasks = []
+    compare(run.rows.length, 140)
+    compare(counts(Runs.rollup([run], milestone)), "0,0,0,0,0,0", "rows alone count nothing")
+  }
+
+  function test_rollup_bucket_mapping() {
+    var cases = [
+      ["running", "1,0,0,0,0,1"], ["started", "1,0,0,0,0,1"],
+      ["parked", "0,1,0,0,0,1"], ["stopped", "0,1,0,0,0,1"],
+      ["escalated", "0,0,1,0,0,1"], ["failed", "0,0,1,0,0,1"],
+      ["done", "0,0,0,1,0,1"],
+      ["pending", "0,0,0,0,1,1"], ["cancelled", "0,0,0,0,1,1"], ["queued", "0,0,0,0,1,1"],
+      ["RUNNING", "0,0,0,0,1,1"], ["Done", "0,0,0,0,1,1"], ["", "0,0,0,0,1,1"],
+      [5, "0,0,0,0,1,1"], [null, "0,0,0,0,1,1"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      // synthetic: milestone m1 with one subtask t1 in the given status
+      var run = mkRun("r1", "started", true, {
+        tree: { stories: [], subtasks: [{ card_id: "t1", status: cases[i][0], phases: [] }] }
+      })
+      compare(counts(Runs.rollup([run], { id: "m1" })), cases[i][1], "status " + JSON.stringify(cases[i][0]))
+    }
+    // synthetic: milestone m1 with one subtask t1 that has no status
+    var missing = mkRun("r1", "started", true, { tree: { stories: [], subtasks: [{ card_id: "t1", phases: [] }] } })
+    compare(counts(Runs.rollup([missing], { id: "m1" })), "0,0,0,0,1,1", "missing status")
+  }
+
+  // synthetic: milestone m1; story s1 lists t1 (id string) and t2 ({card_id}); t3 belongs to s2
+  // via story_id; t4 belongs to no story.
+  function membershipRun(id, status, live) {
+    return mkRun(id, status, live, {
+      tree: {
+        stories: [{ card_id: "s1", subtasks: ["t1", { card_id: "t2" }] }, { card_id: "s2", subtasks: [] }],
+        subtasks: [
+          { card_id: "t1", status: "started", phases: [] },
+          { card_id: "t2", status: "stopped", phases: [] },
+          { card_id: "t3", story_id: "s2", status: "failed", phases: [] },
+          { card_id: "t4", status: "done", phases: [] }
+        ]
+      }
     })
-    compare(counts(Runs.rollup([odd], { id: "m1" })), "0,0,0,0,3,3", "status match is exact")
   }
 
   function test_rollup_story_membership() {
-    var runs = [rollupRun("r1", "started", true)]
-    compare(counts(Runs.rollup(runs, { id: "s1" })), "2,2,0,0,0,4", "string and {card_id} entries")
-    compare(counts(Runs.rollup(runs, { id: "s2" })), "0,0,2,0,0,2", "story_id membership")
+    var runs = [membershipRun("r1", "started", true)]
+    compare(counts(Runs.rollup(runs, { id: "s1" })), "1,1,0,0,0,2", "string and {card_id} entries")
+    compare(counts(Runs.rollup(runs, { id: "s2" })), "0,0,1,0,0,1", "story_id membership")
+    compare(counts(Runs.rollup(runs, { id: "m1" })), "1,1,1,1,0,4", "milestone counts every subtask")
+    compare(counts(Runs.rollup(runs, { id: "t4" })), "0,0,0,1,0,1", "subtask card")
+  }
+
+  function test_rollup_excludes_non_real_subtasks() {
+    // synthetic: garbage and synthetic-id subtasks beside one real t1; story s9 lists an unknown zz
+    var run = mkRun("r1", "started", true, {
+      tree: {
+        stories: [{ card_id: "s9", subtasks: ["zz"] }],
+        subtasks: [null, "x", 5, { card_id: "" }, { card_id: 7 },
+                   { card_id: "integrate", status: "started" }, { card_id: "bases", status: "started" },
+                   { card_id: "base-s1", status: "started" }, { card_id: "t1", status: "done", phases: [] }]
+      }
+    })
+    compare(counts(Runs.rollup([run], { id: "m1" })), "0,0,0,1,0,1", "only t1 counts")
+    compare(counts(Runs.rollup([run], { id: "integrate" })), "0,0,0,0,0,0", "integrate card")
+    compare(counts(Runs.rollup([run], { id: "base-s1" })), "0,0,0,0,0,0", "base-* card")
+    compare(counts(Runs.rollup([run], { id: "s9" })), "0,0,0,0,0,0", "story listing only an unknown id")
   }
 
   function test_rollup_uses_winning_run_only() {
+    // synthetic: a live run of m1 (t1 started) and an older done run (t1, t2 done)
     var winner = mkRun("live", "started", true, {
-      tree: { stories: [], subtasks: [{ card_id: "t1" }] },
-      rows: [{ card_id: "t1", status: "running" }]
+      tree: { stories: [], subtasks: [{ card_id: "t1", status: "started", phases: [] }] }
     })
     var loser = mkRun("old", "done", null, {
-      tree: { stories: [], subtasks: [{ card_id: "t1" }] },
-      rows: [{ card_id: "t1", status: "done" }, { card_id: "t1", status: "done" }]
+      tree: { stories: [], subtasks: [{ card_id: "t1", status: "done", phases: [] },
+                                      { card_id: "t2", status: "done", phases: [] }] }
     })
     compare(counts(Runs.rollup([loser, winner], { id: "m1" })), "1,0,0,0,0,1", "milestone")
     compare(counts(Runs.rollup([loser, winner], { id: "t1" })), "1,0,0,0,0,1", "subtask")
 
+    // synthetic: two finished runs, newest first, no started_at; the older one escalated with t1 failed
     var older = mkRun("older", "escalated", null, {
-      tree: { stories: [], subtasks: [{ card_id: "t1" }] },
-      rows: [{ card_id: "t1", status: "escalated" }]
+      tree: { stories: [], subtasks: [{ card_id: "t1", status: "failed", phases: [] }] }
     })
     compare(counts(Runs.rollup([loser, older], { id: "m1" })), "0,0,0,2,0,2", "all finished: newest wins")
+
+    // synthetic: a started run whose lease is dead (t1 started) beside the done run
+    var dead = mkRun("dead", "started", false, {
+      tree: { stories: [], subtasks: [{ card_id: "t1", status: "started", phases: [] }] }
+    })
+    compare(counts(Runs.rollup([loser, dead], { id: "m1" })), "1,0,0,0,0,1", "dead lease still wins")
   }
 
-  function test_rollup_subtask_card() {
-    var runs = [rollupRun("r1", "started", true)]
-    compare(counts(Runs.rollup(runs, { id: "t1" })), "2,0,0,0,0,2")
-    compare(counts(Runs.rollup(runs, { id: "t4" })), "0,0,0,1,2,3")
-    compare(counts(Runs.rollup(runs, { id: "integrate" })), "0,0,0,0,0,0", "synthetic card")
-
+  function test_rollup_prototype_ids() {
+    // synthetic: card ids that are Object.prototype member names
     var proto = mkRun("p", "started", true, {
       tree: { stories: [{ card_id: "__proto__", subtasks: ["constructor"] }],
-              subtasks: [{ card_id: "constructor" }, { card_id: "toString" }] },
-      rows: [{ card_id: "constructor", status: "done" }, { card_id: "toString", status: "running" }]
+              subtasks: [{ card_id: "constructor", status: "done", phases: [] },
+                         { card_id: "toString", status: "started", phases: [] }] }
     })
     compare(counts(Runs.rollup([proto], { id: "constructor" })), "0,0,0,1,0,1", "constructor subtask")
     compare(counts(Runs.rollup([proto], { id: "__proto__" })), "0,0,0,1,0,1", "__proto__ story")
     compare(counts(Runs.rollup([proto], { id: "valueOf" })), "0,0,0,0,0,0", "absent valueOf")
   }
 
-  function test_rollup_rows_only_not_brd() {
-    var runs = [rollupRun("r1", "started", true)]
+  function test_rollup_ignores_brd_and_garbage() {
+    var runs = [membershipRun("r1", "started", true)]
     var card = { id: "s1", status: "done", children: ["t1", "t2", "t9"], counts: { done: 9 } }
-    compare(counts(Runs.rollup(runs, card)), "2,2,0,0,0,4", "brd status and children ignored")
-    compare(counts(Runs.rollup(runs, { id: "s9", status: "in_progress" })), "0,0,0,0,0,0", "untouched card")
+    compare(counts(Runs.rollup(runs, card)), "1,1,0,0,0,2", "brd status, children and counts ignored")
+    compare(counts(Runs.rollup(runs, card)), counts(Runs.rollup(runs, { id: "s1" })))
+    compare(counts(Runs.rollup(runs, { id: "s9x" })), "0,0,0,0,0,0", "untouched card")
 
     var garbage = [[undefined, { id: "m1" }], [null, { id: "m1" }], ["x", { id: "m1" }], [runs, null],
                    [runs, "m1"], [runs, {}], [runs, { id: "" }], [runs, { id: 5 }], [runs, []]]
@@ -590,9 +1053,17 @@ TestCase {
       compare(counts(Runs.rollup(garbage[i][0], garbage[i][1])), "0,0,0,0,0,0", "garbage " + i)
     }
 
+    // synthetic: a junk tree, with a row naming t1
     var junk = [{ id: "j", status: "started", lease: { live: true }, milestone_id: "m1",
                   tree: { stories: "x", subtasks: [null, 5] }, rows: [{ card_id: "t1", status: "running" }] }]
     compare(counts(Runs.rollup(junk, { id: "m1" })), "0,0,0,0,0,0", "junk tree")
+
+    // synthetic: tree.subtasks is an object, not an array, with a row naming t1
+    var notArray = mkRun("n", "started", true, {
+      tree: { stories: [], subtasks: { card_id: "t1", status: "started" } },
+      rows: [{ card_id: "t1", status: "started" }]
+    })
+    compare(counts(Runs.rollup([notArray], { id: "m1" })), "0,0,0,0,0,0", "subtasks not an array")
   }
 
   // ---- 1.2: attention ---------------------------------------------------------------------
@@ -652,17 +1123,60 @@ TestCase {
     })
     compare(Runs.escalationReason(noDetail), "escalated at review")
 
-    var noFailed = mkRun("r", "escalated", null, {
-      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "spec", status: "done" },
-                                                                { name: "plan", status: "FAILED" }] }] },
-      rows: [{ card_id: "t1", phase: "spec" }, { card_id: "t2", phase: "implement" },
-             { card_id: "t3", phase: "" }, { card_id: "t4" }, null]
+    // synthetic: a tree with no phase whose status is exactly "failed", fresh per call
+    function noFailedTree() {
+      return { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "spec", status: "done" },
+                                                                 { name: "plan", status: "FAILED" }] }] }
+    }
+
+    var failures = ["failed", "escalated", "gate_failed", "schema_invalid", "harness_error"]
+    for (var f = 0; f < failures.length; f++) {
+      // synthetic: one failure row followed by finished rows
+      var oneFailure = mkRun("r", "escalated", null, { tree: noFailedTree(), rows: [
+        { card_id: "t1", phase: "spec", status: "done" },
+        { card_id: "t2", phase: "implement", status: failures[f] },
+        { card_id: "t3", phase: "verify", status: "done" },
+        { card_id: "t4", phase: "mark_done", status: "ok" }] })
+      compare(Runs.escalationReason(oneFailure), "escalated at implement",
+              failures[f] + ": the failure row, not a later finished row")
+    }
+
+    // synthetic: two failure rows, then a finished row
+    var twoFailures = mkRun("r", "escalated", null, { tree: noFailedTree(), rows: [
+      { phase: "spec", status: "failed" }, { phase: "review", status: "harness_error" },
+      { phase: "mark_done", status: "done" }] })
+    compare(Runs.escalationReason(twoFailures), "escalated at review", "the last failure row")
+
+    // synthetic: the later failure rows have no usable phase
+    var noPhase = mkRun("r", "escalated", null, { tree: noFailedTree(), rows: [
+      { phase: "spec", status: "gate_failed" }, { phase: "  ", status: "failed" }, { status: "escalated" }, null, 5] })
+    compare(Runs.escalationReason(noPhase), "escalated at spec", "a failure row without a phase is passed over")
+
+    // synthetic: statuses that are not failures, every row with a phase
+    var others = ["done", "ok", "started", "pending", "stopped", "cancelled", "FAILED", " failed", "dead",
+                  null, 1, "__proto__", "constructor", "toString"]
+    var otherRows = []
+    for (var o = 0; o < others.length; o++) otherRows.push({ card_id: "t" + o, phase: "p" + o, status: others[o] })
+    otherRows.push({ card_id: "tx", phase: "px" })
+    compare(Runs.escalationReason(mkRun("r", "escalated", null, { tree: noFailedTree(), rows: otherRows })),
+            "escalated", "no failure status; status match is exact")
+
+    // synthetic: rows that are not an array
+    var notArrays = ["x", {}]
+    for (var n = 0; n < notArrays.length; n++)
+      compare(Runs.escalationReason(mkRun("r", "escalated", null, { tree: noFailedTree(), rows: notArrays[n] })),
+              "escalated", "rows not an array " + n)
+
+    // synthetic: a failed tree phase and a failure row in another phase
+    var both = mkRun("r", "escalated", null, {
+      tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "review", status: "failed" }] }] },
+      rows: [{ card_id: "t1", phase: "implement", status: "gate_failed" }]
     })
-    compare(Runs.escalationReason(noFailed), "escalated at implement", "last row phase; status match is exact")
+    compare(Runs.escalationReason(both), "escalated at review", "the failed tree phase wins over rows")
 
     var nameless = mkRun("r", "escalated", null, {
       tree: { stories: [], subtasks: [{ card_id: "t1", phases: [{ status: "failed" }] }] },
-      rows: [{ card_id: "t1", phase: "spec" }]
+      rows: [{ card_id: "t1", phase: "spec", status: "failed" }]
     })
     compare(Runs.escalationReason(nameless), "escalated", "nameless failed phase")
 
@@ -671,6 +1185,59 @@ TestCase {
     var bad = [undefined, null, "x", 5, [], {}, { tree: "x", rows: "y" },
                { tree: { subtasks: [null, { phases: "x" }, { phases: [null, 5] }] }, rows: [null] }]
     for (var i = 0; i < bad.length; i++) compare(Runs.escalationReason(bad[i]), "escalated", "garbage " + i)
+  }
+
+  // The two escalated captures and the reason each escalated with: status-escalated.json's
+  // failed review phase's detail, and plain "escalated" for the Integrate escalation, whose
+  // tree has no failed phase and whose rows have no failure status.
+  function escalatedFixtures() {
+    return [
+      ["status-escalated.json", "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-eb8b1851"],
+      ["status-escalated-integrate.json", "escalated"]
+    ]
+  }
+
+  function test_fixture_escalation_reason() {
+    var integrate = Runs.normalizeRun(amRun("status-escalated-integrate.json"))
+    var last = integrate.rows[integrate.rows.length - 1]
+    compare(last.phase + ":" + last.status, "mark_done:done", "the Integrate capture ends on a finished row")
+
+    var cases = escalatedFixtures()
+    for (var i = 0; i < cases.length; i++)
+      compare(Runs.escalationReason(Runs.normalizeRun(amRun(cases[i][0]))), cases[i][1], cases[i][0])
+  }
+
+  function test_fixture_new_alerts_escalation_reason() {
+    var cases = escalatedFixtures()
+    for (var i = 0; i < cases.length; i++) {
+      var next = Runs.normalizeRun(amRun(cases[i][0]))
+      verify(next.id !== "", cases[i][0] + " has a run id")
+      // synthetic: the same run one snapshot earlier, while it was running -- no capture holds both
+      var prev = [mkRun(next.id, "started", true)]
+      var a = Runs.newAlerts(prev, [next])
+      compare(a.length, 1, cases[i][0] + " one alert")
+      compare(a[0].state, "escalated", cases[i][0] + " state")
+      compare(a[0].id, next.id, cases[i][0] + " id")
+      compare(a[0].reason, cases[i][1], cases[i][0] + " reason")
+    }
+  }
+
+  // Cancelled, in either spelling, is neither escalated nor dead: no alert,
+  // whether the run is new or was running one snapshot earlier.
+  function test_fixture_cancel_spellings_new_alerts() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      var run = cancelledRun(spellings[i])
+      compare(Runs.newAlerts([], [run]).length, 0, spellings[i] + ": absent from prevRuns")
+
+      // synthetic: the same run while it was running
+      var prev = Runs.normalizeRun(amRun("status-done.json"))
+      prev.status = "started"
+      prev.lease = { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: true }
+      compare(Runs.runState(prev), "running", spellings[i] + ": prev is running")
+      compare(prev.id, run.id, spellings[i] + ": prev is the same run")
+      compare(Runs.newAlerts([prev], [run]).length, 0, spellings[i] + ": was running")
+    }
   }
 
   // ---- 1.2: error text --------------------------------------------------------------------
@@ -701,7 +1268,9 @@ TestCase {
   // ---- 5.1: the Runs screen's helpers -----------------------------------------------------
 
   function test_normalize_keeps_started_at() {
-    compare(Runs.normalizeRun(fullRaw()).started_at, "2026-10-03T10:00:00Z", "from the am runs row")
+    compare(Runs.normalizeRun(amRun("status-started.json")).started_at, "2026-10-05 02:14:00.590972+00:00",
+            "from the am runs row")
+    // synthetic: bare am status runs and rows, one field each
     compare(Runs.normalizeRun({ status: { run: { started_at: "2026-10-01T00:00:00Z" } } }).started_at,
             "2026-10-01T00:00:00Z", "falls back to am status")
     compare(Runs.normalizeRun({ row: { id: "r1" } }).started_at, "", "absent")
@@ -735,20 +1304,115 @@ TestCase {
     ] }
   }
 
-  function test_run_progress() {
-    var p = Runs.runProgress(mkRun("r", "started", true, { tree: progressTree() }))
-    compare(Object.keys(p).sort().join(","), "done,total")
-    compare(p.done, 1, "only t1 has every phase done")
-    compare(p.total, 5)
-    var none = Runs.runProgress(mkRun("r", "started", true))
-    compare(none.done + "/" + none.total, "0/0")
+  // "done/total" of a runProgress result.
+  function progressText(p) { return p.done + "/" + p.total }
+
+  // The subtask of a normalized run with this card id, else null.
+  function subtaskOf(run, cardId) {
+    var subtasks = run.tree.subtasks
+    for (var i = 0; i < subtasks.length; i++) {
+      if (subtasks[i].card_id === cardId) return subtasks[i]
+    }
+    return null
+  }
+
+  function test_run_progress_fixtures() {
+    var cases = [
+      ["status-started.json", "3/8"],
+      ["status-done.json", "10/10"],
+      ["status-escalated.json", "2/4"],
+      ["status-escalated-integrate.json", "2/2"],
+      ["status-done-integrate.json", "2/2"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var p = Runs.runProgress(Runs.normalizeRun(amRun(cases[i][0])))
+      compare(Object.keys(p).sort().join(","), "done,total", cases[i][0])
+      compare(progressText(p), cases[i][1], cases[i][0])
+    }
+  }
+
+  function test_run_progress_reads_status_not_phases() {
+    // synthetic: between two phases -- the started subtask's phases cut to its first, `worktree` done
+    var started = Runs.normalizeRun(amRun("status-started.json"))
+    var between = subtaskOf(started, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(between.status, "started")
+    compare(between.phases.length, 2)
+    between.phases = [between.phases[0]]
+    compare(between.phases[0].name + ":" + between.phases[0].status, "worktree:done")
+    compare(progressText(Runs.runProgress(started)), "3/8", "every recorded phase done, status started")
+
+    // synthetic: a done subtask's status set to started, its phases left all done
+    var stalled = Runs.normalizeRun(amRun("status-done.json"))
+    var restarted = subtaskOf(stalled, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
+    compare(restarted.status, "done")
+    restarted.status = "started"
+    compare(progressText(Runs.runProgress(stalled)), "9/10", "status started is not done")
+
+    // synthetic: a done subtask's phases emptied
+    var bare = Runs.normalizeRun(amRun("status-done.json"))
+    var emptied = subtaskOf(bare, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
+    compare(emptied.status, "done")
+    emptied.phases = []
+    compare(progressText(Runs.runProgress(bare)), "10/10", "status done without phases is done")
+
+    // synthetic: every subtask's phases replaced by a string
+    var garbled = Runs.normalizeRun(amRun("status-escalated.json"))
+    for (var i = 0; i < garbled.tree.subtasks.length; i++) garbled.tree.subtasks[i].phases = "x"
+    compare(progressText(Runs.runProgress(garbled)), "2/4", "phases not a list")
+  }
+
+  function test_run_progress_status_spelling() {
+    var cases = [
+      ["done", "1/1"],
+      ["started", "0/1"], ["pending", "0/1"], ["failed", "0/1"], ["escalated", "0/1"],
+      ["stopped", "0/1"], ["cancelled", "0/1"],
+      ["Done", "0/1"], ["DONE", "0/1"], [" done", "0/1"], ["", "0/1"],
+      [5, "0/1"], [true, "0/1"], [null, "0/1"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      // synthetic: one subtask t1 in the given status, every recorded phase done
+      var run = mkRun("r1", "started", true, { tree: { stories: [], subtasks: [
+        { card_id: "t1", status: cases[i][0], phases: [{ name: "spec", status: "done" }] }] } })
+      compare(progressText(Runs.runProgress(run)), cases[i][1], "status " + JSON.stringify(cases[i][0]))
+    }
+    // synthetic: one subtask t1 with no status, every recorded phase done
+    var missing = mkRun("r1", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "t1", phases: [{ name: "spec", status: "done" }] }] } })
+    compare(progressText(Runs.runProgress(missing)), "0/1", "missing status")
+    // synthetic: one done subtask t1 with no phases key
+    var noPhases = mkRun("r1", "done", null, { tree: { stories: [], subtasks: [{ card_id: "t1", status: "done" }] } })
+    compare(progressText(Runs.runProgress(noPhases)), "1/1", "done without phases")
+  }
+
+  function test_run_progress_counts_real_subtasks_only() {
+    // synthetic: garbage, id-less and synthetic-id subtasks beside a real done t1 and a real started t2
+    var mixed = mkRun("r1", "started", true, { tree: { stories: [], subtasks: [
+      null, "x", 5, [], {}, { status: "done" }, { card_id: "", status: "done" },
+      { card_id: 7, status: "done" }, { card_id: "integrate", status: "done" },
+      { card_id: "bases", status: "done" }, { card_id: "base-s1", status: "done" },
+      { card_id: "t1", status: "done" }, { card_id: "t2", status: "started" }] } })
+    compare(progressText(Runs.runProgress(mixed)), "1/2", "only t1 and t2 count")
+
+    // synthetic: only synthetic-id subtasks, all done
+    var bookkeeping = mkRun("r1", "done", null, { tree: { stories: [], subtasks: [
+      { card_id: "integrate", status: "done" }, { card_id: "bases", status: "done" },
+      { card_id: "base-s1", status: "done" }] } })
+    compare(progressText(Runs.runProgress(bookkeeping)), "0/0", "bookkeeping ids are no subtasks")
+
+    // synthetic: junk subtasks only
     var junk = Runs.runProgress({ tree: { subtasks: [null, "x", 5, { phases: "x" }] } })
-    compare(junk.done, 0, "junk subtasks are never done")
-    compare(junk.total, 1, "only object subtasks count")
-    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" }, { tree: { subtasks: "y" } }]
+    compare(progressText(junk), "0/0", "junk subtasks never count")
+  }
+
+  function test_run_progress_garbage() {
+    // synthetic: a hand-built run with no subtasks
+    compare(progressText(Runs.runProgress(mkRun("r", "started", true))), "0/0", "no subtasks")
+    var bad = [undefined, null, "x", 5, [], {}, { tree: "x" }, { tree: { subtasks: "y" } },
+               { tree: { subtasks: null } }, { tree: null }]
     for (var i = 0; i < bad.length; i++) {
-      var r = Runs.runProgress(bad[i])
-      compare(r.done + "/" + r.total, "0/0", "garbage " + i)
+      var p = Runs.runProgress(bad[i])
+      compare(Object.keys(p).sort().join(","), "done,total", "garbage " + i)
+      compare(progressText(p), "0/0", "garbage " + i)
     }
   }
 
@@ -859,9 +1523,10 @@ TestCase {
   // ---- Run detail (5.2)
 
   function test_normalize_branch_fields() {
-    var r = Runs.normalizeRun(fullRaw())
+    var r = Runs.normalizeRun(amRun("status-started.json"))
     compare(r.base_branch, "main")
-    compare(r.branch_prefix, "mon/")
+    compare(r.branch_prefix, "dsp")
+    // synthetic: bare am status runs and rows, branch fields only
     var fromRun = Runs.normalizeRun({ status: { run: { base_branch: "master", branch_prefix: "m3" } } })
     compare(fromRun.base_branch, "master", "status.run is the fallback")
     compare(fromRun.branch_prefix, "m3")
@@ -883,45 +1548,116 @@ TestCase {
     return out.join("\n") + "\n"
   }
 
+  // A fresh logs-attempt.json `am logs` data object whose stdout and stderr
+  // artifact texts are `stdout` and `stderr`; an undefined argument keeps the
+  // fixture's text (stdout: 19 lines, stderr: null).
+  function logsData(stdout, stderr) {
+    var data = F.load("logs-attempt.json").data
+    // synthetic: the texts are the test's; the shape is the capture's.
+    if (stdout !== undefined) data.artifacts.stdout.text = stdout
+    if (stderr !== undefined) data.artifacts.stderr.text = stderr
+    return data
+  }
+
+  // The capture's stdout text as its 19 lines.
+  function fixtureStdoutLines() {
+    var text = F.load("logs-attempt.json").data.artifacts.stdout.text
+    return text.slice(0, -1).split("\n")
+  }
+
   function test_log_tail() {
-    var under = Runs.logTail({ stdout: "collecting...\n3 passed\n", stderr: "" }, 200)
+    var under = Runs.logTail(logsData("collecting...\n3 passed\n"), 200)
     compare(under.text, "collecting...\n3 passed")
     compare(under.truncated, false)
 
-    var exact = Runs.logTail({ stdout: numbered(200) }, 200)
+    var exact = Runs.logTail(logsData(numbered(200)), 200)
     compare(exact.text.split("\n").length, 200)
     compare(exact.truncated, false, "exactly 200 lines is not cut")
 
-    var big = Runs.logTail({ stdout: numbered(5000), stderr: "" }, 200)
+    var big = Runs.logTail(logsData(numbered(5000), ""), 200)
     var lines = big.text.split("\n")
     compare(lines.length, 200)
     compare(lines[0], "line 4800")
     compare(lines[199], "line 4999")
     compare(big.truncated, true)
 
-    var withErr = Runs.logTail({ stdout: "out\n", stderr: "err1\nerr2\n" }, 200)
+    var withErr = Runs.logTail(logsData("out\n", "err1\nerr2\n"), 200)
     compare(withErr.text, "out\nerr1\nerr2", "stderr follows stdout")
     compare(withErr.truncated, false)
 
-    var errOnly = Runs.logTail({ stdout: "", stderr: "boom" }, 200)
+    var errOnly = Runs.logTail(logsData("", "boom"), 200)
     compare(errOnly.text, "boom")
 
-    // A huge stderr is bounded too (Review Focus 5).
-    var hugeErr = Runs.logTail({ stdout: "out\n", stderr: numbered(300) }, 200)
+    // A huge stderr is bounded too.
+    var hugeErr = Runs.logTail(logsData("out\n", numbered(300)), 200)
     var errLines = hugeErr.text.split("\n")
     compare(errLines.length, 201, "stdout, then the last 200 stderr lines")
     compare(errLines[0], "out")
     compare(errLines[1], "line 100")
     compare(hugeErr.truncated, true)
 
-    compare(Runs.logTail({ stdout: numbered(250) }, undefined).text.split("\n").length, 200, "a bad maxLines is 200")
+    compare(Runs.logTail(logsData(numbered(250)), undefined).text.split("\n").length, 200, "a bad maxLines is 200")
 
-    var bad = [undefined, null, "x", 5, [], {}, { stdout: 5, stderr: {} }]
+    var newlineOnly = Runs.logTail(logsData("\n"), 200)
+    compare(newlineOnly.text, "", "a lone newline is no lines")
+    compare(newlineOnly.truncated, false)
+
+    // synthetic: garbage in place of an `am logs` data object.
+    var bad = [undefined, null, "x", 5, [], {}, { artifacts: null }, { artifacts: "x" }, { artifacts: [] },
+               { artifacts: {} }, { artifacts: { stdout: 5, stderr: {} } },
+               { artifacts: { stdout: { text: 5 }, stderr: { text: [] } } },
+               { artifacts: { stdout: { text: null }, stderr: { text: null } } },
+               { artifacts: { stdout: { text: "" } } }]
     for (var i = 0; i < bad.length; i++) {
       var t = Runs.logTail(bad[i], 200)
       compare(t.text, "", "garbage " + i)
       compare(t.truncated, false, "garbage " + i)
     }
+  }
+
+  function test_log_tail_of_a_real_attempt() {
+    var data = F.load("logs-attempt.json").data
+    var stdout = data.artifacts.stdout.text
+    var tail = Runs.logTail(data, 200)
+    compare(tail.text, stdout.slice(0, -1), "the stdout artifact without its trailing newline")
+    var lines = tail.text.split("\n")
+    compare(lines.length, 19)
+    verify(lines[0].indexOf("Permission allow rule") === 0, lines[0])
+    compare(lines[18], "| plan_hash | `e8f781ba` |")
+    compare(tail.truncated, false)
+    verify(tail.text.indexOf("# Reviewer") < 0, "the prompt artifact is not shown")
+
+    var ten = Runs.logTail(F.load("logs-attempt.json").data, 10)
+    compare(ten.text, lines.slice(9).join("\n"), "the last 10 of the 19 lines")
+    compare(ten.truncated, true)
+  }
+
+  function test_log_tail_reads_only_the_stream_artifacts() {
+    // synthetic: a top-level stdout/stderr of the old guessed shape added to a fresh copy.
+    var legacy = F.load("logs-attempt.json").data
+    legacy.stdout = "legacy\n"
+    legacy.stderr = "legacy\n"
+    compare(Runs.logTail(legacy, 200).text, fixtureStdoutLines().join("\n"), "the old shape is ignored")
+
+    // synthetic: the old guessed shape alone.
+    var old = Runs.logTail({ stdout: "x\n", stderr: "y\n" }, 200)
+    compare(old.text, "")
+    compare(old.truncated, false)
+
+    // synthetic: a fresh copy with no stdout artifact and a stderr text.
+    var noOut = logsData(undefined, "boom\n")
+    delete noOut.artifacts.stdout
+    compare(Runs.logTail(noOut, 200).text, "boom")
+
+    // synthetic: a fresh copy whose stderr says present: false yet has a text.
+    var late = logsData(undefined, "late\n")
+    late.artifacts.stderr.present = false
+    compare(Runs.logTail(late, 200).text, fixtureStdoutLines().concat(["late"]).join("\n"), "present is not consulted")
+
+    var data = F.load("logs-attempt.json").data
+    var before = JSON.stringify(data)
+    Runs.logTail(data, 10)
+    compare(JSON.stringify(data), before, "data is not mutated")
   }
 
   function test_snapshot_age_text() {
@@ -970,8 +1706,43 @@ TestCase {
   function test_glyph_state_of() {
     var cases = [["started", "running"], ["running", "running"], ["stopped", "parked"], ["parked", "parked"],
                  ["escalated", "escalated"], ["failed", "dead"], ["dead", "dead"], ["cancelled", "cancelled"],
-                 ["done", "done"], ["pending", ""], ["", ""], [undefined, ""], [null, ""], [5, ""], ["constructor", ""]]
+                 ["done", "done"], ["pending", ""], ["", ""], [undefined, ""], [null, ""], [5, ""], ["constructor", ""],
+                 ["ok", "done"], ["gate_failed", "dead"],
+                 // synthetic: no capture contains schema_invalid or harness_error.
+                 ["schema_invalid", "dead"], ["harness_error", "dead"],
+                 ["OK", ""], [" ok", ""], ["Gate_Failed", ""], ["canceled", "cancelled"], ["Canceled", ""],
+                 [" canceled", ""], ["__proto__", ""]]
     for (var i = 0; i < cases.length; i++) compare(Runs.glyphStateOf(cases[i][0]), cases[i][1], String(cases[i][0]))
+  }
+
+  // Every attempt and row status of a real capture maps per `expected`; a
+  // status missing from it fails, naming the status.
+  function test_fixture_glyph_state_of_attempt_outcomes() {
+    var expected = { ok: "done", done: "done", gate_failed: "dead", failed: "dead", escalated: "escalated",
+                     started: "running", pending: "" }
+    function walk(name) {
+      var r = Runs.normalizeRun(amRun(name))
+      var seen = []
+      for (var i = 0; i < r.tree.subtasks.length; i++) {
+        var phases = r.tree.subtasks[i].phases || []
+        for (var j = 0; j < phases.length; j++) {
+          var tries = phases[j].attempts || []
+          for (var k = 0; k < tries.length; k++) seen.push(tries[k].status)
+        }
+      }
+      for (var w = 0; w < r.rows.length; w++) seen.push(r.rows[w].status)
+      for (var s = 0; s < seen.length; s++) {
+        var st = seen[s]
+        verify(typeof st === "string" && Object.prototype.hasOwnProperty.call(expected, st),
+               name + ": status " + String(st) + " has no expected glyph state")
+        compare(Runs.glyphStateOf(st), expected[st], name + ": " + st)
+      }
+      return seen
+    }
+    var escalated = walk("status-escalated.json")
+    verify(escalated.indexOf("gate_failed") >= 0, "status-escalated.json has a gate_failed status")
+    verify(escalated.indexOf("ok") >= 0, "status-escalated.json has an ok status")
+    verify(walk("status-done.json").indexOf("ok") >= 0, "status-done.json has an ok status")
   }
 
   function test_run_tree() {
@@ -1035,6 +1806,53 @@ TestCase {
     compare(cardIds(odd.stories[1].subtasks), "t1")
     compare(odd.stories[1].subtasks[0].phases.length, 1)
     compare(odd.stories[1].subtasks[0].attempts.length, 0)
+  }
+
+  function test_run_tree_open_attempt_rule() {
+    // synthetic: hand-built normalized subtasks, one per case of the open rule
+    var t = Runs.runTree(mkRun("r", "done", null, { tree: {
+      stories: [{ card_id: "s1", subtasks: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] }],
+      subtasks: [
+        { card_id: "a", status: "done", phases: [
+          { name: "spec", status: "done", attempts: [{ n: 2 }] },
+          { name: "implement", status: "done", attempts: [{ n: 1 }] },
+          { name: "verify", status: "done", attempts: [] },
+          { name: "mark_done", status: "done", attempts: [{ status: "done" }] }] },
+        { card_id: "b", status: "started", phases: [
+          { name: "plan", status: "started", attempts: [] },
+          { name: "review", status: "done", attempts: [{ n: 1 }] }] },
+        { card_id: "c", status: "done", phases: [
+          { name: "spec", status: "done", attempts: [{ n: 1 }] },
+          { name: "", status: "done", attempts: [{ n: 3 }] },
+          null,
+          { name: "review", status: "done", attempts: [{ n: 0 }, { n: -1 }, { n: "2" }, { n: Infinity }, null] }] },
+        { card_id: "d", status: "done", phases: [
+          { name: "worktree", status: "done", attempts: [] },
+          { name: "explore", status: "done", attempts: "x" }] },
+        { card_id: "e", status: "started", phases: [
+          { name: "spec", status: "done", attempts: [{ n: 1 }] },
+          { name: "implement", status: "started", attempts: [] }] },
+        { card_id: "f", status: "pending", phases: [null, { name: "" }, { name: 5, status: "started", attempts: [{ n: 1 }] }] },
+        { card_id: "g", status: "pending" },
+        { card_id: "h", status: "started", phases: [
+          { name: "spec", status: "done", attempts: [{ n: 1 }] },
+          { name: "implement", status: "running", attempts: [] },
+          { name: "review", status: null, attempts: [] },
+          { name: "verify", status: 5, attempts: [] }] },
+        { card_id: "i", status: "done", phases: [
+          { name: "spec", status: "done", attempts: [{ attempt: 2, status: "done" }] },
+          { name: "verify", status: "done", attempts: [] }] }
+      ] } }))
+    compare(cardIds(t.stories[0].subtasks), "a,b,c,d,e,f,g,h,i")
+    compare(opensOn(treeNode(t, "a")), "implement/1", "the last numbered phase by position, not the highest n; unnumbered and empty trailing phases passed over")
+    compare(opensOn(treeNode(t, "b")), "plan/0", "a started phase wins over a later numbered one")
+    compare(opensOn(treeNode(t, "c")), "spec/1", "unnamed and non-object phases are never current; bad numbers are not numbered")
+    compare(opensOn(treeNode(t, "d")), "explore/0", "nothing numbered: the last phase")
+    compare(opensOn(treeNode(t, "e")), "implement/0", "a started phase after a numbered one wins")
+    compare(opensOn(treeNode(t, "f")), "/0", "only unnamed phases: no current phase")
+    compare(opensOn(treeNode(t, "g")), "/0", "no phases")
+    compare(opensOn(treeNode(t, "h")), "spec/1", "only the exact status started wins the first rule")
+    compare(opensOn(treeNode(t, "i")), "spec/2", "a legacy attempt number counts")
   }
 
   function at(d) { return d === null ? "null" : d.card_id + "/" + d.phase + "/" + d.attempt }
@@ -1187,16 +2005,28 @@ TestCase {
                   [null, true, "no lease"]]
     for (var i = 0; i < leases.length; i++) {
       var live = leases[i][0], accepting = leases[i][1], label = leases[i][2]
-      compare(Runs.runState(ctlRun("cancelled", live, accepting)), "cancelled", "fixture " + label)
-      checkControls(Runs.controls(ctlRun("cancelled", live, accepting)),
-                    ctlFinished, ctlResumeCancelled, ctlCancelCancelled, "cancelled, " + label)
+      var cancels = ["cancelled", "canceled"]
+      for (var j = 0; j < cancels.length; j++) {
+        compare(Runs.runState(ctlRun(cancels[j], live, accepting)), "cancelled", cancels[j] + " fixture " + label)
+        checkControls(Runs.controls(ctlRun(cancels[j], live, accepting)),
+                      ctlFinished, ctlResumeCancelled, ctlCancelCancelled, cancels[j] + ", " + label)
+      }
       compare(Runs.runState(ctlRun("done", live, accepting)), "done", "fixture " + label)
       checkControls(Runs.controls(ctlRun("done", live, accepting)),
                     ctlFinished, ctlFinished, ctlFinished, "done, " + label)
     }
   }
 
+  function test_fixture_cancel_spellings_controls() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      checkControls(Runs.controls(cancelledRun(spellings[i])), ctlFinished, ctlResumeCancelled, ctlCancelCancelled,
+                    spellings[i])
+    }
+  }
+
   function test_controls_unknown_and_garbage() {
+    // synthetic: normalizeRun(undefined) stands for garbage am output
     var runs = [ctlRun("", true, true), ctlRun("weird", true, false), ctlRun("STARTED", true, true),
                 ctlRun("weird", null, true), undefined, null, 5, "x", {}, [], Object.create(null),
                 Runs.normalizeRun(undefined)]
@@ -1216,6 +2046,7 @@ TestCase {
   }
 
   function test_controls_from_normalized() {
+    // synthetic: am status with only a run and a lease
     function raw(lease) {
       return { status: { run: { id: "r", status: "started" }, control: { lease: lease } } }
     }
@@ -1503,6 +2334,7 @@ TestCase {
     compare(fromBare.length, 1, "a prototype-less run with an id alerts")
     checkAlert(fromBare[0], "np", "…np", "escalated", "escalated", "prototype-less run")
 
+    // synthetic: garbage, and a bare am runs row with an escalated am status run
     compare(Runs.newAlerts([], [Runs.normalizeRun(undefined)]).length, 0, "normalised garbage")
     var normalised = Runs.normalizeRun({ row: { id: "rz", status: "started" },
                                          status: { run: { milestone_id: "m9", status: "escalated" } } })
@@ -1540,8 +2372,9 @@ TestCase {
   // ---- S2 4.1: workflow and control requests ----------------------------------------------
 
   function test_normalize_workflow() {
-    compare(Runs.normalizeRun(fullRaw()).workflow, "orchestrator", "from the am runs row")
-    var raw = fullRaw()
+    compare(Runs.normalizeRun(amRun("status-started.json")).workflow, "milestone", "from the am runs row")
+    // synthetic: the capture's row and run workflows edited to each combination
+    var raw = amRun("status-started.json")
     delete raw.row.workflow
     raw.status.run.workflow = "task"
     compare(Runs.normalizeRun(raw).workflow, "task", "falls back to the am status run")
@@ -1552,12 +2385,14 @@ TestCase {
     delete raw.row.workflow
     delete raw.status.run.workflow
     compare(Runs.normalizeRun(raw).workflow, "", "neither gives empty")
+    // synthetic: null workflows, and garbage
     compare(Runs.normalizeRun({ row: { workflow: null }, status: { run: { workflow: null } } }).workflow, "", "nulls")
     compare(Runs.normalizeRun(undefined).workflow, "", "garbage")
   }
 
   function test_normalize_requests() {
-    var raw = fullRaw()
+    // synthetic: three requests, which no capture contains
+    var raw = amRun("status-started.json")
     raw.status.control.requests = [
       { command: "pause", requested_at: "2026-10-03T10:00:00Z", handled_at: "2026-10-03T10:00:05Z" },
       { command: "resume", requested_at: "2026-10-03T11:00:00Z", handled_at: null },
@@ -1576,12 +2411,19 @@ TestCase {
     compare(r.requests[2].handled_at, "", "missing means not handled")
     r.requests[0].command = "x"
     compare(raw.status.control.requests[0].command, "pause", "the elements are fresh objects")
-    compare(Runs.normalizeRun(fullRaw()).requests.length, 0, "no requests key under control")
+    compare(Runs.normalizeRun(amRun("status-started.json")).requests.length, 0, "the capture's requests are []")
+    // synthetic: the capture's control without its requests key
+    var noRequests = amRun("status-started.json")
+    delete noRequests.status.control.requests
+    var nr = Runs.normalizeRun(noRequests)
+    compare(Array.isArray(nr.requests), true, "no requests key under control")
+    compare(nr.requests.length, 0, "no requests key under control")
   }
 
   // Review Focus 4.
   function test_normalize_requests_garbage() {
-    var raw = fullRaw()
+    // synthetic: garbage request elements in place of the capture's []
+    var raw = amRun("status-started.json")
     raw.status.control.requests = [null, "pause", 7, ["pause"], true,
                                    { command: 5, requested_at: true, handled_at: { a: 1 } }, {}]
     var r = Runs.normalizeRun(raw)
@@ -1593,17 +2435,20 @@ TestCase {
     compare(r.requests[1].requested_at, "")
     compare(r.requests[1].handled_at, "")
 
-    var noControl = fullRaw()
+    // synthetic: am status without control
+    var noControl = amRun("status-started.json")
     delete noControl.status.control
     compare(Runs.normalizeRun(noControl).requests.length, 0, "no control")
+    // synthetic: requests that are not a list
     var values = ["x", { a: 1 }, null, 5]
     for (var i = 0; i < values.length; i++) {
-      var bad = fullRaw()
+      var bad = amRun("status-started.json")
       bad.status.control.requests = values[i]
       var out = Runs.normalizeRun(bad)
       compare(Array.isArray(out.requests), true, "requests " + i)
       compare(out.requests.length, 0, "requests " + i)
     }
+    // synthetic: control that is not an object
     compare(Runs.normalizeRun({ status: { control: "y" } }).requests.length, 0, "control not an object")
   }
 

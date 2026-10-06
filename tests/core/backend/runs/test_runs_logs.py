@@ -1,8 +1,9 @@
 """runs-logs.py: an `am logs` passthrough for one attempt, one JSON line on every path.
 
-Hermetic: a fake `am` lives on a temp PATH and serves hand-written fixtures from
-FAKE_AM_DIR, appending each call's argv to calls.log; HOME and XDG_DATA_HOME are
-temp. The real `am` and real data are never touched.
+Hermetic: a fake `am` lives on a temp PATH and serves, from FAKE_AM_DIR, the
+committed captures in tests/fixtures/am/ (a payload no capture holds is labelled
+`synthetic:`), appending each call's argv to calls.log; HOME and XDG_DATA_HOME
+are temp. The real `am` and real data are never touched.
 """
 import importlib.util
 import json
@@ -42,16 +43,23 @@ code = os.path.join(d, name + ".code")
 sys.exit(int(open(code).read()) if os.path.exists(code) else 0)
 '''
 
-ARGS = ["r1", "c1", "implement", "2"]
+RUN_ARGS = ["r1", "c1", "implement", "2"]
+FIXTURES = os.path.join(ROOT, "tests", "fixtures", "am")
+# synthetic: am's error envelope for an unknown run; no capture holds one.
 UNKNOWN_RUN = {"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": False}
-# Opaque to the helper: it must pass whatever `data` am prints through untouched.
-LOGS_DATA = {
-    "run_id": "r1", "card_id": "c1", "phase": "implement", "attempt": 2,
-    "prompt": "Implement the card.\nUse TDD.",
-    "result": {"status": "done"},
-    "stdout": "collecting...\n3 passed\n",
-    "stderr": "",
-}
+
+
+def fixture(name):
+    """A fresh json.load of tests/fixtures/am/<name>, so an edit never reaches
+    another call."""
+    with open(os.path.join(FIXTURES, name)) as f:
+        return json.load(f)
+
+
+def logs_data():
+    """The captured `am logs` data of one attempt. Opaque to the helper: it must
+    pass whatever `data` am prints through untouched."""
+    return fixture("logs-attempt.json")["data"]
 
 
 def write_exec(path, text):
@@ -61,7 +69,8 @@ def write_exec(path, text):
 
 @pytest.fixture
 def world(tmp_path):
-    """A temp PATH with a fake am, its fixture dir, and a temp HOME/XDG_DATA_HOME."""
+    """A temp PATH with a fake am, its fixture dir, a temp HOME/XDG_DATA_HOME, and a
+    project root whose name would break if it ever went through a shell."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     write_exec(bindir / "am", FAKE_AM)
@@ -69,8 +78,15 @@ def world(tmp_path):
     amdir.mkdir()
     home = tmp_path / "home"
     home.mkdir()
+    proj = tmp_path / "my proj; echo x"
+    proj.mkdir()
     return {"tmp": tmp_path, "bin": bindir, "am": amdir, "home": home,
-            "data": tmp_path / "data"}
+            "data": tmp_path / "data", "proj": proj}
+
+
+def default_args(world):
+    """The helper's argv for one attempt of the world's project."""
+    return [str(world["proj"]), *RUN_ARGS]
 
 
 def env_for(world, drop=(), **extra):
@@ -88,7 +104,7 @@ def env_for(world, drop=(), **extra):
 
 def run(world, args=None, drop=(), **extra):
     """Run the helper; assert stdout is exactly one JSON line; return (exit, payload)."""
-    argv = ARGS if args is None else args
+    argv = default_args(world) if args is None else args
     p = subprocess.run([sys.executable, SCRIPT, *argv], capture_output=True, text=True,
                        env=env_for(world, drop, **extra), timeout=60)
     lines = p.stdout.splitlines()
@@ -115,8 +131,17 @@ def calls(world):
 
 # --- passthrough -------------------------------------------------------------
 
+def test_logs_data_is_the_capture():
+    assert logs_data() == fixture("logs-attempt.json")["data"]
+    assert {"ok": True, "data": logs_data()} == fixture("logs-attempt.json")
+    # Each call is a fresh copy: an edit to one never reaches the next.
+    first = logs_data()
+    first["artifacts"]["stdout"]["text"] = "edited"
+    assert logs_data() == fixture("logs-attempt.json")["data"]
+
+
 def test_ok_envelope_passed_through(world):
-    envelope = {"ok": True, "data": LOGS_DATA}
+    envelope = {"ok": True, "data": logs_data()}
     set_logs(world, envelope)
     code, out = run(world)  # run() asserts stdout is exactly one JSON line
     assert code == 0
@@ -124,28 +149,56 @@ def test_ok_envelope_passed_through(world):
 
 
 def test_exact_am_argv(world):
-    set_logs(world, {"ok": True, "data": LOGS_DATA})
+    # The project dir is named "my proj; echo x": it must arrive as one argv element.
+    set_logs(world, {"ok": True, "data": logs_data()})
     code, _ = run(world)
     assert code == 0
     made = calls(world)
-    assert made == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2"]]
-    assert "--repo-dir" not in made[0]
+    assert made == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
+                     "--repo-dir", str(world["proj"])]]
     assert "--pretty" not in made[0]
 
 
 def test_args_reach_am_verbatim(world):
     # Spaces, shell metacharacters and a leading dash must each arrive as one argv
-    # element: no shell, no validation by the helper.
-    args = ["r 1; echo x", "c$(whoami)", "plan & review", "-1"]
-    set_logs(world, {"ok": True, "data": LOGS_DATA})
+    # element: no shell, no validation by the helper. The root does not exist.
+    root = str(world["tmp"] / "r$(id) & z")
+    args = [root, "r 1; echo x", "c$(whoami)", "plan & review", "-1"]
+    set_logs(world, {"ok": True, "data": logs_data()})
     code, _ = run(world, args)
     assert code == 0
     assert calls(world) == [["logs", "r 1; echo x", "c$(whoami)",
-                             "--phase", "plan & review", "--attempt", "-1"]]
+                             "--phase", "plan & review", "--attempt", "-1",
+                             "--repo-dir", root]]
+
+
+@pytest.mark.parametrize("root", [".", "/some/proj/", "", "-proj"],
+                         ids=["relative-dot", "trailing-slash", "empty", "leading-dash"])
+def test_root_reaches_am_unnormalised(world, root):
+    # The root is neither resolved, stripped nor checked: am refuses a bad one itself.
+    set_logs(world, {"ok": True, "data": logs_data()})
+    code, _ = run(world, [root, *RUN_ARGS])
+    assert code == 0
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
+                             "--repo-dir", root]]
+
+
+def test_root_that_is_a_file_is_left_to_am(world):
+    root = world["tmp"] / "not-a-dir"
+    root.write_text("")
+    # synthetic: am's refusal of a repo dir that is not a directory; no capture holds one.
+    refusal = {"ok": False, "error": {"type": "UsageError",
+                                      "message": "--repo-dir is not a directory"}}
+    set_logs(world, refusal, code=3)
+    code, out = run(world, [str(root), *RUN_ARGS])
+    assert code == 0
+    assert out == refusal
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
+                             "--repo-dir", str(root)]]
 
 
 def test_pretty_printed_am_output_becomes_one_line(world):
-    envelope = {"ok": True, "data": LOGS_DATA}
+    envelope = {"ok": True, "data": logs_data()}
     set_raw(world, json.dumps(envelope, indent=2) + "\n")
     code, out = run(world)  # run() asserts exactly one line
     assert code == 0
@@ -153,6 +206,7 @@ def test_pretty_printed_am_output_becomes_one_line(world):
 
 
 def test_refusal_passed_through_exit_0(world):
+    # synthetic: an am refusal envelope; no capture holds one.
     refusal = {"ok": False, "error": {"type": "UsageError",
                                       "message": "--attempt must be an integer"}}
     set_logs(world, refusal, code=3)
@@ -166,13 +220,15 @@ def test_missing_fixture_unknown_run(world):
     code, out = run(world)
     assert code == 0
     assert out == UNKNOWN_RUN
-    assert calls(world) == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2"]]
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
+                             "--repo-dir", str(world["proj"])]]
 
 
 def test_ok_wins_over_am_exit_code_and_stderr(world):
     # The envelope's `ok` decides, not am's exit code; am's stderr never reaches
     # the helper's stdout line.
-    envelope = {"ok": True, "data": LOGS_DATA}
+    envelope = {"ok": True, "data": logs_data()}
+    # synthetic: am stderr noise.
     set_raw(world, json.dumps(envelope) + "\n", code=3, stderr="warning: noisy\nmore noise\n")
     code, out = run(world)
     assert code == 0
@@ -181,18 +237,25 @@ def test_ok_wins_over_am_exit_code_and_stderr(world):
 
 def test_large_output_not_trimmed(world):
     # Whole-file snapshot: tail-limiting is the store's job, not this helper's.
+    # synthetic: an attempt output longer than any capture.
     big = "".join("line %d of captured output\n" % i for i in range(5000))
-    envelope = {"ok": True, "data": dict(LOGS_DATA, stdout=big)}
+    data = logs_data()
+    data["artifacts"]["stdout"]["text"] = big
+    envelope = {"ok": True, "data": data}
     set_logs(world, envelope)
     code, out = run(world)
     assert code == 0
-    assert out["data"]["stdout"] == big
-    assert len(out["data"]["stdout"].splitlines()) == 5000
+    assert out["data"]["artifacts"]["stdout"]["text"] == big
+    assert len(out["data"]["artifacts"]["stdout"]["text"].splitlines()) == 5000
 
 
 def test_control_and_unicode_text_round_trips(world):
+    # synthetic: control and non-ASCII text in an attempt's stdout and stderr.
     text = "a\nb\r\n\x1b[31mred\x1b[0m\tcafé ✓ 日本\n"
-    envelope = {"ok": True, "data": dict(LOGS_DATA, stdout=text, stderr=text)}
+    data = logs_data()
+    data["artifacts"]["stdout"]["text"] = text
+    data["artifacts"]["stderr"]["text"] = text
+    envelope = {"ok": True, "data": data}
     set_logs(world, envelope)
     code, out = run(world)  # still exactly one line
     assert code == 0
@@ -202,10 +265,12 @@ def test_control_and_unicode_text_round_trips(world):
 def test_am_does_not_inherit_stdin(world):
     # The helper's stdin is an open pipe that never sends EOF. An am that reads
     # stdin must get EOF at once (stdin is /dev/null), not block on that pipe.
+    envelope = {"ok": True, "data": logs_data()}
+    set_logs(world, envelope)
     write_exec(world["bin"] / "am",
-               "#!/usr/bin/env python3\nimport json, sys\nsys.stdin.read()\n"
-               "print(json.dumps({'ok': True, 'data': {'stdout': ''}}))\n")
-    p = subprocess.Popen([sys.executable, SCRIPT, *ARGS], stdin=subprocess.PIPE,
+               "#!/usr/bin/env python3\nimport os, sys\nsys.stdin.read()\n"
+               "sys.stdout.write(open(os.path.join(os.environ['FAKE_AM_DIR'], 'logs.out')).read())\n")
+    p = subprocess.Popen([sys.executable, SCRIPT, *default_args(world)], stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          env=env_for(world))
     try:
@@ -221,11 +286,12 @@ def test_am_does_not_inherit_stdin(world):
     p.stderr.close()
     assert code == 0
     assert len(lines) == 1
-    assert json.loads(lines[0]) == {"ok": True, "data": {"stdout": ""}}
+    assert json.loads(lines[0]) == envelope
 
 
 # --- bad output, am missing, usage, catch-all ---------------------------------
 
+# synthetic: am output that is not JSON.
 @pytest.mark.parametrize("text,exit_code", [
     ("not json\n", 0),
     ("", 1),
@@ -242,6 +308,7 @@ def test_non_json_output_is_am_bad_output(world, text, exit_code):
     assert "(exit %d)" % exit_code in out["error"]["message"]
 
 
+# synthetic: am JSON that is not an object or has no boolean ok.
 @pytest.mark.parametrize("text", [
     "[1, 2]\n",
     "null\n",
@@ -271,14 +338,20 @@ def test_am_missing(world):
     assert out["error"]["message"]
 
 
-@pytest.mark.parametrize("args", [["r1", "c1", "implement"],
-                                  ["r1", "c1", "implement", "2", "extra"]],
-                         ids=["three", "five"])
-def test_usage_wrong_argc(world, args):
+@pytest.mark.parametrize("shape", ["none", "old-four", "four-with-root", "six"])
+def test_usage_wrong_argc(world, shape):
+    proj = str(world["proj"])
+    args = {
+        "none": [],
+        "old-four": ["r1", "c1", "implement", "2"],
+        "four-with-root": [proj, "r1", "c1", "implement"],
+        "six": [proj, "r1", "c1", "implement", "2", "extra"],
+    }[shape]
     code, out = run(world, args)
     assert code == 2
-    assert out == {"ok": False, "error": {"type": "Usage",
-                                          "message": "usage: runs-logs.py RUN CARD PHASE ATTEMPT"}}
+    assert out == {"ok": False, "error": {
+        "type": "Usage",
+        "message": "usage: runs-logs.py <project_root> RUN CARD PHASE ATTEMPT"}}
     assert calls(world) == []
 
 
@@ -310,7 +383,7 @@ def test_am_timeout_is_helper_error(world, monkeypatch, capsys):
     monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
     for key, value in env_for(world).items():
         monkeypatch.setenv(key, value)
-    code = helper.guarded(list(ARGS))
+    code = helper.guarded(default_args(world))
     lines = capsys.readouterr().out.splitlines()
     assert code == 0
     assert len(lines) == 1, lines

@@ -1,8 +1,9 @@
 """runs-snapshot.py: am runs + am status fan-out, one JSON line on every path.
 
-Hermetic: a fake `am` lives on a temp PATH and serves hand-written fixtures from
-FAKE_AM_DIR, appending each call's argv to calls.log; HOME and XDG_DATA_HOME are
-temp. The real `am` and real data are never touched.
+Hermetic: a fake `am` lives on a temp PATH and serves, from FAKE_AM_DIR, the
+committed captures in tests/fixtures/am/ (a payload no capture holds is labelled
+`synthetic:`), appending each call's argv to calls.log; HOME and XDG_DATA_HOME
+are temp. The real `am` and real data are never touched.
 """
 import importlib.util
 import json
@@ -38,9 +39,19 @@ code = os.path.join(d, name + ".code")
 sys.exit(int(open(code).read()) if os.path.exists(code) else 0)
 '''
 
+FIXTURES = os.path.join(ROOT, "tests", "fixtures", "am")
+# synthetic: am error envelopes; no capture holds one.
 UNKNOWN_RUN = {"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": False}
 REPO_DIR_ERROR = {"error": {"message": "not a git repository", "type": "RepoDirError"}, "ok": False}
-SUMMARY_FIELDS = {"id", "workflow", "repo_dir", "base_branch", "branch_prefix", "status", "started_at"}
+STATUS_CAPTURES = {"started": "status-started.json", "done": "status-done.json",
+                   "escalated": "status-escalated.json"}
+
+
+def fixture(name):
+    """A fresh json.load of tests/fixtures/am/<name>, so an edit never reaches
+    another call."""
+    with open(os.path.join(FIXTURES, name)) as f:
+        return json.load(f)
 
 
 def write_exec(path, text):
@@ -88,45 +99,52 @@ def run(world, args=None, drop=(), **extra):
     return p.returncode, json.loads(lines[0])
 
 
-def summary(run_id, status, started_at="2026-10-01T12:00:00Z"):
-    return {"id": run_id, "workflow": "orchestrator", "repo_dir": "/repo",
-            "base_branch": "master", "branch_prefix": "m2", "status": status,
-            "started_at": started_at}
+def runs_rows():
+    """The captured `am runs` rows, newest first: a started run, then a done one."""
+    return fixture("runs.json")["data"]["runs"]
 
 
-def status_data(run_id, status):
-    """`am status` data as the monitor spec describes it: run, the
-    story/subtask/phase/attempt tree, flat rows, control.lease, requests, claims."""
-    return {
-        "run": summary(run_id, status),
-        "stories": [{"id": "s1", "title": "Story", "subtasks": [
-            {"id": "c1", "title": "Card", "phases": [
-                {"name": "implement", "status": "done",
-                 "attempts": [{"n": 1, "status": "done"}]}]}]}],
-        "rows": [{"card_id": "c1", "phase": "implement", "attempt": 1, "status": "done"}],
-        "control": {"lease": {"pid": 4121, "host": "box",
-                              "heartbeat_at": "2026-10-01T12:00:05Z",
-                              "accepting": True, "live": status == "started"}},
-        "requests": [],
-        "claims": [{"card_id": "c1", "run_id": run_id}],
-    }
+def status_envelope(name):
+    """A captured `am status` envelope without its top-level `_` keys."""
+    return {k: v for k, v in fixture(name).items() if not k.startswith("_")}
+
+
+def row_for(run_id, status):
+    """synthetic: a test-local run id, and for a status other than started, done
+    or escalated a value no capture has, set on a copy of a real `am runs` row
+    (the started row, the escalated run's row, or else the done row)."""
+    if status == "escalated":
+        row = fixture("status-escalated.json")["_am_runs_row"]
+    else:
+        row = runs_rows()[0 if status == "started" else 1]
+    row["id"] = run_id
+    row["status"] = status
+    return row
+
+
+def status_for(run_id, status):
+    """synthetic: the same edits as row_for, set on a copy of the matching
+    captured `am status` data (status-done for a status no capture has)."""
+    data = status_envelope(STATUS_CAPTURES.get(status, "status-done.json"))["data"]
+    data["run"]["id"] = run_id
+    data["run"]["status"] = status
+    return data
 
 
 def set_runs(world, runs):
     (world["am"] / "runs.out").write_text(json.dumps({"data": {"runs": runs}, "ok": True}) + "\n")
 
 
-def set_status(world, run_id, status="started", data=None):
-    payload = status_data(run_id, status) if data is None else data
+def set_status(world, run_id, data):
     (world["am"] / ("status-" + run_id + ".out")).write_text(
-        json.dumps({"data": payload, "ok": True}) + "\n")
+        json.dumps({"data": data, "ok": True}) + "\n")
 
 
 def seed(world, runs):
     """`am runs` lists `runs`; `am status` answers for every one of them."""
     set_runs(world, runs)
     for r in runs:
-        set_status(world, r["id"], r["status"])
+        set_status(world, r["id"], status_for(r["id"], r["status"]))
 
 
 def set_raw(world, name, text, code=0):
@@ -148,6 +166,7 @@ def expected(run, data):
 # --- empty state, usage, am missing, data_dir, catch-all --------------------
 
 def test_no_runs_is_empty_state(world):
+    # synthetic: am runs of a project with no runs.
     set_runs(world, [])
     code, out = run(world)
     assert code == 0
@@ -177,6 +196,7 @@ def test_am_missing(world):
 
 @pytest.mark.parametrize("case", ["absolute", "unset", "relative", "empty"])
 def test_data_dir(world, case):
+    # synthetic: am runs of a project with no runs.
     set_runs(world, [])
     fallback = str(world["home"] / ".local" / "share")
     if case == "absolute":
@@ -234,6 +254,7 @@ def test_am_timeout_is_helper_error(world, monkeypatch, capsys):
 def test_am_does_not_inherit_stdin(world):
     # The helper's stdin is an open pipe that never sends EOF. An am that reads
     # stdin must get EOF at once (stdin is /dev/null), not block on that pipe.
+    # synthetic: am runs of a project with no runs.
     write_exec(world["bin"] / "am",
                "#!/usr/bin/env python3\nimport json, sys\nsys.stdin.read()\n"
                "print(json.dumps({'ok': True, 'data': {'runs': []}}))\n")
@@ -257,32 +278,56 @@ def test_am_does_not_inherit_stdin(world):
 
 # --- shape and fan-out -------------------------------------------------------
 
+def test_fake_am_serves_the_captures(world):
+    runs = runs_rows()
+    seed(world, runs)
+    assert json.loads((world["am"] / "runs.out").read_text()) == fixture("runs.json")
+    for row, name in zip(runs, ["status-started.json", "status-done.json"]):
+        served = json.loads((world["am"] / ("status-" + row["id"] + ".out")).read_text())
+        assert served == status_envelope(name)
+    # status-escalated.json carries top-level `_` keys; the served envelope does not.
+    assert any(k.startswith("_") for k in fixture("status-escalated.json"))
+    assert set(status_envelope("status-escalated.json")) == {"data", "ok"}
+    set_status(world, "e1", status_for("e1", "escalated"))
+    served = json.loads((world["am"] / "status-e1.out").read_text())
+    assert not any(k.startswith("_") for k in served)
+    want = status_envelope("status-escalated.json")
+    want["data"]["run"]["id"] = "e1"
+    assert served == want
+    # Every row_for row, capture status or not, has a real am runs row's 11 keys.
+    keys = set(runs[0])
+    assert len(keys) == 11
+    for status in ["started", "done", "escalated", "cancelled", "canceled", "something-new"]:
+        row = row_for("e1", status)
+        assert set(row) == keys
+        assert (row["id"], row["status"]) == ("e1", status)
+
+
 def test_snapshot_shape(world):
-    runs = [summary("r2", "started", "2026-10-02T09:00:00Z"),
-            summary("r1", "done", "2026-10-01T09:00:00Z")]
+    runs = runs_rows()
     seed(world, runs)
     code, out = run(world)  # run() asserts stdout is exactly one JSON line
     assert code == 0
     assert out == {
         "ok": True,
-        "runs": [expected(runs[0], status_data("r2", "started")),
-                 expected(runs[1], status_data("r1", "done"))],
+        "runs": [expected(runs[0], status_envelope("status-started.json")["data"]),
+                 expected(runs[1], status_envelope("status-done.json")["data"])],
         "data_dir": str(world["data"]),
     }
-    for entry in out["runs"]:
-        assert set(entry) == SUMMARY_FIELDS
+    for entry, row in zip(out["runs"], runs):
+        assert set(entry) == set(row)
         assert isinstance(entry["status"], dict)
 
 
 def test_status_fanout_selection(world):
     # Newest first: non-terminal runs interleaved with 12 terminal ones, and one
     # non-terminal run older than every terminal one.
-    runs = ([summary("n1", "started")]
-            + [summary("t%d" % i, "done") for i in range(1, 6)]
-            + [summary("n2", "started")]
-            + [summary("t%d" % i, ["escalated", "cancelled", "stopped"][i % 3])
+    runs = ([row_for("n1", "started")]
+            + [row_for("t%d" % i, "done") for i in range(1, 6)]
+            + [row_for("n2", "started")]
+            + [row_for("t%d" % i, ["escalated", "cancelled", "canceled", "stopped"][i % 4])
                for i in range(6, 13)]
-            + [summary("n3", "started")])
+            + [row_for("n3", "started")])
     seed(world, runs)
     code, out = run(world)
     want = ["n1", "t1", "t2", "t3", "t4", "t5", "n2",
@@ -294,23 +339,39 @@ def test_status_fanout_selection(world):
                             + [["status", i, "--repo-dir", root] for i in want])
 
 
+# synthetic: stopped, cancelled, canceled, Canceled, CANCELED, " canceled",
+# "canceled ", cancel, paused and something-new are run statuses no capture has.
 @pytest.mark.parametrize("status,kept", [
     ("done", 10), ("escalated", 10), ("stopped", 10), ("cancelled", 10),
+    ("canceled", 10),
     ("started", 12), ("paused", 12), ("something-new", 12),
+    ("Canceled", 12), ("CANCELED", 12), (" canceled", 12), ("canceled ", 12),
+    ("cancel", 12),
 ])
 def test_terminal_set_pinned(world, status, kept):
     # `stopped` is "parked" in the domain table but terminal here: it counts
-    # toward the cap of 10. Any status outside the four is non-terminal.
-    runs = [summary("x%02d" % i, status) for i in range(12)]
+    # toward the cap of 10. Any status outside the five is non-terminal.
+    runs = [row_for("x%02d" % i, status) for i in range(12)]
     seed(world, runs)
     code, out = run(world)
     assert code == 0
     assert [r["id"] for r in out["runs"]] == ["x%02d" % i for i in range(kept)]
 
 
+def test_canceled_spelling_reported_verbatim(world):
+    # Both spellings pass through as am printed them: no rewriting either way.
+    runs = [row_for("c1", "canceled"), row_for("c2", "cancelled")]
+    seed(world, runs)
+    code, out = run(world)
+    assert code == 0
+    assert out["runs"] == [expected(runs[0], status_for("c1", "canceled")),
+                           expected(runs[1], status_for("c2", "cancelled"))]
+    assert [r["status"]["run"]["status"] for r in out["runs"]] == ["canceled", "cancelled"]
+
+
 def test_repo_dir_passed(world):
     # The project dir is named "my proj; echo x": it must arrive as one argv element.
-    seed(world, [summary("r2", "started"), summary("r1", "done")])
+    seed(world, runs_rows())
     code, _ = run(world)
     assert code == 0
     made = calls(world)
@@ -334,17 +395,19 @@ def test_am_error_envelope_passthrough_runs(world, envelope, exit_code):
 
 
 def test_am_error_envelope_passthrough_status(world):
-    # r2 has no status fixture, so the fake am answers UnknownRunError, exit 3. The
-    # whole snapshot fails; no partial result is printed.
-    set_runs(world, [summary("r1", "started"), summary("r2", "started")])
-    set_status(world, "r1", "started")
+    # The second run has no status fixture, so the fake am answers UnknownRunError,
+    # exit 3. The whole snapshot fails; no partial result is printed.
+    runs = runs_rows()
+    set_runs(world, runs)
+    set_status(world, runs[0]["id"], status_for(runs[0]["id"], runs[0]["status"]))
     code, out = run(world)
     assert code == 1
     assert out == UNKNOWN_RUN
     assert "data_dir" not in out
-    assert calls(world)[-1] == ["status", "r2", "--repo-dir", str(world["proj"])]
+    assert calls(world)[-1] == ["status", runs[1]["id"], "--repo-dir", str(world["proj"])]
 
 
+# synthetic: garbage and malformed `am runs` / `am status` output.
 @pytest.mark.parametrize("target,text,exit_code", [
     ("runs", "not json\n", 0),
     ("runs", "[1, 2]\n", 0),
@@ -368,8 +431,9 @@ def test_am_bad_output(world, target, text, exit_code):
     if target == "runs":
         set_raw(world, "runs", text, exit_code)
     else:
-        set_runs(world, [summary("r1", "started")])
-        set_raw(world, "status-r1", text, exit_code)
+        runs = runs_rows()
+        set_runs(world, runs)
+        set_raw(world, "status-" + runs[0]["id"], text, exit_code)
     code, out = run(world)  # run() asserts exactly one JSON line
     assert code == 1
     assert out["ok"] is False

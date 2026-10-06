@@ -37,6 +37,10 @@ TestCase {
       property bool watching: true
       property string watchSchemaError: ""
       property string flashText: ""
+      // The current watch's hello, with the real store's defaults (0 / "" =
+      // no hello known).
+      property int amSchema: 0
+      property string amVersion: ""
       readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(rs.runs, rs.runFilter), rs.searchQuery)
       function toggleRunFilter(id) { rs.runFilter = id === "all" || id === rs.runFilter ? "" : id }
       // The control surface the rows read (S2 4.2). `control` only records.
@@ -121,10 +125,10 @@ TestCase {
   function sample() {
     return [
       run("run-20261004-live0001", "started", true, { milestone: "alpha", started_at: ago(5 * tc.minute), tree: { stories: [], subtasks: [
-        { card_id: "t1", phases: [{ name: "spec", status: "done" }] },
-        { card_id: "t2", phases: [{ name: "spec", status: "done" }, { name: "implement", status: "started" }] }] } }),
+        { card_id: "t1", status: "done", phases: [{ name: "spec", status: "done" }] },
+        { card_id: "t2", status: "started", phases: [{ name: "spec", status: "done" }, { name: "implement", status: "started" }] }] } }),
       run("run-20261004-escl0002", "escalated", null, { milestone: "beta", tree: { stories: [], subtasks: [
-        { card_id: "t3", phases: [{ name: "review", status: "failed", detail: "tests red after 3 attempts" }] }] } }),
+        { card_id: "t3", status: "escalated", phases: [{ name: "review", status: "failed", detail: "tests red after 3 attempts" }] }] } }),
       run("run-20261004-dead0003", "started", false, { milestone: "gamma", started_at: ago(180 * tc.minute),
                                                        heartbeat_at: ago(7 * tc.minute) }),
       run("run-20261004-park0004", "stopped", null, { milestone: "delta", started_at: ago(120 * tc.minute) }),
@@ -314,10 +318,11 @@ TestCase {
   function test_the_footer_says_whether_the_runs_are_watched() {
     var s = make(sample()); if (!s) return
     var footer = H.find(s.screen, "runsFooter")
-    compare(footer.text, "am · schema 1 · watching")
+    compare(footer.text, "am · watching")
     compare(footer.visible, true)
     s.runs.watching = false
-    compare(footer.text, "am · schema 1 · not watching")
+    compare(footer.text, "am · not watching")
+    compare(footer.visible, true)
   }
 
   function test_an_error_shows_the_last_error_in_the_footer_and_keeps_the_rows() {
@@ -361,6 +366,150 @@ TestCase {
     s.runs.watchWarning = "CorruptJournal: journal line 12 is not JSON"
     compare(line.visible, true)
     compare(line.text, "CorruptJournal: journal line 12 is not JSON")
+  }
+
+  // ---- the announced hello in the footer
+
+  function test_the_footer_names_am_and_schema_1_from_the_hello() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amVersion = "0.1.0"
+    s.runs.amSchema = 1
+    compare(footer.text, "am 0.1.0 · schema 1 · watching")
+    s.runs.watching = false
+    compare(footer.text, "am 0.1.0 · schema 1 · not watching")
+  }
+
+  function test_the_footer_names_schema_2_from_the_hello() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amVersion = "0.2.0"
+    s.runs.amSchema = 2
+    compare(footer.text, "am 0.2.0 · schema 2 · watching")
+  }
+
+  function test_the_footer_without_a_hello_names_no_schema() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    compare(footer.text, "am · watching")
+    s.runs.amSchema = 1
+    s.runs.amVersion = "0.1.0"
+    compare(footer.text, "am 0.1.0 · schema 1 · watching", "a hello arrives")
+    s.runs.amSchema = 0
+    s.runs.amVersion = ""
+    compare(footer.text, "am · watching", "the hello is forgotten")
+  }
+
+  function test_the_footer_leaves_out_an_unknown_version() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amSchema = 2
+    s.runs.amVersion = ""
+    compare(footer.text, "am · schema 2 · watching")
+  }
+
+  function test_the_footer_shows_no_version_without_a_schema() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amVersion = "0.1.0"
+    compare(footer.text, "am · watching")
+    s.runs.watching = false
+    compare(footer.text, "am · not watching")
+  }
+
+  function test_flash_and_error_still_win_over_the_announced_hello() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amSchema = 2
+    s.runs.amVersion = "0.2.0"
+    s.runs.flashText = "The run has finished"
+    compare(footer.text, "The run has finished", "the flash alone, with no am prefix")
+    s.runs.flashText = ""
+    compare(footer.text, "am 0.2.0 · schema 2 · watching")
+    s.runs.amStatus = "error"
+    s.runs.lastError = "AmFailed: boom"
+    compare(footer.text, "AmFailed: boom", "the error alone, with no am prefix")
+    s.runs.flashText = "The run is still running"
+    compare(footer.text, "The run is still running", "the flash wins over the error line")
+    s.runs.flashText = ""
+    compare(footer.text, "AmFailed: boom")
+    s.runs.amStatus = "ok"
+    compare(footer.text, "am 0.2.0 · schema 2 · watching")
+  }
+
+  function test_the_hello_does_not_unhide_the_footer() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amSchema = 1
+    s.runs.amVersion = "0.1.0"
+    compare(footer.visible, true)
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(footer.visible, false, "am is missing")
+    s.runs.amStatus = "schema"
+    wait(20)
+    compare(footer.visible, false, "the schema banner shows")
+  }
+
+  // Review Focus 1.
+  function test_a_hello_that_arrives_under_the_error_line_shows_once_the_error_clears() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amStatus = "error"
+    s.runs.lastError = "AmFailed: boom"
+    s.runs.amSchema = 1
+    s.runs.amVersion = "0.1.0"
+    compare(footer.text, "AmFailed: boom")
+    s.runs.amStatus = "ok"
+    compare(footer.text, "am 0.1.0 · schema 1 · watching")
+  }
+
+  // Review Focus 2.
+  function test_a_hello_forgotten_under_a_flash_is_not_shown_after_it() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amSchema = 2
+    s.runs.amVersion = "0.2.0"
+    s.runs.flashText = "The run has finished"
+    s.runs.amSchema = 0
+    s.runs.amVersion = ""
+    s.runs.watching = false
+    compare(footer.text, "The run has finished")
+    s.runs.flashText = ""
+    compare(footer.text, "am · not watching")
+  }
+
+  // Review Focus 3.
+  function test_the_footer_comes_back_from_the_schema_banner_with_the_hello() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amSchema = 2
+    s.runs.amVersion = "0.2.0"
+    s.runs.amStatus = "schema"
+    wait(20)
+    compare(footer.visible, false)
+    s.runs.amStatus = "ok"
+    wait(20)
+    compare(footer.visible, true)
+    compare(footer.text, "am 0.2.0 · schema 2 · watching")
+  }
+
+  // Review Focus 4.
+  function test_a_two_digit_schema_prints_as_a_plain_integer() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amSchema = 10
+    s.runs.amVersion = "1.0.0"
+    compare(footer.text, "am 1.0.0 · schema 10 · watching")
+  }
+
+  // Review Focus 5.
+  function test_a_pre_release_version_prints_verbatim() {
+    var s = make(sample()); if (!s) return
+    var footer = H.find(s.screen, "runsFooter")
+    s.runs.amSchema = 2
+    s.runs.amVersion = "0.2.0-rc.1"
+    compare(footer.text, "am 0.2.0-rc.1 · schema 2 · watching")
   }
 
   // ---- robustness and visibility
@@ -489,7 +638,7 @@ TestCase {
     compare(footer.text, "The run has finished")
     compare(footer.visible, true)
     s.runs.flashText = ""
-    compare(footer.text, "am · schema 1 · watching")
+    compare(footer.text, "am · watching")
     s.runs.amStatus = "error"
     s.runs.lastError = "AmFailed: boom"
     s.runs.flashText = "The run is still running"

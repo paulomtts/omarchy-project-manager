@@ -6,6 +6,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../helpers/amFixtures.js" as F
 
 TestCase {
   id: tc
@@ -13,7 +14,11 @@ TestCase {
 
   property string rootA: "/home/u/my proj"
   property string rootB: "/home/u/b"
-  property string logsCmd: "python3|/plugin/core/backend/runs/runs-logs.py|"
+  property string logsCmd: "python3|/plugin/core/backend/runs/runs-logs.py|" + rootA + "|"
+  // The started capture's open subtask (explore attempt 1 is started) and a
+  // done subtask of it (spec attempt 1 is ok).
+  readonly property string openCard: "299ec9c0-b935-4c44-a7a0-982a104cbfe5"
+  readonly property string doneCard: "5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff"
 
   Component { id: spyC; SignalSpy {} }
 
@@ -456,6 +461,258 @@ TestCase {
     compare(store.watching, true, "the watch keeps running")
     compare(store.amStatus, "ok")
     compare(store.lastError, "")
+  }
+
+  // ---- the hello
+
+  // The helper's forwarded hello for watch-hello.json's `key` line.
+  function helloLine(key) {
+    var h = F.load("watch-hello.json")[key]
+    return { hello: { schema: h.schema, am: h.am } }
+  }
+
+  function test_am_schema_and_version_default_unknown() {
+    var store = make(); if (!store) return
+    compare(store.amSchema, 0, "a fresh store knows no schema")
+    compare(store.amVersion, "", "nor am's version")
+    var watched = watchedStore([entry("a", "done", false)]); if (!watched) return
+    compare(watched.amSchema, 0, "a running watch before its hello")
+    compare(watched.amVersion, "")
+  }
+
+  function test_hello_sets_schema_and_version() {
+    var cases = [["schema_1", 1], ["schema_2", 2]]
+    for (var i = 0; i < cases.length; i++) {
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      sendLine(store.watchProc, helloLine(cases[i][0]))
+      compare(store.amSchema, cases[i][1], cases[i][0])
+      compare(store.amVersion, "0.1.0", cases[i][0])
+    }
+  }
+
+  function test_hello_starts_nothing() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var seq = store.snapshotRunner.seq
+    var liveness = store.livenessTimer.running
+    sendLine(store.watchProc, helloLine("schema_2"))
+    compare(store.amSchema, 2)
+    compare(store.debounceTimer.running, false, "a hello is not a change")
+    compare(store.snapshotRunner.seq, seq, "no snapshot")
+    compare(store.livenessTimer.running, liveness, "the liveness timer is left as it was")
+    compare(store.watching, true)
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    compare(store.watchWarning, "")
+    compare(store.watchSchemaError, "")
+    verify(!store.watchProc.envelope, "a hello is not an envelope")
+    sendLine(store.watchProc, { changed: ["a"] })
+    compare(store.debounceTimer.running, true, "a changed line still starts the debounce")
+  }
+
+  function test_malformed_hello_values() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var schemas = ["2", true, 2.5, 0, -1, null, undefined]
+    for (var i = 0; i < schemas.length; i++) {
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amSchema, 2, "a known schema first")
+      // synthetic: schema_1's forwarded hello with a schema that is not an
+      // integer of 1 or more (undefined drops the key).
+      var line = helloLine("schema_1")
+      if (schemas[i] === undefined) delete line.hello.schema
+      else line.hello.schema = schemas[i]
+      sendLine(store.watchProc, line)
+      compare(store.amSchema, 0, JSON.stringify(line))
+      compare(store.amVersion, "0.1.0", JSON.stringify(line) + " keeps its string am")
+    }
+    var ams = [5, null, undefined]
+    for (var j = 0; j < ams.length; j++) {
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amVersion, "0.1.0", "a known version first")
+      // synthetic: schema_1's forwarded hello with an am that is not a string
+      // (undefined drops the key).
+      var amLine = helloLine("schema_1")
+      if (ams[j] === undefined) delete amLine.hello.am
+      else amLine.hello.am = ams[j]
+      sendLine(store.watchProc, amLine)
+      compare(store.amVersion, "", JSON.stringify(amLine))
+      compare(store.amSchema, 1, JSON.stringify(amLine) + " keeps its integer schema")
+    }
+    // synthetic: the spec's error-table lines, typed as raw text.
+    var raw = ['{"hello": {"schema": "2", "am": 5}}', '{"hello": {}}']
+    for (var k = 0; k < raw.length; k++) {
+      sendLine(store.watchProc, helloLine("schema_2"))
+      sendLine(store.watchProc, raw[k])
+      compare(store.amSchema, 0, raw[k])
+      compare(store.amVersion, "", raw[k])
+    }
+  }
+
+  function test_non_object_hello_ignored() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    var lines = ['{"hello": 1}', '{"hello": null}', '{"hello": []}', '{"hello": "x"}']
+    for (var i = 0; i < lines.length; i++) {
+      sendLine(store.watchProc, lines[i])
+      compare(store.amSchema, 2, lines[i] + " is ignored")
+      compare(store.amVersion, "0.1.0", lines[i] + " is ignored")
+      compare(store.debounceTimer.running, false, lines[i])
+    }
+  }
+
+  function test_a_later_hello_overwrites_both() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    sendLine(store.watchProc, helloLine("schema_1"))
+    compare(store.amSchema, 1, "the latest hello wins")
+    compare(store.amVersion, "0.1.0")
+    // synthetic: schema_1's forwarded hello with neither a usable schema nor am.
+    var line = helloLine("schema_1")
+    line.hello.schema = "1"
+    line.hello.am = 1
+    sendLine(store.watchProc, line)
+    compare(store.amSchema, 0, "a later malformed hello resets the schema")
+    compare(store.amVersion, "", "and the version")
+  }
+
+  function test_hello_beside_changed_or_ok_false_keeps_its_meaning() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    // synthetic: a changed line that also carries schema_2's hello.
+    var changed = helloLine("schema_2")
+    changed.changed = ["a"]
+    sendLine(store.watchProc, changed)
+    compare(store.debounceTimer.running, true, "a changed array still restarts the debounce")
+    compare(store.amSchema, 0, "its hello is not read")
+    compare(store.amVersion, "")
+    // synthetic: an ok:false envelope that also carries schema_2's hello.
+    var refusal = helloLine("schema_2")
+    refusal.ok = false
+    refusal.error = { type: "HelperError", message: "m" }
+    sendLine(store.watchProc, refusal)
+    verify(store.watchProc.envelope, "ok:false is still kept as the envelope")
+    compare(store.watchProc.envelope.error.type, "HelperError")
+    compare(store.amSchema, 0, "its hello is not read")
+    compare(store.amVersion, "")
+  }
+
+  function test_hello_mid_burst_keeps_the_debounce() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, { changed: ["a"] })
+    compare(store.debounceTimer.running, true)
+    sendLine(store.watchProc, helloLine("schema_2"))
+    compare(store.amSchema, 2)
+    compare(store.debounceTimer.running, true, "the pending refresh is kept")
+    compare(store.snapshotRunner.seq, seq, "and not fired early")
+    store.debounceTimer.triggered()
+    compare(store.snapshotRunner.seq, seq + 1, "the burst still costs one snapshot")
+  }
+
+  function test_hello_extra_keys_are_ignored() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    // synthetic: am's raw hello object (event, runs_dir) as the hello value.
+    sendLine(store.watchProc, { hello: F.load("watch-hello.json").schema_2 })
+    compare(store.amSchema, 2)
+    compare(store.amVersion, "0.1.0")
+    // synthetic: schema_1's forwarded hello with an empty am and an unknown key.
+    var line = helloLine("schema_1")
+    line.hello.am = ""
+    line.hello.extra = { schema: 9 }
+    sendLine(store.watchProc, line)
+    compare(store.amSchema, 1)
+    compare(store.amVersion, "", "an empty string is still a string")
+  }
+
+  function test_hello_reset_on_deactivate() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    compare(store.amSchema, 2)
+    store.active = false
+    compare(store.amSchema, 0, "a closed panel has no watch hello")
+    compare(store.amVersion, "")
+    store.active = true
+    compare(store.amSchema, 0, "reopening alone restores nothing")
+    compare(store.amVersion, "")
+  }
+
+  function test_hello_reset_on_watch_exit() {
+    var cases = [["", 0], [watchError("HelperError", "m"), 1], ["", 137]]
+    for (var i = 0; i < cases.length; i++) {
+      var label = "exit " + cases[i][1] + " " + cases[i][0]
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amSchema, 2, label)
+      endWatch(store.watchProc, cases[i][0], cases[i][1])
+      compare(store.watching, false, label)
+      compare(store.amSchema, 0, label + ": an ended watch has no hello")
+      compare(store.amVersion, "", label)
+    }
+  }
+
+  function test_hello_reset_when_poll_takes_over() {
+    var types = ["SchemaMismatch", "CorruptJournal"]
+    for (var i = 0; i < types.length; i++) {
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amSchema, 2, types[i])
+      endWatch(store.watchProc, watchError(types[i], "m"), 1)
+      compare(store.amSchema, 0, types[i])
+      compare(store.amVersion, "", types[i])
+      compare(store.pollTimer.running, true, types[i] + " polls")
+      store.pollTimer.triggered()
+      reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+      compare(store.amSchema, 0, types[i] + ": a polled snapshot brings no hello")
+      compare(store.amVersion, "", types[i])
+    }
+  }
+
+  function test_hello_reset_on_project_switch() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    store.project = rootB
+    compare(store.amSchema, 0, "A's hello says nothing about B")
+    compare(store.amVersion, "")
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    sendLine(store.watchProc, helloLine("schema_1"))
+    compare(store.amSchema, 1, "B's watch says hello")
+    compare(store.amVersion, "0.1.0")
+    store.project = ""
+    compare(store.amSchema, 0, "no project, no hello")
+    compare(store.amVersion, "")
+  }
+
+  function test_old_watch_hello_ignored() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var old = store.watchProc
+    sendLine(old, helloLine("schema_2"))
+    store.project = rootB
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    verify(store.watchProc !== old, "B runs its own watch")
+    sendLine(old, helloLine("schema_2"))
+    compare(store.amSchema, 0, "A's late hello is dropped")
+    compare(store.amVersion, "")
+    sendLine(store.watchProc, helloLine("schema_1"))
+    compare(store.amSchema, 1, "B's own hello counts")
+    compare(store.amVersion, "0.1.0")
+    old.exited(0)
+    compare(store.amSchema, 1, "A's late exit forgets nothing")
+    compare(store.amVersion, "0.1.0")
+  }
+
+  function test_new_watch_starts_unknown() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var old = store.watchProc
+    sendLine(old, helloLine("schema_2"))
+    store.active = false
+    store.active = true
+    reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+    var fresh = store.watchProc
+    verify(fresh !== old, "a new watch was started")
+    compare(fresh.running, true)
+    compare(store.amSchema, 0, "a new watch starts unknown")
+    compare(store.amVersion, "")
+    sendLine(fresh, helloLine("schema_1"))
+    compare(store.amSchema, 1, "until its own hello")
+    compare(store.amVersion, "0.1.0")
   }
 
   // ---- liveness
@@ -910,19 +1167,30 @@ TestCase {
 
   // ---- attempt logs (5.2)
 
-  // A snapshot entry whose run has story s1 with subtask t1: spec is done,
-  // implement is started and on its second attempt, whose status is `status`.
+  // A snapshot entry of the started capture: runs.json's first `am runs` row
+  // whose `status` is status-started.json's `am status` data. Its open attempt
+  // is openCard explore 1 and doneCard spec 1 is an earlier, ok attempt. The
+  // run id and repo dir are the test's; so is the open attempt's status, in
+  // am's attempt vocabulary (started, ok).
   function treeEntry(id, status) {
-    var e = entry(id, "started", true)
-    e.status.stories = [{ card_id: "s1", subtasks: ["t1"] }]
-    e.status.subtasks = [{ card_id: "t1", phases: [
-      { name: "spec", status: "done", attempts: [{ n: 1, status: "done" }] },
-      { name: "implement", status: "started", attempts: [{ n: 1, status: "failed" }, { n: 2, status: status }] }] }]
+    var e = F.load("runs.json").data.runs[0]
+    e.id = id
+    e.repo_dir = tc.rootA
+    e.status = F.load("status-started.json").data
+    e.status.run.id = id
+    e.status.stories[1].subtasks[1].phases[1].attempts[0].status = status
     return e
   }
 
+  // A fresh logs-attempt.json `am logs` reply, as one JSON line, whose stdout
+  // artifact text is `stdout` and, when given, whose stderr artifact text is
+  // `stderr` (else the capture's null).
   function logsReply(stdout, stderr) {
-    return JSON.stringify({ ok: true, data: { stdout: stdout, stderr: stderr || "" } }) + "\n"
+    var envelope = F.load("logs-attempt.json")
+    // synthetic: the texts are the test's; the envelope is the capture's.
+    envelope.data.artifacts.stdout.text = stdout
+    if (stderr !== undefined) envelope.data.artifacts.stderr.text = stderr
+    return JSON.stringify(envelope) + "\n"
   }
 
   function argv(proc) { return proc.command.join("|") }
@@ -952,31 +1220,31 @@ TestCase {
     var store = opened(); if (!store) return
     var proc = store.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
-    compare(argv(proc), tc.logsCmd + "r1|t1|implement|2")
+    compare(argv(proc), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
     compare(proc.launchGuard, "/home/u/my proj", "guarded by the project")
-    compare(store.selectedAttempt.card_id, "t1")
-    compare(store.selectedAttempt.phase, "implement")
-    compare(store.selectedAttempt.attempt, 2)
+    compare(store.selectedAttempt.card_id, tc.openCard)
+    compare(store.selectedAttempt.phase, "explore")
+    compare(store.selectedAttempt.attempt, 1)
     compare(store.logsStatus, "started", "the status the fetch was launched for")
     compare(store.logsLoading, true)
   }
 
   function test_select_attempt_and_refresh_launch_the_exact_argv() {
     var store = opened(); if (!store) return
-    store.selectAttempt("t1", "spec", 1)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|spec|1")
-    compare(store.logsStatus, "done")
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|1")
+    compare(store.logsStatus, "ok")
     var first = store.logsRunner.current
     var seq = store.logsRunner.seq
     store.refreshLogs()
     compare(store.logsRunner.seq, seq + 1, "Refresh fetches again")
     verify(store.logsRunner.current !== first)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|spec|1")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|1")
   }
 
   function test_no_logs_launch_without_project_run_or_selection() {
     var bare = make(); if (!bare) return
-    bare.selectAttempt("t1", "spec", 1)
+    bare.selectAttempt(tc.doneCard, "spec", 1)
     verify(!bare.logsRunner.current, "no project")
     compare(bare.selectedAttempt, null)
     bare.refreshLogs()
@@ -984,7 +1252,7 @@ TestCase {
 
     var store = makeWithProject(rootA); if (!store) return
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started"), entry("r2", "started", true)]), 0)
-    store.selectAttempt("t1", "spec", 1)
+    store.selectAttempt(tc.doneCard, "spec", 1)
     verify(!store.logsRunner.current, "no run selected")
     compare(store.selectedAttempt, null)
     store.selectedRunId = "r2"
@@ -992,10 +1260,10 @@ TestCase {
     compare(store.selectedAttempt, null)
     store.refreshLogs()
     verify(!store.logsRunner.current, "no selection")
-    store.selectAttempt("t1", "spec", 0)
-    store.selectAttempt("t1", "", 1)
+    store.selectAttempt(tc.doneCard, "spec", 0)
+    store.selectAttempt(tc.doneCard, "", 1)
     store.selectAttempt("", "spec", 1)
-    store.selectAttempt("t1", "spec", "1")
+    store.selectAttempt(tc.doneCard, "spec", "1")
     verify(!store.logsRunner.current, "not a real attempt")
   }
 
@@ -1019,6 +1287,17 @@ TestCase {
     compare(shown[199], "line 249")
     compare(shown[200], "boom")
     compare(store.logsTruncated, true)
+  }
+
+  function test_a_real_logs_reply_shows_the_attempts_output() {
+    var store = opened(); if (!store) return
+    var envelope = F.load("logs-attempt.json")
+    reply(store.logsRunner.current, JSON.stringify(envelope) + "\n", 0)
+    compare(store.logsText, envelope.data.artifacts.stdout.text.slice(0, -1), "the attempt's stdout")
+    compare(store.logsText.split("\n").length, 19)
+    compare(store.logsTruncated, false)
+    compare(store.logsError, "")
+    compare(store.logsLoading, false)
   }
 
   function test_logs_failures_keep_the_text_and_never_touch_am_status() {
@@ -1057,12 +1336,12 @@ TestCase {
   function test_only_the_latest_logs_fetch_is_applied() {
     var store = opened(); if (!store) return
     var first = store.logsRunner.current
-    store.selectAttempt("t1", "spec", 1)
+    store.selectAttempt(tc.doneCard, "spec", 1)
     var second = store.logsRunner.current
     compare(first.running, false, "the older fetch is stopped")
     reply(second, logsReply("spec text\n"), 0)
     compare(store.logsText, "spec text")
-    reply(first, logsReply("implement text\n"), 0)
+    reply(first, logsReply("explore text\n"), 0)
     compare(store.logsText, "spec text", "a late reply for an older selection changes nothing")
   }
 
@@ -1073,7 +1352,7 @@ TestCase {
     store.refreshLogs()
     compare(store.logsText, "first", "a refresh keeps the text until its reply")
     compare(store.logsLoading, true)
-    store.selectAttempt("t1", "spec", 1)
+    store.selectAttempt(tc.doneCard, "spec", 1)
     compare(store.logsText, "", "another attempt's text is never shown under this heading")
     compare(store.logsFetchedMs, 0)
     compare(store.logsError, "")
@@ -1083,20 +1362,24 @@ TestCase {
 
   function test_changing_the_selected_run_resets_to_its_default_attempt() {
     var store = makeWithProject(rootA); if (!store) return
-    var r2 = treeEntry("r2", "started")
-    r2.status.stories = [{ card_id: "s9", subtasks: ["t9"] }]
-    r2.status.subtasks = [{ card_id: "t9", phases: [{ name: "review", status: "started", attempts: [{ n: 3, status: "started" }] }] }]
+    // r2 is the done capture: runs.json's second row with status-done.json's
+    // `am status`, under the test's run id and repo dir.
+    var r2 = F.load("runs.json").data.runs[1]
+    r2.id = "r2"
+    r2.repo_dir = tc.rootA
+    r2.status = F.load("status-done.json").data
+    r2.status.run.id = "r2"
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started"), r2]), 0)
     store.selectedRunId = "r1"
     reply(store.logsRunner.current, logsReply("r1 text\n"), 0)
-    store.selectAttempt("t1", "spec", 1)
+    store.selectAttempt(tc.doneCard, "spec", 1)
     store.selectedRunId = "r2"
-    compare(store.selectedAttempt.card_id, "t9")
+    compare(store.selectedAttempt.card_id, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
     compare(store.selectedAttempt.phase, "review")
-    compare(store.selectedAttempt.attempt, 3)
+    compare(store.selectedAttempt.attempt, 1)
     compare(store.logsText, "")
     compare(store.logsFetchedMs, 0)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r2|t9|review|3")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r2|22153f5f-9632-4b5f-a7dd-664c39d89e5c|review|1")
     var pending = store.logsRunner.current
     store.selectedRunId = ""
     compare(store.selectedAttempt, null, "clearing the run clears the selection")
@@ -1157,35 +1440,98 @@ TestCase {
     store.refresh()
     reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}', 1)
     compare(store.logsRunner.seq, seq, "a failed snapshot fetches nothing")
-    snapshot(store, [treeEntry("r1", "done")])
-    compare(store.logsRunner.seq, seq + 1, "started -> done fetches the logs again")
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|implement|2")
-    compare(store.logsStatus, "done")
+    snapshot(store, [treeEntry("r1", "ok")])
+    compare(store.logsRunner.seq, seq + 1, "started -> ok fetches the logs again")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+    compare(store.logsStatus, "ok")
     compare(store.logsText, "a", "the text stays until the new reply")
-    snapshot(store, [treeEntry("r1", "done")])
+    snapshot(store, [treeEntry("r1", "ok")])
     compare(store.logsRunner.seq, seq + 1, "only once")
   }
 
   function test_a_snapshot_without_a_selected_run_fetches_no_logs() {
     var store = makeWithProject(rootA); if (!store) return
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
-    snapshot(store, [treeEntry("r1", "done")])
+    snapshot(store, [treeEntry("r1", "ok")])
     verify(!store.logsRunner.current, "nothing is selected")
   }
 
   // Review Focus 2.
   function test_a_run_opened_before_its_first_attempt_picks_one_when_it_appears() {
     var store = makeWithProject(rootA); if (!store) return
+    // synthetic: the run before any attempt exists; shape kept
     var bare = treeEntry("r1", "started")
-    bare.status.subtasks[0].phases = []
+    var stories = bare.status.stories
+    for (var i = 0; i < stories.length; i++) {
+      for (var j = 0; j < stories[i].subtasks.length; j++) stories[i].subtasks[j].phases = []
+    }
+    bare.status.rows = []
     reply(store.snapshotRunner.current, okReply([bare]), 0)
     store.selectedRunId = "r1"
     compare(store.selectedAttempt, null)
     verify(!store.logsRunner.current)
     snapshot(store, [treeEntry("r1", "started")])
     verify(store.selectedAttempt, "the first attempt is picked once it exists")
-    compare(store.selectedAttempt.attempt, 2)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|t1|implement|2")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+  }
+
+  // The logs launch: python3, the script, then the project root and the
+  // attempt, five arguments; the root is the current project's, one element.
+  function test_logs_argv_leads_with_the_current_project_root() {
+    var store = opened(); if (!store) return
+    var procA = store.logsRunner.current
+    compare(argv(procA), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/my proj|r1|" + tc.openCard + "|explore|1")
+    compare(procA.command.length, 7, "five arguments after python3 and the script")
+    compare(procA.command[2], "/home/u/my proj", "the root with a space is one argument")
+    store.project = tc.rootB
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    compare(store.logsRunner.current, procA, "nothing is launched after the switch until a run is selected")
+    compare(procA.running, false, "A's fetch is stopped, not re-sent")
+    store.selectedRunId = "r1"
+    var procB = store.logsRunner.current
+    verify(procB !== procA)
+    compare(procB.command[2], "/home/u/b")
+    compare(argv(procB), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b|r1|" + tc.openCard + "|explore|1")
+  }
+
+  // Refresh, selectAttempt and a snapshot's refetch under B
+  // carry B's root; back on A, A's root again.
+  function test_every_logs_launch_after_a_switch_carries_the_new_root() {
+    var bCmd = "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b|"
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    store.project = tc.rootB
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    reply(store.logsRunner.current, logsReply("b\n"), 0)
+    store.refreshLogs()
+    compare(argv(store.logsRunner.current), bCmd + "r1|" + tc.openCard + "|explore|1", "Refresh")
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    compare(argv(store.logsRunner.current), bCmd + "r1|" + tc.doneCard + "|spec|1", "selectAttempt")
+    store.selectAttempt(tc.openCard, "explore", 1)
+    reply(store.logsRunner.current, logsReply("b\n"), 0)
+    var seq = store.logsRunner.seq
+    snapshot(store, [treeEntry("r1", "ok")])
+    compare(store.logsRunner.seq, seq + 1, "started -> ok fetches again")
+    compare(argv(store.logsRunner.current), bCmd + "r1|" + tc.openCard + "|explore|1", "the snapshot's refetch")
+    store.project = tc.rootA
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1", "back on A")
+  }
+
+  // The root reaches the runner byte-for-byte.
+  function test_logs_argv_keeps_an_odd_root_verbatim() {
+    var odd = "/home/u/o'dd; $x/"
+    var store = makeWithProject(odd); if (!store) return
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    var proc = store.logsRunner.current
+    verify(proc, "the default attempt's logs were asked for")
+    compare(proc.command.length, 7)
+    compare(proc.command[2], odd, "not split, quoted, trimmed or normalised")
+    compare(proc.command[3], "r1")
   }
 
   // ---- run controls (S2 4.1)
