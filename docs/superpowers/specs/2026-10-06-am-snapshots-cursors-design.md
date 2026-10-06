@@ -255,8 +255,8 @@ for what the docs PR does.
 | | 4.0.2 | regenerate `tests/fixtures/am/*.json` from the new `am` and add `events.json` |
 | | 4.0.3 | `normalizeRun` tolerates `project` and the new keys; `tst_runs.qml` |
 | 4.1 Nudges | 4.1.1 | `runs-watch.py` as a nudge and cursor source (no backlog filter, no run-id argv) |
-| | 4.1.2 | `RunStore` refresh-on-nudge with `appliedSeq` and `cursorReset` |
-| | 4.1.3 | `runs-snapshot.py --all-projects` with `as_of_seq` |
+| | 4.1.2 | `runs-snapshot.py --all-projects` with `as_of_seq` and a single-run read |
+| | 4.1.3 | `RunStore` refresh-on-nudge with `appliedSeq` and `cursorReset`, using the single-run read |
 | | 4.1.4 | store_id reset: the consumer clears `appliedSeq`, the persisted cursor and the list when `store_id` (hello or snapshot) differs from the one it last saw, then does a full snapshot |
 | 4.2 Specs retarget (the docs PR, not a board story) | 4.2.1 | edit S6, S5 and history specs (glb, evt, hst) |
 | | 4.2.2 | edit alerts, split, dispatch-from-runs, resume and story specs (alr, spl, dfr, rsm, sty) and the live-output notes (liv) |
@@ -266,7 +266,7 @@ for what the docs PR does.
 | | 4.3.4 | `start-run.py` run-id discovery from `am runs --all-projects` |
 | 4.4 Docs | 4.4.1 | `docs/architecture.md` and README run-monitor sections, read from the code |
 
-4.1.2 depends on 4.1.1 and 4.0.2; 4.1.4 depends on 4.1.2.
+4.1.2 depends on 4.1.1; 4.1.3 depends on 4.1.2 (the store's refresh needs the helper's single-run read) and on the 4.0.2 fixtures; 4.1.4 depends on 4.1.3. In M4 the watch cursor is held in memory only; persisting it belongs to the Alerts milestone.
 
 ## Decisions (user, 2026-10-06)
 
