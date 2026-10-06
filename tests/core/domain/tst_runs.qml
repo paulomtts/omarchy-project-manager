@@ -2841,25 +2841,172 @@ TestCase {
     compare(Runs.dispatchDefaults({ settings: "x" }, f.s, f.map).prefix, "m3", "settings garbage")
   }
 
-  function test_dispatchDefaults_prefix_no_milestone() {
+  function test_dispatchDefaults_prefix_order() {
     var f = prefixCards()
-    var settings = { prefixHistory: ["hist-p"] }
-    compare(prefixWith(settings, "board", f.map), "", "board")
-    compare(prefixWith(settings, f.s, undefined), "", "story without cardMap")
-    compare(prefixWith(settings, f.c, { s1: f.s, c1: f.c }), "", "broken chain")
-    var a = mkCard("a", 1, "todo", "b", "A")
-    var b = mkCard("b", 1, "todo", "a", "B")
-    compare(prefixWith(settings, a, { a: a, b: b }), "", "two-card cycle")
-    compare(prefixWith(settings, null, f.map), "", "no card")
-    var noId = { depth: 0, status: "todo", parentId: null, title: "M3 Document runs" }
-    compare(prefixWith(settings, noId, {}), "hist-p", "a milestone without an id takes the history")
-    compare(prefixWith({ prefixHistory: [] }, noId, {}), "m3", "then the stem")
+    var cards = [f.m, f.s, f.c]
+    var runs = [mkPrefixRun("m1", "run-p", "2026-10-06T10:00:00Z")]
+    for (var i = 0; i < cards.length; i++) {
+      var id = cards[i].id
+      compare(prefixWith({ prefixByMilestone: { m1: "map-p" }, prefixHistory: ["hist-p"] }, cards[i], f.map, runs), "run-p",
+              id + ": the run first")
+      compare(prefixWith({ prefixByMilestone: { m1: "map-p" }, prefixHistory: ["hist-p"] }, cards[i], f.map, []), "map-p",
+              id + ": then the map")
+      compare(prefixWith({ prefixByMilestone: {}, prefixHistory: ["hist-p"] }, cards[i], f.map, []), "hist-p",
+              id + ": then the history")
+      compare(prefixWith({ prefixByMilestone: {}, prefixHistory: [] }, cards[i], f.map, []), "m3", id + ": then the stem")
+    }
+    compare(Runs.dispatchDefaults({ settings: "x" }, f.s, f.map, runs).prefix, "run-p", "a run needs no settings")
+  }
+
+  // Review Focus 1.
+  function test_dispatchDefaults_prefix_runs_newest() {
+    var f = prefixCards()
+    var settings = { prefixByMilestone: { m1: "map-p" }, prefixHistory: ["hist-p"] }
+    var older = mkPrefixRun("m1", "older-p", "2026-10-05T10:00:00Z")
+    var newer = mkPrefixRun("m1", "newer-p", "2026-10-06T10:00:00Z")
+    compare(prefixWith(settings, f.s, f.map, [newer, older]), "newer-p", "newest first")
+    compare(prefixWith(settings, f.s, f.map, [older, newer]), "newer-p", "a later started_at wins over the index")
+    var stamps = [["2026-10-06T10:00:00Z", "2026-10-06T10:00:00Z"], [undefined, "2026-10-06T10:00:00Z"],
+                  ["2026-10-06T10:00:00Z", undefined], [undefined, undefined], ["", "2026-10-06T10:00:00Z"],
+                  ["", ""], [5, "2026-10-06T10:00:00Z"], [null, "2026-10-06T10:00:00Z"]]
+    for (var i = 0; i < stamps.length; i++) {
+      var runs = [mkPrefixRun("m1", "first-p", stamps[i][0]), mkPrefixRun("m1", "second-p", stamps[i][1])]
+      compare(prefixWith(settings, f.s, f.map, runs), "first-p", "stamps " + i + ": the lower index wins")
+    }
+    var bare = { milestone_id: "m1", branch_prefix: "first-p" }
+    compare(prefixWith(settings, f.s, f.map, [bare, newer]), "first-p", "no started_at key: the lower index wins")
+    var blanks = ["", "  ", null, 5, undefined]
+    for (var j = 0; j < blanks.length; j++) {
+      compare(prefixWith(settings, f.s, f.map, [mkPrefixRun("m1", blanks[j], "2026-10-07T10:00:00Z"), older]), "older-p",
+              "a newer run with prefix " + j + " is skipped")
+      compare(prefixWith(settings, f.s, f.map, [older, mkPrefixRun("m1", blanks[j], "2026-10-07T10:00:00Z")]), "older-p",
+              "a later-stamped run with prefix " + j + " is skipped")
+      compare(prefixWith(settings, f.s, f.map, [mkPrefixRun("m1", blanks[j], "2026-10-07T10:00:00Z")]), "map-p",
+              "the only run, with prefix " + j + ", falls to the map")
+    }
+  }
+
+  // Review Focus 2, 3 and 4.
+  function test_dispatchDefaults_prefix_runs_matching() {
+    var f = prefixCards()
+    var settings = { prefixByMilestone: { m1: "map-p" }, prefixHistory: ["hist-p"] }
+    var mine = mkPrefixRun("m1", "run-p", "2026-10-05T10:00:00Z")
+    compare(prefixWith(settings, f.m, f.map, [mkPrefixRun("m2", "other-p", "2026-10-07T10:00:00Z"), mine]), "run-p",
+            "another milestone's newer run is ignored")
+    compare(prefixWith(settings, f.s, f.map, [mkPrefixRun("s1", "story-p", "2026-10-07T10:00:00Z")]), "map-p",
+            "a run keyed by the story's own id is ignored")
+    compare(prefixWith(settings, f.c, f.map, [mkPrefixRun("c1", "card-p", "2026-10-07T10:00:00Z")]), "map-p",
+            "a run keyed by the subtask's own id is ignored")
+    var ids = [5, null, undefined, ["m1"], { id: "m1" }, " m1", "m1 ", "M1"]
+    for (var i = 0; i < ids.length; i++) {
+      compare(prefixWith(settings, f.s, f.map, [mkPrefixRun(ids[i], "bad-p", "2026-10-07T10:00:00Z")]), "map-p",
+              "milestone_id " + i + " never matches")
+    }
+    compare(prefixWith(settings, f.s, f.map, [null, "x", [], 5, Object.create(null), mine]), "run-p", "garbage entries are skipped")
+    var lists = [undefined, null, {}, "m1", 5, { 0: mine, length: 1 }]
+    for (var j = 0; j < lists.length; j++) {
+      compare(prefixWith(settings, f.s, f.map, lists[j]), "map-p", "runs " + j + " is []")
+    }
+    var sparse = []
+    sparse[3] = mine
+    compare(prefixWith(settings, f.s, f.map, sparse), "run-p", "holes are skipped")
+    compare(prefixWith(settings, f.s, f.map, [{ milestone_id: "m1", branch_prefix: Object.create(null) }]), "map-p",
+            "an unconvertible branch_prefix is skipped")
+    var states = [{ status: "started", lease: { live: false } }, { status: "started", lease: { live: true } },
+                  { status: "done" }, { status: "escalated" }, { status: "canceled" }, { status: "stopped" }, { status: "" }]
+    for (var k = 0; k < states.length; k++) {
+      var run = mkPrefixRun("m1", "state-p", "2026-10-06T10:00:00Z")
+      run.status = states[k].status
+      run.lease = states[k].lease
+      compare(prefixWith(settings, f.s, f.map, [run]), "state-p", "a run in state " + k + " still names the prefix")
+    }
+  }
+
+  // Review Focus 3 and 5.
+  function test_dispatchDefaults_prefix_map() {
+    var f = prefixCards()
+    var hist = ["hist-p"]
+    compare(prefixWith({ prefixByMilestone: { m2: "other-p" }, prefixHistory: hist }, f.s, f.map, []), "hist-p",
+            "another milestone's entry is ignored")
+    compare(prefixWith({ prefixByMilestone: { s1: "story-p" }, prefixHistory: hist }, f.s, f.map, []), "hist-p",
+            "an entry for the story's own id is ignored")
+    compare(prefixWith({ prefixByMilestone: { " m1": "a", "m1 ": "b", M1: "c" }, prefixHistory: hist }, f.s, f.map, []), "hist-p",
+            "near-miss keys are ignored")
+    var values = ["", "   ", 5, null, ["p"], undefined]
+    for (var i = 0; i < values.length; i++) {
+      compare(prefixWith({ prefixByMilestone: { m1: values[i] }, prefixHistory: hist }, f.s, f.map, []), "hist-p",
+              "value " + i + " falls through")
+    }
+    var maps = [null, [], "m1", 5, undefined]
+    for (var j = 0; j < maps.length; j++) {
+      compare(prefixWith({ prefixByMilestone: maps[j], prefixHistory: hist }, f.s, f.map, []), "hist-p", "map " + j + " is skipped")
+    }
+    compare(prefixWith({ prefixByMilestone: Object.create({ m1: "inh" }), prefixHistory: hist }, f.s, f.map, []), "hist-p",
+            "an inherited entry does not match")
+    var protoIds = ["constructor", "toString", "__proto__", "hasOwnProperty"]
+    for (var k = 0; k < protoIds.length; k++) {
+      var m = mkCard(protoIds[k], 0, "todo", null, "M3 Document runs")
+      compare(prefixWith({ prefixByMilestone: {}, prefixHistory: hist }, m, {}, []), "hist-p",
+              "milestone id " + protoIds[k] + " with a plain map")
+    }
+    var bare = Object.create(null)
+    bare.m1 = "bare-p"
+    compare(prefixWith({ prefixByMilestone: bare, prefixHistory: hist }, f.s, f.map, []), "bare-p", "a prototype-less map")
+    var own = JSON.parse('{"__proto__": "own-p"}')
+    compare(prefixWith({ prefixByMilestone: own, prefixHistory: hist }, mkCard("__proto__", 0, "todo", null, "M3 X"), {}, []),
+            "own-p", "an own __proto__ entry matches")
   }
 
   function test_dispatchDefaults_prefix_trimmed() {
     var f = prefixCards()
-    compare(prefixWith({ prefixHistory: ["\thist-p "] }, f.s, f.map), "hist-p", "history")
-    compare(prefixWith({ prefixHistory: [" my hist-p\n"] }, f.s, f.map), "my hist-p", "inner whitespace kept")
+    compare(prefixWith({}, f.s, f.map, [mkPrefixRun("m1", "  run-p \n", "2026-10-06T10:00:00Z")]), "run-p", "run")
+    compare(prefixWith({ prefixByMilestone: { m1: " map-p " } }, f.s, f.map, []), "map-p", "map")
+    compare(prefixWith({ prefixHistory: ["\thist-p "] }, f.s, f.map, []), "hist-p", "history")
+    compare(prefixWith({ prefixByMilestone: { m1: " my map-p\n" } }, f.s, f.map, []), "my map-p", "inner whitespace kept")
+  }
+
+  function test_dispatchDefaults_prefix_no_milestone() {
+    var f = prefixCards()
+    var settings = { prefixByMilestone: { m1: "map-p", "": "blank-key-p" }, prefixHistory: ["hist-p"] }
+    var runs = [mkPrefixRun("m1", "run-p", "2026-10-06T10:00:00Z"), mkPrefixRun("", "blank-run-p", "2026-10-07T10:00:00Z"),
+                mkPrefixRun(undefined, "none-run-p", "2026-10-08T10:00:00Z")]
+    compare(prefixWith(settings, "board", f.map, runs), "", "board")
+    compare(prefixWith(settings, f.s, undefined, runs), "", "story without cardMap")
+    compare(prefixWith(settings, f.c, { s1: f.s, c1: f.c }, runs), "", "broken chain")
+    var a = mkCard("a", 1, "todo", "b", "A")
+    var b = mkCard("b", 1, "todo", "a", "B")
+    compare(prefixWith(settings, a, { a: a, b: b }, runs), "", "two-card cycle")
+    compare(prefixWith(settings, null, f.map, runs), "", "no card")
+    var noId = { depth: 0, status: "todo", parentId: null, title: "M3 Document runs" }
+    var blankId = mkCard("", 0, "todo", null, "M3 Document runs")
+    var numberId = mkCard(5, 0, "todo", null, "M3 Document runs")
+    var keyless = [noId, blankId, numberId]
+    var noHistory = { prefixByMilestone: settings.prefixByMilestone, prefixHistory: [] }
+    for (var i = 0; i < keyless.length; i++) {
+      compare(prefixWith(settings, keyless[i], {}, runs), "hist-p", "milestone " + i + " without a usable id skips run and map")
+      compare(prefixWith(noHistory, keyless[i], {}, runs), "m3", "milestone " + i + ": then the stem")
+    }
+  }
+
+  function test_dispatchDefaults_prefix_pure() {
+    var f = prefixCards()
+    var project = fullProject()
+    project.settings.prefixByMilestone = { m1: "map-p", m2: "other-p" }
+    project.settings.prefixHistory = ["hist-p", "older"]
+    var runs = [mkPrefixRun("m2", "other-p", "2026-10-07T10:00:00Z"), mkPrefixRun("m1", "  run-p ", "2026-10-06T10:00:00Z")]
+    var before = JSON.stringify([runs, project, f.map])
+    var a = Runs.dispatchDefaults(project, f.c, f.map, runs)
+    var b = Runs.dispatchDefaults(project, f.c, f.map, runs)
+    compare(JSON.stringify([runs, project, f.map]), before, "runs, settings and cardMap unchanged")
+    verify(a !== b, "distinct objects")
+    verify(a.verify !== b.verify, "distinct verify arrays")
+    checkDefaults5(a, "main", 2, "run-p", ["uv run pytest", "bash tests/run.sh"], "with runs")
+    checkDefaults5(Runs.dispatchDefaults(project, f.c, f.map), "main", 2, "map-p", ["uv run pytest", "bash tests/run.sh"],
+                   "without runs")
+    var values = [undefined, null, 0, "x", [], Object.create(null), [null], [Object.create(null)]]
+    for (var i = 0; i < values.length; i++) {
+      checkDefaults5(Runs.dispatchDefaults(values[i], values[i], values[i], values[i]), "", 4, "", [], "garbage " + i)
+    }
   }
 
   // ---- S3 1.2: dispatch form and preview ---------------------------------------------------

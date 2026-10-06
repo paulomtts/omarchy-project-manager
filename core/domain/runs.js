@@ -963,23 +963,57 @@ function _historyPrefix(history) {
   return ""
 }
 
+// The trimmed branch_prefix of the newest run in runs (newest first, see
+// _isNewer) whose milestone_id is key and whose branch_prefix is a non-blank
+// string; "" when runs is not an array or has none.
+function _runPrefix(runs, key) {
+  var list = _arrayOr(runs)
+  var newest = -1
+  for (var i = 0; i < list.length; i++) {
+    var run = list[i]
+    if (!_isObject(run) || run.milestone_id !== key || _trimmedOr(run.branch_prefix) === "") continue
+    if (newest < 0 || _isNewer(run, i, list[newest], newest)) newest = i
+  }
+  return newest < 0 ? "" : _trimmedOr(list[newest].branch_prefix)
+}
+
+// map's own entry for key, trimmed, when map is an object and the entry a
+// string; else "". Inherited keys never count.
+function _mapPrefix(map, key) {
+  if (!_isObject(map) || !Object.prototype.hasOwnProperty.call(map, key)) return ""
+  return _trimmedOr(map[key])
+}
+
 // The prefix default for milestone (a card, or null when the card's milestone
-// is unknown): "" for null; else the first non-blank prefix of
-// settings.prefixHistory, else the stem of milestone's title.
-function _defaultPrefix(milestone, settings) {
+// is unknown): "" for null; else the first non-blank of, in order, the newest
+// run of the milestone (_runPrefix), settings.prefixByMilestone's own entry for
+// the milestone's id (both only when that id is a non-empty string), the first
+// prefix of settings.prefixHistory, and the stem of milestone's title.
+function _defaultPrefix(milestone, settings, runs) {
   if (milestone === null) return ""
+  var key = milestone.id
+  if (typeof key === "string" && key !== "") {
+    var fromRun = _runPrefix(runs, key)
+    if (fromRun !== "") return fromRun
+    var fromMap = _mapPrefix(settings.prefixByMilestone, key)
+    if (fromMap !== "") return fromMap
+  }
   var fromHistory = _historyPrefix(settings.prefixHistory)
   return fromHistory !== "" ? fromHistory : _stemOf(milestone.title)
 }
 
 // The dispatch form's starting values. project is {defaultBranch, settings}
-// with settings as get-run-settings returns it; any part may be missing. base
-// is the trimmed default branch (no fallback: the caller resolves it). prefix
-// is "" when the card's milestone is unknown, else the first non-blank entry of
-// settings.prefixHistory, trimmed, else the stem of the milestone's title.
-// verify is the stored non-blank commands verbatim, parallelism the stored
-// whole number >= 1 else 4. The opt-out from verification is never pre-ticked.
-function dispatchDefaults(project, card, cardMap) {
+// with settings as get-run-settings returns it; runs is the Runs snapshot
+// (normalizeRun output, newest first), [] when not an array; any part may be
+// missing. base is the trimmed default branch (no fallback: the caller
+// resolves it). prefix is "" when the card's milestone is unknown, else the
+// first non-blank, trimmed, of: the branch_prefix of the newest run whose
+// milestone_id is the milestone's id; settings.prefixByMilestone's own entry
+// for that id; the first entry of settings.prefixHistory; the stem of the
+// milestone's title. verify is the stored non-blank commands verbatim,
+// parallelism the stored whole number >= 1 else 4. The opt-out from
+// verification is never pre-ticked.
+function dispatchDefaults(project, card, cardMap, runs) {
   var p = _isObject(project) ? project : {}
   var settings = _isObject(p.settings) ? p.settings : {}
   var milestone = _milestoneOf(card, cardMap)
@@ -993,7 +1027,7 @@ function dispatchDefaults(project, card, cardMap) {
     allowNoVerification: false,
     base: typeof p.defaultBranch === "string" ? _textOf(p.defaultBranch) : "",
     parallelism: _isWholeNumber(parallelism) && parallelism >= 1 ? parallelism : 4,
-    prefix: _defaultPrefix(milestone, settings),
+    prefix: _defaultPrefix(milestone, settings, runs),
     verify: verify
   }
 }
