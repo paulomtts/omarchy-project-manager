@@ -727,8 +727,8 @@ TestCase {
   function test_escape_closes_an_open_dispatch_before_anything_else() {
     var s = onBoard(); if (!s) return
     s.navigator.openCard("s1")
-    compare(s.app.runs.openDispatch(s.app.board.cardMap["s1"], s.app.board.cardMap), false, "a story is refused at once")
-    compare(s.app.runs.dispatchState, "refused")
+    compare(s.app.runs.openDispatch(s.app.board.cardMap["s1"], s.app.board.cardMap), true, "a story opens on itself")
+    compare(s.app.runs.dispatchState, "previewing")
     s.closeRequested()
     compare(s.app.runs.dispatchState, "idle")
     compare(s.app.nav.viewMode, "entry", "that Escape closed the dialog only")

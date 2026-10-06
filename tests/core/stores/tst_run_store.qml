@@ -2639,19 +2639,21 @@ TestCase {
   }
 
   // 4
-  function test_open_story_is_refused_with_its_milestone() {
+  function test_open_story_is_offered_with_the_story_flag() {
     var store = dispatchStore(); if (!store) return
     var cards = dispatchCards()
-    compare(store.openDispatch(cards.s1, cards), false)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchErrorType, "Target")
-    compare(store.dispatchError, "A story is dispatched through its milestone")
-    compare(store.dispatchSuggest.id, "m1")
-    compare(store.dispatchSuggest.title, "M3 Document runs")
+    compare(store.openDispatch(cards.s1, cards), true)
+    compare(store.dispatchState, "previewing")
     compare(store.dispatchTarget.level, "story")
-    compare(store.dispatchForm, null, "a refused target has no form")
-    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
-    verify(!store.dispatchPreviewRunner.current)
+    compare(store.dispatchTarget.command, "story")
+    compare(JSON.stringify(store.dispatchTarget.flags), JSON.stringify(["--story", "s1"]))
+    compare(store.dispatchSuggest, null)
+    compare(store.dispatchError, "")
+    verify(store.dispatchForm, "an offered target has a form")
+    compare(store.dispatchForm.prefix, "m3", "the story's milestone names the prefix")
+    var proc = store.dispatchDefaultsRunner.current
+    verify(proc, "the default branch is looked up")
+    compare(proc.running, true)
   }
 
   // 5
@@ -2676,7 +2678,7 @@ TestCase {
     compare(store.closeDispatch(), true)
     checkDispatchIdle(store, "closed")
     compare(first.running, false, "the lookup is stopped")
-    store.openDispatch(cards.s1, cards)
+    store.openDispatch(cards.d1, cards)
     compare(store.dispatchState, "refused")
     compare(store.openDispatch(cards.m1, cards), true, "opening again replaces a refused target")
     compare(store.dispatchState, "previewing")
@@ -3012,10 +3014,10 @@ TestCase {
     compare(store.setDispatchField("prefix", "x"), false, "idle")
     compare(store.dispatchForm, null)
     var cards = dispatchCards()
-    store.openDispatch(cards.s1, cards)
+    store.openDispatch(cards.d1, cards)
     compare(store.setDispatchField("prefix", "x"), false, "a refused target has no form")
     compare(store.dispatchState, "refused")
-    compare(store.dispatchError, "A story is dispatched through its milestone")
+    compare(store.dispatchError, "The card is done")
     store.openDispatch(cards.m1, cards)
     compare(store.setDispatchField("branch", "x"), false, "unknown field")
     compare(store.setDispatchField("__proto__", {}), false)
@@ -3057,7 +3059,7 @@ TestCase {
     var cards = dispatchCards()
     store.openDispatch(cards.m1, cards)
     compare(store.dispatchStart(), false, "previewing")
-    store.openDispatch(cards.s1, cards)
+    store.openDispatch(cards.d1, cards)
     compare(store.dispatchStart(), false, "refused")
     compare(store.dispatchStartRunners.length, 0, "no start runner")
     var fresh = make(); if (!fresh) return

@@ -871,7 +871,6 @@ function newAlerts(prevRuns, nextRuns) {
 
 var _DISPATCH_NO_CARD = "No card to dispatch"
 var _DISPATCH_UNKNOWN_LEVEL = "The card's level is unknown"
-var _DISPATCH_STORY = "A story is dispatched through its milestone"
 
 // A card id am can take as a target: a non-empty string that cannot be read as a flag.
 function _isDispatchId(id) { return typeof id === "string" && id !== "" && id.charAt(0) !== "-" }
@@ -898,25 +897,19 @@ function _refusedPlan(level, reason, suggest) {
 }
 
 // What the dispatch dialog may start for card. "board" is the whole board;
-// otherwise card is a brd card: depth 0 milestone, 1 story, 2+ subtask. A
-// finished card is refused; a story is refused with its milestone as the
-// suggestion (title from cardMap when it owns the parent, else ""). Decision
-// order and sentences are pinned in docs/superpowers/specs/1-1-runs-js-5eb7ec0c.md.
+// otherwise card is a brd card: depth 0 milestone (--milestone), 1 story
+// (--story), 2+ subtask (--card). A finished card is refused at every level.
+// cardMap is accepted and not read. Decision order and sentences are pinned in
+// docs/superpowers/specs/1-1-runs-js-5eb7ec0c.md and
+// docs/superpowers/specs/1-2-runs-js-the-story-a2a74eda.md.
 function dispatchPlan(card, cardMap) {
   if (card === "board") return _offeredPlan("board", "board", ["--board"])
   if (!_isObject(card) || !_isDispatchId(card.id)) return _refusedPlan("", _DISPATCH_NO_CARD, null)
   if (!_isWholeNumber(card.depth) || card.depth < 0) return _refusedPlan("", _DISPATCH_UNKNOWN_LEVEL, null)
   var level = card.depth === 0 ? "milestone" : (card.depth === 1 ? "story" : "subtask")
   if (Board.isFinishedStatus(card.status)) return _refusedPlan(level, "The card is " + card.status, null)
-  if (level === "story") {
-    var suggest = null
-    if (typeof card.parentId === "string" && card.parentId !== "") {
-      var parent = _ownCard(cardMap, card.parentId)
-      suggest = { id: card.parentId, title: parent !== null ? _textOf(parent.title) : "" }
-    }
-    return _refusedPlan("story", _DISPATCH_STORY, suggest)
-  }
   if (level === "milestone") return _offeredPlan("milestone", "milestone", ["--milestone", card.id])
+  if (level === "story") return _offeredPlan("story", "story", ["--story", card.id])
   return _offeredPlan("subtask", "card", ["--card", card.id])
 }
 
