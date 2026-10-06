@@ -21,7 +21,8 @@ non-empty strings, most recent first, default []), parallelism (a whole number
 (an object mapping each milestone id to a non-empty prefix string, default {}).
 `set-run-settings` takes a JSON object with any of them, validates every key
 before writing anything, and changes only the keys given; a list given replaces
-the stored list wholesale.
+the stored list wholesale, and a prefixByMilestone given is merged into the
+stored map per milestone id (a stored map that is not valid is replaced).
 """
 import json
 import os
@@ -167,6 +168,11 @@ def cmd_set_run_settings(root_path, text):
     entry = settings.get(root_path)
     if not isinstance(entry, dict):
         entry = settings[root_path] = {}
+    if "prefixByMilestone" in update:
+        stored = entry.get("prefixByMilestone")
+        merged = dict(stored) if valid_prefix_by_milestone(stored) else {}
+        merged.update(update["prefixByMilestone"])
+        update["prefixByMilestone"] = merged
     entry.update(update)
     return save(data)
 

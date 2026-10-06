@@ -630,3 +630,62 @@ def test_set_project_preserves_prefix_by_milestone(env):
     assert run(env, "set-project", "/other") == (0, {"ok": True})
     assert run(env, "get-run-settings", "/p")[1]["prefixByMilestone"] == {"m1": "a", "m2": "b"}
     assert run(env, "get") == (0, {"last_project": "/other"})
+
+
+def test_set_prefix_by_milestone_merges_per_milestone(env):
+    def set_and_get(by_milestone):
+        assert set_by_milestone(env, "/p", by_milestone) == (0, {"ok": True})
+        return run(env, "get-run-settings", "/p")[1]["prefixByMilestone"]
+    assert set_and_get({"m1": "a"}) == {"m1": "a"}
+    assert set_and_get({"m2": "b"}) == {"m1": "a", "m2": "b"}
+    assert set_and_get({"m1": "c"}) == {"m1": "c", "m2": "b"}
+    assert set_and_get({}) == {"m1": "c", "m2": "b"}
+
+
+def test_set_prefix_by_milestone_padded_ids_are_distinct(env):
+    assert set_by_milestone(env, "/p", {"m1": "a"}) == (0, {"ok": True})
+    assert set_by_milestone(env, "/p", {" m1": "b"}) == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixByMilestone"] == {"m1": "a", " m1": "b"}
+
+
+# A damaged stored map is replaced, not merged into: merging would leave a bad
+# entry behind and the whole field would read {}.
+@pytest.mark.parametrize("stored", [{"m1": "p", "m2": 5}, "x", [], {"": "p"}, None])
+def test_set_prefix_by_milestone_replaces_a_damaged_stored_map(env, stored):
+    write_state(env, {"run_settings": {"/p": {"verify": ["a"], "prefixByMilestone": stored}}})
+    assert set_by_milestone(env, "/p", {"m3": "q"}) == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text())["run_settings"]["/p"] == {
+        "verify": ["a"], "prefixByMilestone": {"m3": "q"}}
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and same_json(result, {**DEFAULTS, "verify": ["a"], "prefixByMilestone": {"m3": "q"}})
+
+
+def test_set_empty_prefix_by_milestone_on_a_fresh_root(env):
+    assert set_by_milestone(env, "/p", {}) == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {"run_settings": {"/p": {"prefixByMilestone": {}}}}
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and same_json(result, DEFAULTS)
+
+
+def test_set_prefix_by_milestone_preserves_other_keys(env):
+    write_state(env, {"last_project": "/p", "other": {"x": 1},
+                      "run_settings": {"/q": {"prefixByMilestone": {"m1": "q-"}},
+                                       "/p": {"verify": ["old"], "future": 1, "parallelism": "x",
+                                              "prefixByMilestone": {"m1": "a"}}}})
+    assert set_by_milestone(env, "/p", {"m2": "b"}) == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {
+        "last_project": "/p", "other": {"x": 1},
+        "run_settings": {"/q": {"prefixByMilestone": {"m1": "q-"}},
+                         "/p": {"verify": ["old"], "future": 1, "parallelism": "x",
+                                "prefixByMilestone": {"m1": "a", "m2": "b"}}}}
+    assert [p.name for p in state_file(env).parent.iterdir()] == ["state.json"]
+
+
+def test_set_prefix_by_milestone_merges_into_the_legacy_map(env):
+    old = Path(env["XDG_STATE_HOME"]) / "brd-viewer" / "state.json"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"run_settings": {"/p": {"prefixByMilestone": {"m1": "a"}}}}')
+    assert set_by_milestone(env, "/p", {"m2": "b"}) == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {
+        "run_settings": {"/p": {"prefixByMilestone": {"m1": "a", "m2": "b"}}}}
+    assert old.read_text() == '{"run_settings": {"/p": {"prefixByMilestone": {"m1": "a"}}}}'
