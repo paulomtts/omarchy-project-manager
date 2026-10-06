@@ -508,13 +508,15 @@ function _linesOf(text) {
   return t === "" ? [] : t.split("\n")
 }
 
-// The last `maxLines` lines of an `am logs` data object's stdout, then the last
-// `maxLines` of its stderr, as one string. `truncated` says lines were cut, so
-// the pane can say "last 200 lines". A bad maxLines is 200.
+// The last `maxLines` lines of an `am logs` data object's
+// artifacts.stdout.text, then the last `maxLines` of its artifacts.stderr.text,
+// as one string. A missing artifact or a text that is not a string is no lines.
+// `truncated` says lines were cut. A bad maxLines is 200.
 function logTail(data, maxLines) {
   var max = _isFiniteNumber(maxLines) && maxLines >= 1 ? Math.floor(maxLines) : 200
-  var out = _isObject(data) ? _linesOf(data.stdout) : []
-  var err = _isObject(data) ? _linesOf(data.stderr) : []
+  var artifacts = _isObject(data) && _isObject(data.artifacts) ? data.artifacts : {}
+  var out = _isObject(artifacts.stdout) ? _linesOf(artifacts.stdout.text) : []
+  var err = _isObject(artifacts.stderr) ? _linesOf(artifacts.stderr.text) : []
   var truncated = out.length > max || err.length > max
   if (out.length > max) out = out.slice(out.length - max)
   if (err.length > max) err = err.slice(err.length - max)

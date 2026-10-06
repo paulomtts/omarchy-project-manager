@@ -43,7 +43,7 @@ code = os.path.join(d, name + ".code")
 sys.exit(int(open(code).read()) if os.path.exists(code) else 0)
 '''
 
-ARGS = ["r1", "c1", "implement", "2"]
+RUN_ARGS = ["r1", "c1", "implement", "2"]
 FIXTURES = os.path.join(ROOT, "tests", "fixtures", "am")
 # synthetic: am's error envelope for an unknown run; no capture holds one.
 UNKNOWN_RUN = {"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": False}
@@ -69,7 +69,8 @@ def write_exec(path, text):
 
 @pytest.fixture
 def world(tmp_path):
-    """A temp PATH with a fake am, its fixture dir, and a temp HOME/XDG_DATA_HOME."""
+    """A temp PATH with a fake am, its fixture dir, a temp HOME/XDG_DATA_HOME, and a
+    project root whose name would break if it ever went through a shell."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     write_exec(bindir / "am", FAKE_AM)
@@ -77,8 +78,15 @@ def world(tmp_path):
     amdir.mkdir()
     home = tmp_path / "home"
     home.mkdir()
+    proj = tmp_path / "my proj; echo x"
+    proj.mkdir()
     return {"tmp": tmp_path, "bin": bindir, "am": amdir, "home": home,
-            "data": tmp_path / "data"}
+            "data": tmp_path / "data", "proj": proj}
+
+
+def default_args(world):
+    """The helper's argv for one attempt of the world's project."""
+    return [str(world["proj"]), *RUN_ARGS]
 
 
 def env_for(world, drop=(), **extra):
@@ -96,7 +104,7 @@ def env_for(world, drop=(), **extra):
 
 def run(world, args=None, drop=(), **extra):
     """Run the helper; assert stdout is exactly one JSON line; return (exit, payload)."""
-    argv = ARGS if args is None else args
+    argv = default_args(world) if args is None else args
     p = subprocess.run([sys.executable, SCRIPT, *argv], capture_output=True, text=True,
                        env=env_for(world, drop, **extra), timeout=60)
     lines = p.stdout.splitlines()
@@ -141,24 +149,52 @@ def test_ok_envelope_passed_through(world):
 
 
 def test_exact_am_argv(world):
+    # The project dir is named "my proj; echo x": it must arrive as one argv element.
     set_logs(world, {"ok": True, "data": logs_data()})
     code, _ = run(world)
     assert code == 0
     made = calls(world)
-    assert made == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2"]]
-    assert "--repo-dir" not in made[0]
+    assert made == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
+                     "--repo-dir", str(world["proj"])]]
     assert "--pretty" not in made[0]
 
 
 def test_args_reach_am_verbatim(world):
     # Spaces, shell metacharacters and a leading dash must each arrive as one argv
-    # element: no shell, no validation by the helper.
-    args = ["r 1; echo x", "c$(whoami)", "plan & review", "-1"]
+    # element: no shell, no validation by the helper. The root does not exist.
+    root = str(world["tmp"] / "r$(id) & z")
+    args = [root, "r 1; echo x", "c$(whoami)", "plan & review", "-1"]
     set_logs(world, {"ok": True, "data": logs_data()})
     code, _ = run(world, args)
     assert code == 0
     assert calls(world) == [["logs", "r 1; echo x", "c$(whoami)",
-                             "--phase", "plan & review", "--attempt", "-1"]]
+                             "--phase", "plan & review", "--attempt", "-1",
+                             "--repo-dir", root]]
+
+
+@pytest.mark.parametrize("root", [".", "/some/proj/", "", "-proj"],
+                         ids=["relative-dot", "trailing-slash", "empty", "leading-dash"])
+def test_root_reaches_am_unnormalised(world, root):
+    # The root is neither resolved, stripped nor checked: am refuses a bad one itself.
+    set_logs(world, {"ok": True, "data": logs_data()})
+    code, _ = run(world, [root, *RUN_ARGS])
+    assert code == 0
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
+                             "--repo-dir", root]]
+
+
+def test_root_that_is_a_file_is_left_to_am(world):
+    root = world["tmp"] / "not-a-dir"
+    root.write_text("")
+    # synthetic: am's refusal of a repo dir that is not a directory; no capture holds one.
+    refusal = {"ok": False, "error": {"type": "UsageError",
+                                      "message": "--repo-dir is not a directory"}}
+    set_logs(world, refusal, code=3)
+    code, out = run(world, [str(root), *RUN_ARGS])
+    assert code == 0
+    assert out == refusal
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
+                             "--repo-dir", str(root)]]
 
 
 def test_pretty_printed_am_output_becomes_one_line(world):
@@ -184,7 +220,8 @@ def test_missing_fixture_unknown_run(world):
     code, out = run(world)
     assert code == 0
     assert out == UNKNOWN_RUN
-    assert calls(world) == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2"]]
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
+                             "--repo-dir", str(world["proj"])]]
 
 
 def test_ok_wins_over_am_exit_code_and_stderr(world):
@@ -233,7 +270,7 @@ def test_am_does_not_inherit_stdin(world):
     write_exec(world["bin"] / "am",
                "#!/usr/bin/env python3\nimport os, sys\nsys.stdin.read()\n"
                "sys.stdout.write(open(os.path.join(os.environ['FAKE_AM_DIR'], 'logs.out')).read())\n")
-    p = subprocess.Popen([sys.executable, SCRIPT, *ARGS], stdin=subprocess.PIPE,
+    p = subprocess.Popen([sys.executable, SCRIPT, *default_args(world)], stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          env=env_for(world))
     try:
@@ -301,14 +338,20 @@ def test_am_missing(world):
     assert out["error"]["message"]
 
 
-@pytest.mark.parametrize("args", [["r1", "c1", "implement"],
-                                  ["r1", "c1", "implement", "2", "extra"]],
-                         ids=["three", "five"])
-def test_usage_wrong_argc(world, args):
+@pytest.mark.parametrize("shape", ["none", "old-four", "four-with-root", "six"])
+def test_usage_wrong_argc(world, shape):
+    proj = str(world["proj"])
+    args = {
+        "none": [],
+        "old-four": ["r1", "c1", "implement", "2"],
+        "four-with-root": [proj, "r1", "c1", "implement"],
+        "six": [proj, "r1", "c1", "implement", "2", "extra"],
+    }[shape]
     code, out = run(world, args)
     assert code == 2
-    assert out == {"ok": False, "error": {"type": "Usage",
-                                          "message": "usage: runs-logs.py RUN CARD PHASE ATTEMPT"}}
+    assert out == {"ok": False, "error": {
+        "type": "Usage",
+        "message": "usage: runs-logs.py <project_root> RUN CARD PHASE ATTEMPT"}}
     assert calls(world) == []
 
 
@@ -340,7 +383,7 @@ def test_am_timeout_is_helper_error(world, monkeypatch, capsys):
     monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
     for key, value in env_for(world).items():
         monkeypatch.setenv(key, value)
-    code = helper.guarded(list(ARGS))
+    code = helper.guarded(default_args(world))
     lines = capsys.readouterr().out.splitlines()
     assert code == 0
     assert len(lines) == 1, lines

@@ -14,7 +14,7 @@ TestCase {
 
   property string rootA: "/home/u/my proj"
   property string rootB: "/home/u/b"
-  property string logsCmd: "python3|/plugin/core/backend/runs/runs-logs.py|"
+  property string logsCmd: "python3|/plugin/core/backend/runs/runs-logs.py|" + rootA + "|"
   // The started capture's open subtask (explore attempt 1 is started) and a
   // done subtask of it (spec attempt 1 is ok).
   readonly property string openCard: "299ec9c0-b935-4c44-a7a0-982a104cbfe5"
@@ -930,8 +930,15 @@ TestCase {
     return e
   }
 
+  // A fresh logs-attempt.json `am logs` reply, as one JSON line, whose stdout
+  // artifact text is `stdout` and, when given, whose stderr artifact text is
+  // `stderr` (else the capture's null).
   function logsReply(stdout, stderr) {
-    return JSON.stringify({ ok: true, data: { stdout: stdout, stderr: stderr || "" } }) + "\n"
+    var envelope = F.load("logs-attempt.json")
+    // synthetic: the texts are the test's; the envelope is the capture's.
+    envelope.data.artifacts.stdout.text = stdout
+    if (stderr !== undefined) envelope.data.artifacts.stderr.text = stderr
+    return JSON.stringify(envelope) + "\n"
   }
 
   function argv(proc) { return proc.command.join("|") }
@@ -1028,6 +1035,17 @@ TestCase {
     compare(shown[199], "line 249")
     compare(shown[200], "boom")
     compare(store.logsTruncated, true)
+  }
+
+  function test_a_real_logs_reply_shows_the_attempts_output() {
+    var store = opened(); if (!store) return
+    var envelope = F.load("logs-attempt.json")
+    reply(store.logsRunner.current, JSON.stringify(envelope) + "\n", 0)
+    compare(store.logsText, envelope.data.artifacts.stdout.text.slice(0, -1), "the attempt's stdout")
+    compare(store.logsText.split("\n").length, 19)
+    compare(store.logsTruncated, false)
+    compare(store.logsError, "")
+    compare(store.logsLoading, false)
   }
 
   function test_logs_failures_keep_the_text_and_never_touch_am_status() {
@@ -1204,6 +1222,64 @@ TestCase {
     verify(store.selectedAttempt, "the first attempt is picked once it exists")
     compare(store.selectedAttempt.attempt, 1)
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+  }
+
+  // The logs launch: python3, the script, then the project root and the
+  // attempt, five arguments; the root is the current project's, one element.
+  function test_logs_argv_leads_with_the_current_project_root() {
+    var store = opened(); if (!store) return
+    var procA = store.logsRunner.current
+    compare(argv(procA), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/my proj|r1|" + tc.openCard + "|explore|1")
+    compare(procA.command.length, 7, "five arguments after python3 and the script")
+    compare(procA.command[2], "/home/u/my proj", "the root with a space is one argument")
+    store.project = tc.rootB
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    compare(store.logsRunner.current, procA, "nothing is launched after the switch until a run is selected")
+    compare(procA.running, false, "A's fetch is stopped, not re-sent")
+    store.selectedRunId = "r1"
+    var procB = store.logsRunner.current
+    verify(procB !== procA)
+    compare(procB.command[2], "/home/u/b")
+    compare(argv(procB), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b|r1|" + tc.openCard + "|explore|1")
+  }
+
+  // Refresh, selectAttempt and a snapshot's refetch under B
+  // carry B's root; back on A, A's root again.
+  function test_every_logs_launch_after_a_switch_carries_the_new_root() {
+    var bCmd = "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b|"
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    store.project = tc.rootB
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    reply(store.logsRunner.current, logsReply("b\n"), 0)
+    store.refreshLogs()
+    compare(argv(store.logsRunner.current), bCmd + "r1|" + tc.openCard + "|explore|1", "Refresh")
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    compare(argv(store.logsRunner.current), bCmd + "r1|" + tc.doneCard + "|spec|1", "selectAttempt")
+    store.selectAttempt(tc.openCard, "explore", 1)
+    reply(store.logsRunner.current, logsReply("b\n"), 0)
+    var seq = store.logsRunner.seq
+    snapshot(store, [treeEntry("r1", "ok")])
+    compare(store.logsRunner.seq, seq + 1, "started -> ok fetches again")
+    compare(argv(store.logsRunner.current), bCmd + "r1|" + tc.openCard + "|explore|1", "the snapshot's refetch")
+    store.project = tc.rootA
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1", "back on A")
+  }
+
+  // The root reaches the runner byte-for-byte.
+  function test_logs_argv_keeps_an_odd_root_verbatim() {
+    var odd = "/home/u/o'dd; $x/"
+    var store = makeWithProject(odd); if (!store) return
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    var proc = store.logsRunner.current
+    verify(proc, "the default attempt's logs were asked for")
+    compare(proc.command.length, 7)
+    compare(proc.command[2], odd, "not split, quoted, trimmed or normalised")
+    compare(proc.command[3], "r1")
   }
 
   // ---- run controls (S2 4.1)

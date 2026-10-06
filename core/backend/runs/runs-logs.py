@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """One attempt's output snapshot: an `am logs` passthrough.
 
-    runs-logs.py RUN CARD PHASE ATTEMPT
+    runs-logs.py <project_root> RUN CARD PHASE ATTEMPT
 
-Runs `am logs RUN CARD --phase PHASE --attempt ATTEMPT` as an argv list (no
-shell, stdin /dev/null, 60 s timeout). No --repo-dir is sent: am resolves the
-run by id. The four arguments go to am verbatim; am refuses bad ones itself.
+Runs `am logs RUN CARD --phase PHASE --attempt ATTEMPT --repo-dir ROOT` as an
+argv list (no shell, stdin /dev/null, 60 s timeout). The five arguments go to am
+verbatim; am refuses bad ones itself.
 
 Prints exactly one JSON line on EVERY path:
 - am's envelope, unchanged, whether {"ok": true, "data": ...} or
@@ -16,7 +16,7 @@ Prints exactly one JSON line on EVERY path:
   JSON, is not an object, or has no boolean `ok`;
 - {"ok": false, "error": {"type": "HelperError", ...}} on any unexpected
   failure (a timeout, an am that cannot start);
-- {"ok": false, "error": {"type": "Usage", ...}} when not given exactly four
+- {"ok": false, "error": {"type": "Usage", ...}} when not given exactly five
   arguments.
 Exit 0 whenever a line was printed, refusals and errors included; exit 2 for
 Usage only. Only the documented `am logs` command is used; am's database and
@@ -31,7 +31,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = "usage: runs-logs.py RUN CARD PHASE ATTEMPT"
+USAGE = "usage: runs-logs.py <project_root> RUN CARD PHASE ATTEMPT"
 AM_TIMEOUT = 60
 
 
@@ -43,9 +43,9 @@ def failure(kind, message, code=0):
     return emit({"ok": False, "error": {"type": kind, "message": message}}, code)
 
 
-def logs_argv(run, card, phase, attempt):
-    """am's argv after the executable. No --repo-dir: am resolves the run by id."""
-    return ["logs", run, card, "--phase", phase, "--attempt", attempt]
+def logs_argv(root, run, card, phase, attempt):
+    """am's argv after the executable: the attempt, then --repo-dir ROOT."""
+    return ["logs", run, card, "--phase", phase, "--attempt", attempt, "--repo-dir", root]
 
 
 def envelope_of(stdout, returncode):
@@ -63,7 +63,7 @@ def envelope_of(stdout, returncode):
 
 
 def main(argv):
-    if len(argv) != 4:
+    if len(argv) != 5:
         return failure("Usage", USAGE, 2)
     am = shutil.which("am")
     if am is None:
