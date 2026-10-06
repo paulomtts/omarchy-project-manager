@@ -463,6 +463,258 @@ TestCase {
     compare(store.lastError, "")
   }
 
+  // ---- the hello
+
+  // The helper's forwarded hello for watch-hello.json's `key` line.
+  function helloLine(key) {
+    var h = F.load("watch-hello.json")[key]
+    return { hello: { schema: h.schema, am: h.am } }
+  }
+
+  function test_am_schema_and_version_default_unknown() {
+    var store = make(); if (!store) return
+    compare(store.amSchema, 0, "a fresh store knows no schema")
+    compare(store.amVersion, "", "nor am's version")
+    var watched = watchedStore([entry("a", "done", false)]); if (!watched) return
+    compare(watched.amSchema, 0, "a running watch before its hello")
+    compare(watched.amVersion, "")
+  }
+
+  function test_hello_sets_schema_and_version() {
+    var cases = [["schema_1", 1], ["schema_2", 2]]
+    for (var i = 0; i < cases.length; i++) {
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      sendLine(store.watchProc, helloLine(cases[i][0]))
+      compare(store.amSchema, cases[i][1], cases[i][0])
+      compare(store.amVersion, "0.1.0", cases[i][0])
+    }
+  }
+
+  function test_hello_starts_nothing() {
+    var store = watchedStore([entry("a", "started", true)]); if (!store) return
+    var seq = store.snapshotRunner.seq
+    var liveness = store.livenessTimer.running
+    sendLine(store.watchProc, helloLine("schema_2"))
+    compare(store.amSchema, 2)
+    compare(store.debounceTimer.running, false, "a hello is not a change")
+    compare(store.snapshotRunner.seq, seq, "no snapshot")
+    compare(store.livenessTimer.running, liveness, "the liveness timer is left as it was")
+    compare(store.watching, true)
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    compare(store.watchWarning, "")
+    compare(store.watchSchemaError, "")
+    verify(!store.watchProc.envelope, "a hello is not an envelope")
+    sendLine(store.watchProc, { changed: ["a"] })
+    compare(store.debounceTimer.running, true, "a changed line still starts the debounce")
+  }
+
+  function test_malformed_hello_values() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var schemas = ["2", true, 2.5, 0, -1, null, undefined]
+    for (var i = 0; i < schemas.length; i++) {
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amSchema, 2, "a known schema first")
+      // synthetic: schema_1's forwarded hello with a schema that is not an
+      // integer of 1 or more (undefined drops the key).
+      var line = helloLine("schema_1")
+      if (schemas[i] === undefined) delete line.hello.schema
+      else line.hello.schema = schemas[i]
+      sendLine(store.watchProc, line)
+      compare(store.amSchema, 0, JSON.stringify(line))
+      compare(store.amVersion, "0.1.0", JSON.stringify(line) + " keeps its string am")
+    }
+    var ams = [5, null, undefined]
+    for (var j = 0; j < ams.length; j++) {
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amVersion, "0.1.0", "a known version first")
+      // synthetic: schema_1's forwarded hello with an am that is not a string
+      // (undefined drops the key).
+      var amLine = helloLine("schema_1")
+      if (ams[j] === undefined) delete amLine.hello.am
+      else amLine.hello.am = ams[j]
+      sendLine(store.watchProc, amLine)
+      compare(store.amVersion, "", JSON.stringify(amLine))
+      compare(store.amSchema, 1, JSON.stringify(amLine) + " keeps its integer schema")
+    }
+    // synthetic: the spec's error-table lines, typed as raw text.
+    var raw = ['{"hello": {"schema": "2", "am": 5}}', '{"hello": {}}']
+    for (var k = 0; k < raw.length; k++) {
+      sendLine(store.watchProc, helloLine("schema_2"))
+      sendLine(store.watchProc, raw[k])
+      compare(store.amSchema, 0, raw[k])
+      compare(store.amVersion, "", raw[k])
+    }
+  }
+
+  function test_non_object_hello_ignored() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    var lines = ['{"hello": 1}', '{"hello": null}', '{"hello": []}', '{"hello": "x"}']
+    for (var i = 0; i < lines.length; i++) {
+      sendLine(store.watchProc, lines[i])
+      compare(store.amSchema, 2, lines[i] + " is ignored")
+      compare(store.amVersion, "0.1.0", lines[i] + " is ignored")
+      compare(store.debounceTimer.running, false, lines[i])
+    }
+  }
+
+  function test_a_later_hello_overwrites_both() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    sendLine(store.watchProc, helloLine("schema_1"))
+    compare(store.amSchema, 1, "the latest hello wins")
+    compare(store.amVersion, "0.1.0")
+    // synthetic: schema_1's forwarded hello with neither a usable schema nor am.
+    var line = helloLine("schema_1")
+    line.hello.schema = "1"
+    line.hello.am = 1
+    sendLine(store.watchProc, line)
+    compare(store.amSchema, 0, "a later malformed hello resets the schema")
+    compare(store.amVersion, "", "and the version")
+  }
+
+  function test_hello_beside_changed_or_ok_false_keeps_its_meaning() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    // synthetic: a changed line that also carries schema_2's hello.
+    var changed = helloLine("schema_2")
+    changed.changed = ["a"]
+    sendLine(store.watchProc, changed)
+    compare(store.debounceTimer.running, true, "a changed array still restarts the debounce")
+    compare(store.amSchema, 0, "its hello is not read")
+    compare(store.amVersion, "")
+    // synthetic: an ok:false envelope that also carries schema_2's hello.
+    var refusal = helloLine("schema_2")
+    refusal.ok = false
+    refusal.error = { type: "HelperError", message: "m" }
+    sendLine(store.watchProc, refusal)
+    verify(store.watchProc.envelope, "ok:false is still kept as the envelope")
+    compare(store.watchProc.envelope.error.type, "HelperError")
+    compare(store.amSchema, 0, "its hello is not read")
+    compare(store.amVersion, "")
+  }
+
+  function test_hello_mid_burst_keeps_the_debounce() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, { changed: ["a"] })
+    compare(store.debounceTimer.running, true)
+    sendLine(store.watchProc, helloLine("schema_2"))
+    compare(store.amSchema, 2)
+    compare(store.debounceTimer.running, true, "the pending refresh is kept")
+    compare(store.snapshotRunner.seq, seq, "and not fired early")
+    store.debounceTimer.triggered()
+    compare(store.snapshotRunner.seq, seq + 1, "the burst still costs one snapshot")
+  }
+
+  function test_hello_extra_keys_are_ignored() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    // synthetic: am's raw hello object (event, runs_dir) as the hello value.
+    sendLine(store.watchProc, { hello: F.load("watch-hello.json").schema_2 })
+    compare(store.amSchema, 2)
+    compare(store.amVersion, "0.1.0")
+    // synthetic: schema_1's forwarded hello with an empty am and an unknown key.
+    var line = helloLine("schema_1")
+    line.hello.am = ""
+    line.hello.extra = { schema: 9 }
+    sendLine(store.watchProc, line)
+    compare(store.amSchema, 1)
+    compare(store.amVersion, "", "an empty string is still a string")
+  }
+
+  function test_hello_reset_on_deactivate() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    compare(store.amSchema, 2)
+    store.active = false
+    compare(store.amSchema, 0, "a closed panel has no watch hello")
+    compare(store.amVersion, "")
+    store.active = true
+    compare(store.amSchema, 0, "reopening alone restores nothing")
+    compare(store.amVersion, "")
+  }
+
+  function test_hello_reset_on_watch_exit() {
+    var cases = [["", 0], [watchError("HelperError", "m"), 1], ["", 137]]
+    for (var i = 0; i < cases.length; i++) {
+      var label = "exit " + cases[i][1] + " " + cases[i][0]
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amSchema, 2, label)
+      endWatch(store.watchProc, cases[i][0], cases[i][1])
+      compare(store.watching, false, label)
+      compare(store.amSchema, 0, label + ": an ended watch has no hello")
+      compare(store.amVersion, "", label)
+    }
+  }
+
+  function test_hello_reset_when_poll_takes_over() {
+    var types = ["SchemaMismatch", "CorruptJournal"]
+    for (var i = 0; i < types.length; i++) {
+      var store = watchedStore([entry("a", "done", false)]); if (!store) return
+      sendLine(store.watchProc, helloLine("schema_2"))
+      compare(store.amSchema, 2, types[i])
+      endWatch(store.watchProc, watchError(types[i], "m"), 1)
+      compare(store.amSchema, 0, types[i])
+      compare(store.amVersion, "", types[i])
+      compare(store.pollTimer.running, true, types[i] + " polls")
+      store.pollTimer.triggered()
+      reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+      compare(store.amSchema, 0, types[i] + ": a polled snapshot brings no hello")
+      compare(store.amVersion, "", types[i])
+    }
+  }
+
+  function test_hello_reset_on_project_switch() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    sendLine(store.watchProc, helloLine("schema_2"))
+    store.project = rootB
+    compare(store.amSchema, 0, "A's hello says nothing about B")
+    compare(store.amVersion, "")
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    sendLine(store.watchProc, helloLine("schema_1"))
+    compare(store.amSchema, 1, "B's watch says hello")
+    compare(store.amVersion, "0.1.0")
+    store.project = ""
+    compare(store.amSchema, 0, "no project, no hello")
+    compare(store.amVersion, "")
+  }
+
+  function test_old_watch_hello_ignored() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var old = store.watchProc
+    sendLine(old, helloLine("schema_2"))
+    store.project = rootB
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    verify(store.watchProc !== old, "B runs its own watch")
+    sendLine(old, helloLine("schema_2"))
+    compare(store.amSchema, 0, "A's late hello is dropped")
+    compare(store.amVersion, "")
+    sendLine(store.watchProc, helloLine("schema_1"))
+    compare(store.amSchema, 1, "B's own hello counts")
+    compare(store.amVersion, "0.1.0")
+    old.exited(0)
+    compare(store.amSchema, 1, "A's late exit forgets nothing")
+    compare(store.amVersion, "0.1.0")
+  }
+
+  function test_new_watch_starts_unknown() {
+    var store = watchedStore([entry("a", "done", false)]); if (!store) return
+    var old = store.watchProc
+    sendLine(old, helloLine("schema_2"))
+    store.active = false
+    store.active = true
+    reply(store.snapshotRunner.current, okReply([entry("a", "done", false)]), 0)
+    var fresh = store.watchProc
+    verify(fresh !== old, "a new watch was started")
+    compare(fresh.running, true)
+    compare(store.amSchema, 0, "a new watch starts unknown")
+    compare(store.amVersion, "")
+    sendLine(fresh, helloLine("schema_1"))
+    compare(store.amSchema, 1, "until its own hello")
+    compare(store.amVersion, "0.1.0")
+  }
+
   // ---- liveness
 
   function test_liveness_on_with_running_run() {

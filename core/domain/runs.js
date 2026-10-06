@@ -143,7 +143,8 @@ function normalizeRun(raw) {
 
 // The one state shown for a normalised run. The lease matters only while the
 // run says `started`: a started run whose lease is missing or not live is
-// dead. Anything else -- an unknown or empty status, or no run at all -- is
+// dead. Both `cancelled` and `canceled` are `cancelled`, whatever the lease.
+// Anything else -- an unknown or empty status, or no run at all -- is
 // `unknown`, which is neither running nor finished. `stale` is a card state,
 // never a run state.
 function runState(run) {
@@ -154,7 +155,8 @@ function runState(run) {
     return lease !== null && typeof lease === "object" && lease.live === true ? "running" : "dead"
   }
   if (status === "stopped") return "parked"
-  if (status === "escalated" || status === "cancelled" || status === "done") return status
+  if (status === "cancelled" || status === "canceled") return "cancelled"
+  if (status === "escalated" || status === "done") return status
   return "unknown"
 }
 
@@ -538,15 +540,16 @@ function snapshotAgeText(fetchedMs, nowMs) {
 
 // The run-state name (a runGlyphs.js key) an am story, subtask, phase, attempt
 // or row status is drawn with: started is running; failed and the attempt
-// failures gate_failed, schema_invalid, harness_error are dead; the attempt
-// outcome ok is done. "" for anything else, which shows no glyph.
+// failures gate_failed, schema_invalid, harness_error are dead; both cancelled
+// and canceled are cancelled; the attempt outcome ok is done. "" for anything
+// else, which shows no glyph.
 function glyphStateOf(status) {
   if (status === "started" || status === "running") return "running"
   if (status === "stopped" || status === "parked") return "parked"
   if (status === "escalated") return "escalated"
   if (status === "failed" || status === "dead" || status === "gate_failed" ||
       status === "schema_invalid" || status === "harness_error") return "dead"
-  if (status === "cancelled") return "cancelled"
+  if (status === "cancelled" || status === "canceled") return "cancelled"
   if (status === "done" || status === "ok") return "done"
   return ""
 }

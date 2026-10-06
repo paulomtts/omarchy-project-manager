@@ -136,8 +136,9 @@ Column {
     }
   }
 
-  // The watch line, or why the last run key was refused while that flash
-  // lasts; a flash shows even where the footer is otherwise hidden.
+  // The watch line, naming the am version and journal schema the watch
+  // announced once they are known, or why the last run key was refused while
+  // that flash lasts; a flash shows even where the footer is otherwise hidden.
   UI.ThemedText {
     objectName: "runsFooter"
     variant: "caption"
@@ -148,7 +149,10 @@ Column {
       ? screen.app.runs.flashText
       : screen.app.runs.amStatus === "error" && screen.app.runs.lastError !== ""
         ? screen.app.runs.lastError
-        : "am · schema 1 · " + (screen.app.runs.watching ? "watching" : "not watching")
+        : "am" +
+          (screen.app.runs.amSchema > 0 && screen.app.runs.amVersion !== "" ? " " + screen.app.runs.amVersion : "") +
+          (screen.app.runs.amSchema > 0 ? " · schema " + screen.app.runs.amSchema : "") +
+          " · " + (screen.app.runs.watching ? "watching" : "not watching")
     wrapMode: Text.WordWrap
   }
 

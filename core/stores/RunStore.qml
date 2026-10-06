@@ -28,6 +28,8 @@ Scope {
   property var runs: []               // Runs.normalizeRun output, am's order
   property string selectedRunId: ""   // set by the UI
   property string amStatus: "ok"      // "ok" | "missing" | "schema" | "error"
+  property int amSchema: 0            // journal schema from the current watch's hello; 0 = unknown
+  property string amVersion: ""       // am's version from the current watch's hello; "" = unknown
   property string lastError: ""
   property bool stale: false          // the last good snapshot is over 30 s old while active
   property string watchWarning: ""    // the corrupt-journal chip; "" when there is none
@@ -206,17 +208,21 @@ Scope {
     else staleTimer.stop()
   }
 
+  // No watch is left running, so am's schema and version are unknown again.
   function stopWatch() {
     store.watchSeq += 1
     if (watchState.proc) watchState.proc.running = false
     watchState.watching = false
+    store.forgetHello()
   }
 
   // runs-watch.py for this project and the runs the snapshot just listed, in
   // its order. Long-lived, so a plain Process rather than the HelperRunner.
+  // It starts with am's schema and version unknown until its own hello.
   function startWatch() {
     store.watchSeq += 1
     store.watchTried = true
+    store.forgetHello()
     var ids = []
     for (var i = 0; i < store.runs.length; i++) {
       var id = store.runs[i].id
@@ -237,7 +243,11 @@ Scope {
   }
 
   // One stdout line of the watch. {"changed": [...]} (re)starts the debounce;
-  // anything else -- blank, not JSON, not an object -- is ignored. Never throws.
+  // {"ok": false, ...} is kept as the envelope its exit explains. The hello,
+  // {"hello": {"schema": N, "am": V}}, sets amSchema to N (an integer of 1 or
+  // more, else 0) and amVersion to V (a string, else "") and starts nothing.
+  // Anything else -- blank, not JSON, not an object, a hello that is not an
+  // object -- is ignored. Never throws.
   function watchLine(proc, data) {
     if (!store.isCurrentWatch(proc)) return
     var text = String(data || "").trim()
@@ -247,15 +257,28 @@ Scope {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return
     if (Array.isArray(value.changed)) debounceTimer.restart()
     else if (value.ok === false) proc.envelope = value
+    else if (value.hello !== null && typeof value.hello === "object" && !Array.isArray(value.hello)) {
+      var schema = value.hello.schema
+      store.amSchema = typeof schema === "number" && Number.isInteger(schema) && schema >= 1 ? schema : 0
+      store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
+    }
   }
 
-  // The watch ended. Exit 0: it was stopped (by us, or because am exited).
-  // Otherwise the last envelope line it printed says why: a journal the helper
-  // cannot read switches to the 5 s poll; anything else is reported and the
-  // watch stays off until the next activation or project switch.
+  // amSchema and amVersion back to unknown: no current watch has said hello.
+  function forgetHello() {
+    store.amSchema = 0
+    store.amVersion = ""
+  }
+
+  // The watch ended, whatever the code: its hello no longer holds, so amSchema
+  // and amVersion are reset. Exit 0: it was stopped (by us, or because am
+  // exited). Otherwise the last envelope line it printed says why: a journal
+  // the helper cannot read switches to the 5 s poll; anything else is reported
+  // and the watch stays off until the next activation or project switch.
   function watchExited(proc, exitCode) {
     if (!store.isCurrentWatch(proc)) return
     watchState.watching = false
+    store.forgetHello()
     if (exitCode === 0) return
     var envelope = proc.envelope
     var err = envelope ? envelope.error : null

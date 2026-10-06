@@ -297,7 +297,7 @@ def test_fake_am_serves_the_captures(world):
     # Every row_for row, capture status or not, has a real am runs row's 11 keys.
     keys = set(runs[0])
     assert len(keys) == 11
-    for status in ["started", "done", "escalated", "cancelled", "something-new"]:
+    for status in ["started", "done", "escalated", "cancelled", "canceled", "something-new"]:
         row = row_for("e1", status)
         assert set(row) == keys
         assert (row["id"], row["status"]) == ("e1", status)
@@ -325,7 +325,7 @@ def test_status_fanout_selection(world):
     runs = ([row_for("n1", "started")]
             + [row_for("t%d" % i, "done") for i in range(1, 6)]
             + [row_for("n2", "started")]
-            + [row_for("t%d" % i, ["escalated", "cancelled", "stopped"][i % 3])
+            + [row_for("t%d" % i, ["escalated", "cancelled", "canceled", "stopped"][i % 4])
                for i in range(6, 13)]
             + [row_for("n3", "started")])
     seed(world, runs)
@@ -339,20 +339,34 @@ def test_status_fanout_selection(world):
                             + [["status", i, "--repo-dir", root] for i in want])
 
 
-# synthetic: stopped, cancelled, paused and something-new are run statuses no
-# capture has.
+# synthetic: stopped, cancelled, canceled, Canceled, CANCELED, " canceled",
+# "canceled ", cancel, paused and something-new are run statuses no capture has.
 @pytest.mark.parametrize("status,kept", [
     ("done", 10), ("escalated", 10), ("stopped", 10), ("cancelled", 10),
+    ("canceled", 10),
     ("started", 12), ("paused", 12), ("something-new", 12),
+    ("Canceled", 12), ("CANCELED", 12), (" canceled", 12), ("canceled ", 12),
+    ("cancel", 12),
 ])
 def test_terminal_set_pinned(world, status, kept):
     # `stopped` is "parked" in the domain table but terminal here: it counts
-    # toward the cap of 10. Any status outside the four is non-terminal.
+    # toward the cap of 10. Any status outside the five is non-terminal.
     runs = [row_for("x%02d" % i, status) for i in range(12)]
     seed(world, runs)
     code, out = run(world)
     assert code == 0
     assert [r["id"] for r in out["runs"]] == ["x%02d" % i for i in range(kept)]
+
+
+def test_canceled_spelling_reported_verbatim(world):
+    # Both spellings pass through as am printed them: no rewriting either way.
+    runs = [row_for("c1", "canceled"), row_for("c2", "cancelled")]
+    seed(world, runs)
+    code, out = run(world)
+    assert code == 0
+    assert out["runs"] == [expected(runs[0], status_for("c1", "canceled")),
+                           expected(runs[1], status_for("c2", "cancelled"))]
+    assert [r["status"]["run"]["status"] for r in out["runs"]] == ["canceled", "cancelled"]
 
 
 def test_repo_dir_passed(world):

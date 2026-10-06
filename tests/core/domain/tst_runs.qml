@@ -568,6 +568,7 @@ TestCase {
       ["stopped", "parked"],
       ["escalated", "escalated"],
       ["cancelled", "cancelled"],
+      ["canceled", "cancelled"],
       ["done", "done"]
     ]
     for (var i = 0; i < expected.length; i++) {
@@ -581,7 +582,8 @@ TestCase {
   }
 
   function test_state_unknown() {
-    var statuses = ["weird", "", "stale", "STARTED", "Done", "running", "dead"]
+    var statuses = ["weird", "", "stale", "STARTED", "Done", "running", "dead",
+                    "Canceled", "CANCELED", " canceled", "cancel", "constructor", "__proto__", 5, null]
     for (var i = 0; i < statuses.length; i++) {
       compare(Runs.runState({ status: statuses[i], lease: { live: true } }), "unknown", "status " + statuses[i])
     }
@@ -591,6 +593,56 @@ TestCase {
     compare(Runs.runState(undefined), "unknown", "undefined")
     compare(Runs.runState("x"), "unknown", "string run")
     compare(Runs.runState(Runs.normalizeRun(undefined)), "unknown", "normalised garbage")
+  }
+
+  // The two spellings am gives a cancelled run.
+  function cancelSpellings() { return ["cancelled", "canceled"] }
+
+  // The status-done.json run, normalized, with am's run status set to spelling.
+  // Its control.lease is null, so no Integrate reason interferes.
+  function cancelledRun(spelling) {
+    // status-done.json copy, run.status set to spelling (cancelled or canceled)
+    var raw = amRun("status-done.json")
+    raw.status.run.status = spelling
+    return Runs.normalizeRun(raw)
+  }
+
+  function test_fixture_cancel_spellings_run_state() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      var run = cancelledRun(spellings[i])
+      compare(run.status, spellings[i], spellings[i] + ": normalizeRun keeps am's spelling")
+      compare(Runs.runState(run), "cancelled", spellings[i] + ": runState")
+    }
+  }
+
+  // A cancelled run in either spelling is found by its state name and sits in
+  // no chip but `all`.
+  function test_fixture_cancel_spellings_filters_and_search() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      var run = cancelledRun(spellings[i])
+      var counts = Runs.runFilterCounts([run])
+      compare([counts.attention, counts.live, counts.parked, counts.all].join(","), "0,0,0,1",
+              spellings[i] + ": chip counts")
+      compare(Runs.searchRuns([run], "cancelled").length, 1, spellings[i] + ": found by its state name")
+      compare(Runs.searchRuns([run], "unknown").length, 0, spellings[i] + ": not unknown")
+    }
+  }
+
+  // A newer cancelled run, in either spelling, never outranks an older running
+  // run for a card; alone, it leaves the card with no run state, dimmed.
+  function test_card_run_state_cancel_spellings() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      var cancelled = mkRun("rx", spellings[i], null, { started_at: "2026-10-05 10:00:00+00:00" })
+      var running = mkRun("rr", "started", true, { started_at: "2026-10-04 10:00:00+00:00" })
+      var both = Runs.cardRunState([cancelled, running], "m1")
+      compare(both.state + "/" + both.runId + "/" + both.dimmed, "running/rr/false",
+              spellings[i] + ": beside an older running run")
+      var alone = Runs.cardRunState([cancelled], "m1")
+      compare(alone.state + "/" + alone.runId + "/" + alone.dimmed, "none/rx/true", spellings[i] + ": alone")
+    }
   }
 
   // ---- 1.2: card mapping ------------------------------------------------------------------
@@ -1170,6 +1222,24 @@ TestCase {
     }
   }
 
+  // Cancelled, in either spelling, is neither escalated nor dead: no alert,
+  // whether the run is new or was running one snapshot earlier.
+  function test_fixture_cancel_spellings_new_alerts() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      var run = cancelledRun(spellings[i])
+      compare(Runs.newAlerts([], [run]).length, 0, spellings[i] + ": absent from prevRuns")
+
+      // synthetic: the same run while it was running
+      var prev = Runs.normalizeRun(amRun("status-done.json"))
+      prev.status = "started"
+      prev.lease = { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: true }
+      compare(Runs.runState(prev), "running", spellings[i] + ": prev is running")
+      compare(prev.id, run.id, spellings[i] + ": prev is the same run")
+      compare(Runs.newAlerts([prev], [run]).length, 0, spellings[i] + ": was running")
+    }
+  }
+
   // ---- 1.2: error text --------------------------------------------------------------------
 
   function test_error_text() {
@@ -1640,7 +1710,8 @@ TestCase {
                  ["ok", "done"], ["gate_failed", "dead"],
                  // synthetic: no capture contains schema_invalid or harness_error.
                  ["schema_invalid", "dead"], ["harness_error", "dead"],
-                 ["OK", ""], [" ok", ""], ["Gate_Failed", ""], ["canceled", ""], ["__proto__", ""]]
+                 ["OK", ""], [" ok", ""], ["Gate_Failed", ""], ["canceled", "cancelled"], ["Canceled", ""],
+                 [" canceled", ""], ["__proto__", ""]]
     for (var i = 0; i < cases.length; i++) compare(Runs.glyphStateOf(cases[i][0]), cases[i][1], String(cases[i][0]))
   }
 
@@ -1934,12 +2005,23 @@ TestCase {
                   [null, true, "no lease"]]
     for (var i = 0; i < leases.length; i++) {
       var live = leases[i][0], accepting = leases[i][1], label = leases[i][2]
-      compare(Runs.runState(ctlRun("cancelled", live, accepting)), "cancelled", "fixture " + label)
-      checkControls(Runs.controls(ctlRun("cancelled", live, accepting)),
-                    ctlFinished, ctlResumeCancelled, ctlCancelCancelled, "cancelled, " + label)
+      var cancels = ["cancelled", "canceled"]
+      for (var j = 0; j < cancels.length; j++) {
+        compare(Runs.runState(ctlRun(cancels[j], live, accepting)), "cancelled", cancels[j] + " fixture " + label)
+        checkControls(Runs.controls(ctlRun(cancels[j], live, accepting)),
+                      ctlFinished, ctlResumeCancelled, ctlCancelCancelled, cancels[j] + ", " + label)
+      }
       compare(Runs.runState(ctlRun("done", live, accepting)), "done", "fixture " + label)
       checkControls(Runs.controls(ctlRun("done", live, accepting)),
                     ctlFinished, ctlFinished, ctlFinished, "done, " + label)
+    }
+  }
+
+  function test_fixture_cancel_spellings_controls() {
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++) {
+      checkControls(Runs.controls(cancelledRun(spellings[i])), ctlFinished, ctlResumeCancelled, ctlCancelCancelled,
+                    spellings[i])
     }
   }
 

@@ -5,6 +5,9 @@
 
 Long-lived. Spawns `am watch --all --follow` (an argv list, never a shell) and
 prints one JSON line per output event, flushed at once:
+  {"hello": {"schema": N, "am": "<version>"}}  for the first accepted hello
+                                  line only: N is its journal schema, 1 or 2;
+                                  am is its am version, "" when not a string
   {"changed": ["<run id>", ...]}  at most once per 250 ms, never empty, run ids
                                   only (event contents are never forwarded)
   {"ok": false, "error": {"type", "message"}}  then exit 1, with type
@@ -12,13 +15,15 @@ prints one JSON line per output event, flushed at once:
                                   AmMissing (Usage exits 2); an am refusal
                                   envelope with an exit other than 3 is
                                   re-emitted unchanged.
-The hello line is dropped (its schema must be 1). Journal lines written before
-the helper started (the backlog) are dropped. A journal line is kept when its
-event is one of the five schema-1 events and its run id is watched: the argv run
-ids, plus every run whose run_upsert payload.repo_dir is this project root.
-Unknown events, unknown keys and non-JSON lines are ignored. am exiting 0,
-SIGINT, SIGTERM or a closed stdout end the helper with exit 0. Only the `am`
-command is used; am's database and on-disk layout are never read.
+Every hello line (event "watch") must announce journal schema 1 or 2, else
+SchemaMismatch; only its schema and am are forwarded. Journal lines are handled
+the same under either schema. Journal lines written before the helper started
+(the backlog) are dropped. A journal line is kept when its event is one of the
+five journal events and its run id is watched: the argv run ids, plus every run
+whose run_upsert payload.repo_dir is this project root. Unknown events, unknown
+keys and non-JSON lines are ignored. am exiting 0, SIGINT, SIGTERM or a closed
+stdout end the helper with exit 0. Only the `am` command is used; am's database
+and on-disk layout are never read.
 """
 import datetime
 import json
@@ -38,13 +43,15 @@ USAGE = "usage: runs-watch.py <project_root> [run_id ...]"
 IDLE_POLL = 1.0  # seconds; the longest the main loop blocks with nothing pending
 WINDOW = 0.25  # seconds; at most one {"changed": [...]} line per window
 EOF = object()
-# The schema-1 journal events. Any other `event` value is ignored.
+# The journal events. Any other `event` value is ignored.
 EVENTS = frozenset({"run_upsert", "story_upsert", "subtask_upsert", "phase_upsert",
                     "attempt_upsert"})
+# The journal schemas a hello line may announce, as JSON integers.
+SCHEMAS = (1, 2)
 
 
 class SchemaMismatch(Exception):
-    """The hello line announced a journal schema other than 1."""
+    """The hello line announced a journal schema other than 1 or 2."""
 
 
 class Stop(Exception):
@@ -119,10 +126,12 @@ def keep(line, watched, root, started):
 
 
 def check_schema(hello):
+    """The hello line's journal schema, an integer in SCHEMAS. Raises SchemaMismatch."""
     schema = hello.get("schema")
-    if not (type(schema) is int and schema == 1):
+    if not (type(schema) is int and schema in SCHEMAS):
         raise SchemaMismatch("am watch speaks journal schema " + json.dumps(schema)
-                             + "; this helper reads schema 1.")
+                             + "; this helper reads schema 1 or 2.")
+    return schema
 
 
 def spawn(am):
@@ -155,12 +164,15 @@ def stop(proc):
 
 
 def stream(lines, watched, root, started):
-    """Turn am's stream into debounced {"changed": [...]} lines until it ends.
-    Trailing edge: the first kept run id into an empty batch opens a WINDOW;
-    when it closes the batch is printed once and cleared. A pending batch is
-    printed when the stream ends. Returns am's refusal envelope (the only line
-    with an "ok" key) if it printed one, else None. Raises SchemaMismatch."""
-    batch, deadline, refusal = [], None, None
+    """Turn am's stream into the hello line and debounced {"changed": [...]}
+    lines until it ends. Every hello line (event "watch") is checked; the first
+    is printed at once as {"hello": {"schema", "am"}}, am "" when not a string,
+    without touching the batch; later ones print nothing. Trailing edge: the
+    first kept run id into an empty batch opens a WINDOW; when it closes the
+    batch is printed once and cleared. A pending batch is printed when the
+    stream ends. Returns am's refusal envelope (the only line with an "ok" key)
+    if it printed one, else None. Raises SchemaMismatch."""
+    batch, deadline, refusal, greeted = [], None, None, False
     while True:
         if deadline is not None and time.monotonic() >= deadline:
             say({"changed": batch})
@@ -182,7 +194,12 @@ def stream(lines, watched, root, started):
             refusal = line
             continue
         if isinstance(line, dict) and line.get("event") == "watch":
-            check_schema(line)
+            schema = check_schema(line)
+            if not greeted:
+                version = line.get("am")
+                say({"hello": {"schema": schema,
+                               "am": version if isinstance(version, str) else ""}})
+                greeted = True
             continue
         run_id = keep(line, watched, root, started)
         if run_id is not None and run_id not in batch:
