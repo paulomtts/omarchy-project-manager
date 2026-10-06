@@ -2803,6 +2803,65 @@ TestCase {
     compare(Object.keys(c).sort().join(","), "depth,id,parentId,status,title", "no key added to the card")
   }
 
+  // ---- 1.3: the prefix default --------------------------------------------------------------
+
+  function mkPrefixRun(milestoneId, prefix, startedAt) {
+    return { milestone_id: milestoneId, branch_prefix: prefix, started_at: startedAt }
+  }
+
+  // Milestone m1 "M3 Document runs" (stem m3), its story s1, the story's subtask c1, and their map.
+  function prefixCards() {
+    var m = mkCard("m1", 0, "todo", null, "M3 Document runs")
+    var s = mkCard("s1", 1, "todo", "m1", "Story")
+    var c = mkCard("c1", 2, "todo", "s1", "Subtask")
+    return { m: m, s: s, c: c, map: { m1: m, s1: s, c1: c } }
+  }
+
+  // The prefix dispatchDefaults gives card with these settings and runs.
+  function prefixWith(settings, card, map, runs) {
+    return Runs.dispatchDefaults({ settings: settings }, card, map, runs).prefix
+  }
+
+  function test_dispatchDefaults_prefix_history() {
+    var f = prefixCards()
+    var cards = [f.m, f.s, f.c]
+    for (var i = 0; i < cards.length; i++) {
+      var id = cards[i].id
+      compare(prefixWith({ prefixHistory: ["", "  ", 5, null, "hist-p", "older"] }, cards[i], f.map), "hist-p",
+              id + ": the first non-blank string entry")
+      var stems = [[], "hist-p", { 0: "x" }, ["", "  ", 5, null], null, undefined]
+      for (var j = 0; j < stems.length; j++) {
+        compare(prefixWith({ prefixHistory: stems[j] }, cards[i], f.map), "m3", id + ": history " + j + " falls to the stem")
+      }
+    }
+    compare(prefixWith({}, f.s, f.map), "m3", "no history key")
+    compare(prefixWith({ prefixHistory: ["hist-p"] }, mkCard("m9", 0, "todo", null, "-- **"), {}), "hist-p",
+            "the history before an empty stem")
+    compare(prefixWith({}, mkCard("m9", 0, "todo", null, "-- **"), {}), "", "an empty stem stays empty")
+    compare(Runs.dispatchDefaults({ settings: "x" }, f.s, f.map).prefix, "m3", "settings garbage")
+  }
+
+  function test_dispatchDefaults_prefix_no_milestone() {
+    var f = prefixCards()
+    var settings = { prefixHistory: ["hist-p"] }
+    compare(prefixWith(settings, "board", f.map), "", "board")
+    compare(prefixWith(settings, f.s, undefined), "", "story without cardMap")
+    compare(prefixWith(settings, f.c, { s1: f.s, c1: f.c }), "", "broken chain")
+    var a = mkCard("a", 1, "todo", "b", "A")
+    var b = mkCard("b", 1, "todo", "a", "B")
+    compare(prefixWith(settings, a, { a: a, b: b }), "", "two-card cycle")
+    compare(prefixWith(settings, null, f.map), "", "no card")
+    var noId = { depth: 0, status: "todo", parentId: null, title: "M3 Document runs" }
+    compare(prefixWith(settings, noId, {}), "hist-p", "a milestone without an id takes the history")
+    compare(prefixWith({ prefixHistory: [] }, noId, {}), "m3", "then the stem")
+  }
+
+  function test_dispatchDefaults_prefix_trimmed() {
+    var f = prefixCards()
+    compare(prefixWith({ prefixHistory: ["\thist-p "] }, f.s, f.map), "hist-p", "history")
+    compare(prefixWith({ prefixHistory: [" my hist-p\n"] }, f.s, f.map), "my hist-p", "inner whitespace kept")
+  }
+
   // ---- S3 1.2: dispatch form and preview ---------------------------------------------------
 
   function validForm() {

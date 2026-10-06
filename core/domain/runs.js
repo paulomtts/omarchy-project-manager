@@ -949,12 +949,36 @@ function _stemOf(title) {
   return tokens.slice(0, 3).join("-").slice(0, 24).replace(/-+$/, "")
 }
 
+// v trimmed when it is a string, else "".
+function _trimmedOr(v) { return typeof v === "string" ? v.trim() : "" }
+
+// The first entry of history that is a non-blank string, trimmed; "" when
+// history is not an array or has none.
+function _historyPrefix(history) {
+  var list = _arrayOr(history)
+  for (var i = 0; i < list.length; i++) {
+    var prefix = _trimmedOr(list[i])
+    if (prefix !== "") return prefix
+  }
+  return ""
+}
+
+// The prefix default for milestone (a card, or null when the card's milestone
+// is unknown): "" for null; else the first non-blank prefix of
+// settings.prefixHistory, else the stem of milestone's title.
+function _defaultPrefix(milestone, settings) {
+  if (milestone === null) return ""
+  var fromHistory = _historyPrefix(settings.prefixHistory)
+  return fromHistory !== "" ? fromHistory : _stemOf(milestone.title)
+}
+
 // The dispatch form's starting values. project is {defaultBranch, settings}
 // with settings as get-run-settings returns it; any part may be missing. base
-// is the trimmed default branch (no fallback: the caller resolves it), prefix
-// the stem of the card's milestone title, verify the stored non-blank commands
-// verbatim, parallelism the stored whole number >= 1 else 4. The opt-out from
-// verification is never pre-ticked.
+// is the trimmed default branch (no fallback: the caller resolves it). prefix
+// is "" when the card's milestone is unknown, else the first non-blank entry of
+// settings.prefixHistory, trimmed, else the stem of the milestone's title.
+// verify is the stored non-blank commands verbatim, parallelism the stored
+// whole number >= 1 else 4. The opt-out from verification is never pre-ticked.
 function dispatchDefaults(project, card, cardMap) {
   var p = _isObject(project) ? project : {}
   var settings = _isObject(p.settings) ? p.settings : {}
@@ -969,7 +993,7 @@ function dispatchDefaults(project, card, cardMap) {
     allowNoVerification: false,
     base: typeof p.defaultBranch === "string" ? _textOf(p.defaultBranch) : "",
     parallelism: _isWholeNumber(parallelism) && parallelism >= 1 ? parallelism : 4,
-    prefix: milestone !== null ? _stemOf(milestone.title) : "",
+    prefix: _defaultPrefix(milestone, settings),
     verify: verify
   }
 }

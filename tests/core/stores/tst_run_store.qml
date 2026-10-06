@@ -2650,7 +2650,7 @@ TestCase {
     compare(store.dispatchSuggest, null)
     compare(store.dispatchError, "")
     verify(store.dispatchForm, "an offered target has a form")
-    compare(store.dispatchForm.prefix, "m3", "the story's milestone names the prefix")
+    compare(store.dispatchForm.prefix, "old", "the history's first prefix names the story's prefix")
     var proc = store.dispatchDefaultsRunner.current
     verify(proc, "the default branch is looked up")
     compare(proc.running, true)
@@ -2720,7 +2720,7 @@ TestCase {
     return store
   }
 
-  property string previewArgs: "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest"
+  property string previewArgs: "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest"
 
   // 6
   function test_defaults_reply_sets_base_and_launches_preview() {
@@ -2755,7 +2755,7 @@ TestCase {
       compare(store.dispatchForm.base, "", "reply " + i + " leaves base blank")
       var proc = store.dispatchPreviewRunner.current
       verify(proc, "reply " + i + ": the check still runs")
-      compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest",
+      compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest",
               "reply " + i + ": no --base-branch pair")
     }
     var padded = dispatchStore(); if (!padded) return
@@ -2835,7 +2835,7 @@ TestCase {
     var cards = dispatchCards()
     compare(store.openDispatch(cards.t1, cards), true)
     compare(store.dispatchTarget.level, "subtask")
-    compare(store.dispatchForm.prefix, "m3", "the stem of the subtask's milestone")
+    compare(store.dispatchForm.prefix, "old", "the history's first prefix names the subtask's prefix")
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
     compare(store.dispatchState, "ready")
     compare(store.dispatchPreview, null, "am has no dry run for one card")
@@ -2862,7 +2862,7 @@ TestCase {
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
     compare(store.dispatchForm.base, "develop", "the user's base wins over the lookup")
     compare(argv(store.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|develop|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest")
+            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|develop|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest")
   }
 
   // 9
@@ -2920,11 +2920,11 @@ TestCase {
     fire(store.dispatchDebounceTimer)
     compare(store.dispatchState, "previewing")
     var proc = store.dispatchPreviewRunner.current
-    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--allow-no-verification")
+    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--allow-no-verification")
     store.setDispatchField("verify", ["", "  ", "-x make check", "uv run pytest"])
     fire(store.dispatchDebounceTimer)
     proc = store.dispatchPreviewRunner.current
-    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--verify|-x make check|--verify|uv run pytest|--allow-no-verification")
+    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|-x make check|--verify|uv run pytest|--allow-no-verification")
     compare(proc.command[12], "-x make check", "a command that starts with a dash is one verbatim argument")
     store.setDispatchField("allowNoVerification", "yes")
     fire(store.dispatchDebounceTimer)
@@ -2947,7 +2947,7 @@ TestCase {
     store.setDispatchField("parallelism", 4)
     fire(store.dispatchDebounceTimer)
     compare(argv(store.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--allow-no-verification")
+            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--allow-no-verification")
   }
 
   // 16
@@ -3003,7 +3003,7 @@ TestCase {
     compare(form.verify[0], "uv run pytest", "the old form was not changed in place")
     compare(store.dispatchForm.verify.length, 1, "verify is copied")
     compare(store.dispatchForm.verify[0], "make test")
-    compare(store.dispatchForm.prefix, "m3", "the other fields are kept")
+    compare(store.dispatchForm.prefix, "old", "the other fields are kept")
     compare(store.dispatchForm.base, "main")
     compare(store.dispatchDebounceTimer.running, true)
   }
@@ -3021,7 +3021,7 @@ TestCase {
     store.openDispatch(cards.m1, cards)
     compare(store.setDispatchField("branch", "x"), false, "unknown field")
     compare(store.setDispatchField("__proto__", {}), false)
-    compare(store.dispatchForm.prefix, "m3", "nothing changed")
+    compare(store.dispatchForm.prefix, "old", "nothing changed")
     compare(store.dispatchForm.branch, undefined)
     compare(store.dispatchDebounceTimer.running, false)
   }
@@ -3038,7 +3038,7 @@ TestCase {
     return store
   }
 
-  property string savedJson: '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["m3","old"],"parallelism":4}'
+  property string savedJson: '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4}'
 
   // 20 (the start half)
   function test_subtask_start_argv_uses_card() {
@@ -3048,7 +3048,7 @@ TestCase {
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
     compare(store.dispatchStart(), true)
     var proc = store.dispatchStartRunners[0].current
-    compare(argv(proc), tc.startCmd + "/home/u/my proj|card|t1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest")
+    compare(argv(proc), tc.startCmd + "/home/u/my proj|card|t1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest")
     compare(proc.command.length, 13)
   }
 
@@ -3091,7 +3091,7 @@ TestCase {
     var store = readyStore(); if (!store) return
     store.dispatchStart()
     compare(store.setDispatchField("prefix", "x"), false)
-    compare(store.dispatchForm.prefix, "m3")
+    compare(store.dispatchForm.prefix, "old")
     compare(store.closeDispatch(), false)
     var cards = dispatchCards()
     compare(store.openDispatch(cards.t1, cards), false)
@@ -3120,7 +3120,7 @@ TestCase {
     var save = runner.current
     compare(save.command.length, 5)
     compare(argv(save), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson)
-    compare(store.runSettings.prefixHistory.join(","), "m3,old")
+    compare(store.runSettings.prefixHistory.join(","), "old")
     compare(store.runSettings.verify.join(","), "uv run pytest")
     compare(store.runSettings.parallelism, 4)
     compare(store.runSettings.allowNoVerification, false)
@@ -3203,7 +3203,7 @@ TestCase {
     compare(spy.count, 0)
     compare(store.dispatchStartRunners.length, 0, "no settings write after a failed start")
     compare(store.runSettings.prefixHistory.join(","), "old", "nothing saved")
-    compare(store.dispatchForm.prefix, "m3", "the form stays for another try")
+    compare(store.dispatchForm.prefix, "old", "the form stays for another try")
   }
 
   // 28 + Review Focus 5 (exit code half)
@@ -3370,7 +3370,7 @@ TestCase {
     compare(store.dispatchStartRunners[1].madeFor, "/home/u/b")
     compare(procA.running, true, "A's start is still running")
     var procB = store.dispatchStartRunners[1].current
-    compare(argv(procB), tc.startCmd + "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|m3|--max-concurrent|4|--verify|uv run pytest")
+    compare(argv(procB), tc.startCmd + "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest")
     reply(procA, startOk("r-a", ""), 0)
     compare(store.dispatchState, "starting", "A's reply does not land in B's dialog")
     reply(procB, startOk("r-b", ""), 0)
