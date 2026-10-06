@@ -171,22 +171,6 @@ def test_watch_all_follow_prints_a_hello_line_then_journal_lines(am):
     assert events == expected
 
 
-def test_require_tool_fails_naming_the_missing_tool(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    with pytest.raises(pytest.fail.Exception, match="brd is not on the PATH"):
-        require_tool("brd")
-
-
-def test_story_board_reaches_only_am_brd_and_git_and_its_own_repo(am, story_board, tmp_path):
-    assert am.env["PATH"] == str(tmp_path / "bin")
-    assert sorted(os.listdir(tmp_path / "bin")) == ["am", "brd", "git"]
-    assert not [key for key in am.env if key.startswith("GIT_")], am.env
-    proc = subprocess.run(["git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
-                          cwd=am.repo, env=am.env, capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert proc.stdout.split() == [os.path.realpath(am.repo), "master"], proc.stdout
-
-
 STORY_DATA_KEYS = {"already_done", "integrate", "levels", "max_concurrent"}
 RUN_ROW_KEYS = {"id", "story_id", "milestone_id", "branch_prefix", "started_at"}
 
@@ -247,6 +231,22 @@ def test_run_help_lists_the_story_option(am):
     if "--story" not in proc.stdout:
         pytest.fail("the installed am has no --story option on am run "
                     "(reinstall agent-manager: uv tool install --reinstall)")
+
+
+def test_require_tool_fails_naming_the_missing_tool(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(pytest.fail.Exception, match="brd is not on the PATH"):
+        require_tool("brd")
+
+
+def test_story_board_reaches_only_am_brd_and_git_and_its_own_repo(am, story_board, tmp_path):
+    assert am.env["PATH"] == str(tmp_path / "bin")
+    assert sorted(os.listdir(tmp_path / "bin")) == ["am", "brd", "git"]
+    assert not [key for key in am.env if key.startswith("GIT_")], am.env
+    proc = subprocess.run(["git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+                          cwd=am.repo, env=am.env, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.split() == [os.path.realpath(am.repo), "master"], proc.stdout
 
 
 def assert_story_blocked(proc, blocker):
