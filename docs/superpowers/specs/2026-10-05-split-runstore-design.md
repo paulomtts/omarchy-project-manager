@@ -1,6 +1,7 @@
 # Split RunStore — design
 
-Status: proposed. A behaviour-preserving refactor. Lands after the Resume and recover milestone
+Status: proposed; retargeted to the new `am` (nudges and cursors, one global snapshot;
+`2026-10-06-am-snapshots-cursors-design.md`, row spl). A behaviour-preserving refactor. Lands after the Resume and recover milestone
 (`2026-10-05-resume-recover-design.md`) and before Alerts while the panel is closed. By then the
 S3 (`2026-10-03-am-run-dispatch-design.md`), S7 (`2026-10-05-dispatch-story-level-design.md`),
 S6 (`2026-10-05-runs-all-projects-design.md`), S5
@@ -18,7 +19,7 @@ holds seven concerns. Grounded in today's file:
 | concern | state | functions | runners / timers |
 |---|---|---|---|
 | snapshot | `runs`, `amStatus`, `lastError`, `stale` (25-29) | `refresh` (126), `applySnapshot` (431), `rowOf` (417), `projectSwitched` (253) | `snapshotRunner` (838), `staleTimer` (898) |
-| watch | `watchWarning`, `watchTried`, `watchSeq`, `watchSchemaError` (30, 46-48), `watching` / `watchProc` (98-99) | `startLive`/`stopLive` (144-163), `startWatch` (181), `watchLine` (205), `watchExited` (220), poll (242-249) | `watchC` (1011), `debounceTimer` (879), `livenessTimer` (888), `pollTimer` (907) |
+| watch | `watchWarning`, `watchTried`, `watchSeq`, `watchSchemaError` (30, 46-48), `watching` / `watchProc` (98-99); after milestone 4 also `asOfSeq`, `appliedSeq`, `watchCursor` | `startLive`/`stopLive` (144-163), `startWatch` (181; after milestone 4 it passes no run ids and no project), `watchLine` (205), `watchExited` (220), poll (242-249) | `watchC` (1011), `debounceTimer` (879), `livenessTimer` (888), `pollTimer` (907) |
 | list filter | `runFilter`, `searchQuery`, `filteredRuns` (35-40), `runFilterToggled` (38) | `toggleRunFilter` (132) | |
 | selection and logs | `selectedRunId` (26), `selectedAttempt` … `logsStatus` (52-58) | `runById` (291), `selectAttempt` (303) … `applyLogs` (376) | `logsRunner` (850) |
 | control | `pending`, `stillWaiting`, `stillWaitingText`, `lastControlError*` (65-69) | `control` (501) … `checkWaiting` (680), `resumeWithSettings` (625) | `controlC` (981), `controlState` (956), `pendingTimer` (917) |
@@ -50,9 +51,9 @@ removes them.
 
 | store | `App` property | owns |
 |---|---|---|
-| `RunStore` | `app.runs` | the snapshot (every project root after S6), the watch and its `runsChanged(ids)` signal, `amStatus` / `lastError` / `stale` / `watchWarning`, the list filter (status chips, S6 project filter, search), the selection (`selectedRunId`, `runById`, Resume and recover's stopped-run attempt choice), the attempt logs, the S5 events |
+| `RunStore` | `app.runs` | the snapshot (every project, one `am runs --all-projects` call after S6 and milestone 4), the watch (nudges, no run-id argv) with its `asOfSeq`, `appliedSeq` and `watchCursor` and its `runsChanged(ids)` signal, `amStatus` / `lastError` / `stale` / `watchWarning`, the list filter (status chips, S6 project filter, search), the selection (`selectedRunId`, `runById`, Resume and recover's stopped-run attempt choice), the attempt logs, the S5 events |
 | `RunControlStore` | `app.runControl` | `control()`, `pending`, `stillWaiting`, the control error (with Resume and recover's `lastControlErrorType`), `refusalOf`, the cancel confirmation, the flash, the resume verify read, the Resume dialog (the `resume*` section: its state, `resumeOpenFor` / `resumeClose` / `resumeConfirm`, `resumeSaveRunner`), and every run or global settings read and write through `viewer-state.py` (`get/set-run-settings`, S6 `get/set-global-settings`), so the notify switch and the stored verify set live here |
-| `RunAlertsStore` | `app.runAlerts` | `newAlerts` arming (per project after S6), the toast queue, the toast expiry, the desktop notification (`notify.py`) |
+| `RunAlertsStore` | `app.runAlerts` | `newAlerts` arming (per project after S6), the toast queue, the toast expiry, the desktop notification (`notify.py`), and the persisted last-seen `gseq` alert cursor (with the `store_id` it belongs to; dismissing an alert advances it). The cursor's read and write through `viewer-state.py` global settings reach `RunControlStore` as an App-routed signal, the way `RunDispatchStore`'s settings requests do (to be confirmed in Appendix A) |
 | `RunDispatchStore` | `app.runDispatch` | the S3 dispatch state machine (`idle → previewing → ready / refused → starting → started / failed`), the form, the debounced preview, `dispatchStart()`, the S7 story target and `retargetToMilestone()`, the default-branch lookup, Dispatch from the Runs screen's `dispatchRoot` and project and target steps (`dispatchStep`, `dispatchOpenFromRuns`, `dispatchBack`, `dispatchProject*`, `dispatchTarget*`, their runners), and Resume and recover's relaunch (the `relaunch*` section) |
 
 Rules:
@@ -79,7 +80,8 @@ Rules:
 
    `snapshotReplied` is new. `RunStore` emits it once per project reply, after the reply's own
    state is applied. `outcome` is `ok`, `missing` (AmMissing) or `failed`, and `previousRuns`
-   are that project's runs before the reply. Before S6 there is one "project" (`store.project`).
+   are that project's runs before the reply. Before S6 there is one "project" (`store.project`);
+   after milestone 4 the snapshot is one global reply, so it fires once per reply.
    App handles it in ONE handler, in today's order: `runControl.settleAfterSnapshot()` on `ok`,
    then `runAlerts.snapshotReplied(…)`. This replaces the direct calls in `applySnapshot`
    (444, 458) and the `alertsArmed = false` on AmMissing (472). Any direct call from one

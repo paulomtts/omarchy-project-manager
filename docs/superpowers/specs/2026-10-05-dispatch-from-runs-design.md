@@ -1,6 +1,7 @@
 # Dispatch from the Runs screen — design
 
-Status: proposed. Builds on the S3 dispatch spec (`2026-10-03-am-run-dispatch-design.md`), S7
+Status: proposed; retargeted to the new `am` (run-id discovery over `am runs --all-projects`, no
+per-root refresh; `2026-10-06-am-snapshots-cursors-design.md`, row dfr). Builds on the S3 dispatch spec (`2026-10-03-am-run-dispatch-design.md`), S7
 (`2026-10-05-dispatch-story-level-design.md`) and S6 (`2026-10-05-runs-all-projects-design.md`).
 All of them are merged on main when this starts, so read their code before changing it. It
 lands BEFORE "Split RunStore" (`2026-10-05-split-runstore-design.md`), so it is written against
@@ -27,8 +28,10 @@ then lands on the new run's detail. The open project does not change.
 
 - S3's per-card entry points (Dispatch in card detail, `d` on the board list and card detail)
   are unchanged. They dispatch the open project's card and never show the new steps.
-- No change to the form, the preview (`dispatch-preview.py`), the launcher (`start-run.py`) or
-  run-id discovery. They already take the project root as an argument.
+- No change to the form, the preview (`dispatch-preview.py`) or the launcher's spawn
+  (`start-run.py`, `am run ... --repo-dir ROOT`). They already take the project root as an
+  argument. The launcher's run-id discovery is retargeted, see Architecture ("Run-id
+  discovery").
 - No board editing, and no dispatch for a repository that is not registered with brd.
 - No new run settings: the per-project run settings are read and written as S3 and S7 do,
   keyed by the picked root.
@@ -102,8 +105,8 @@ returns to step 2 and keeps the picked target's row under the cursor.
 ### Landing
 
 On `started`, the S3 path opens Run detail for the new run id. After S6, Run detail works for
-a run of any project. The store asks for a snapshot of ROOT, and only ROOT (S6's per-root
-refresh), so the new run appears without a full refresh. A run id that is not yet known follows
+a run of any project. The store refreshes the run list once (the global snapshot, `am runs
+--all-projects`), so the new run appears; there is no per-root refresh any more. A run id that is not yet known follows
 S3: the dialog closes, a toast says "Started — waiting for the run to appear", and the Runs
 list stays. The S6 project filter is not changed. If the filter hides ROOT, Run detail still
 opens, because it is reached by id.
@@ -157,6 +160,17 @@ commands are used, and brd's database is never read. The parsed tree is indexed 
 existing `Board.indexTree` (`core/domain/board.js:12`), which sets the `depth` and `parentId`
 that `Runs.dispatchPlan(card, cardMap)` reads.
 
+### Run-id discovery (`core/backend/runs/start-run.py`)
+
+After the spawn the helper still polls for the new run's id for up to `POLL_WINDOW` seconds,
+matching on target, prefix and `started_at >= spawn` as today (`find_run`). What changes is the
+read: `list_runs` calls `am runs --all-projects --limit N` (N covering the newest runs) instead
+of `am runs --repo-dir ROOT`; rows carry `project.repo_dir`, so a match still has to be a row of
+ROOT. Optionally the helper captures the global head (`as_of_seq` of that first call, before the
+spawn) and prefers rows whose events come after it; the `started_at` rule stays the fallback.
+`am run` itself keeps `--repo-dir ROOT`. Its output line (`run_id`, `pid`, `log`, `started_at`)
+is unchanged.
+
 ### Domain (`core/domain/runs.js`)
 
 - `dispatchProjects(projectRoots, probe, openRoot)` returns the step 1 rows
@@ -197,7 +211,8 @@ in the file's existing style (`// ---- attempt logs (5.2)`, `RunStore.qml:288` o
   `projectSwitched()`, `RunStore.qml:253` on main, and skips a dialog with a non-empty
   `dispatchStep`). A dialog opened from a card keeps S3's behaviour on a project switch. A
   launch in flight completes for the root it was started for (S3's rule), and its result names
-  that root. On `started` the store asks S6's per-root refresh for `dispatchRoot` only.
+  that root. On `started` the store asks for one refresh of the global snapshot (the per-root
+  refresh step collapses; the signal that carried `[dispatchRoot]` carries no roots).
 - Story targets need `am run --story` (S7). This milestone does not re-check it, because S7's
   contract test gates `am` before S7 merges.
 
@@ -235,7 +250,7 @@ in the file's existing style (`// ---- attempt logs (5.2)`, `RunStore.qml:288` o
   drives the defaults, preview, start and settings argv; a card entry uses the open project;
   the steps and `dispatchBack()`; the probe and tree runners and their guards; a failed tree
   read marks the row; an open-project switch leaves a Runs-opened dialog alone; the project
-  step reads the store's `projectRoots`; `started` refreshes ROOT only.
+  step reads the store's `projectRoots`; `started` refreshes the global snapshot once.
 - `tests/ui/`: Start run with no project open, through all three steps, with a stubbed launcher,
   landing on Run detail. Also: `d` on the Runs list; a disabled project row; the empty registry;
   Back at each step; Escape; filter, arrows and Enter in step 2; the card entry points unchanged.
