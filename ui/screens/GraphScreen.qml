@@ -38,7 +38,7 @@ Item {
   }
 
   // { marks: id -> Runs.cardRunState, rollups: id -> Runs.rollup, ringed: [pip id] }.
-  // A pip is ringed when its run is live and running AND its own am row is in the
+  // A pip is ringed when its run is live and running AND its own subtask status is in the
   // running bucket: the subtask am is working on now, not every subtask of the run.
   function buildRunMarks(nodes, runs, amStatus) {
     var marks = Object.create(null)

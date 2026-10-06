@@ -93,7 +93,7 @@ TestCase {
     p.app.board.applyTreeData([m1, x1])
     p.app.runs.runs = [mkRun("run-0000000000a1", "started", true, "m1",
       { stories: [{ card_id: "s1", subtasks: ["t1"] }],
-        subtasks: [{ card_id: "t1", phases: [{ name: "implement", status: "started" }] }] },
+        subtasks: [{ card_id: "t1", status: "started", phases: [{ name: "implement", status: "started" }] }] },
       [{ card_id: "t1", status: "running" }])]
     wait(50)
     compare(shownBadges(p).join(","), "⟳ 1", "the milestone the run heads carries its counts, and nothing else does")

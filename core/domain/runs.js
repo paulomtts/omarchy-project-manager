@@ -4,21 +4,38 @@
 // Run domain model: one `am` orchestrator run, normalised from the CLI's
 // output.
 //
-// Input shape for normalizeRun (provisional until the runs-snapshot helper
-// exists; pinned by tests/core/domain/tst_runs.qml):
+// Input of normalizeRun:
 //   raw = {
-//     row:    { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at }  // one `am runs` row
-//     status: { run: {..., workflow}, rows: [...], stories: [...], subtasks: [...],
-//               control: { lease: { pid, host, heartbeat_at, accepting, live },
-//                          requests: [{ command, requested_at, handled_at }] }, ... }  // `am status` data, may be absent
+//     row:    one `am runs` entry without its `status`:
+//             { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
+//               milestone_id, card_id, lease, progress }
+//     status: `am status` data, may be absent:
+//             { run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at },
+//               stories: [{ card_id, title, level, status, tip_branch,
+//                           subtasks: [{ card_id, branch, base_branch, status, worktree_path,
+//                                        phases: [{ name, kind, status, started_at, ended_at, detail,
+//                                                   attempts: [{ n, status, ... }] }] }] }],
+//               rows: [{ story, subtask, phase, attempt, state }],
+//               control: { lease: { pid, host, heartbeat_at, accepting, live, ... },
+//                          requests: [{ command, requested_at, handled_at }], claims },
+//               integrity }
 //   }
-// `workflow` is the row's, else the am status run's ("task" for a --card run).
-// `requests` are am's control requests in the order made; handled_at "" means
-// the run has not acted on it yet.
+// Output scalars: id, repo_dir, started_at, base_branch, branch_prefix and
+// workflow are the row's, else the am status run's; status and milestone_id are
+// the am status run's, else the row's. `lease` keeps pid, host, heartbeat_at,
+// accepting and live. `requests` are am's control requests in the order made;
+// handled_at "" means the run has not acted on it yet.
+// tree.stories: every object story in am's order, the synthetic `integrate` and
+// `bases` included; its `subtasks` is the card_id strings of its subtasks.
+// tree.subtasks: the subtasks of every other story, flattened in am's order,
+// each with `story_id`, its story's card_id.
+// rows: { story_id, card_id, phase, attempt, status } from am's story, subtask,
+// phase, attempt and state, in am's order. A row under `integrate` or `bases`
+// whose subtask is a real card id (an Integrate resolver) is dropped.
 //
-// The status always comes from `am` (am status first, then the am runs row),
-// never from a brd card. Never throws: anything missing or malformed becomes
-// its default, and a missing lease means the run is not live.
+// The status always comes from `am`, never from a brd card. The output holds
+// copies, never am's objects. Never throws: anything missing or malformed
+// becomes its default, and a missing lease means the run is not live.
 function normalizeRun(raw) {
   function isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
   function objectOr(v) { return isObject(v) ? v : {} }
@@ -26,6 +43,24 @@ function normalizeRun(raw) {
   function text(v) { return v === undefined || v === null ? "" : String(v) }
   function firstText(a, b) { var s = text(a); return s !== "" ? s : text(b) }
   function asGiven(v) { return v === undefined || v === null ? "" : v }
+  function stringOr(v) { return typeof v === "string" ? v : "" }
+  function isSyntheticStory(id) { return id === "integrate" || id === "bases" }
+  // A JSON-like deep copy of arrays and objects. An own `__proto__` key is
+  // dropped, so every copied object's prototype is Object.prototype.
+  function copyOf(v) {
+    if (Array.isArray(v)) {
+      var list = []
+      for (var a = 0; a < v.length; a++) list.push(copyOf(v[a]))
+      return list
+    }
+    if (!isObject(v)) return v
+    var out = {}
+    var keys = Object.keys(v)
+    for (var k = 0; k < keys.length; k++) {
+      if (keys[k] !== "__proto__") out[keys[k]] = copyOf(v[keys[k]])
+    }
+    return out
+  }
 
   var r = objectOr(raw)
   var row = objectOr(r.row)
@@ -53,6 +88,43 @@ function normalizeRun(raw) {
     requests.push({ command: text(q.command), requested_at: text(q.requested_at), handled_at: text(q.handled_at) })
   }
 
+  var stories = [], subtasks = []
+  var amStories = arrayOr(st.stories)
+  for (var s = 0; s < amStories.length; s++) {
+    var story = amStories[s]
+    if (!isObject(story)) continue
+    var real = !isSyntheticStory(story.card_id)
+    var ids = []
+    var amSubtasks = arrayOr(story.subtasks)
+    for (var t = 0; t < amSubtasks.length; t++) {
+      var subtask = amSubtasks[t]
+      if (!isObject(subtask)) continue
+      if (typeof subtask.card_id === "string") ids.push(subtask.card_id)
+      if (!real) continue
+      var copied = copyOf(subtask)
+      copied.story_id = stringOr(story.card_id)
+      subtasks.push(copied)
+    }
+    var storyCopy = copyOf(story)
+    storyCopy.subtasks = ids
+    stories.push(storyCopy)
+  }
+
+  var rows = []
+  var amRows = arrayOr(st.rows)
+  for (var w = 0; w < amRows.length; w++) {
+    var amRow = amRows[w]
+    if (!isObject(amRow)) continue
+    if (isSyntheticStory(amRow.story) && _isCardId(amRow.subtask)) continue
+    rows.push({
+      story_id: stringOr(amRow.story),
+      card_id: stringOr(amRow.subtask),
+      phase: stringOr(amRow.phase),
+      attempt: typeof amRow.attempt === "number" && isFinite(amRow.attempt) ? amRow.attempt : null,
+      status: stringOr(amRow.state)
+    })
+  }
+
   return {
     id: firstText(row.id, run.id),
     repo_dir: firstText(row.repo_dir, run.repo_dir),
@@ -64,8 +136,8 @@ function normalizeRun(raw) {
     workflow: firstText(row.workflow, run.workflow),
     lease: lease,
     requests: requests,
-    rows: arrayOr(st.rows),
-    tree: { stories: arrayOr(st.stories), subtasks: arrayOr(st.subtasks) }
+    rows: rows,
+    tree: { stories: stories, subtasks: subtasks }
   }
 }
 
@@ -194,7 +266,7 @@ function runsTouching(runs, cardId) {
   return out
 }
 
-// Which am row status lands in which rollup bucket; anything else is pending.
+// Which subtask status lands in which rollup bucket; anything else is pending.
 function _bucketOf(status) {
   if (status === "running" || status === "started") return "running"
   if (status === "parked" || status === "stopped") return "parked"
@@ -215,8 +287,8 @@ function _storyHas(story, subtask, storyId) {
   return false
 }
 
-// Run-progress counts for a brd card, from the winning run's am rows only (never brd status;
-// Board.subtreeCounts is a separate thing). Only rows of real subtasks in that run count.
+// Run-progress counts for a brd card: the winning run's real subtasks, one each, by the
+// subtask's own status. Never rows, never brd status (Board.subtreeCounts is separate).
 function rollup(runs, card) {
   var counts = { running: 0, parked: 0, escalated: 0, done: 0, pending: 0, total: 0 }
   if (!_isObject(card)) return counts
@@ -227,17 +299,15 @@ function rollup(runs, card) {
   var tree = _treeOf(run)
   var isMilestone = run.milestone_id === cardId
   var story = isMilestone ? null : _findByCardId(tree.stories, cardId)
-  var rows = _arrayOr(run.rows)
-  for (var i = 0; i < rows.length; i++) {
-    var row = rows[i]
-    if (!_isObject(row) || !_isCardId(row.card_id)) continue
-    var subtask = _findByCardId(tree.subtasks, row.card_id)
-    if (subtask === null) continue
+  var subtasks = _arrayOr(tree.subtasks)
+  for (var i = 0; i < subtasks.length; i++) {
+    var subtask = subtasks[i]
+    if (!_isObject(subtask) || !_isCardId(subtask.card_id)) continue
     if (!isMilestone) {
-      var belongs = story !== null ? _storyHas(story, subtask, cardId) : row.card_id === cardId
+      var belongs = story !== null ? _storyHas(story, subtask, cardId) : subtask.card_id === cardId
       if (!belongs) continue
     }
-    counts[_bucketOf(row.status)] += 1
+    counts[_bucketOf(subtask.status)] += 1
     counts.total += 1
   }
   return counts
@@ -261,8 +331,13 @@ function _textOf(v) {
   try { return String(v).trim() } catch (e) { return "" }
 }
 
+// Row statuses that mean a phase or attempt failed.
+var _FAILURE_STATUSES = ["failed", "escalated", "gate_failed", "schema_invalid", "harness_error"]
+
 // Why a run escalated: the first failed phase's detail (or its last attempt's detail),
-// else "escalated at <phase>", else "escalated".
+// else "escalated at <that phase>". With no failed phase, "escalated at <phase>" of the
+// last row whose status is failed, escalated, gate_failed, schema_invalid or
+// harness_error and whose phase is not empty; else "escalated".
 function escalationReason(run) {
   var subtasks = _arrayOr(_treeOf(run).subtasks)
   for (var i = 0; i < subtasks.length; i++) {
@@ -282,7 +357,9 @@ function escalationReason(run) {
   }
   var rows = _isObject(run) ? _arrayOr(run.rows) : []
   for (var r = rows.length - 1; r >= 0; r--) {
-    var at = _isObject(rows[r]) ? _textOf(rows[r].phase) : ""
+    var row = rows[r]
+    if (!_isObject(row) || _FAILURE_STATUSES.indexOf(row.status) < 0) continue
+    var at = _textOf(row.phase)
     if (at !== "") return "escalated at " + at
   }
   return "escalated"
@@ -322,18 +399,16 @@ function runTitle(run) {
   return milestone !== "" ? milestone : shortId(run)
 }
 
-// How many of the run's subtasks are through. A subtask is done when it has
-// phases and every one of them is `done`; only object subtasks count at all.
+// Counts of the run's real subtasks (an object with a real card id) and of those whose own
+// `status` is `done`.
 function runProgress(run) {
   var subtasks = _subtasksOf(run)
   var done = 0, total = 0
   for (var i = 0; i < subtasks.length; i++) {
-    if (!_isObject(subtasks[i])) continue
+    var subtask = subtasks[i]
+    if (!_isObject(subtask) || !_isCardId(subtask.card_id)) continue
     total += 1
-    var phases = _arrayOr(subtasks[i].phases)
-    var allDone = phases.length > 0
-    for (var j = 0; allDone && j < phases.length; j++) allDone = _isObject(phases[j]) && phases[j].status === "done"
-    if (allDone) done += 1
+    if (subtask.status === "done") done += 1
   }
   return { done: done, total: total }
 }
@@ -460,15 +535,17 @@ function snapshotAgeText(fetchedMs, nowMs) {
 }
 
 // The run-state name (a runGlyphs.js key) an am story, subtask, phase, attempt
-// or row status is drawn with -- the mapping PhaseTimeline uses (started is
-// running, failed is dead). "" for anything else, which shows no glyph.
+// or row status is drawn with: started is running; failed and the attempt
+// failures gate_failed, schema_invalid, harness_error are dead; the attempt
+// outcome ok is done. "" for anything else, which shows no glyph.
 function glyphStateOf(status) {
   if (status === "started" || status === "running") return "running"
   if (status === "stopped" || status === "parked") return "parked"
   if (status === "escalated") return "escalated"
-  if (status === "failed" || status === "dead") return "dead"
+  if (status === "failed" || status === "dead" || status === "gate_failed" ||
+      status === "schema_invalid" || status === "harness_error") return "dead"
   if (status === "cancelled") return "cancelled"
-  if (status === "done") return "done"
+  if (status === "done" || status === "ok") return "done"
   return ""
 }
 
@@ -516,23 +593,26 @@ function _syntheticLabel(id) {
 
 // One subtask as the detail tree shows it. Its own status, else its last am
 // row's; phases with a name only; every attempt object (attempt 0 when it has
-// no number); the current phase is the first started one, else the last.
+// no number). The current phase is the first started one, else the last one
+// with a numbered attempt, else the last; the current attempt is that phase's
+// newest number, 0 when it has none.
 function _subtaskNode(run, subtask) {
   var phases = [], attempts = []
-  var started = null, last = null
+  var started = null, numbered = null, last = null
   var list = _arrayOr(subtask.phases)
   for (var i = 0; i < list.length; i++) {
     var p = list[i]
     if (!_isObject(p) || typeof p.name !== "string" || p.name === "") continue
     phases.push({ name: p.name, status: _stringOr(p.status) })
     if (started === null && p.status === "started") started = p
+    if (_newestAttempt(p) > 0) numbered = p
     last = p
     var tries = _arrayOr(p.attempts)
     for (var k = 0; k < tries.length; k++) {
       if (_isObject(tries[k])) attempts.push({ phase: p.name, attempt: _attemptNumber(tries[k]), status: _stringOr(tries[k].status) })
     }
   }
-  var current = started !== null ? started : last
+  var current = started !== null ? started : numbered !== null ? numbered : last
   var own = _stringOr(subtask.status)
   return {
     card_id: subtask.card_id,
