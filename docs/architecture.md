@@ -241,8 +241,8 @@ would load its own type instead of ours.
   runs `am runs` and `am status <newest>` in the main checkout (the parent of
   git's common dir), read-only with only `--repo-dir`, and expects the same key
   sets, with `story_id` allowed as the one extra key on a runs row and on the
-  status run; it is skipped when `am` or `git` is absent or the checkout has no
-  runs.
+  status run; it is skipped when `am` or `git` is absent, `am runs` fails or
+  the checkout has no runs.
 - `tests/fixtures/am/` holds real captured am payloads: `runs.json`, five
   `status-*.json`, `watch-events.json`, `watch-hello.json` and
   `logs-attempt.json`; keys starting with `_` are annotations readers ignore.
