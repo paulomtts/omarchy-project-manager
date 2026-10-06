@@ -96,9 +96,11 @@ sys.exit(2)
 '''
 
 USAGE_LINE = {"ok": False, "error": {"type": "Usage", "message":
-              "usage: start-run.py ROOT (milestone ID | card ID | board) [--base-branch B]"
-              " [--branch-prefix P] [--max-concurrent N] [--verify CMD]..."
+              "usage: start-run.py ROOT (milestone ID | story ID | card ID | board)"
+              " [--base-branch B] [--branch-prefix P] [--max-concurrent N] [--verify CMD]..."
               " [--allow-no-verification]"}}
+STORY_BLOCKED = {"ok": False, "error": {"type": "StoryBlockedError",
+                                        "message": "story s1 is blocked by s0 (todo)"}}
 CLAIMED = {"ok": False, "error": {"type": "ClaimedError",
                                   "message": "card c1 is claimed by run r9"}}
 STARTED_AT_RE = r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$"
@@ -230,6 +232,38 @@ def test_board_argv(world):
     made = run_calls(world)
     assert made == [["run", "--board", "--repo-dir", root]]
     assert "--milestone" not in made[0]
+
+
+def test_story_argv(world):
+    root = str(world["project"])
+    code, _ = run(world, [root, "story", "s1", "--branch-prefix", "m3"])
+    assert code == 0
+    made = run_calls(world)
+    assert made == [["run", "--story", "s1", "--repo-dir", root, "--branch-prefix", "m3"]]
+    for never in ("--dry-run", "--detach", "--pretty", "--milestone", "--card", "--board"):
+        assert never not in made[0]
+
+
+def test_story_options_forwarded_in_fixed_order(world):
+    root = str(world["project"])
+    code, _ = run(world, [root, "story", "s1",
+                          "--verify", "uv run pytest", "--max-concurrent", "2",
+                          "--branch-prefix", "m3", "--base-branch", "main",
+                          "--verify", "-x", "--allow-no-verification"])
+    assert code == 0
+    assert run_calls(world) == [["run", "--story", "s1", "--repo-dir", root,
+                                 "--base-branch", "main", "--branch-prefix", "m3",
+                                 "--max-concurrent", "2",
+                                 "--verify", "uv run pytest", "--verify", "-x",
+                                 "--allow-no-verification"]]
+
+
+def test_story_named_board(world):
+    # The target is a literal word, so a story whose id is "board" stays a story.
+    root = str(world["project"])
+    code, _ = run(world, [root, "story", "board"])
+    assert code == 0
+    assert run_calls(world) == [["run", "--story", "board", "--repo-dir", root]]
 
 
 def test_options_forwarded_in_fixed_order(world):
@@ -440,7 +474,12 @@ def test_unexpected_error_is_helper_error(world):
 @pytest.mark.parametrize("args", [
     [],
     ["/p"],
-    ["/p", "story", "x"],
+    ["/p", "story"],
+    ["/p", "story", ""],
+    ["/p", "story", "s1", "extra"],
+    ["/p", "story", "s1", "--pretty"],
+    ["/p", "story", "s1", "--dry-run"],
+    ["/p", "story", "s1", "--milestone", "m1"],
     ["/p", "milestone"],
     ["/p", "card", ""],
     ["", "board"],
@@ -526,15 +565,47 @@ def test_early_exit_empty_log(world):
     assert out["error"]["type"] == "AmExited"
 
 
+def test_story_blocked_early_exit(world):
+    (world["am"] / "run.out").write_text(json.dumps(STORY_BLOCKED) + "\n")
+    (world["am"] / "run.code").write_text("3")
+    root = str(world["project"])
+    code, out = run(world, [root, "story", "s1", "--branch-prefix", "m3"])
+    assert code == 0
+    assert set(out) == EARLY_KEYS
+    assert out["ok"] is False
+    assert out["error"] == STORY_BLOCKED["error"]
+    assert out["exit_code"] == 3
+    assert json.dumps(STORY_BLOCKED) in out["log_tail"]
+    assert run_calls(world) == [["run", "--story", "s1", "--repo-dir", root,
+                                 "--branch-prefix", "m3"]]
+
+
+def test_story_claimed_early_exit(world):
+    (world["am"] / "run.out").write_text(json.dumps(CLAIMED) + "\n")
+    (world["am"] / "run.code").write_text("3")
+    code, out = run(world, [str(world["project"]), "story", "s1", "--branch-prefix", "m3"])
+    assert code == 0
+    assert set(out) == EARLY_KEYS
+    assert out["error"] == CLAIMED["error"]
+    assert out["exit_code"] == 3
+
+
 # --- run-id discovery ----------------------------------------------------------------
 
 NOON = datetime.datetime(2026, 10, 5, 12, 0, 0, 700000, tzinfo=datetime.timezone.utc)
 SINCE = datetime.datetime(2026, 10, 5, 12, 0, 0, tzinfo=datetime.timezone.utc)
 
 
-def row(run_id, started_at, prefix="m3"):
-    return {"id": run_id, "workflow": "orchestrator", "repo_dir": "/p", "base_branch": "main",
-            "branch_prefix": prefix, "status": "running", "started_at": started_at}
+ABSENT = object()
+
+
+def row(run_id, started_at, prefix="m3", story_id=ABSENT):
+    """An `am runs` row; `story_id` is set only when given, so by default the key is absent."""
+    r = {"id": run_id, "workflow": "orchestrator", "repo_dir": "/p", "base_branch": "main",
+         "branch_prefix": prefix, "status": "running", "started_at": started_at}
+    if story_id is not ABSENT:
+        r["story_id"] = story_id
+    return r
 
 
 def serve_rows(world, rows):
@@ -618,6 +689,97 @@ def test_malformed_rows_skipped():
     rows = [None, "r", 5, [], {"id": "", "started_at": when}, {"id": 7, "started_at": when},
             {"started_at": when}, {"id": "no-time"}]
     assert helper.find_run(rows, "board", None, SINCE) is None
+
+
+def test_story_run_matches_story_id():
+    helper = load_helper()
+    # am lists newest first; the other story's row is the earlier one each time.
+    rows = [row("r-s1", "2026-10-05T12:00:05Z", story_id="s1"),
+            row("r-s2", "2026-10-05T12:00:02Z", story_id="s2")]
+    assert helper.find_run(rows, "story", "m3", SINCE, "s1") == "r-s1"
+    assert helper.find_run(rows, "story", "m3", SINCE, "s2") == "r-s2"
+    rows = [row("r-s2", "2026-10-05T12:00:06Z", story_id="s2"),
+            row("r-s1", "2026-10-05T12:00:01Z", story_id="s1")]
+    assert helper.find_run(rows, "story", "m3", SINCE, "s2") == "r-s2"
+    assert helper.find_run(rows, "story", "m3", SINCE, "s1") == "r-s1"
+    # Among one story's rows, the earliest still wins, a tie to the one listed last.
+    rows = [row("later", "2026-10-05T12:00:09Z", story_id="s1"),
+            row("tie-first", "2026-10-05T12:00:02Z", story_id="s1"),
+            row("tie-last", "2026-10-05T12:00:02Z", story_id="s1")]
+    assert helper.find_run(rows, "story", "m3", SINCE, "s1") == "tie-last"
+
+
+@pytest.mark.parametrize("prefix", ["m3", None], ids=["prefix", "no-prefix"])
+def test_story_run_requires_story_id(prefix):
+    helper = load_helper()
+    when = "2026-10-05T12:00:01Z"
+    assert helper.find_run([row("r", when)], "story", prefix, SINCE, "s1") is None
+    assert helper.find_run([row("r", when, story_id=None)], "story", prefix, SINCE, "s1") is None
+    assert helper.find_run([row("r", when, story_id=5)], "story", prefix, SINCE, "5") is None
+    assert helper.find_run([row("r", when, story_id="s2")], "story", prefix, SINCE, "s1") is None
+    assert helper.find_run([row("r", when, story_id="S1")], "story", prefix, SINCE, "s1") is None
+    assert helper.find_run([row("r", when, story_id="s1")], "story", prefix, SINCE, "s1") == "r"
+    # A story launch with no id given matches no row.
+    assert helper.find_run([row("r", when, story_id="s1")], "story", prefix, SINCE) is None
+    assert helper.find_run([row("r", when)], "story", prefix, SINCE) is None
+    # The time rule still holds for a story.
+    assert helper.find_run([row("r", "2026-10-05T11:59:59Z", story_id="s1")],
+                           "story", prefix, SINCE, "s1") is None
+
+
+def test_story_prefix_rule():
+    helper = load_helper()
+    when = "2026-10-05T12:00:01Z"
+    # Only the board derives <prefix>-<stem>; a story's prefix must be equal.
+    assert helper.find_run([row("r", when, prefix="x-m3", story_id="s1")],
+                           "story", "x", SINCE, "s1") is None
+    assert helper.find_run([row("r", when, prefix="x", story_id="s1")],
+                           "story", "x", SINCE, "s1") == "r"
+    assert helper.find_run([row("r", when, prefix=None, story_id="s1")],
+                           "story", "x", SINCE, "s1") is None
+
+
+def test_non_story_targets_ignore_story_id():
+    helper = load_helper()
+    when = "2026-10-05T12:00:01Z"
+    for story_id in (ABSENT, "s1", None, 5):
+        r = row("r", when, story_id=story_id)
+        assert helper.find_run([r], "milestone", "m3", SINCE) == "r"
+        assert helper.find_run([r], "milestone", "m3", SINCE, "m1") == "r"
+        assert helper.find_run([r], "card", "m3", SINCE, "c1") == "r"
+        assert helper.find_run([r], "board", None, SINCE) == "r"
+        assert helper.matches(r, "milestone", "m3", SINCE) is True
+
+
+@pytest.mark.parametrize("story,expected", [("s1", "r-s1"), ("s2", "r-s2")])
+def test_two_story_launches_one_prefix(world, monkeypatch, capsys, story, expected):
+    helper = fast_helper(monkeypatch, world)
+    at_noon(helper, monkeypatch)
+    # Newest first: s1's run is the later one, a milestone run without story_id the earliest.
+    seed_runs(world, [row("r-s1", "2026-10-05T12:00:04Z", story_id="s1"),
+                      row("r-s2", "2026-10-05T12:00:02Z", story_id="s2"),
+                      row("r-m", "2026-10-05T12:00:01Z")])
+    (world["am"] / "run.sleep").write_text("2")
+    root = str(world["project"])
+    assert helper.guarded([root, "story", story, "--branch-prefix", "m3"]) == 0
+    out = one_line(capsys)
+    assert out == {"ok": True, "pid": read_pid(world), "log": out["log"],
+                   "started_at": "2026-10-05T12:00:00Z", "run_id": expected, "message": ""}
+    assert run_calls(world) == [["run", "--story", story, "--repo-dir", root,
+                                 "--branch-prefix", "m3"]]
+
+
+def test_story_run_not_visible_when_no_row_carries_its_id(world, monkeypatch, capsys):
+    helper = fast_helper(monkeypatch, world, window=0.3)
+    at_noon(helper, monkeypatch)
+    seed_runs(world, [row("r-s2", "2026-10-05T12:00:02Z", story_id="s2"),
+                      row("r-m", "2026-10-05T12:00:01Z")])
+    (world["am"] / "run.sleep").write_text("5")
+    assert helper.guarded([str(world["project"]), "story", "s1", "--branch-prefix", "m3"]) == 0
+    out = one_line(capsys)
+    assert out["ok"] is True
+    assert out["run_id"] is None
+    assert out["message"] == "started, run not visible yet"
 
 
 def test_runs_errors_are_retried(world, monkeypatch, capsys):
