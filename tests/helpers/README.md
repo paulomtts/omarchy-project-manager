@@ -8,3 +8,11 @@ test with a path relative to the test file:
 
 (`import "../helpers/find.js" as H` in tests under `tests/ui`; adjust the `..`
 count for deeper folders.)
+
+`amFixtures.js` is a `.pragma library` with `load(name)`. It returns a fresh
+parse of `tests/fixtures/am/<name>` on every call, so edits never leak between
+tests, and it throws an `Error` naming `<name>` when the file cannot be read or
+parsed. It reads through `XMLHttpRequest`, which needs `QML_XHR_ALLOW_FILE_READ=1`;
+`tests/run.sh` sets it. From a test under `tests/<dir>/`:
+
+    import "../helpers/amFixtures.js" as F

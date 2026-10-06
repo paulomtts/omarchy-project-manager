@@ -1,8 +1,9 @@
 """runs-logs.py: an `am logs` passthrough for one attempt, one JSON line on every path.
 
-Hermetic: a fake `am` lives on a temp PATH and serves hand-written fixtures from
-FAKE_AM_DIR, appending each call's argv to calls.log; HOME and XDG_DATA_HOME are
-temp. The real `am` and real data are never touched.
+Hermetic: a fake `am` lives on a temp PATH and serves, from FAKE_AM_DIR, the
+committed captures in tests/fixtures/am/ (a payload no capture holds is labelled
+`synthetic:`), appending each call's argv to calls.log; HOME and XDG_DATA_HOME
+are temp. The real `am` and real data are never touched.
 """
 import importlib.util
 import json
@@ -43,15 +44,22 @@ sys.exit(int(open(code).read()) if os.path.exists(code) else 0)
 '''
 
 ARGS = ["r1", "c1", "implement", "2"]
+FIXTURES = os.path.join(ROOT, "tests", "fixtures", "am")
+# synthetic: am's error envelope for an unknown run; no capture holds one.
 UNKNOWN_RUN = {"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": False}
-# Opaque to the helper: it must pass whatever `data` am prints through untouched.
-LOGS_DATA = {
-    "run_id": "r1", "card_id": "c1", "phase": "implement", "attempt": 2,
-    "prompt": "Implement the card.\nUse TDD.",
-    "result": {"status": "done"},
-    "stdout": "collecting...\n3 passed\n",
-    "stderr": "",
-}
+
+
+def fixture(name):
+    """A fresh json.load of tests/fixtures/am/<name>, so an edit never reaches
+    another call."""
+    with open(os.path.join(FIXTURES, name)) as f:
+        return json.load(f)
+
+
+def logs_data():
+    """The captured `am logs` data of one attempt. Opaque to the helper: it must
+    pass whatever `data` am prints through untouched."""
+    return fixture("logs-attempt.json")["data"]
 
 
 def write_exec(path, text):
@@ -115,8 +123,17 @@ def calls(world):
 
 # --- passthrough -------------------------------------------------------------
 
+def test_logs_data_is_the_capture():
+    assert logs_data() == fixture("logs-attempt.json")["data"]
+    assert {"ok": True, "data": logs_data()} == fixture("logs-attempt.json")
+    # Each call is a fresh copy: an edit to one never reaches the next.
+    first = logs_data()
+    first["artifacts"]["stdout"]["text"] = "edited"
+    assert logs_data() == fixture("logs-attempt.json")["data"]
+
+
 def test_ok_envelope_passed_through(world):
-    envelope = {"ok": True, "data": LOGS_DATA}
+    envelope = {"ok": True, "data": logs_data()}
     set_logs(world, envelope)
     code, out = run(world)  # run() asserts stdout is exactly one JSON line
     assert code == 0
@@ -124,7 +141,7 @@ def test_ok_envelope_passed_through(world):
 
 
 def test_exact_am_argv(world):
-    set_logs(world, {"ok": True, "data": LOGS_DATA})
+    set_logs(world, {"ok": True, "data": logs_data()})
     code, _ = run(world)
     assert code == 0
     made = calls(world)
@@ -137,7 +154,7 @@ def test_args_reach_am_verbatim(world):
     # Spaces, shell metacharacters and a leading dash must each arrive as one argv
     # element: no shell, no validation by the helper.
     args = ["r 1; echo x", "c$(whoami)", "plan & review", "-1"]
-    set_logs(world, {"ok": True, "data": LOGS_DATA})
+    set_logs(world, {"ok": True, "data": logs_data()})
     code, _ = run(world, args)
     assert code == 0
     assert calls(world) == [["logs", "r 1; echo x", "c$(whoami)",
@@ -145,7 +162,7 @@ def test_args_reach_am_verbatim(world):
 
 
 def test_pretty_printed_am_output_becomes_one_line(world):
-    envelope = {"ok": True, "data": LOGS_DATA}
+    envelope = {"ok": True, "data": logs_data()}
     set_raw(world, json.dumps(envelope, indent=2) + "\n")
     code, out = run(world)  # run() asserts exactly one line
     assert code == 0
@@ -153,6 +170,7 @@ def test_pretty_printed_am_output_becomes_one_line(world):
 
 
 def test_refusal_passed_through_exit_0(world):
+    # synthetic: an am refusal envelope; no capture holds one.
     refusal = {"ok": False, "error": {"type": "UsageError",
                                       "message": "--attempt must be an integer"}}
     set_logs(world, refusal, code=3)
@@ -172,7 +190,8 @@ def test_missing_fixture_unknown_run(world):
 def test_ok_wins_over_am_exit_code_and_stderr(world):
     # The envelope's `ok` decides, not am's exit code; am's stderr never reaches
     # the helper's stdout line.
-    envelope = {"ok": True, "data": LOGS_DATA}
+    envelope = {"ok": True, "data": logs_data()}
+    # synthetic: am stderr noise.
     set_raw(world, json.dumps(envelope) + "\n", code=3, stderr="warning: noisy\nmore noise\n")
     code, out = run(world)
     assert code == 0
@@ -181,18 +200,25 @@ def test_ok_wins_over_am_exit_code_and_stderr(world):
 
 def test_large_output_not_trimmed(world):
     # Whole-file snapshot: tail-limiting is the store's job, not this helper's.
+    # synthetic: an attempt output longer than any capture.
     big = "".join("line %d of captured output\n" % i for i in range(5000))
-    envelope = {"ok": True, "data": dict(LOGS_DATA, stdout=big)}
+    data = logs_data()
+    data["artifacts"]["stdout"]["text"] = big
+    envelope = {"ok": True, "data": data}
     set_logs(world, envelope)
     code, out = run(world)
     assert code == 0
-    assert out["data"]["stdout"] == big
-    assert len(out["data"]["stdout"].splitlines()) == 5000
+    assert out["data"]["artifacts"]["stdout"]["text"] == big
+    assert len(out["data"]["artifacts"]["stdout"]["text"].splitlines()) == 5000
 
 
 def test_control_and_unicode_text_round_trips(world):
+    # synthetic: control and non-ASCII text in an attempt's stdout and stderr.
     text = "a\nb\r\n\x1b[31mred\x1b[0m\tcafé ✓ 日本\n"
-    envelope = {"ok": True, "data": dict(LOGS_DATA, stdout=text, stderr=text)}
+    data = logs_data()
+    data["artifacts"]["stdout"]["text"] = text
+    data["artifacts"]["stderr"]["text"] = text
+    envelope = {"ok": True, "data": data}
     set_logs(world, envelope)
     code, out = run(world)  # still exactly one line
     assert code == 0
@@ -202,9 +228,11 @@ def test_control_and_unicode_text_round_trips(world):
 def test_am_does_not_inherit_stdin(world):
     # The helper's stdin is an open pipe that never sends EOF. An am that reads
     # stdin must get EOF at once (stdin is /dev/null), not block on that pipe.
+    envelope = {"ok": True, "data": logs_data()}
+    set_logs(world, envelope)
     write_exec(world["bin"] / "am",
-               "#!/usr/bin/env python3\nimport json, sys\nsys.stdin.read()\n"
-               "print(json.dumps({'ok': True, 'data': {'stdout': ''}}))\n")
+               "#!/usr/bin/env python3\nimport os, sys\nsys.stdin.read()\n"
+               "sys.stdout.write(open(os.path.join(os.environ['FAKE_AM_DIR'], 'logs.out')).read())\n")
     p = subprocess.Popen([sys.executable, SCRIPT, *ARGS], stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          env=env_for(world))
@@ -221,11 +249,12 @@ def test_am_does_not_inherit_stdin(world):
     p.stderr.close()
     assert code == 0
     assert len(lines) == 1
-    assert json.loads(lines[0]) == {"ok": True, "data": {"stdout": ""}}
+    assert json.loads(lines[0]) == envelope
 
 
 # --- bad output, am missing, usage, catch-all ---------------------------------
 
+# synthetic: am output that is not JSON.
 @pytest.mark.parametrize("text,exit_code", [
     ("not json\n", 0),
     ("", 1),
@@ -242,6 +271,7 @@ def test_non_json_output_is_am_bad_output(world, text, exit_code):
     assert "(exit %d)" % exit_code in out["error"]["message"]
 
 
+# synthetic: am JSON that is not an object or has no boolean ok.
 @pytest.mark.parametrize("text", [
     "[1, 2]\n",
     "null\n",
