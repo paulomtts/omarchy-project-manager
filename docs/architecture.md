@@ -233,8 +233,26 @@ would load its own type instead of ours.
   `core/domain/brd-extras.js` parses; skipped when `brd` is absent.
   `test_am_shapes.py` does the same for the installed `am`: hand-written schema 1
   journals under a throwaway `XDG_DATA_HOME`, pinning the `am runs`, `am status`
-  and `am watch` (one-shot and `--follow`) shapes `core/backend/runs/*` parses;
-  skipped when `am` is absent.
+  and `am watch` (one-shot and `--follow`) shapes `core/backend/runs/*` parses,
+  with the `--follow` hello's schema accepted as 1 or 2; skipped when `am` is
+  absent. `test_am_fixtures.py` pins the committed captures in
+  `tests/fixtures/am/`: each level's exact key set, the run and attempt status
+  vocabularies, and no top-level `subtasks` in `am status` data. Its live check
+  runs `am runs` and `am status <newest>` in the main checkout (the parent of
+  git's common dir), read-only with only `--repo-dir`, and expects the same key
+  sets, with `story_id` allowed as the one extra key on a runs row and on the
+  status run; it is skipped when `am` or `git` is absent or the checkout has no
+  runs.
+- `tests/fixtures/am/` holds real captured am payloads: `runs.json`, five
+  `status-*.json`, `watch-events.json`, `watch-hello.json` and
+  `logs-attempt.json`; keys starting with `_` are annotations readers ignore.
+  Tests of code that reads am output (`normalizeRun`, `logTail`, the `runs-*`
+  helpers, `run-control.py`, `RunStore`'s snapshot, logs and watch handling)
+  build their input from these fixtures; a hand-written am payload is used only
+  for a synthetic edge case and is marked with a `synthetic:` comment. Tests of
+  code that takes a normalized run may build it by hand. A test that edits a
+  fixture edits a fresh copy. Python reads them with `json.load`, QML with
+  `tests/helpers/amFixtures.js` (see `tests/helpers/README.md`).
 - `bash tests/live-check.sh` - restarts the real shell and fails on plugin load errors in the journal (needs the desktop session).
 
 ## Documented exceptions

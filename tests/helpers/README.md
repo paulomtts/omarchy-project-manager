@@ -13,6 +13,8 @@ count for deeper folders.)
 parse of `tests/fixtures/am/<name>` on every call, so edits never leak between
 tests, and it throws an `Error` naming `<name>` when the file cannot be read or
 parsed. It reads through `XMLHttpRequest`, which needs `QML_XHR_ALLOW_FILE_READ=1`;
-`tests/run.sh` sets it. From a test under `tests/<dir>/`:
+`tests/run.sh` sets it. Which tests must build their am input from these
+fixtures is the rule in `docs/architecture.md`'s Tests section. From a test
+under `tests/<dir>/`:
 
     import "../helpers/amFixtures.js" as F
