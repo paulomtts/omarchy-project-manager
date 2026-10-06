@@ -2975,6 +2975,27 @@ TestCase {
     }
   }
 
+  // `am run --story s1 --dry-run` data as recorded in 1.1: one level, one story,
+  // 2 subtasks stacked on master, no Integrate.
+  function dryRunStory() {
+    return {
+      max_concurrent: 1,
+      levels: [
+        { level: 0, concurrent: 1, stories: [
+          { story: "s1", title: "Story one", root: "master",
+            subtasks: [planSubtask("p", "c1", "master"), planSubtask("p", "c2", "p-c1")] }
+        ] }
+      ],
+      already_done: [],
+      integrate: null
+    }
+  }
+
+  // `am run --story s1 --dry-run` data for a finished story: no level, the story already done.
+  function dryRunStoryDone() {
+    return { max_concurrent: 1, levels: [], already_done: [{ kind: "story", id: "s1", title: "Story one" }], integrate: null }
+  }
+
   // A board milestone's own plan: one level, one story with count subtasks,
   // one story already done, its own Integrate branch.
   function boardPlan(prefix, count) {
@@ -3147,16 +3168,124 @@ TestCase {
     checkSummary(Runs.previewSummary(board), true, "3 milestones, 7 subtasks", "", "plans' done and integrate stay out")
   }
 
+  function test_previewSummary_story() {
+    checkSummary(Runs.previewSummary(dryRunStory(), "story"), false, "2 subtasks \u00b7 rooted on master", "", "story")
+    var a = Runs.previewSummary(dryRunStory(), "story")
+    var b = Runs.previewSummary(dryRunStory(), "story")
+    verify(a !== b, "distinct objects")
+    a.summary = "changed"
+    a.board = true
+    checkSummary(Runs.previewSummary(dryRunStory(), "story"), false, "2 subtasks \u00b7 rooted on master", "",
+                 "mutation does not leak")
+  }
+
+  function test_previewSummary_story_singular() {
+    var one = dryRunStory()
+    one.levels[0].stories[0].subtasks = [planSubtask("p", "c1", "master")]
+    checkSummary(Runs.previewSummary(one, "story"), false, "1 subtask \u00b7 rooted on master", "", "one subtask")
+  }
+
+  function test_previewSummary_story_nothing_left() {
+    checkSummary(Runs.previewSummary(dryRunStoryDone(), "story"), false, "Nothing left to run", "", "finished story")
+    var payloads = [
+      { levels: [] },
+      { levels: [{ level: 0, concurrent: 1, stories: [] }] },
+      { levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Story one", root: "master", subtasks: [] }] }] },
+      { levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Story one", root: "master" }] }] },
+      { levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Story one", root: "master", subtasks: "x" }] }] },
+      { levels: [null, "x", [], { level: 0, stories: ["x", null, [], { story: "s1", subtasks: [null, 7, "x", []] }] }] }
+    ]
+    for (var i = 0; i < payloads.length; i++) {
+      checkSummary(Runs.previewSummary(payloads[i], "story"), false, "Nothing left to run", "", "payload " + i)
+    }
+  }
+
+  // Review Focus 3.
+  function test_previewSummary_story_ignores_integrate_and_done() {
+    var full = "2 subtasks \u00b7 rooted on master"
+    var integrated = dryRunStory()
+    integrated.integrate = { branch: "p-integrate", worktree: "/repo/.worktrees/p-integrate", order: [] }
+    checkSummary(Runs.previewSummary(integrated, "story"), false, full, "", "integrate branch")
+    var done = dryRunStory()
+    done.already_done = [{ kind: "story", id: "s9", title: "Story nine" },
+                         { kind: "subtask", id: "c0", title: "Subtask c0", story: "s1" }]
+    checkSummary(Runs.previewSummary(done, "story"), false, full, "", "already done")
+    var board = dryRunStory()
+    board.board = true
+    checkSummary(Runs.previewSummary(board, "story"), false, full, "", "board true")
+  }
+
+  // Review Focus 2.
+  function test_previewSummary_story_base() {
+    var padded = dryRunStory()
+    padded.levels[0].stories[0].subtasks[0].base = "  main \n"
+    checkSummary(Runs.previewSummary(padded, "story"), false, "2 subtasks \u00b7 rooted on main", "", "base trimmed")
+    var bases = ["", "  ", 5, null]
+    for (var i = 0; i < bases.length; i++) {
+      var d = dryRunStory()
+      d.levels[0].stories[0].subtasks[0].base = bases[i]
+      checkSummary(Runs.previewSummary(d, "story"), false, "2 subtasks", "", "base " + i + " (no fallback)")
+    }
+    var absent = dryRunStory()
+    delete absent.levels[0].stories[0].subtasks[0].base
+    checkSummary(Runs.previewSummary(absent, "story"), false, "2 subtasks", "", "base absent")
+    var garbage = dryRunStory()
+    garbage.levels[0].stories[0].subtasks.unshift(7, null, [], "c0")
+    garbage.levels[0].stories.unshift("x", null, [], { story: "s0", title: "Empty", root: "main", subtasks: [] })
+    garbage.levels.unshift(null, "x", [], { level: 9, stories: "x" })
+    checkSummary(Runs.previewSummary(garbage, "story"), false, "2 subtasks \u00b7 rooted on master", "",
+                 "the first object subtask's base")
+    var partly = dryRunStory()
+    partly.levels[0].stories[0].subtasks = [planSubtask("p", "c2", "p-c1"), planSubtask("p", "c3", "p-c2")]
+    partly.already_done = [{ kind: "subtask", id: "c1", title: "Subtask c1", story: "s1" }]
+    checkSummary(Runs.previewSummary(partly, "story"), false, "2 subtasks \u00b7 rooted on p-c1", "", "partly done")
+  }
+
+  // Review Focus 4.
+  function test_previewSummary_story_unreadable() {
+    var values = [undefined, null, 0, true, "x", [], Object.create(null), {}, { levels: "x" }, { levels: {} },
+                  { ok: true, data: dryRunStory() }, { ok: true, data: dryRunStoryDone() }]
+    for (var i = 0; i < values.length; i++) {
+      checkSummary(Runs.previewSummary(values[i], "story"), false, "", "", "value " + i)
+    }
+    var bare = Object.create(null)
+    bare.levels = dryRunStory().levels
+    checkSummary(Runs.previewSummary(bare, "story"), false, "2 subtasks \u00b7 rooted on master", "", "prototype-less payload")
+  }
+
+  // Review Focus 5.
+  function test_previewSummary_level_argument() {
+    var levels = [undefined, "milestone", "board", "Story", " story", "story ", 1, null]
+    for (var i = 0; i < levels.length; i++) {
+      checkSummary(Runs.previewSummary(dryRunMilestone(), levels[i]), false,
+                   "2 levels \u00b7 5 subtasks \u00b7 3 stories already done", "Integrate \u2192 m3-integrate",
+                   "milestone with level " + levels[i])
+      checkSummary(Runs.previewSummary(dryRunBoard(), levels[i]), true, "3 milestones, 7 subtasks", "",
+                   "board with level " + levels[i])
+    }
+    checkSummary(Runs.previewSummary(dryRunStory()), false, "1 level \u00b7 2 subtasks", "", "a story payload alone is a milestone")
+    checkSummary(Runs.previewSummary(dryRunStoryDone()), false, "0 levels \u00b7 0 subtasks \u00b7 1 story already done", "",
+                 "a finished story payload alone is a milestone")
+    checkSummary(Runs.previewSummary(dryRunMilestone(), "story"), false, "5 subtasks \u00b7 rooted on main", "",
+                 "the argument selects the story variant")
+  }
+
   function test_dispatch_form_preview_inputs_unchanged() {
     var form = validForm()
     var milestone = dryRunMilestone()
     var board = dryRunBoard()
-    var before = JSON.stringify([form, milestone, board])
+    var story = dryRunStory()
+    var storyDone = dryRunStoryDone()
+    var before = JSON.stringify([form, milestone, board, story, storyDone])
     Runs.validateDispatch(form)
     Runs.validateDispatch(formWith("prefix", ""))
     Runs.previewSummary(milestone)
     Runs.previewSummary(board)
-    compare(JSON.stringify([form, milestone, board]), before, "form and payloads unchanged")
+    Runs.previewSummary(story, "story")
+    Runs.previewSummary(storyDone, "story")
+    Runs.previewSummary(milestone, "story")
+    compare(JSON.stringify([form, milestone, board, story, storyDone]), before, "form and payloads unchanged")
     compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify", "no key added to the form")
+    compare(Object.keys(story).sort().join(","), "already_done,integrate,levels,max_concurrent", "no key added to the story payload")
   }
 }

@@ -978,9 +978,10 @@ function dispatchDefaults(project, card, cardMap) {
 // ---- Dispatch form and preview (S3 1.2) --------------------------------------------------
 //
 // The dispatch form's own checks, and the one-line summary of an `am run
-// --dry-run` payload (the envelope's data, milestone or board). Pure and never
-// throwing, like the rest of this file. Rules, sentences and payload shapes are
-// pinned in docs/superpowers/specs/1-2-runs-js-45cc9067.md.
+// --dry-run` payload (the envelope's data, milestone, story or board). Pure and
+// never throwing, like the rest of this file. Rules, sentences and payload
+// shapes are pinned in docs/superpowers/specs/1-2-runs-js-45cc9067.md and
+// docs/superpowers/specs/1-2-runs-js-the-story-a2a74eda.md.
 
 var _DISPATCH_PREFIX_EMPTY = "Enter a branch prefix"
 var _DISPATCH_VERIFY_MISSING = "Add a verify command or choose to run without verification"
@@ -1039,15 +1040,47 @@ function _planSubtasks(plan) {
 // The fresh result for a payload previewSummary cannot read.
 function _unreadablePreview() { return { board: false, integrate: "", summary: "" } }
 
+// The first object subtask of a dry-run plan, walking object levels, then
+// object stories, then object subtasks, in order; null when there is none.
+function _firstPlanSubtask(plan) {
+  var levels = _objectsOf(plan.levels)
+  for (var i = 0; i < levels.length; i++) {
+    var stories = _objectsOf(levels[i].stories)
+    for (var j = 0; j < stories.length; j++) {
+      var subtasks = _objectsOf(stories[j].subtasks)
+      if (subtasks.length > 0) return subtasks[0]
+    }
+  }
+  return null
+}
+
+// The story preview of a readable `am run --story --dry-run` payload: "<S>
+// subtask(s)", then " \u00b7 rooted on <base>" when the first object subtask's
+// base is a non-blank string (trimmed); "Nothing left to run" when S is 0.
+// integrate, already_done and board are not read.
+function _storyPreview(plan) {
+  var count = _planSubtasks(plan)
+  if (count === 0) return { board: false, integrate: "", summary: "Nothing left to run" }
+  var first = _firstPlanSubtask(plan)
+  var base = first !== null && typeof first.base === "string" ? _textOf(first.base) : ""
+  var summary = _countOf(count, "subtask", "subtasks")
+  if (base !== "") summary += " \u00b7 rooted on " + base
+  return { board: false, integrate: "", summary: summary }
+}
+
 // The dispatch dialog's preview lines for `am run --dry-run` data (never the
-// {ok, data} envelope). A board payload (board exactly true) gives "<N>
+// {ok, data} envelope). level is the target's level: exactly "story" gives the
+// story preview ("<S> subtask(s) \u00b7 rooted on <base>", or "Nothing left to
+// run"; never an Integrate line, a done count or board true). Any other level
+// reads the payload: a board payload (board exactly true) gives "<N>
 // milestone(s), <M> subtask(s)" and no Integrate line; a milestone payload
 // gives "<L> level(s) \u00b7 <S> subtask(s)", then " \u00b7 <D> stor(y|ies) already
 // done" when D > 0, and "Integrate \u2192 <branch>" when integrate.branch is a
 // non-blank string. Only subtasks listed in levels count. No array levels
-// means unreadable: board false and both lines "".
-function previewSummary(dryRunData) {
+// means unreadable at every level: board false and both lines "".
+function previewSummary(dryRunData, level) {
   if (!_isObject(dryRunData) || !Array.isArray(dryRunData.levels)) return _unreadablePreview()
+  if (level === "story") return _storyPreview(dryRunData)
   var levels = _objectsOf(dryRunData.levels)
   if (dryRunData.board === true) {
     var milestones = 0
