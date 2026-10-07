@@ -55,10 +55,34 @@ def test_issue_list_carries_the_fields_the_parsers_read(board):
     assert row["blocks"] == [card["id"]]
 
 
+def export_of(run):
+    """The one project entry plain `brd export` returns (brd_export 2).
+
+    The envelope is {"brd_export": 2, "projects": [{"project": {...}, "cards": ...,
+    "issues": ..., "documents": ..., "comments": ..., "tags": ..., "refs": ...}]}.
+    `--all` adds more entries; there is no flag that restores the old flat shape.
+    """
+    data = run("export")
+    assert data["brd_export"] == 2
+    assert len(data["projects"]) == 1
+    return data["projects"][0]
+
+
+def test_export_is_a_versioned_envelope_of_per_project_entries(board):
+    run = board[0]
+    data = run("export")
+    assert set(data) == {"brd_export", "projects"}
+    assert data["brd_export"] == 2
+    project = data["projects"][0]["project"]
+    for key in ("id", "name", "root_path", "created_at"):
+        assert key in project, key
+    assert project["name"] == "contract"
+
+
 def test_export_carries_every_collection_and_the_same_issue_facts(board):
     run, card, _child, issue, _nested = board
-    data = run("export")
-    for key in ("brd_export", "cards", "issues", "documents", "comments", "tags", "refs"):
+    data = export_of(run)
+    for key in ("project", "cards", "issues", "documents", "comments", "tags", "refs"):
         assert key in data, key
     exported = next(i for i in data["issues"] if i["id"] == issue["id"])
     listed = next(i for i in run("issue", "list") if i["id"] == issue["id"])
@@ -78,14 +102,14 @@ def test_export_carries_every_collection_and_the_same_issue_facts(board):
 
 
 def test_the_export_carries_only_explicit_refs_never_wikilink_ones(board):
-    """Why the panel says "explicit references only": `brd export`'s refs[] hold
+    """Why the panel says "explicit references only": `brd export`'s per-project refs[] hold
     the refs somebody wrote with `--ref`, and never the origin:"link" refs a
     [[wikilink]] in a body creates. Those exist -- `brd show` and
     `brd issue list` report them per entity -- but the export does not carry
     them, so indexRefs() cannot see them either."""
     run, card, _child, issue, _nested = board
     linker = run("add", "--title", "Linker", "--description", "see [[%s]]" % card["id"])
-    data = run("export")
+    data = export_of(run)
     assert {r["origin"] for r in data["refs"]} == {"explicit"}
     assert [r for r in data["refs"] if r["src_id"] == linker["id"]] == []
     assert {r["dst_id"] for r in data["refs"] if r["src_id"] == issue["id"]} == {card["id"]}
@@ -97,7 +121,7 @@ def test_the_export_drops_an_issues_blocks_and_keeps_them_on_the_card_tree(board
     """indexBlockedCards() exists because of this: the export's issues carry no
     `blocks`, so the relation is read back off the nested cards' `blocked_by`."""
     run, card, child, issue, nested_issue = board
-    data = run("export")
+    data = export_of(run)
     exported = next(i for i in data["issues"] if i["id"] == issue["id"])
     assert "blocks" not in exported
     root = next(c for c in data["cards"] if c["id"] == card["id"])
@@ -135,5 +159,5 @@ def test_a_closed_issue_reports_a_close_reason_and_keeps_its_blocked_cards(board
     assert closed["blocks"] == [card["id"]]
     # The card keeps the closed issue in blocked_by, so the derived relation
     # still names the card -- exactly what `brd issue list` reports.
-    root = next(c for c in run("export")["cards"] if c["id"] == card["id"])
+    root = next(c for c in export_of(run)["cards"] if c["id"] == card["id"])
     assert issue["id"] in root["blocked_by"]
