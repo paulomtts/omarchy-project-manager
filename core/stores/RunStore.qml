@@ -1167,9 +1167,10 @@ Scope {
   }
 
   // start-run.py's reply. When it is this dispatch's: ok gives `started`,
-  // the run id and message, the saved values in runSettings (prefixByMilestone merged per
-  // milestone id), a re-snapshot
-  // and dispatchStarted(id or null); anything else gives `failed` with what
+  // the run id and message, the saved values in runSettings (prefixByMilestone
+  // merged per milestone id), a re-snapshot and dispatchStarted(id or null);
+  // a StoryBlockedError gives `refused` with am's message, no log fields and
+  // the blockedSuggest() milestone; anything else gives `failed` with what
   // the helper said. After any successful start, wherever it was made, the
   // same runner writes the saved values for the project it was made in.
   function dispatchStartReplied(runner, stdout) {
@@ -1205,12 +1206,15 @@ Scope {
       var err = failure.error
       var isErr = err !== null && err !== undefined && typeof err === "object"
       var message = isErr && typeof err.message === "string" ? err.message : ""
-      store.dispatchState = "failed"
+      var type = isErr && typeof err.type === "string" ? err.type : ""
+      var blocked = type === "StoryBlockedError"
+      store.dispatchState = blocked ? "refused" : "failed"
       store.dispatchError = message.trim() !== "" ? message : "The launch could not be read"
-      store.dispatchErrorType = isErr && typeof err.type === "string" ? err.type : ""
-      store.dispatchLog = typeof failure.log === "string" ? failure.log : ""
-      store.dispatchLogTail = typeof failure.log_tail === "string" ? failure.log_tail : ""
-      store.dispatchExitCode = typeof failure.exit_code === "number" ? failure.exit_code : null
+      store.dispatchErrorType = type
+      store.dispatchLog = !blocked && typeof failure.log === "string" ? failure.log : ""
+      store.dispatchLogTail = !blocked && typeof failure.log_tail === "string" ? failure.log_tail : ""
+      store.dispatchExitCode = !blocked && typeof failure.exit_code === "number" ? failure.exit_code : null
+      store.dispatchSuggest = blocked ? store.blockedSuggest() : null
     }
     store.dropStartRunner(runner)
   }
