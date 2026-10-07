@@ -784,34 +784,76 @@ TestCase {
     compare(chosen.count, 0)
   }
 
-  // ---- the story's milestone offer (S3 4.2) -------------------------------
+  // ---- the story's refusals and the blocked story's action (S7) -----------
 
   function storyRefusal(over) {
-    return Object.assign({ dispatchState: "refused", target: { level: "story", offered: false }, targetTitle: "Story one",
-                           form: null, preview: null, error: "A story is dispatched through its milestone",
+    return Object.assign({ dispatchState: "refused", target: { level: "story", offered: true }, targetTitle: "Story one",
+                           targetLabel: "Story \"Story one\" (milestone \"M one\")",
+                           form: null, preview: null,
+                           error: "Story \"Story one\" is blocked by \"Story zero\" (StoryBlockedError)",
                            suggestion: { id: "m1", title: "M one" } }, over || {})
   }
 
-  // 2
-  function test_a_refused_story_offers_its_milestone() {
+  // 3
+  function test_a_blocked_story_shows_the_refusal_and_the_milestone_action() {
     var d = make(storyRefusal())
+    compare(H.find(d, "dispatchTarget").text, "Target   Story \"Story one\" (milestone \"M one\")")
+    var refusal = H.find(d, "dispatchRefusal")
+    verify(refusal.visible, "the refusal")
+    compare(refusal.text, "Story \"Story one\" is blocked by \"Story zero\" (StoryBlockedError)")
+    compare(refusal.color, d.theme.urgent)
+    var start = H.find(d, "dispatchStart")
+    compare(start.enabled, false)
+    click(start)
+    compare(starts.count, 0, "a disabled Start emits nothing")
     var offer = H.find(d, "dispatchSuggest")
-    verify(offer, "the offer button")
+    verify(offer, "the action")
     compare(offer.visible, true)
-    compare(offer.text, "Dispatch its milestone \"M one\"")
+    compare(offer.text, "Dispatch the milestone instead")
     click(offer)
     compare(offers.count, 1)
     compare(starts.count, 0)
     compare(cancels.count, 0)
   }
 
-  // 2
+  // Review Focus 1
+  function test_a_second_click_after_the_owner_moves_on_emits_nothing() {
+    var d = make(storyRefusal())
+    var offer = H.find(d, "dispatchSuggest")
+    click(offer)
+    compare(offers.count, 1)
+    d.dispatchState = "previewing"
+    d.suggestion = null
+    offer.clicked()
+    compare(offers.count, 1, "the second click finds no refusal")
+    compare(offer.visible, false)
+  }
+
+  // 4, Review Focus 4
+  function test_the_action_text_ignores_the_title_data() {
+    return [
+      { tag: "titled", suggestion: { id: "m1", title: "M one" } },
+      { tag: "untitled", suggestion: { id: "m1", title: "" } },
+      { tag: "non-string-title", suggestion: { id: "m1", title: 7 } },
+      { tag: "no-title", suggestion: { id: "m1" } }
+    ]
+  }
+
+  function test_the_action_text_ignores_the_title(data) {
+    var d = make(storyRefusal({ suggestion: data.suggestion }))
+    var offer = H.find(d, "dispatchSuggest")
+    compare(offer.visible, true)
+    compare(offer.text, "Dispatch the milestone instead")
+  }
+
+  // 5
   function test_the_offer_shows_only_for_a_refusal_with_a_milestone_id_data() {
     return [
       { tag: "ready", over: { dispatchState: "ready" } },
       { tag: "no-suggestion", over: { suggestion: null } },
       { tag: "empty-id", over: { suggestion: { id: "", title: "M one" } } },
-      { tag: "non-string-id", over: { suggestion: { id: 7, title: "M one" } } }
+      { tag: "non-string-id", over: { suggestion: { id: 7, title: "M one" } } },
+      { tag: "failed", over: { dispatchState: "failed" } }
     ]
   }
 
@@ -823,10 +865,36 @@ TestCase {
     compare(offers.count, 0, "a hidden offer emits nothing")
   }
 
-  // 2
-  function test_an_untitled_milestone_offer_reads_without_a_title() {
-    var d = make(storyRefusal({ suggestion: { id: "m1", title: "" } }))
-    compare(H.find(d, "dispatchSuggest").text, "Dispatch its milestone")
+  // 6
+  function test_a_finished_story_says_nothing_is_left_to_run() {
+    var d = make(storyRefusal({ error: "Nothing left to run", suggestion: null }))
+    compare(H.find(d, "dispatchTarget").text, "Target   Story \"Story one\" (milestone \"M one\")")
+    var refusal = H.find(d, "dispatchRefusal")
+    verify(refusal.visible, "the refusal")
+    compare(refusal.text, "Nothing left to run")
+    var start = H.find(d, "dispatchStart")
+    compare(start.enabled, false)
+    click(start)
+    compare(starts.count, 0)
+    compare(H.find(d, "dispatchSuggest").visible, false)
+    compare(H.find(d, "dispatchSummary").visible, false)
+  }
+
+  // 7
+  function test_a_claimed_story_names_the_holding_run() {
+    var d = make(storyRefusal({ error: "Card s1 is claimed by run r-123 (ClaimedError)", suggestion: null }))
+    compare(H.find(d, "dispatchTarget").text, "Target   Story \"Story one\" (milestone \"M one\")")
+    var refusal = H.find(d, "dispatchRefusal")
+    verify(refusal.visible, "the refusal")
+    compare(refusal.text, "Card s1 is claimed by run r-123 (ClaimedError)")
+    verify(String(refusal.text).indexOf("r-123") >= 0, "the holding run")
+    var start = H.find(d, "dispatchStart")
+    compare(start.enabled, false)
+    click(start)
+    compare(starts.count, 0)
+    compare(H.find(d, "dispatchSuggest").visible, false)
+    compare(H.find(d, "dispatchExitCode").visible, false)
+    compare(H.find(d, "dispatchLogPath").visible, false)
   }
 
   // ---- the subtask's two-click Start (S3 4.2) -----------------------------
