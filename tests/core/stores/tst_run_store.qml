@@ -2576,6 +2576,7 @@ TestCase {
     compare(store.dispatchLog, "", label + ": log")
     compare(store.dispatchLogTail, "", label + ": log tail")
     compare(store.dispatchExitCode, null, label + ": exit code")
+    compare(store.dispatchTargetLabel, "", label + ": target label")
   }
 
   // 1 (dispatchStart() from idle is checked in Task 5's test 21)
@@ -3411,5 +3412,66 @@ TestCase {
     reply(proc, startOk("r-1", ""), 0)
     compare(store.dispatchState, "started", "it lands normally")
     compare(store.dispatchRunId, "r-1")
+  }
+
+  // ---- dispatch: story target, retarget and keyed prefix (2.1)
+
+  // get-run-settings like dispatchSettings(), with prefixByMilestone set to map.
+  function keyedSettings(map) {
+    return JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false, notifyOnEscalation: false,
+                            prefixHistory: ["old"], parallelism: 4, confirmDispatch: true, prefixByMilestone: map }) + "\n"
+  }
+
+  // 2.1 test 3
+  function test_open_sets_the_target_label() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.openDispatch(cards.s1, cards)
+    compare(store.dispatchTargetLabel, 'Story "Dispatch store" (milestone "M3 Document runs")')
+    store.openDispatch(cards.m1, cards)
+    compare(store.dispatchTargetLabel, 'Milestone "M3 Document runs"')
+    store.openDispatch(cards.t1, cards)
+    compare(store.dispatchTargetLabel, 'Subtask "RunStore dispatch"')
+    store.openDispatch("board", cards)
+    compare(store.dispatchTargetLabel, "Whole board")
+    store.openDispatch(null, cards)
+    compare(store.dispatchTargetLabel, "No card", "a refused opening is labelled too")
+    compare(store.closeDispatch(), true)
+    checkDispatchIdle(store, "closed")
+  }
+
+  // 2.1 test 5
+  function test_story_prefix_reads_the_snapshot_then_the_keyed_map() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.settingsLoadRunner.current, keyedSettings({ m9: "m9-map" }), 0)
+    store.runs = [{ id: "r-old", milestone_id: "m1", branch_prefix: "m3-old", started_at: "2026-10-01T00:00:00Z" },
+                  { id: "r-live", milestone_id: "m1", branch_prefix: " m3-live ", started_at: "2026-10-06T00:00:00Z" },
+                  { id: "r-other", milestone_id: "m2", branch_prefix: "m2-x", started_at: "2026-10-07T00:00:00Z" }]
+    var cards = dispatchCards()
+    store.openDispatch(cards.s1, cards)
+    compare(store.dispatchForm.prefix, "m3-live", "the milestone's newest snapshot run wins")
+    store.openDispatch(cards.m1, cards)
+    compare(store.dispatchForm.prefix, "m3-live", "the same default serves the milestone")
+
+    var keyed = makeWithProject(rootA); if (!keyed) return
+    reply(keyed.settingsLoadRunner.current, keyedSettings({ m1: "m3-map" }), 0)
+    keyed.openDispatch(cards.s1, cards)
+    compare(keyed.dispatchForm.prefix, "m3-map", "the keyed map beats the prefix history")
+    keyed.openDispatch(cards.t1, cards)
+    compare(keyed.dispatchForm.prefix, "m3-map", "a subtask reads its root milestone's entry")
+  }
+
+  // 2.1 test 12 (the done story)
+  function test_a_done_story_is_refused_and_labelled() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    cards.s1 = { id: "s1", title: "Dispatch store", status: "done", parentId: "m1", depth: 1 }
+    compare(store.openDispatch(cards.s1, cards), false)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchError, "The card is done")
+    compare(store.dispatchErrorType, "Target")
+    compare(store.dispatchSuggest, null)
+    compare(store.dispatchTargetLabel, 'Story "Dispatch store" (milestone "M3 Document runs")')
+    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
   }
 }
