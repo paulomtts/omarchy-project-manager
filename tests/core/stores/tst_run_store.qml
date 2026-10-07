@@ -3544,4 +3544,138 @@ TestCase {
     compare(store.dispatchSuggest, null)
     compare(store.dispatchPreview, null)
   }
+
+  property string blockedMessage: "story s1 is blocked by s0 (todo); dispatch milestone m1 instead"
+
+  // Every dispatch field, as one string to compare before and after.
+  function dispatchFields(store) {
+    return JSON.stringify([store.dispatchState, store.dispatchTarget, store.dispatchTargetLabel, store.dispatchForm,
+                           store.dispatchPreview, store.dispatchError, store.dispatchErrorType, store.dispatchErrors,
+                           store.dispatchSuggest, store.dispatchRunId, store.dispatchMessage, store.dispatchLog,
+                           store.dispatchLogTail, store.dispatchExitCode])
+  }
+
+  // retargetToMilestone() returns false, changes no dispatch field and launches no lookup.
+  function checkRetargetRefused(store, label) {
+    var before = dispatchFields(store)
+    var lookup = store.dispatchDefaultsRunner.current
+    compare(store.retargetToMilestone(), false, label)
+    compare(dispatchFields(store), before, label + ": nothing changed")
+    verify(store.dispatchDefaultsRunner.current === lookup, label + ": no lookup")
+  }
+
+  // 2.1 test 8
+  function test_retarget_from_a_blocked_preview() {
+    var store = storyPreviewingStore(); if (!store) return
+    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchError, tc.blockedMessage, "am's sentence, verbatim")
+    compare(store.dispatchErrorType, "StoryBlockedError")
+    compare(JSON.stringify(store.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}')
+    compare(store.dispatchStart(), false, "Start stays refused")
+    var storyLookup = store.dispatchDefaultsRunner.current
+    compare(store.retargetToMilestone(), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchTarget.level, "milestone")
+    compare(JSON.stringify(store.dispatchTarget.flags), JSON.stringify(["--milestone", "m1"]))
+    compare(store.dispatchTargetLabel, 'Milestone "M3 Document runs"')
+    compare(store.dispatchSuggest, null)
+    compare(store.dispatchError, "")
+    compare(store.dispatchErrorType, "")
+    var lookup = store.dispatchDefaultsRunner.current
+    verify(lookup !== storyLookup, "a fresh --defaults lookup")
+    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/my proj")
+    reply(lookup, defaultsOk("main"), 0)
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs, "the milestone is previewed")
+  }
+
+  // 2.1 test 10
+  function test_retarget_refused_outside_a_blocked_refusal() {
+    var cards = dispatchCards()
+    var idle = dispatchStore(); if (!idle) return
+    checkRetargetRefused(idle, "idle")
+    checkDispatchIdle(idle, "idle after the refusal")
+
+    var ready = readyStore(); if (!ready) return
+    checkRetargetRefused(ready, "ready")
+
+    var claimed = storyPreviewingStore(); if (!claimed) return
+    reply(claimed.dispatchPreviewRunner.current, ctlFail("ClaimedError", "story s1 is claimed by run r-other"), 0)
+    checkRetargetRefused(claimed, "ClaimedError")
+
+    var form = dispatchStore(); if (!form) return
+    form.openDispatch("board", cards)
+    reply(form.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(form.dispatchErrorType, "Form")
+    checkRetargetRefused(form, "Form")
+
+    var target = dispatchStore(); if (!target) return
+    var doneCards = dispatchCards()
+    doneCards.s1 = { id: "s1", title: "Dispatch store", status: "done", parentId: "m1", depth: 1 }
+    target.openDispatch(doneCards.s1, doneCards)
+    compare(target.dispatchErrorType, "Target")
+    checkRetargetRefused(target, "Target")
+
+    var failed = readyStore(); if (!failed) return
+    failed.dispatchStart()
+    reply(failed.dispatchStartRunners[0].current, ctlFail("AmExited", "am run exited at once (exit 2)"), 0)
+    compare(failed.dispatchState, "failed")
+    checkRetargetRefused(failed, "failed")
+
+    var orphan = dispatchStore(); if (!orphan) return
+    var orphanCards = dispatchCards()
+    orphanCards.o1 = { id: "o1", title: "Orphan", status: "todo", parentId: "", depth: 1 }
+    orphan.openDispatch(orphanCards.o1, orphanCards)
+    reply(orphan.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(orphan.dispatchPreviewRunner.current),
+            tc.previewCmd + "/home/u/my proj|story|o1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest")
+    reply(orphan.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", "story o1 is blocked"), 0)
+    compare(orphan.dispatchState, "refused")
+    compare(orphan.dispatchErrorType, "StoryBlockedError")
+    compare(orphan.dispatchSuggest, null, "no milestone to offer")
+    compare(orphan.dispatchTargetLabel, 'Story "Orphan"')
+    checkRetargetRefused(orphan, "a blocked story with no milestone")
+
+    var closed = storyPreviewingStore(); if (!closed) return
+    reply(closed.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
+    compare(closed.closeDispatch(), true)
+    checkRetargetRefused(closed, "closed after a blocked refusal")
+    checkDispatchIdle(closed, "still idle")
+  }
+
+  // 2.1 test 13
+  function test_an_edit_after_a_blocked_refusal_previews_again() {
+    var store = storyPreviewingStore(); if (!store) return
+    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
+    compare(store.setDispatchField("prefix", "x"), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchSuggest, null)
+    compare(store.dispatchError, "")
+    compare(store.dispatchErrorType, "")
+    checkRetargetRefused(store, "previewing after the edit")
+    fire(store.dispatchDebounceTimer)
+    compare(argv(store.dispatchPreviewRunner.current),
+            tc.previewCmd + "/home/u/my proj|story|s1|--base-branch|main|--branch-prefix|x|--max-concurrent|4|--verify|uv run pytest")
+    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
+    compare(store.dispatchState, "refused")
+    compare(JSON.stringify(store.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}', "the action comes back")
+  }
+
+  // 2.1 Review Focus 4 and 5
+  function test_retarget_goes_once_to_the_milestone_recorded_at_the_opening() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.openDispatch(cards.s1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    store.setDispatchField("parallelism", 2)
+    fire(store.dispatchDebounceTimer)
+    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
+    cards.m1 = { id: "m1", title: "M4 Renamed", status: "todo", parentId: "", depth: 0 }
+    compare(store.retargetToMilestone(), true)
+    compare(store.dispatchTargetLabel, 'Milestone "M3 Document runs"', "the milestone recorded at the opening")
+    compare(JSON.stringify(store.dispatchTarget.flags), JSON.stringify(["--milestone", "m1"]))
+    compare(store.dispatchForm.parallelism, 4, "the story's edits are not carried over")
+    compare(store.dispatchForm.prefix, "old")
+    checkRetargetRefused(store, "the second call, while previewing")
+  }
 }

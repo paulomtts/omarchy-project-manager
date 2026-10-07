@@ -975,6 +975,23 @@ Scope {
     return true
   }
 
+  // The milestone a StoryBlockedError refusal offers: the recorded milestone
+  // card as Runs.dispatchMilestone's {id, title} when the target is a story
+  // and its milestone is known, else null.
+  function blockedSuggest() {
+    if (store.dispatchTarget === null || store.dispatchTarget.level !== "story" || dispatchBook.milestone === null) return null
+    return Runs.dispatchMilestone(dispatchBook.milestone, dispatchBook.cardMap)
+  }
+
+  // From a blocked story's refusal (`refused` with a dispatchSuggest), opens
+  // the dispatch afresh on the milestone card and cardMap recorded at the
+  // story's opening and returns openDispatch's result. Refused (false,
+  // nothing changes) in any other state or refusal.
+  function retargetToMilestone() {
+    if (store.dispatchState !== "refused" || store.dispatchSuggest === null) return false
+    return store.openDispatch(dispatchBook.milestone, dispatchBook.cardMap)
+  }
+
   // A copy of the form with one field set as given; verify is copied as a
   // fresh array when it is one. The store converts nothing else.
   function withField(form, name, value) {
@@ -1047,8 +1064,9 @@ Scope {
   // The newest preview's reply for this project and these values (a form
   // change cancels the runner). ok: ready with Runs.previewSummary for the
   // target's level, except a story with nothing left, refused as `Nothing
-  // left to run` (Empty); am's refusal: its message verbatim; anything else
-  // cannot be read.
+  // left to run` (Empty); am's refusal: its message verbatim, and for a
+  // StoryBlockedError the blockedSuggest() milestone; anything else cannot
+  // be read.
   function dispatchPreviewReplied(stdout) {
     if (store.dispatchState !== "previewing") return
     var envelope = store.parseEnvelope(stdout)
@@ -1071,6 +1089,7 @@ Scope {
     if (message.trim() !== "") {
       store.dispatchError = message
       store.dispatchErrorType = typeof err.type === "string" ? err.type : ""
+      if (store.dispatchErrorType === "StoryBlockedError") store.dispatchSuggest = store.blockedSuggest()
     } else {
       store.dispatchError = "The preview could not be read"
       store.dispatchErrorType = ""
