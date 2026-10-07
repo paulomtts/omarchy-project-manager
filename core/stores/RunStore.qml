@@ -1024,8 +1024,8 @@ Scope {
   }
 
   // The form is checked: an invalid one is refused and launches nothing, a
-  // subtask is ready (am has no dry run for one card), a milestone or the
-  // board is previewed. Waits for the defaults lookup, whose reply checks.
+  // subtask is ready (am has no dry run for one card), a milestone, a story
+  // or the board is previewed. Waits for the defaults lookup, whose reply checks.
   function checkDispatch() {
     if (dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
     dispatchDebounceTimer.stop()
@@ -1045,13 +1045,23 @@ Scope {
   }
 
   // The newest preview's reply for this project and these values (a form
-  // change cancels the runner). ok: ready with its summary; am's refusal:
-  // its message verbatim; anything else cannot be read.
+  // change cancels the runner). ok: ready with Runs.previewSummary for the
+  // target's level, except a story with nothing left, refused as `Nothing
+  // left to run` (Empty); am's refusal: its message verbatim; anything else
+  // cannot be read.
   function dispatchPreviewReplied(stdout) {
     if (store.dispatchState !== "previewing") return
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
-      store.dispatchPreview = Runs.previewSummary(envelope.data)
+      var level = store.dispatchTarget.level
+      var preview = Runs.previewSummary(envelope.data, level)
+      if (level === "story" && preview.summary === "Nothing left to run") {
+        store.dispatchState = "refused"
+        store.dispatchError = preview.summary
+        store.dispatchErrorType = "Empty"
+        return
+      }
+      store.dispatchPreview = preview
       store.dispatchState = "ready"
       return
     }

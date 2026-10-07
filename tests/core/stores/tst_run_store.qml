@@ -3474,4 +3474,74 @@ TestCase {
     compare(store.dispatchTargetLabel, 'Story "Dispatch store" (milestone "M3 Document runs")')
     verify(!store.dispatchDefaultsRunner.current, "nothing launched")
   }
+
+  // `am run --story s1 --dry-run` data: one level, story s1 with 2 subtasks rooted on main.
+  function storyDryRun() {
+    return {
+      max_concurrent: 4,
+      levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Dispatch store", root: "main", subtasks: [
+        { id: "t1", title: "RunStore dispatch", status: "todo", branch: "old-t1", base: "main" },
+        { id: "t2", title: "Docs", status: "todo", branch: "old-t2", base: "old-t1" }] }] }],
+      already_done: [],
+      integrate: null
+    }
+  }
+
+  // Project A with story s1 opened and its default branch `main` read: the
+  // first preview is in flight.
+  function storyPreviewingStore() {
+    var store = dispatchStore(); if (!store) return null
+    var cards = dispatchCards()
+    store.openDispatch(cards.s1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    return store
+  }
+
+  property string storyPreviewArgs: "/home/u/my proj|story|s1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest"
+
+  // 2.1 test 4
+  function test_story_preview_argv_and_story_summary() {
+    var store = storyPreviewingStore(); if (!store) return
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc, "a story is previewed")
+    compare(argv(proc), tc.previewCmd + tc.storyPreviewArgs)
+    reply(proc, previewOk(storyDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchPreview.summary, "2 subtasks · rooted on main")
+    compare(store.dispatchPreview.integrate, "")
+    compare(store.dispatchPreview.board, false)
+    compare(store.dispatchError, "")
+    compare(store.dispatchErrorType, "")
+  }
+
+  // 2.1 test 12 (the preview half)
+  function test_a_finished_story_preview_is_refused() {
+    var store = storyPreviewingStore(); if (!store) return
+    reply(store.dispatchPreviewRunner.current, previewOk({ max_concurrent: 4, levels: [],
+      already_done: [{ kind: "story", id: "s1", title: "Dispatch store" }], integrate: null }), 0)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchError, "Nothing left to run")
+    compare(store.dispatchErrorType, "Empty")
+    compare(store.dispatchPreview, null)
+    compare(store.dispatchSuggest, null)
+    compare(store.dispatchStart(), false, "Start only works from ready")
+    compare(store.dispatchStartRunners.length, 0)
+
+    var milestone = previewingStore(); if (!milestone) return
+    reply(milestone.dispatchPreviewRunner.current, previewOk({ max_concurrent: 4, levels: [], already_done: [], integrate: null }), 0)
+    compare(milestone.dispatchState, "ready", "a milestone with nothing left keeps its behaviour")
+    compare(milestone.dispatchPreview.summary, "0 levels · 0 subtasks")
+  }
+
+  // 2.1 test 11 (the preview half)
+  function test_a_claimed_story_preview_names_the_other_run() {
+    var store = storyPreviewingStore(); if (!store) return
+    var message = "story s1 is claimed by run r-other (pid 77)"
+    reply(store.dispatchPreviewRunner.current, ctlFail("ClaimedError", message), 0)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchError, message, "am's sentence, verbatim")
+    compare(store.dispatchErrorType, "ClaimedError")
+    compare(store.dispatchSuggest, null)
+    compare(store.dispatchPreview, null)
+  }
 }
