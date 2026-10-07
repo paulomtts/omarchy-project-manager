@@ -871,7 +871,6 @@ function newAlerts(prevRuns, nextRuns) {
 
 var _DISPATCH_NO_CARD = "No card to dispatch"
 var _DISPATCH_UNKNOWN_LEVEL = "The card's level is unknown"
-var _DISPATCH_STORY = "A story is dispatched through its milestone"
 
 // A card id am can take as a target: a non-empty string that cannot be read as a flag.
 function _isDispatchId(id) { return typeof id === "string" && id !== "" && id.charAt(0) !== "-" }
@@ -898,25 +897,19 @@ function _refusedPlan(level, reason, suggest) {
 }
 
 // What the dispatch dialog may start for card. "board" is the whole board;
-// otherwise card is a brd card: depth 0 milestone, 1 story, 2+ subtask. A
-// finished card is refused; a story is refused with its milestone as the
-// suggestion (title from cardMap when it owns the parent, else ""). Decision
-// order and sentences are pinned in docs/superpowers/specs/1-1-runs-js-5eb7ec0c.md.
+// otherwise card is a brd card: depth 0 milestone (--milestone), 1 story
+// (--story), 2+ subtask (--card). A finished card is refused at every level.
+// cardMap is accepted and not read. Decision order and sentences are pinned in
+// docs/superpowers/specs/1-1-runs-js-5eb7ec0c.md and
+// docs/superpowers/specs/1-2-runs-js-the-story-a2a74eda.md.
 function dispatchPlan(card, cardMap) {
   if (card === "board") return _offeredPlan("board", "board", ["--board"])
   if (!_isObject(card) || !_isDispatchId(card.id)) return _refusedPlan("", _DISPATCH_NO_CARD, null)
   if (!_isWholeNumber(card.depth) || card.depth < 0) return _refusedPlan("", _DISPATCH_UNKNOWN_LEVEL, null)
   var level = card.depth === 0 ? "milestone" : (card.depth === 1 ? "story" : "subtask")
   if (Board.isFinishedStatus(card.status)) return _refusedPlan(level, "The card is " + card.status, null)
-  if (level === "story") {
-    var suggest = null
-    if (typeof card.parentId === "string" && card.parentId !== "") {
-      var parent = _ownCard(cardMap, card.parentId)
-      suggest = { id: card.parentId, title: parent !== null ? _textOf(parent.title) : "" }
-    }
-    return _refusedPlan("story", _DISPATCH_STORY, suggest)
-  }
   if (level === "milestone") return _offeredPlan("milestone", "milestone", ["--milestone", card.id])
+  if (level === "story") return _offeredPlan("story", "story", ["--story", card.id])
   return _offeredPlan("subtask", "card", ["--card", card.id])
 }
 
@@ -956,13 +949,71 @@ function _stemOf(title) {
   return tokens.slice(0, 3).join("-").slice(0, 24).replace(/-+$/, "")
 }
 
+// v trimmed when it is a string, else "".
+function _trimmedOr(v) { return typeof v === "string" ? v.trim() : "" }
+
+// The first entry of history that is a non-blank string, trimmed; "" when
+// history is not an array or has none.
+function _historyPrefix(history) {
+  var list = _arrayOr(history)
+  for (var i = 0; i < list.length; i++) {
+    var prefix = _trimmedOr(list[i])
+    if (prefix !== "") return prefix
+  }
+  return ""
+}
+
+// The trimmed branch_prefix of the newest run in runs (newest first, see
+// _isNewer) whose milestone_id is key and whose branch_prefix is a non-blank
+// string; "" when runs is not an array or has none.
+function _runPrefix(runs, key) {
+  var list = _arrayOr(runs)
+  var newest = -1
+  for (var i = 0; i < list.length; i++) {
+    var run = list[i]
+    if (!_isObject(run) || run.milestone_id !== key || _trimmedOr(run.branch_prefix) === "") continue
+    if (newest < 0 || _isNewer(run, i, list[newest], newest)) newest = i
+  }
+  return newest < 0 ? "" : _trimmedOr(list[newest].branch_prefix)
+}
+
+// map's own entry for key, trimmed, when map is an object and the entry a
+// string; else "". Inherited keys never count.
+function _mapPrefix(map, key) {
+  if (!_isObject(map) || !Object.prototype.hasOwnProperty.call(map, key)) return ""
+  return _trimmedOr(map[key])
+}
+
+// The prefix default for milestone (a card, or null when the card's milestone
+// is unknown): "" for null; else the first non-blank of, in order, the newest
+// run of the milestone (_runPrefix), settings.prefixByMilestone's own entry for
+// the milestone's id (both only when that id is a non-empty string), the first
+// prefix of settings.prefixHistory, and the stem of milestone's title.
+function _defaultPrefix(milestone, settings, runs) {
+  if (milestone === null) return ""
+  var key = milestone.id
+  if (typeof key === "string" && key !== "") {
+    var fromRun = _runPrefix(runs, key)
+    if (fromRun !== "") return fromRun
+    var fromMap = _mapPrefix(settings.prefixByMilestone, key)
+    if (fromMap !== "") return fromMap
+  }
+  var fromHistory = _historyPrefix(settings.prefixHistory)
+  return fromHistory !== "" ? fromHistory : _stemOf(milestone.title)
+}
+
 // The dispatch form's starting values. project is {defaultBranch, settings}
-// with settings as get-run-settings returns it; any part may be missing. base
-// is the trimmed default branch (no fallback: the caller resolves it), prefix
-// the stem of the card's milestone title, verify the stored non-blank commands
-// verbatim, parallelism the stored whole number >= 1 else 4. The opt-out from
+// with settings as get-run-settings returns it; runs is the Runs snapshot
+// (normalizeRun output, newest first), [] when not an array; any part may be
+// missing. base is the trimmed default branch (no fallback: the caller
+// resolves it). prefix is "" when the card's milestone is unknown, else the
+// first non-blank, trimmed, of: the branch_prefix of the newest run whose
+// milestone_id is the milestone's id; settings.prefixByMilestone's own entry
+// for that id; the first entry of settings.prefixHistory; the stem of the
+// milestone's title. verify is the stored non-blank commands verbatim,
+// parallelism the stored whole number >= 1 else 4. The opt-out from
 // verification is never pre-ticked.
-function dispatchDefaults(project, card, cardMap) {
+function dispatchDefaults(project, card, cardMap, runs) {
   var p = _isObject(project) ? project : {}
   var settings = _isObject(p.settings) ? p.settings : {}
   var milestone = _milestoneOf(card, cardMap)
@@ -976,7 +1027,7 @@ function dispatchDefaults(project, card, cardMap) {
     allowNoVerification: false,
     base: typeof p.defaultBranch === "string" ? _textOf(p.defaultBranch) : "",
     parallelism: _isWholeNumber(parallelism) && parallelism >= 1 ? parallelism : 4,
-    prefix: milestone !== null ? _stemOf(milestone.title) : "",
+    prefix: _defaultPrefix(milestone, settings, runs),
     verify: verify
   }
 }
@@ -985,9 +1036,10 @@ function dispatchDefaults(project, card, cardMap) {
 // ---- Dispatch form and preview (S3 1.2) --------------------------------------------------
 //
 // The dispatch form's own checks, and the one-line summary of an `am run
-// --dry-run` payload (the envelope's data, milestone or board). Pure and never
-// throwing, like the rest of this file. Rules, sentences and payload shapes are
-// pinned in docs/superpowers/specs/1-2-runs-js-45cc9067.md.
+// --dry-run` payload (the envelope's data, milestone, story or board). Pure and
+// never throwing, like the rest of this file. Rules, sentences and payload
+// shapes are pinned in docs/superpowers/specs/1-2-runs-js-45cc9067.md and
+// docs/superpowers/specs/1-2-runs-js-the-story-a2a74eda.md.
 
 var _DISPATCH_PREFIX_EMPTY = "Enter a branch prefix"
 var _DISPATCH_VERIFY_MISSING = "Add a verify command or choose to run without verification"
@@ -1046,15 +1098,47 @@ function _planSubtasks(plan) {
 // The fresh result for a payload previewSummary cannot read.
 function _unreadablePreview() { return { board: false, integrate: "", summary: "" } }
 
+// The first object subtask of a dry-run plan, walking object levels, then
+// object stories, then object subtasks, in order; null when there is none.
+function _firstPlanSubtask(plan) {
+  var levels = _objectsOf(plan.levels)
+  for (var i = 0; i < levels.length; i++) {
+    var stories = _objectsOf(levels[i].stories)
+    for (var j = 0; j < stories.length; j++) {
+      var subtasks = _objectsOf(stories[j].subtasks)
+      if (subtasks.length > 0) return subtasks[0]
+    }
+  }
+  return null
+}
+
+// The story preview of a readable `am run --story --dry-run` payload: "<S>
+// subtask(s)", then " \u00b7 rooted on <base>" when the first object subtask's
+// base is a non-blank string (trimmed); "Nothing left to run" when S is 0.
+// integrate, already_done and board are not read.
+function _storyPreview(plan) {
+  var count = _planSubtasks(plan)
+  if (count === 0) return { board: false, integrate: "", summary: "Nothing left to run" }
+  var first = _firstPlanSubtask(plan)
+  var base = first !== null && typeof first.base === "string" ? _textOf(first.base) : ""
+  var summary = _countOf(count, "subtask", "subtasks")
+  if (base !== "") summary += " \u00b7 rooted on " + base
+  return { board: false, integrate: "", summary: summary }
+}
+
 // The dispatch dialog's preview lines for `am run --dry-run` data (never the
-// {ok, data} envelope). A board payload (board exactly true) gives "<N>
+// {ok, data} envelope). level is the target's level: exactly "story" gives the
+// story preview ("<S> subtask(s) \u00b7 rooted on <base>", or "Nothing left to
+// run"; never an Integrate line, a done count or board true). Any other level
+// reads the payload: a board payload (board exactly true) gives "<N>
 // milestone(s), <M> subtask(s)" and no Integrate line; a milestone payload
 // gives "<L> level(s) \u00b7 <S> subtask(s)", then " \u00b7 <D> stor(y|ies) already
 // done" when D > 0, and "Integrate \u2192 <branch>" when integrate.branch is a
 // non-blank string. Only subtasks listed in levels count. No array levels
-// means unreadable: board false and both lines "".
-function previewSummary(dryRunData) {
+// means unreadable at every level: board false and both lines "".
+function previewSummary(dryRunData, level) {
   if (!_isObject(dryRunData) || !Array.isArray(dryRunData.levels)) return _unreadablePreview()
+  if (level === "story") return _storyPreview(dryRunData)
   var levels = _objectsOf(dryRunData.levels)
   if (dryRunData.board === true) {
     var milestones = 0

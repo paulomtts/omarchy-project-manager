@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Start a dispatch: `am run`, detached, and the id of the run it started.
 
-    start-run.py ROOT (milestone ID | card ID | board) [--base-branch B] [--branch-prefix P]
-                 [--max-concurrent N] [--verify CMD]... [--allow-no-verification]
+    start-run.py ROOT (milestone ID | story ID | card ID | board) [--base-branch B]
+                 [--branch-prefix P] [--max-concurrent N] [--verify CMD]...
+                 [--allow-no-verification]
 
-Spawns `am run (--milestone ID | --card ID | --board) --repo-dir ROOT`, then the
-options given in a fixed order (--base-branch, --branch-prefix, --max-concurrent,
-every --verify pair in the order given, --allow-no-verification), as an argv list
-(no shell), ROOT made absolute. Every value is the next argument verbatim, even if
-it starts with `-`; am refuses bad ones itself. --dry-run, --detach and --pretty
-are never sent.
+Spawns `am run (--milestone ID | --story ID | --card ID | --board) --repo-dir ROOT`,
+then the options given in a fixed order (--base-branch, --branch-prefix,
+--max-concurrent, every --verify pair in the order given, --allow-no-verification),
+as an argv list (no shell), ROOT made absolute. The target is a literal word:
+`story board` names the story "board". Every value is the next argument verbatim,
+even if it starts with `-`; am refuses bad ones itself. --dry-run, --detach and
+--pretty are never sent.
 
 The child runs in ROOT, in its own session (so a signal to the helper's process
 group never reaches it), stdin /dev/null, stdout and stderr in a fresh log,
@@ -22,8 +24,10 @@ panel and the shell. The helper only polls whether it has exited.
 For up to POLL_WINDOW seconds after the spawn it asks `am runs --repo-dir ROOT`
 every POLL_INTERVAL seconds for the run this launch started: a row with an id,
 started at or after the spawn (to the second), whose branch_prefix is the one
-given (for the board, also `<prefix>-<stem>`; any, when none was given); the
-earliest such row wins. A failing `am runs` is retried on the next tick.
+given (for the board, also `<prefix>-<stem>`; any, when none was given) and, for
+a story, whose story_id is the story's ID, string for string; the earliest such
+row wins, on a tie the one listed last. A failing `am runs` is retried on the
+next tick.
 
 Prints exactly one JSON line on EVERY path; pid, log and started_at are the
 child's pid, the absolute log path and the spawn time (YYYY-MM-DDTHH:MM:SSZ):
@@ -57,11 +61,11 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = ("usage: start-run.py ROOT (milestone ID | card ID | board) [--base-branch B]"
-         " [--branch-prefix P] [--max-concurrent N] [--verify CMD]..."
+USAGE = ("usage: start-run.py ROOT (milestone ID | story ID | card ID | board)"
+         " [--base-branch B] [--branch-prefix P] [--max-concurrent N] [--verify CMD]..."
          " [--allow-no-verification]")
 VALUED = ("--base-branch", "--branch-prefix", "--max-concurrent")
-TARGETS = ("milestone", "card")
+TARGETS = ("milestone", "story", "card")
 POLL_WINDOW = 20
 POLL_INTERVAL = 0.5
 RUNS_TIMEOUT = 5
@@ -87,7 +91,7 @@ def good_root(root):
 def parse(argv):
     """(root, target, id, options) for a command line USAGE allows, else None.
 
-    target is "milestone", "card" or "board"; id is None for the board. options
+    target is "milestone", "story", "card" or "board"; id is None for the board. options
     always maps "--verify" to the list of commands in the order given, maps each
     given VALUED flag to its value and "--allow-no-verification" to True when
     given; a once-only flag given twice is a usage error."""
@@ -189,11 +193,15 @@ def parse_time(value):
     return when
 
 
-def matches(row, target, prefix, since):
+def matches(row, target, prefix, since, ident=None):
     """Whether an `am runs` row can be the run this launch started: it has an id,
-    started at or after `since`, and carries the prefix given (the board's runs may
-    carry `<prefix>-<stem>`); with no prefix given, any."""
+    started at or after `since`, carries the prefix given (the board's runs may
+    carry `<prefix>-<stem>`; with no prefix given, any) and, for a story launch,
+    carries a string story_id equal to `ident`. Other targets ignore story_id."""
     if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+        return False
+    if target == "story" and (not isinstance(row.get("story_id"), str)
+                              or row["story_id"] != ident):
         return False
     when = parse_time(row.get("started_at"))
     if when is None or when < since:
@@ -206,12 +214,12 @@ def matches(row, target, prefix, since):
     return got == prefix or (target == "board" and got.startswith(prefix + "-"))
 
 
-def find_run(rows, target, prefix, since):
+def find_run(rows, target, prefix, since, ident=None):
     """The id of the earliest matching row (on a tie, the one listed last: the
     oldest in am's newest-first order), else None."""
     best = None
     for row in rows:
-        if matches(row, target, prefix, since):
+        if matches(row, target, prefix, since, ident):
             when = parse_time(row["started_at"])
             if best is None or when <= best[0]:
                 best = (when, row["id"])
@@ -276,7 +284,7 @@ def early_exit(proc, launch):
                  "log_tail": log_tail(text)})
 
 
-def watch(proc, am, root, target, prefix, launch, started, deadline):
+def watch(proc, am, root, target, ident, prefix, launch, started, deadline):
     """Tick every POLL_INTERVAL until the run appears, am exits or the window ends;
     one last tick runs at or after the deadline. Whether am has exited is read
     before `am runs` is asked: an exit seen first means its row, if any, was
@@ -284,7 +292,7 @@ def watch(proc, am, root, target, prefix, launch, started, deadline):
     while True:
         last = time.monotonic() >= deadline
         exited = proc.poll() is not None
-        run_id = find_run(list_runs(am, root), target, prefix, started)
+        run_id = find_run(list_runs(am, root), target, prefix, started, ident)
         if run_id is not None:
             return emit({"ok": True, **launch, "run_id": run_id, "message": ""})
         if exited:
@@ -311,7 +319,8 @@ def main(argv, launch):
         return failure("SpawnFailed", "Could not start am run: " + str(e), log=log)
     deadline = time.monotonic() + POLL_WINDOW
     launch.update({"pid": proc.pid, "log": log, "started_at": started.strftime(STAMP)})
-    return watch(proc, am, root, target, options.get("--branch-prefix"), launch, started, deadline)
+    return watch(proc, am, root, target, ident, options.get("--branch-prefix"), launch, started,
+                 deadline)
 
 
 def guarded(argv):

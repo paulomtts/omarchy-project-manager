@@ -1,7 +1,7 @@
 // tests/ui/tst_dispatch_flow.qml
 // The dispatch around the whole panel (S3 4.2): each entry point (the card
 // detail's Dispatch, d on the board list, the Runs toolbar's Start run) opens
-// the mounted dialog; the story's milestone offer, the subtask's lines and
+// the mounted dialog; a story opening on itself, the subtask's lines and
 // two-click Start, Escape, the focus, and where a start takes the user. The
 // dialog's own rendering is tests/ui/components/tst_dispatch_dialog.qml; the
 // store's rules are tests/core/stores/tst_run_store.qml.
@@ -138,35 +138,15 @@ TestCase {
   }
 
   // 22
-  function test_a_story_offers_its_milestone_and_the_offer_reopens_on_it() {
+  function test_a_story_opens_the_dialog_on_itself() {
     var p = make(); if (!p) return
     dispatchCard(p, "s1")
-    compare(p.app.runs.dispatchState, "refused")
-    compare(text(p, "dispatchTarget"), "Target   Story \"Story one\"")
-    compare(text(p, "dispatchRefusal"), "A story is dispatched through its milestone")
-    compare(H.find(p, "dispatchStart").enabled, false)
-    var offer = H.find(p, "dispatchSuggest")
-    compare(offer.visible, true)
-    compare(String(offer.text), "Dispatch its milestone \"M one\"")
-    offer.clicked()
-    compare(p.dispatchCardId, "m1")
+    compare(H.find(p, "dispatchDialog").visible, true)
+    compare(p.dispatchCardId, "s1")
     compare(p.app.runs.dispatchState, "previewing")
-    compare(text(p, "dispatchTarget"), "Target   Milestone \"M one\"")
-    compare(offer.visible, false)
-    wait(50)
-    compare(p.focusItem.objectName, "dispatchBase", "the re-opened dialog has the focus")
-  }
-
-  // A story whose milestone is not on the board: the refusal, no offer.
-  function test_a_story_whose_milestone_left_the_board_offers_nothing() {
-    var p = make(); if (!p) return
-    dispatchCard(p, "s1")
-    compare(H.find(p, "dispatchSuggest").visible, true)
-    p.app.board.applyTreeData([card("m9", "M nine", "done")])
-    wait(50)
-    compare(p.app.runs.dispatchState, "refused")
-    compare(text(p, "dispatchRefusal"), "A story is dispatched through its milestone")
-    compare(H.find(p, "dispatchSuggest").visible, false)
+    compare(text(p, "dispatchTarget"), "Target   Story \"Story one\"")
+    compare(p.app.runs.dispatchSuggest, null)
+    compare(H.find(p, "dispatchSuggest").visible, false, "no milestone offer")
   }
 
   // 23

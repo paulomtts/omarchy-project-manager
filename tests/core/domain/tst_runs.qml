@@ -2486,6 +2486,8 @@ TestCase {
     var board = Runs.dispatchPlan("board")
     board.flags.push("--evil")
     compare(JSON.stringify(Runs.dispatchPlan("board").flags), JSON.stringify(["--board"]), "board flags fresh")
+    var story = Runs.dispatchPlan(inputs[1])
+    compare(JSON.stringify(story.flags), JSON.stringify(["--story", "s1"]), "the story input is offered")
   }
 
   function test_dispatchPlan_milestone() {
@@ -2514,29 +2516,45 @@ TestCase {
   }
 
   function test_dispatchPlan_story() {
+    var map = { m1: mkCard("m1", 0, "todo", null, "M3 Document runs") }
+    var statuses = ["todo", "in_progress", "blocked", undefined]
+    for (var i = 0; i < statuses.length; i++) {
+      var story = mkCard("s1", 1, statuses[i], "m1", "Story")
+      map.s1 = story
+      checkPlan(Runs.dispatchPlan(story, map), true, "story", "story", ["--story", "s1"], "", null,
+                "status " + statuses[i])
+    }
+  }
+
+  // Review Focus 1.
+  function test_dispatchPlan_story_ignores_parent() {
+    var story = mkCard("s1", 1, "todo", "m1", "Story")
+    var maps = [undefined, { s1: story }, { m1: "M3" }, { m1: mkCard("m1", 0, "todo", null, Object.create(null)) },
+                { m1: mkCard("m1", 0, "todo", null, 7) }, { m1: mkCard("m1", 0, "todo", null, null) }]
+    for (var i = 0; i < maps.length; i++) {
+      checkPlan(Runs.dispatchPlan(story, maps[i]), true, "story", "story", ["--story", "s1"], "", null, "cardMap " + i)
+    }
+    var parents = [null, "", 5, "__proto__", undefined]
+    var map = { m1: mkCard("m1", 0, "todo", null, "M3 Document runs") }
+    for (var j = 0; j < parents.length; j++) {
+      checkPlan(Runs.dispatchPlan(mkCard("s1", 1, "todo", parents[j], "S"), map), true, "story", "story",
+                ["--story", "s1"], "", null, "parentId " + parents[j])
+    }
+  }
+
+  function test_dispatchPlan_story_fresh() {
     var story = mkCard("s1", 1, "todo", "m1", "Story")
     var map = { m1: mkCard("m1", 0, "todo", null, "M3 Document runs"), s1: story }
-    var reason = "A story is dispatched through its milestone"
-    checkPlan(Runs.dispatchPlan(story, map), false, "story", "", [], reason,
-              { id: "m1", title: "M3 Document runs" }, "with cardMap")
-    checkPlan(Runs.dispatchPlan(story), false, "story", "", [], reason, { id: "m1", title: "" }, "no cardMap")
-    checkPlan(Runs.dispatchPlan(story, { s1: story }), false, "story", "", [], reason,
-              { id: "m1", title: "" }, "cardMap missing m1")
-    checkPlan(Runs.dispatchPlan(story, { m1: "M3" }), false, "story", "", [], reason,
-              { id: "m1", title: "" }, "m1 not an object")
-    checkPlan(Runs.dispatchPlan(story, { m1: mkCard("m1", 0, "todo", null, "  M3 x \n") }), false, "story", "", [], reason,
-              { id: "m1", title: "M3 x" }, "title trimmed")
-    var parents = [null, "", 5]
-    for (var i = 0; i < parents.length; i++) {
-      checkPlan(Runs.dispatchPlan(mkCard("s1", 1, "todo", parents[i], "S"), map), false, "story", "", [], reason,
-                null, "parentId " + parents[i])
-    }
+    var before = JSON.stringify(map)
     var a = Runs.dispatchPlan(story, map)
     var b = Runs.dispatchPlan(story, map)
-    verify(a.suggest !== b.suggest, "suggest is fresh")
-    a.suggest.title = "x"
-    compare(Runs.dispatchPlan(story, map).suggest.title, "M3 Document runs", "mutation does not leak")
-    compare(map.m1.title, "M3 Document runs", "cardMap unchanged")
+    verify(a !== b, "distinct objects")
+    verify(a.flags !== b.flags, "distinct flags arrays")
+    a.flags.push("--evil")
+    a.flags[1] = "x"
+    compare(JSON.stringify(b.flags), JSON.stringify(["--story", "s1"]), "the other result is untouched")
+    compare(JSON.stringify(Runs.dispatchPlan(story, map).flags), JSON.stringify(["--story", "s1"]), "mutation does not leak")
+    compare(JSON.stringify(map), before, "cardMap unchanged")
   }
 
   function test_dispatchPlan_finished() {
@@ -2550,6 +2568,10 @@ TestCase {
       }
     }
     compare(Runs.dispatchPlan(mkCard("s1", 1, "done", "m1", "S"), map).reason, "The card is done", "exact sentence")
+    checkPlan(Runs.dispatchPlan(mkCard("s1", 1, "blocked", "m1", "S"), map), true, "story", "story",
+              ["--story", "s1"], "", null, "blocked is not finished")
+    checkPlan(Runs.dispatchPlan(mkCard("s1", 1, "merged", "m1", "S"), { m1: map.m1, s1: mkCard("s1", 1, "merged", "m1", "S") }),
+              false, "story", "", [], "The card is merged", null, "a finished story with its milestone in cardMap")
     checkPlan(Runs.dispatchPlan(mkCard("m1", 0, "Done", null, "M")), true, "milestone", "milestone",
               ["--milestone", "m1"], "", null, "Done is not finished")
     checkPlan(Runs.dispatchPlan(mkCard("m1", 0, " done", null, "M")), true, "milestone", "milestone",
@@ -2589,33 +2611,22 @@ TestCase {
     }
     checkPlan(Runs.dispatchPlan(), false, "", "", [], "No card to dispatch", null, "no arguments")
     var story = mkCard("s1", 1, "todo", "m1", "S")
-    var maps = [null, "x", [], Object.create(null)]
-    for (var j = 0; j < maps.length; j++) {
-      checkPlan(Runs.dispatchPlan(story, maps[j]), false, "story", "", [],
-                "A story is dispatched through its milestone", { id: "m1", title: "" }, "cardMap " + j)
-    }
     var bare = Object.create(null)
     bare.m1 = mkCard("m1", 0, "todo", null, "M3 Document runs")
-    compare(Runs.dispatchPlan(story, bare).suggest.title, "M3 Document runs", "prototype-less cardMap is read")
+    var maps = [null, "x", [], Object.create(null), bare]
+    for (var j = 0; j < maps.length; j++) {
+      checkPlan(Runs.dispatchPlan(story, maps[j]), true, "story", "story", ["--story", "s1"], "", null, "cardMap " + j)
+    }
   }
 
   function test_dispatchPlan_proto_ids() {
     var ids = ["__proto__", "constructor", "toString"]
     for (var i = 0; i < ids.length; i++) {
       checkPlan(Runs.dispatchPlan(mkCard("s1", 1, "todo", ids[i], "S"), { m1: mkCard("m1", 0, "todo", null, "M") }),
-                false, "story", "", [], "A story is dispatched through its milestone",
-                { id: ids[i], title: "" }, "parentId " + ids[i])
+                true, "story", "story", ["--story", "s1"], "", null, "parentId " + ids[i])
+      checkPlan(Runs.dispatchPlan(mkCard(ids[i], 1, "todo", "m1", "S")), true, "story", "story",
+                ["--story", ids[i]], "", null, "story id " + ids[i])
     }
-  }
-
-  // Review Focus 4.
-  function test_dispatchPlan_odd_titles() {
-    var story = mkCard("s1", 1, "todo", "m1", "S")
-    var bareTitle = mkCard("m1", 0, "todo", null, Object.create(null))
-    checkPlan(Runs.dispatchPlan(story, { m1: bareTitle }), false, "story", "", [],
-              "A story is dispatched through its milestone", { id: "m1", title: "" }, "unconvertible title")
-    compare(Runs.dispatchPlan(story, { m1: mkCard("m1", 0, "todo", null, 7) }).suggest.title, "7", "number title")
-    compare(Runs.dispatchPlan(story, { m1: mkCard("m1", 0, "todo", null, null) }).suggest.title, "", "null title")
   }
 
   function fullProject() {
@@ -2792,6 +2803,212 @@ TestCase {
     compare(Object.keys(c).sort().join(","), "depth,id,parentId,status,title", "no key added to the card")
   }
 
+  // ---- 1.3: the prefix default --------------------------------------------------------------
+
+  function mkPrefixRun(milestoneId, prefix, startedAt) {
+    return { milestone_id: milestoneId, branch_prefix: prefix, started_at: startedAt }
+  }
+
+  // Milestone m1 "M3 Document runs" (stem m3), its story s1, the story's subtask c1, and their map.
+  function prefixCards() {
+    var m = mkCard("m1", 0, "todo", null, "M3 Document runs")
+    var s = mkCard("s1", 1, "todo", "m1", "Story")
+    var c = mkCard("c1", 2, "todo", "s1", "Subtask")
+    return { m: m, s: s, c: c, map: { m1: m, s1: s, c1: c } }
+  }
+
+  // The prefix dispatchDefaults gives card with these settings and runs.
+  function prefixWith(settings, card, map, runs) {
+    return Runs.dispatchDefaults({ settings: settings }, card, map, runs).prefix
+  }
+
+  function test_dispatchDefaults_prefix_history() {
+    var f = prefixCards()
+    var cards = [f.m, f.s, f.c]
+    for (var i = 0; i < cards.length; i++) {
+      var id = cards[i].id
+      compare(prefixWith({ prefixHistory: ["", "  ", 5, null, "hist-p", "older"] }, cards[i], f.map), "hist-p",
+              id + ": the first non-blank string entry")
+      var stems = [[], "hist-p", { 0: "x" }, ["", "  ", 5, null], null, undefined]
+      for (var j = 0; j < stems.length; j++) {
+        compare(prefixWith({ prefixHistory: stems[j] }, cards[i], f.map), "m3", id + ": history " + j + " falls to the stem")
+      }
+    }
+    compare(prefixWith({}, f.s, f.map), "m3", "no history key")
+    compare(prefixWith({ prefixHistory: ["hist-p"] }, mkCard("m9", 0, "todo", null, "-- **"), {}), "hist-p",
+            "the history before an empty stem")
+    compare(prefixWith({}, mkCard("m9", 0, "todo", null, "-- **"), {}), "", "an empty stem stays empty")
+    compare(Runs.dispatchDefaults({ settings: "x" }, f.s, f.map).prefix, "m3", "settings garbage")
+  }
+
+  function test_dispatchDefaults_prefix_order() {
+    var f = prefixCards()
+    var cards = [f.m, f.s, f.c]
+    var runs = [mkPrefixRun("m1", "run-p", "2026-10-06T10:00:00Z")]
+    for (var i = 0; i < cards.length; i++) {
+      var id = cards[i].id
+      compare(prefixWith({ prefixByMilestone: { m1: "map-p" }, prefixHistory: ["hist-p"] }, cards[i], f.map, runs), "run-p",
+              id + ": the run first")
+      compare(prefixWith({ prefixByMilestone: { m1: "map-p" }, prefixHistory: ["hist-p"] }, cards[i], f.map, []), "map-p",
+              id + ": then the map")
+      compare(prefixWith({ prefixByMilestone: {}, prefixHistory: ["hist-p"] }, cards[i], f.map, []), "hist-p",
+              id + ": then the history")
+      compare(prefixWith({ prefixByMilestone: {}, prefixHistory: [] }, cards[i], f.map, []), "m3", id + ": then the stem")
+    }
+    compare(Runs.dispatchDefaults({ settings: "x" }, f.s, f.map, runs).prefix, "run-p", "a run needs no settings")
+  }
+
+  // Review Focus 1.
+  function test_dispatchDefaults_prefix_runs_newest() {
+    var f = prefixCards()
+    var settings = { prefixByMilestone: { m1: "map-p" }, prefixHistory: ["hist-p"] }
+    var older = mkPrefixRun("m1", "older-p", "2026-10-05T10:00:00Z")
+    var newer = mkPrefixRun("m1", "newer-p", "2026-10-06T10:00:00Z")
+    compare(prefixWith(settings, f.s, f.map, [newer, older]), "newer-p", "newest first")
+    compare(prefixWith(settings, f.s, f.map, [older, newer]), "newer-p", "a later started_at wins over the index")
+    var stamps = [["2026-10-06T10:00:00Z", "2026-10-06T10:00:00Z"], [undefined, "2026-10-06T10:00:00Z"],
+                  ["2026-10-06T10:00:00Z", undefined], [undefined, undefined], ["", "2026-10-06T10:00:00Z"],
+                  ["", ""], [5, "2026-10-06T10:00:00Z"], [null, "2026-10-06T10:00:00Z"]]
+    for (var i = 0; i < stamps.length; i++) {
+      var runs = [mkPrefixRun("m1", "first-p", stamps[i][0]), mkPrefixRun("m1", "second-p", stamps[i][1])]
+      compare(prefixWith(settings, f.s, f.map, runs), "first-p", "stamps " + i + ": the lower index wins")
+    }
+    var bare = { milestone_id: "m1", branch_prefix: "first-p" }
+    compare(prefixWith(settings, f.s, f.map, [bare, newer]), "first-p", "no started_at key: the lower index wins")
+    var blanks = ["", "  ", null, 5, undefined]
+    for (var j = 0; j < blanks.length; j++) {
+      compare(prefixWith(settings, f.s, f.map, [mkPrefixRun("m1", blanks[j], "2026-10-07T10:00:00Z"), older]), "older-p",
+              "a newer run with prefix " + j + " is skipped")
+      compare(prefixWith(settings, f.s, f.map, [older, mkPrefixRun("m1", blanks[j], "2026-10-07T10:00:00Z")]), "older-p",
+              "a later-stamped run with prefix " + j + " is skipped")
+      compare(prefixWith(settings, f.s, f.map, [mkPrefixRun("m1", blanks[j], "2026-10-07T10:00:00Z")]), "map-p",
+              "the only run, with prefix " + j + ", falls to the map")
+    }
+  }
+
+  // Review Focus 2, 3 and 4.
+  function test_dispatchDefaults_prefix_runs_matching() {
+    var f = prefixCards()
+    var settings = { prefixByMilestone: { m1: "map-p" }, prefixHistory: ["hist-p"] }
+    var mine = mkPrefixRun("m1", "run-p", "2026-10-05T10:00:00Z")
+    compare(prefixWith(settings, f.m, f.map, [mkPrefixRun("m2", "other-p", "2026-10-07T10:00:00Z"), mine]), "run-p",
+            "another milestone's newer run is ignored")
+    compare(prefixWith(settings, f.s, f.map, [mkPrefixRun("s1", "story-p", "2026-10-07T10:00:00Z")]), "map-p",
+            "a run keyed by the story's own id is ignored")
+    compare(prefixWith(settings, f.c, f.map, [mkPrefixRun("c1", "card-p", "2026-10-07T10:00:00Z")]), "map-p",
+            "a run keyed by the subtask's own id is ignored")
+    var ids = [5, null, undefined, ["m1"], { id: "m1" }, " m1", "m1 ", "M1"]
+    for (var i = 0; i < ids.length; i++) {
+      compare(prefixWith(settings, f.s, f.map, [mkPrefixRun(ids[i], "bad-p", "2026-10-07T10:00:00Z")]), "map-p",
+              "milestone_id " + i + " never matches")
+    }
+    compare(prefixWith(settings, f.s, f.map, [null, "x", [], 5, Object.create(null), mine]), "run-p", "garbage entries are skipped")
+    var lists = [undefined, null, {}, "m1", 5, { 0: mine, length: 1 }]
+    for (var j = 0; j < lists.length; j++) {
+      compare(prefixWith(settings, f.s, f.map, lists[j]), "map-p", "runs " + j + " is []")
+    }
+    var sparse = []
+    sparse[3] = mine
+    compare(prefixWith(settings, f.s, f.map, sparse), "run-p", "holes are skipped")
+    compare(prefixWith(settings, f.s, f.map, [{ milestone_id: "m1", branch_prefix: Object.create(null) }]), "map-p",
+            "an unconvertible branch_prefix is skipped")
+    var states = [{ status: "started", lease: { live: false } }, { status: "started", lease: { live: true } },
+                  { status: "done" }, { status: "escalated" }, { status: "canceled" }, { status: "stopped" }, { status: "" }]
+    for (var k = 0; k < states.length; k++) {
+      var run = mkPrefixRun("m1", "state-p", "2026-10-06T10:00:00Z")
+      run.status = states[k].status
+      run.lease = states[k].lease
+      compare(prefixWith(settings, f.s, f.map, [run]), "state-p", "a run in state " + k + " still names the prefix")
+    }
+  }
+
+  // Review Focus 3 and 5.
+  function test_dispatchDefaults_prefix_map() {
+    var f = prefixCards()
+    var hist = ["hist-p"]
+    compare(prefixWith({ prefixByMilestone: { m2: "other-p" }, prefixHistory: hist }, f.s, f.map, []), "hist-p",
+            "another milestone's entry is ignored")
+    compare(prefixWith({ prefixByMilestone: { s1: "story-p" }, prefixHistory: hist }, f.s, f.map, []), "hist-p",
+            "an entry for the story's own id is ignored")
+    compare(prefixWith({ prefixByMilestone: { " m1": "a", "m1 ": "b", M1: "c" }, prefixHistory: hist }, f.s, f.map, []), "hist-p",
+            "near-miss keys are ignored")
+    var values = ["", "   ", 5, null, ["p"], undefined]
+    for (var i = 0; i < values.length; i++) {
+      compare(prefixWith({ prefixByMilestone: { m1: values[i] }, prefixHistory: hist }, f.s, f.map, []), "hist-p",
+              "value " + i + " falls through")
+    }
+    var maps = [null, [], "m1", 5, undefined]
+    for (var j = 0; j < maps.length; j++) {
+      compare(prefixWith({ prefixByMilestone: maps[j], prefixHistory: hist }, f.s, f.map, []), "hist-p", "map " + j + " is skipped")
+    }
+    compare(prefixWith({ prefixByMilestone: Object.create({ m1: "inh" }), prefixHistory: hist }, f.s, f.map, []), "hist-p",
+            "an inherited entry does not match")
+    var protoIds = ["constructor", "toString", "__proto__", "hasOwnProperty"]
+    for (var k = 0; k < protoIds.length; k++) {
+      var m = mkCard(protoIds[k], 0, "todo", null, "M3 Document runs")
+      compare(prefixWith({ prefixByMilestone: {}, prefixHistory: hist }, m, {}, []), "hist-p",
+              "milestone id " + protoIds[k] + " with a plain map")
+    }
+    var bare = Object.create(null)
+    bare.m1 = "bare-p"
+    compare(prefixWith({ prefixByMilestone: bare, prefixHistory: hist }, f.s, f.map, []), "bare-p", "a prototype-less map")
+    var own = JSON.parse('{"__proto__": "own-p"}')
+    compare(prefixWith({ prefixByMilestone: own, prefixHistory: hist }, mkCard("__proto__", 0, "todo", null, "M3 X"), {}, []),
+            "own-p", "an own __proto__ entry matches")
+  }
+
+  function test_dispatchDefaults_prefix_trimmed() {
+    var f = prefixCards()
+    compare(prefixWith({}, f.s, f.map, [mkPrefixRun("m1", "  run-p \n", "2026-10-06T10:00:00Z")]), "run-p", "run")
+    compare(prefixWith({ prefixByMilestone: { m1: " map-p " } }, f.s, f.map, []), "map-p", "map")
+    compare(prefixWith({ prefixHistory: ["\thist-p "] }, f.s, f.map, []), "hist-p", "history")
+    compare(prefixWith({ prefixByMilestone: { m1: " my map-p\n" } }, f.s, f.map, []), "my map-p", "inner whitespace kept")
+  }
+
+  function test_dispatchDefaults_prefix_no_milestone() {
+    var f = prefixCards()
+    var settings = { prefixByMilestone: { m1: "map-p", "": "blank-key-p" }, prefixHistory: ["hist-p"] }
+    var runs = [mkPrefixRun("m1", "run-p", "2026-10-06T10:00:00Z"), mkPrefixRun("", "blank-run-p", "2026-10-07T10:00:00Z"),
+                mkPrefixRun(undefined, "none-run-p", "2026-10-08T10:00:00Z")]
+    compare(prefixWith(settings, "board", f.map, runs), "", "board")
+    compare(prefixWith(settings, f.s, undefined, runs), "", "story without cardMap")
+    compare(prefixWith(settings, f.c, { s1: f.s, c1: f.c }, runs), "", "broken chain")
+    var a = mkCard("a", 1, "todo", "b", "A")
+    var b = mkCard("b", 1, "todo", "a", "B")
+    compare(prefixWith(settings, a, { a: a, b: b }, runs), "", "two-card cycle")
+    compare(prefixWith(settings, null, f.map, runs), "", "no card")
+    var noId = { depth: 0, status: "todo", parentId: null, title: "M3 Document runs" }
+    var blankId = mkCard("", 0, "todo", null, "M3 Document runs")
+    var numberId = mkCard(5, 0, "todo", null, "M3 Document runs")
+    var keyless = [noId, blankId, numberId]
+    var noHistory = { prefixByMilestone: settings.prefixByMilestone, prefixHistory: [] }
+    for (var i = 0; i < keyless.length; i++) {
+      compare(prefixWith(settings, keyless[i], {}, runs), "hist-p", "milestone " + i + " without a usable id skips run and map")
+      compare(prefixWith(noHistory, keyless[i], {}, runs), "m3", "milestone " + i + ": then the stem")
+    }
+  }
+
+  function test_dispatchDefaults_prefix_pure() {
+    var f = prefixCards()
+    var project = fullProject()
+    project.settings.prefixByMilestone = { m1: "map-p", m2: "other-p" }
+    project.settings.prefixHistory = ["hist-p", "older"]
+    var runs = [mkPrefixRun("m2", "other-p", "2026-10-07T10:00:00Z"), mkPrefixRun("m1", "  run-p ", "2026-10-06T10:00:00Z")]
+    var before = JSON.stringify([runs, project, f.map])
+    var a = Runs.dispatchDefaults(project, f.c, f.map, runs)
+    var b = Runs.dispatchDefaults(project, f.c, f.map, runs)
+    compare(JSON.stringify([runs, project, f.map]), before, "runs, settings and cardMap unchanged")
+    verify(a !== b, "distinct objects")
+    verify(a.verify !== b.verify, "distinct verify arrays")
+    checkDefaults5(a, "main", 2, "run-p", ["uv run pytest", "bash tests/run.sh"], "with runs")
+    checkDefaults5(Runs.dispatchDefaults(project, f.c, f.map), "main", 2, "map-p", ["uv run pytest", "bash tests/run.sh"],
+                   "without runs")
+    var values = [undefined, null, 0, "x", [], Object.create(null), [null], [Object.create(null)]]
+    for (var i = 0; i < values.length; i++) {
+      checkDefaults5(Runs.dispatchDefaults(values[i], values[i], values[i], values[i]), "", 4, "", [], "garbage " + i)
+    }
+  }
+
   // ---- S3 1.2: dispatch form and preview ---------------------------------------------------
 
   function validForm() {
@@ -2962,6 +3179,27 @@ TestCase {
       integrate: { branch: "m3-integrate", worktree: "/repo/.worktrees/m3-integrate",
                    order: [{ story: "s1", tip: "m3-c2" }, { story: "s2", tip: "m3-c3" }, { story: "s3", tip: "m3-c5" }] }
     }
+  }
+
+  // `am run --story s1 --dry-run` data as recorded in 1.1: one level, one story,
+  // 2 subtasks stacked on master, no Integrate.
+  function dryRunStory() {
+    return {
+      max_concurrent: 1,
+      levels: [
+        { level: 0, concurrent: 1, stories: [
+          { story: "s1", title: "Story one", root: "master",
+            subtasks: [planSubtask("p", "c1", "master"), planSubtask("p", "c2", "p-c1")] }
+        ] }
+      ],
+      already_done: [],
+      integrate: null
+    }
+  }
+
+  // `am run --story s1 --dry-run` data for a finished story: no level, the story already done.
+  function dryRunStoryDone() {
+    return { max_concurrent: 1, levels: [], already_done: [{ kind: "story", id: "s1", title: "Story one" }], integrate: null }
   }
 
   // A board milestone's own plan: one level, one story with count subtasks,
@@ -3136,16 +3374,124 @@ TestCase {
     checkSummary(Runs.previewSummary(board), true, "3 milestones, 7 subtasks", "", "plans' done and integrate stay out")
   }
 
+  function test_previewSummary_story() {
+    checkSummary(Runs.previewSummary(dryRunStory(), "story"), false, "2 subtasks \u00b7 rooted on master", "", "story")
+    var a = Runs.previewSummary(dryRunStory(), "story")
+    var b = Runs.previewSummary(dryRunStory(), "story")
+    verify(a !== b, "distinct objects")
+    a.summary = "changed"
+    a.board = true
+    checkSummary(Runs.previewSummary(dryRunStory(), "story"), false, "2 subtasks \u00b7 rooted on master", "",
+                 "mutation does not leak")
+  }
+
+  function test_previewSummary_story_singular() {
+    var one = dryRunStory()
+    one.levels[0].stories[0].subtasks = [planSubtask("p", "c1", "master")]
+    checkSummary(Runs.previewSummary(one, "story"), false, "1 subtask \u00b7 rooted on master", "", "one subtask")
+  }
+
+  function test_previewSummary_story_nothing_left() {
+    checkSummary(Runs.previewSummary(dryRunStoryDone(), "story"), false, "Nothing left to run", "", "finished story")
+    var payloads = [
+      { levels: [] },
+      { levels: [{ level: 0, concurrent: 1, stories: [] }] },
+      { levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Story one", root: "master", subtasks: [] }] }] },
+      { levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Story one", root: "master" }] }] },
+      { levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Story one", root: "master", subtasks: "x" }] }] },
+      { levels: [null, "x", [], { level: 0, stories: ["x", null, [], { story: "s1", subtasks: [null, 7, "x", []] }] }] }
+    ]
+    for (var i = 0; i < payloads.length; i++) {
+      checkSummary(Runs.previewSummary(payloads[i], "story"), false, "Nothing left to run", "", "payload " + i)
+    }
+  }
+
+  // Review Focus 3.
+  function test_previewSummary_story_ignores_integrate_and_done() {
+    var full = "2 subtasks \u00b7 rooted on master"
+    var integrated = dryRunStory()
+    integrated.integrate = { branch: "p-integrate", worktree: "/repo/.worktrees/p-integrate", order: [] }
+    checkSummary(Runs.previewSummary(integrated, "story"), false, full, "", "integrate branch")
+    var done = dryRunStory()
+    done.already_done = [{ kind: "story", id: "s9", title: "Story nine" },
+                         { kind: "subtask", id: "c0", title: "Subtask c0", story: "s1" }]
+    checkSummary(Runs.previewSummary(done, "story"), false, full, "", "already done")
+    var board = dryRunStory()
+    board.board = true
+    checkSummary(Runs.previewSummary(board, "story"), false, full, "", "board true")
+  }
+
+  // Review Focus 2.
+  function test_previewSummary_story_base() {
+    var padded = dryRunStory()
+    padded.levels[0].stories[0].subtasks[0].base = "  main \n"
+    checkSummary(Runs.previewSummary(padded, "story"), false, "2 subtasks \u00b7 rooted on main", "", "base trimmed")
+    var bases = ["", "  ", 5, null]
+    for (var i = 0; i < bases.length; i++) {
+      var d = dryRunStory()
+      d.levels[0].stories[0].subtasks[0].base = bases[i]
+      checkSummary(Runs.previewSummary(d, "story"), false, "2 subtasks", "", "base " + i + " (no fallback)")
+    }
+    var absent = dryRunStory()
+    delete absent.levels[0].stories[0].subtasks[0].base
+    checkSummary(Runs.previewSummary(absent, "story"), false, "2 subtasks", "", "base absent")
+    var garbage = dryRunStory()
+    garbage.levels[0].stories[0].subtasks.unshift(7, null, [], "c0")
+    garbage.levels[0].stories.unshift("x", null, [], { story: "s0", title: "Empty", root: "main", subtasks: [] })
+    garbage.levels.unshift(null, "x", [], { level: 9, stories: "x" })
+    checkSummary(Runs.previewSummary(garbage, "story"), false, "2 subtasks \u00b7 rooted on master", "",
+                 "the first object subtask's base")
+    var partly = dryRunStory()
+    partly.levels[0].stories[0].subtasks = [planSubtask("p", "c2", "p-c1"), planSubtask("p", "c3", "p-c2")]
+    partly.already_done = [{ kind: "subtask", id: "c1", title: "Subtask c1", story: "s1" }]
+    checkSummary(Runs.previewSummary(partly, "story"), false, "2 subtasks \u00b7 rooted on p-c1", "", "partly done")
+  }
+
+  // Review Focus 4.
+  function test_previewSummary_story_unreadable() {
+    var values = [undefined, null, 0, true, "x", [], Object.create(null), {}, { levels: "x" }, { levels: {} },
+                  { ok: true, data: dryRunStory() }, { ok: true, data: dryRunStoryDone() }]
+    for (var i = 0; i < values.length; i++) {
+      checkSummary(Runs.previewSummary(values[i], "story"), false, "", "", "value " + i)
+    }
+    var bare = Object.create(null)
+    bare.levels = dryRunStory().levels
+    checkSummary(Runs.previewSummary(bare, "story"), false, "2 subtasks \u00b7 rooted on master", "", "prototype-less payload")
+  }
+
+  // Review Focus 5.
+  function test_previewSummary_level_argument() {
+    var levels = [undefined, "milestone", "board", "Story", " story", "story ", 1, null]
+    for (var i = 0; i < levels.length; i++) {
+      checkSummary(Runs.previewSummary(dryRunMilestone(), levels[i]), false,
+                   "2 levels \u00b7 5 subtasks \u00b7 3 stories already done", "Integrate \u2192 m3-integrate",
+                   "milestone with level " + levels[i])
+      checkSummary(Runs.previewSummary(dryRunBoard(), levels[i]), true, "3 milestones, 7 subtasks", "",
+                   "board with level " + levels[i])
+    }
+    checkSummary(Runs.previewSummary(dryRunStory()), false, "1 level \u00b7 2 subtasks", "", "a story payload alone is a milestone")
+    checkSummary(Runs.previewSummary(dryRunStoryDone()), false, "0 levels \u00b7 0 subtasks \u00b7 1 story already done", "",
+                 "a finished story payload alone is a milestone")
+    checkSummary(Runs.previewSummary(dryRunMilestone(), "story"), false, "5 subtasks \u00b7 rooted on main", "",
+                 "the argument selects the story variant")
+  }
+
   function test_dispatch_form_preview_inputs_unchanged() {
     var form = validForm()
     var milestone = dryRunMilestone()
     var board = dryRunBoard()
-    var before = JSON.stringify([form, milestone, board])
+    var story = dryRunStory()
+    var storyDone = dryRunStoryDone()
+    var before = JSON.stringify([form, milestone, board, story, storyDone])
     Runs.validateDispatch(form)
     Runs.validateDispatch(formWith("prefix", ""))
     Runs.previewSummary(milestone)
     Runs.previewSummary(board)
-    compare(JSON.stringify([form, milestone, board]), before, "form and payloads unchanged")
+    Runs.previewSummary(story, "story")
+    Runs.previewSummary(storyDone, "story")
+    Runs.previewSummary(milestone, "story")
+    compare(JSON.stringify([form, milestone, board, story, storyDone]), before, "form and payloads unchanged")
     compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify", "no key added to the form")
+    compare(Object.keys(story).sort().join(","), "already_done,integrate,levels,max_concurrent", "no key added to the story payload")
   }
 }
