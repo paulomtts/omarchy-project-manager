@@ -1117,12 +1117,22 @@ Scope {
     return true
   }
 
+  // A fresh {milestone id: prefix} map: stored's own entries when stored is
+  // an object that is not an array, then entry's, which override them, as
+  // set-run-settings merges prefixByMilestone.
+  function mergedPrefixes(stored, entry) {
+    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? store.copyMap(stored) : {}
+    for (var id in entry) merged[id] = entry[id]
+    return merged
+  }
+
   // Start: only from ready. start-run.py runs on a HelperRunner of its own
   // (guard "", madeFor this project), which no preview, project switch or
   // other Start stops. The settings a successful start saves are fixed now,
   // from this project's runSettings: the non-blank verify commands sent, the
   // opt-out, the prefix sent followed by the stored history without it (at
-  // most 20), and the parallelism.
+  // most 20), the parallelism and, for a story or milestone whose milestone
+  // card is known, prefixByMilestone {<milestone id>: prefix sent}.
   function dispatchStart() {
     if (store.dispatchState !== "ready") return false
     var form = store.dispatchForm
@@ -1135,6 +1145,12 @@ Scope {
     }
     var saved = { verify: store.dispatchCommands(form), allowNoVerification: form.allowNoVerification === true,
                   prefixHistory: history, parallelism: form.parallelism }
+    var level = store.dispatchTarget.level
+    if ((level === "story" || level === "milestone") && dispatchBook.milestone !== null) {
+      var keyed = {}
+      keyed[dispatchBook.milestone.id] = prefix
+      saved.prefixByMilestone = keyed
+    }
     var runner = dispatchStartC.createObject(store, { madeFor: store.project, savedJson: JSON.stringify(saved) })
     dispatchBook.runners = dispatchBook.runners.concat([runner])
     dispatchBook.startRunner = runner
@@ -1151,7 +1167,8 @@ Scope {
   }
 
   // start-run.py's reply. When it is this dispatch's: ok gives `started`,
-  // the run id and message, the saved values in runSettings, a re-snapshot
+  // the run id and message, the saved values in runSettings (prefixByMilestone merged per
+  // milestone id), a re-snapshot
   // and dispatchStarted(id or null); anything else gives `failed` with what
   // the helper said. After any successful start, wherever it was made, the
   // same runner writes the saved values for the project it was made in.
@@ -1170,7 +1187,9 @@ Scope {
         // Parsed from the JSON that is written: a var property hands back a
         // list Runs.dispatchDefaults does not take for an array.
         var saved = JSON.parse(runner.savedJson)
-        for (var key in saved) settings[key] = saved[key]
+        for (var key in saved) {
+          settings[key] = key === "prefixByMilestone" ? store.mergedPrefixes(settings.prefixByMilestone, saved[key]) : saved[key]
+        }
         store.runSettings = settings
         store.dispatchState = "started"
         store.refresh()

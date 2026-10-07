@@ -3039,7 +3039,7 @@ TestCase {
     return store
   }
 
-  property string savedJson: '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4}'
+  property string savedJson: '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4,"prefixByMilestone":{"m1":"old"}}'
 
   // 20 (the start half)
   function test_subtask_start_argv_uses_card() {
@@ -3183,7 +3183,7 @@ TestCase {
     var bareRunner = bare.dispatchStartRunners[0]
     reply(bareRunner.current, startOk("r-2", ""), 0)
     compare(argv(bareRunner.current), tc.viewerCmd +
-            'set-run-settings|/home/u/my proj|{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["m3"],"parallelism":4}')
+            'set-run-settings|/home/u/my proj|{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["m3"],"parallelism":4,"prefixByMilestone":{"m1":"m3"}}')
   }
 
   // 27
@@ -3677,5 +3677,101 @@ TestCase {
     compare(store.dispatchForm.parallelism, 4, "the story's edits are not carried over")
     compare(store.dispatchForm.prefix, "old")
     checkRetargetRefused(store, "the second call, while previewing")
+  }
+
+  // Project A with story s1's preview landed: Start is allowed.
+  function storyReadyStore() {
+    var store = storyPreviewingStore(); if (!store) return null
+    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
+    return store
+  }
+
+  // 2.1 test 6
+  function test_a_story_start_saves_the_prefix_under_its_milestone() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.settingsLoadRunner.current, keyedSettings({ m9: "x" }), 0)
+    var cards = dispatchCards()
+    store.openDispatch(cards.s1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    compare(argv(runner.current), tc.startCmd + tc.storyPreviewArgs)
+    reply(runner.current, startOk("r-1", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" +
+            '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4,"prefixByMilestone":{"m1":"old"}}')
+    var map = store.runSettings.prefixByMilestone
+    compare(Object.keys(map).sort().join(","), "m1,m9", "merged locally")
+    compare(map.m9, "x", "the stored entry is kept")
+    compare(map.m1, "old")
+    compare(store.runSettings.prefixHistory.join(","), "old")
+    compare(store.runSettings.confirmDispatch, true, "keys the start does not write are kept")
+  }
+
+  // 2.1 test 7
+  function test_milestone_starts_key_the_prefix_and_subtask_or_board_starts_do_not() {
+    var store = readyStore(); if (!store) return
+    store.dispatchStart()
+    var runner = store.dispatchStartRunners[0]
+    reply(runner.current, startOk("r-1", ""), 0)
+    compare(runner.current.command[4], tc.savedJson, "a milestone start keys its own id")
+    compare(store.runSettings.prefixByMilestone.m1, "old")
+
+    var plain = '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4}'
+    var cards = dispatchCards()
+    var subtask = dispatchStore(); if (!subtask) return
+    subtask.openDispatch(cards.t1, cards)
+    reply(subtask.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(subtask.dispatchStart(), true)
+    var subtaskRunner = subtask.dispatchStartRunners[0]
+    reply(subtaskRunner.current, startOk("r-2", ""), 0)
+    compare(argv(subtaskRunner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + plain, "a subtask start keys nothing")
+    compare(subtask.runSettings.prefixByMilestone, undefined, "nothing keyed locally")
+
+    var board = dispatchStore(); if (!board) return
+    board.openDispatch("board", cards)
+    reply(board.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    board.setDispatchField("prefix", "old")
+    fire(board.dispatchDebounceTimer)
+    reply(board.dispatchPreviewRunner.current, previewOk({ board: true, levels: [] }), 0)
+    compare(board.dispatchState, "ready")
+    compare(board.dispatchStart(), true)
+    var boardRunner = board.dispatchStartRunners[0]
+    reply(boardRunner.current, startOk("r-3", ""), 0)
+    compare(argv(boardRunner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + plain, "a board start keys nothing")
+  }
+
+  // 2.1 Review Focus 2
+  function test_a_stored_map_that_is_not_an_object_merges_from_nothing() {
+    var stored = [[], "x", ["a"], 7, null]
+    for (var i = 0; i < stored.length; i++) {
+      var store = makeWithProject(rootA); if (!store) return
+      reply(store.settingsLoadRunner.current, keyedSettings(stored[i]), 0)
+      var cards = dispatchCards()
+      store.openDispatch(cards.s1, cards)
+      reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+      reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
+      store.dispatchStart()
+      reply(store.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
+      compare(store.dispatchState, "started", "stored " + i)
+      compare(Object.keys(store.runSettings.prefixByMilestone).join(","), "m1", "stored " + i + ": only the new entry")
+      compare(store.runSettings.prefixByMilestone.m1, "old", "stored " + i)
+    }
+  }
+
+  // 2.1 Review Focus 3
+  function test_the_keyed_prefix_is_the_trimmed_one_sent() {
+    var store = storyPreviewingStore(); if (!store) return
+    store.setDispatchField("prefix", "  m3-spaced ")
+    fire(store.dispatchDebounceTimer)
+    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    compare(runner.current.command[8], "m3-spaced", "sent trimmed")
+    compare(runner.savedJson, '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["m3-spaced","old"],' +
+                              '"parallelism":4,"prefixByMilestone":{"m1":"m3-spaced"}}')
+    reply(runner.current, startOk("r-1", ""), 0)
+    compare(store.runSettings.prefixByMilestone.m1, "m3-spaced")
   }
 }
