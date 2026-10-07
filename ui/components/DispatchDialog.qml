@@ -9,8 +9,9 @@ import "../theme" as T
 // owner passes RunStore's dispatch values in and maps fieldEdited,
 // startRequested and cancelRequested onto setDispatchField, dispatchStart and
 // closeDispatch. Only a click on Start starts a run: Return never does. The
-// owner may add a row of targets (targetChosen), a refused story's milestone
-// (suggestionRequested) and a Start that takes two clicks (confirmFirst).
+// owner may pass a ready target label (targetLabel), a row of targets
+// (targetChosen), a blocked story's milestone, whose action emits
+// suggestionRequested(), and a Start that takes two clicks (confirmFirst).
 Item {
   id: dialog
   objectName: "dispatchDialog"
@@ -26,6 +27,9 @@ Item {
   property var target: null
   // The target card's title; "" for the board.
   property string targetTitle: ""
+  // The owner's ready-made target text (RunStore's dispatchTargetLabel); ""
+  // builds it from the level and targetTitle. Only the target line reads it.
+  property string targetLabel: ""
   // RunStore's dispatchForm: {base, prefix, verify, parallelism,
   // allowNoVerification}; null for a target refused at open.
   property var form: null
@@ -42,7 +46,8 @@ Item {
   // the active one's id.
   property var targetChoices: []
   property string targetChoice: ""
-  // A refused story's milestone {id, title}, offered as a target of its own.
+  // A blocked story's milestone {id, title}; with a refusal it shows the
+  // retarget action.
   property var suggestion: null
   // Start takes two clicks: the first only arms it (a subtask has no preview,
   // so ready alone is not an explicit confirm).
@@ -63,10 +68,6 @@ Item {
     && dialog.targetChoices.length > 0
   readonly property bool canOffer: dialog.dispatchState === "refused" && !!dialog.suggestion
     && typeof dialog.suggestion.id === "string" && dialog.suggestion.id !== ""
-  readonly property string offerText: {
-    var title = dialog.suggestion && typeof dialog.suggestion.title === "string" ? dialog.suggestion.title : ""
-    return title !== "" ? "Dispatch its milestone \"" + title + "\"" : "Dispatch its milestone"
-  }
 
   // Every object prop is read guarded: a refused target has no form, and
   // tearing a view down nulls them while these bindings still run once.
@@ -76,6 +77,7 @@ Item {
   readonly property color urgentColor: dialog.theme ? dialog.theme.urgent : Color.urgent
   readonly property color dimColor: dialog.theme ? dialog.theme.dim : Color.foreground
   readonly property string targetText: {
+    if (dialog.targetLabel !== "") return dialog.targetLabel
     var quoted = "\"" + dialog.targetTitle + "\""
     switch (dialog.targetLevel) {
     case "board": return "Whole board"
@@ -427,11 +429,12 @@ Item {
       wrapMode: Text.WordWrap
     }
 
-    // A story is dispatched through its milestone: offer it.
+    // A blocked story's retarget onto its milestone, which the target line
+    // already names.
     UI.ActionButton {
       objectName: "dispatchSuggest"
       visible: dialog.canOffer
-      text: dialog.offerText
+      text: "Dispatch the milestone instead"
       theme: dialog.theme
       onClicked: if (dialog.canOffer) dialog.suggestionRequested()
     }

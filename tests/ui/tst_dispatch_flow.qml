@@ -1,7 +1,7 @@
 // tests/ui/tst_dispatch_flow.qml
 // The dispatch around the whole panel (S3 4.2): each entry point (the card
 // detail's Dispatch, d on the board list, the Runs toolbar's Start run) opens
-// the mounted dialog; the story's milestone offer, the subtask's lines and
+// the mounted dialog; a story opening on itself, the subtask's lines and
 // two-click Start, Escape, the focus, and where a start takes the user. The
 // dialog's own rendering is tests/ui/components/tst_dispatch_dialog.qml; the
 // store's rules are tests/core/stores/tst_run_store.qml.
@@ -138,34 +138,91 @@ TestCase {
   }
 
   // 22
-  function test_a_story_offers_its_milestone_and_the_offer_reopens_on_it() {
+  function test_a_story_opens_the_dialog_on_itself() {
     var p = make(); if (!p) return
     dispatchCard(p, "s1")
+    compare(H.find(p, "dispatchDialog").visible, true)
+    compare(p.dispatchCardId, "s1")
+    compare(p.app.runs.dispatchState, "previewing")
+    compare(text(p, "dispatchTarget"), "Target   Story \"Story one\" (milestone \"M one\")")
+    compare(p.app.runs.dispatchSuggest, null)
+    compare(H.find(p, "dispatchSuggest").visible, false, "no milestone offer")
+  }
+
+  // A story's preview refused with `previewText`, after its defaults lookup.
+  function refuseStory(p, previewText) {
+    dispatchCard(p, "s1")
+    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
+    compare(p.app.runs.dispatchState, "previewing")
+    reply(p.app.runs.dispatchPreviewRunner.current, previewText)
     compare(p.app.runs.dispatchState, "refused")
-    compare(text(p, "dispatchTarget"), "Target   Story \"Story one\"")
-    compare(text(p, "dispatchRefusal"), "A story is dispatched through its milestone")
+  }
+
+  // 9, Review Focus 1 and 3
+  function test_a_blocked_story_retargets_to_its_milestone() {
+    var p = make(); if (!p) return
+    refuseStory(p, '{"ok":false,"error":{"type":"StoryBlockedError","message":"Story blocked by s0"}}')
+    compare(text(p, "dispatchRefusal"), "Story blocked by s0")
     compare(H.find(p, "dispatchStart").enabled, false)
     var offer = H.find(p, "dispatchSuggest")
     compare(offer.visible, true)
-    compare(String(offer.text), "Dispatch its milestone \"M one\"")
+    compare(String(offer.text), "Dispatch the milestone instead")
     offer.clicked()
+    compare(p.app.runs.dispatchTarget.level, "milestone")
+    compare(JSON.stringify(p.app.runs.dispatchTarget.flags), JSON.stringify(["--milestone", "m1"]))
     compare(p.dispatchCardId, "m1")
-    compare(p.app.runs.dispatchState, "previewing")
     compare(text(p, "dispatchTarget"), "Target   Milestone \"M one\"")
+    compare(p.app.runs.dispatchState, "previewing")
     compare(offer.visible, false)
+    compare(H.find(p, "dispatchDialog").visible, true)
+    offer.clicked()
+    compare(p.dispatchCardId, "m1", "a second click changes nothing")
+    compare(p.app.runs.dispatchTarget.level, "milestone")
+    compare(p.app.runs.dispatchState, "previewing")
     wait(50)
-    compare(p.focusItem.objectName, "dispatchBase", "the re-opened dialog has the focus")
+    compare(p.focusItem.objectName, "dispatchBase")
+    verify(H.find(p, "dispatchBase").activeFocus, "the retargeted form has the keyboard")
+    toReady(p)
+    compare(H.find(p, "dispatchStart").enabled, true)
   }
 
-  // A story whose milestone is not on the board: the refusal, no offer.
-  function test_a_story_whose_milestone_left_the_board_offers_nothing() {
+  // Review Focus 2
+  function test_a_refused_retarget_leaves_the_story_dialog() {
     var p = make(); if (!p) return
+    var dialog = H.find(p, "dispatchDialog")
     dispatchCard(p, "s1")
-    compare(H.find(p, "dispatchSuggest").visible, true)
-    p.app.board.applyTreeData([card("m9", "M nine", "done")])
-    wait(50)
-    compare(p.app.runs.dispatchState, "refused")
-    compare(text(p, "dispatchRefusal"), "A story is dispatched through its milestone")
+    compare(p.dispatchSuggestion, null)
+    dialog.suggestionRequested()
+    compare(p.dispatchCardId, "s1", "no suggestion: nothing happens")
+    compare(p.app.runs.dispatchTarget.level, "story")
+    p.app.runs.closeDispatch()
+    refuseStory(p, '{"ok":false,"error":{"type":"StoryBlockedError","message":"Story blocked by s0"}}')
+    verify(p.dispatchSuggestion !== null, "the milestone is offered")
+    // The state moved on between render and click: the store refuses.
+    p.app.runs.dispatchState = "previewing"
+    dialog.suggestionRequested()
+    compare(p.dispatchCardId, "s1")
+    compare(p.app.runs.dispatchTarget.level, "story")
+    compare(text(p, "dispatchTarget"), "Target   Story \"Story one\" (milestone \"M one\")")
+    p.app.runs.closeDispatch()
+  }
+
+  // 10
+  function test_a_finished_or_claimed_story_says_why_data() {
+    return [
+      { tag: "finished", preview: '{"ok":true,"data":{"integrate":null,"levels":[]}}',
+        text: "Nothing left to run" },
+      { tag: "claimed", preview: '{"ok":false,"error":{"type":"ClaimedError","message":"Card s1 is claimed by run r-other"}}',
+        text: "Card s1 is claimed by run r-other" }
+    ]
+  }
+
+  function test_a_finished_or_claimed_story_says_why(data) {
+    var p = make(); if (!p) return
+    refuseStory(p, data.preview)
+    compare(text(p, "dispatchTarget"), "Target   Story \"Story one\" (milestone \"M one\")")
+    compare(text(p, "dispatchRefusal"), data.text)
+    compare(H.find(p, "dispatchStart").enabled, false)
     compare(H.find(p, "dispatchSuggest").visible, false)
   }
 
@@ -274,7 +331,7 @@ TestCase {
     p.app.board.applyTreeData([card("m9", "M nine", "done")])
     wait(50)
     compare(H.find(p, "dispatchDialog").visible, true, "the store still holds the dispatch")
-    compare(text(p, "dispatchTarget"), "Target   Subtask \"\"")
+    compare(text(p, "dispatchTarget"), "Target   Subtask \"Do it\"", "the store's label from the opening")
     compare(H.find(p, "dispatchStory").visible, false)
     compare(H.find(p, "dispatchBlocked").visible, false)
     H.find(p, "dispatchCancel").clicked()

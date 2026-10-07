@@ -46,7 +46,7 @@ sys.exit(int(open(code).read()) if os.path.exists(code) else 0)
 
 NOT_FOUND = {"error": {"message": "milestone not found", "type": "MilestoneNotFoundError"}, "ok": False}
 USAGE_LINE = {"ok": False, "error": {"type": "Usage", "message":
-              "usage: dispatch-preview.py ROOT (milestone ID | board) [--base-branch B]"
+              "usage: dispatch-preview.py ROOT (milestone ID | story ID | board) [--base-branch B]"
               " [--branch-prefix P] [--max-concurrent N] [--verify CMD]..."
               " [--allow-no-verification] | dispatch-preview.py --defaults ROOT"}}
 
@@ -72,6 +72,18 @@ BOARD_PLAN = {"ok": True, "data": {
 }}
 CLAIMED = {"ok": False, "error": {"type": "ClaimedError",
                                   "message": "card c1 is claimed by run r9"}}
+STORY_PLAN = {"ok": True, "data": {
+    "max_concurrent": 4,
+    "levels": [
+        {"level": 0, "concurrent": 1, "stories": [
+            {"story": "s1", "title": "Story one", "root": "m3-c0",
+             "subtasks": [{"card": "c1", "branch": "m3-c1", "base": "m3-c0"}]}]},
+    ],
+    "already_done": [],
+    "integrate": None,
+}}
+STORY_BLOCKED = {"ok": False, "error": {"type": "StoryBlockedError",
+                                        "message": "story s1 is blocked by s0 (todo)"}}
 
 
 def write_exec(path, text):
@@ -180,6 +192,41 @@ def test_milestone_named_board(world):
     assert calls(world) == [["run", "--milestone", "board", "--dry-run", "--repo-dir", "/p"]]
 
 
+def test_story_argv(world):
+    set_envelope(world, STORY_PLAN)
+    code, _ = run(world, ["/p", "story", "s1"])
+    assert code == 0
+    made = calls(world)
+    assert made == [["run", "--story", "s1", "--dry-run", "--repo-dir", "/p"]]
+    for never in ("--milestone", "--board", "--card", "--pretty", "--detach"):
+        assert never not in made[0]
+
+
+def test_story_options_forwarded_in_fixed_order(world):
+    set_envelope(world, STORY_PLAN)
+    code, _ = run(world, ["/p", "story", "s1",
+                          "--verify", "uv run pytest", "--max-concurrent", "2",
+                          "--branch-prefix", "m3", "--base-branch", "main",
+                          "--verify", "-x", "--allow-no-verification"])
+    assert code == 0
+    assert calls(world) == [["run", "--story", "s1", "--dry-run", "--repo-dir", "/p",
+                             "--base-branch", "main", "--branch-prefix", "m3",
+                             "--max-concurrent", "2",
+                             "--verify", "uv run pytest", "--verify", "-x",
+                             "--allow-no-verification"]]
+
+
+def test_story_named_board(world):
+    # The target is a literal word, so a story whose id is "board" stays a story.
+    set_envelope(world, STORY_PLAN)
+    code, _ = run(world, ["/p", "story", "board"])
+    assert code == 0
+    assert calls(world) == [["run", "--story", "board", "--dry-run", "--repo-dir", "/p"]]
+    code, _ = run(world, ["/p", "story", "milestone"])
+    assert code == 0
+    assert calls(world)[-1] == ["run", "--story", "milestone", "--dry-run", "--repo-dir", "/p"]
+
+
 def test_options_forwarded_in_fixed_order(world):
     set_envelope(world, MILESTONE_PLAN)
     code, _ = run(world, ["/p", "milestone", "m1",
@@ -272,6 +319,20 @@ def test_refusal_passthrough_exit_3(world):
     code, out = run(world, ["/p", "milestone", "m1"])
     assert code == 0
     assert out == CLAIMED
+
+
+def test_story_blocked_passthrough(world):
+    set_envelope(world, STORY_BLOCKED, code=3)
+    code, out = run(world, ["/p", "story", "s1", "--branch-prefix", "m3"])
+    assert code == 0
+    assert out == STORY_BLOCKED
+
+
+def test_story_plan_passthrough(world):
+    set_envelope(world, STORY_PLAN)
+    code, out = run(world, ["/p", "story", "s1", "--branch-prefix", "m3"])
+    assert code == 0
+    assert out == STORY_PLAN
 
 
 def test_default_fake_refusal(world):
@@ -409,7 +470,13 @@ def test_am_that_cannot_start_is_helper_error(world):
 @pytest.mark.parametrize("args", [
     [],
     ["/p"],
-    ["/p", "story", "x"],
+    ["/p", "story"],
+    ["/p", "story", ""],
+    ["/p", "story", "s1", "extra"],
+    ["/p", "story", "s1", "--pretty"],
+    ["/p", "story", "s1", "--detach"],
+    ["/p", "story", "s1", "--milestone", "m1"],
+    ["/p", "story", "s1", "--branch-prefix"],
     ["/p", "milestone"],
     ["/p", "milestone", ""],
     ["", "board"],

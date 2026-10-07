@@ -299,8 +299,8 @@ Panel {
     root.focusForView()
   }
 
-  // A card id or "board": the card detail's Dispatch, d, and a story's offer.
-  // None of them shows the target row.
+  // A card id or "board": the card detail's Dispatch and d. Neither shows the
+  // target row.
   function openDispatch(target) {
     root.dispatchChoices = []
     root.launchDispatch(target)
@@ -865,6 +865,7 @@ Panel {
         dispatchState: appStores.runs.dispatchState
         target: appStores.runs.dispatchTarget
         targetTitle: root.dispatchCard ? String(root.dispatchCard.title || "") : ""
+        targetLabel: appStores.runs.dispatchTargetLabel
         form: appStores.runs.dispatchForm
         preview: appStores.runs.dispatchPreview
         error: appStores.runs.dispatchError
@@ -880,7 +881,13 @@ Panel {
         onFieldEdited: function(name, value) { appStores.runs.setDispatchField(name, value) }
         onStartRequested: appStores.runs.dispatchStart()
         onCancelRequested: appStores.runs.closeDispatch()
-        onSuggestionRequested: if (root.dispatchSuggestion) root.openDispatch(root.dispatchSuggestion.id)
+        // The store reopens on the milestone and clears its suggestion; the
+        // card follows only when it did.
+        onSuggestionRequested: {
+          if (!root.dispatchSuggestion) return
+          var milestoneId = root.dispatchSuggestion.id
+          if (appStores.runs.retargetToMilestone()) root.dispatchCardId = milestoneId
+        }
         onTargetChosen: function(id) { root.openRunsDispatch(id) }
       }
     }

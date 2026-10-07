@@ -5,6 +5,10 @@ tmp_path (am keeps runs under $XDG_DATA_HOME/agent-manager/runs), so the
 user's real runs are never read or written. Journals are hand-written in the
 shape am's store.JournalLine dumps (journal schema 1); am is never imported and
 its SQLite is never read. Skipped when am is absent.
+
+Story tests build a real git repo and brd board under tmp_path and run am with
+a PATH holding only am, brd and git, so no agent CLI is reachable. When am is
+present they fail, never skip, if am run lacks --story or brd or git is absent.
 """
 import json
 import os
@@ -165,3 +169,144 @@ def test_watch_all_follow_prints_a_hello_line_then_journal_lines(am):
         assert set(event) == EVENT_KEYS, event
         assert event["ts"].endswith("Z"), event
     assert events == expected
+
+
+STORY_DATA_KEYS = {"already_done", "integrate", "levels", "max_concurrent"}
+RUN_ROW_KEYS = {"id", "story_id", "milestone_id", "branch_prefix", "started_at"}
+
+
+def require_tool(name):
+    """The resolved path of `name` on the PATH; fails the test when it is absent."""
+    path = shutil.which(name)
+    if path is None:
+        pytest.fail(f"{name} is not on the PATH: the story tests need am, brd and git")
+    return os.path.realpath(path)
+
+
+@pytest.fixture
+def story_board(am, tmp_path):
+    """A git repo on master and a brd board in am.repo: milestone M holding
+    story S1 and story S2 (blocked by S1), two subtasks each. am.env's PATH is
+    only a dir of am, brd and git, and it carries no GIT_* variable."""
+    tools = {name: require_tool(name) for name in ("am", "brd", "git")}
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, path in tools.items():
+        (bin_dir / name).symlink_to(path)
+    am.env["PATH"] = str(bin_dir)
+    for key in [key for key in am.env if key.startswith("GIT_")]:
+        del am.env[key]
+
+    def git(*args):
+        proc = subprocess.run(["git", "-c", "user.name=tester", "-c", "user.email=tester@example.com",
+                               *args], cwd=am.repo, env=am.env, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    git("init", "-b", "master")
+    git("commit", "--allow-empty", "-m", "init")
+
+    brd_env = {**am.env, "BRD_AUTHOR": "tester"}
+
+    def brd(*args):
+        proc = subprocess.run(["brd", *args], cwd=am.repo, env=brd_env, capture_output=True,
+                              text=True)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        payload = json.loads(proc.stdout.strip().splitlines()[-1])
+        assert payload["ok"] is True, payload
+        return payload["data"]
+
+    brd("init", "--name", "contract")
+    milestone = brd("add", "--title", "Milestone M")["id"]
+    s1 = brd("add", "--title", "Story A", "--parent", milestone)["id"]
+    s2 = brd("add", "--title", "Story B", "--parent", milestone, "--blocked-by", s1)["id"]
+    s1_subtasks = [brd("add", "--title", f"Subtask A{n}", "--parent", s1)["id"] for n in (1, 2)]
+    for n in (1, 2):
+        brd("add", "--title", f"Subtask B{n}", "--parent", s2)
+    return SimpleNamespace(milestone=milestone, s1=s1, s2=s2, s1_subtasks=s1_subtasks)
+
+
+def test_run_help_lists_the_story_option(am):
+    proc = am.run("run", "--help")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    if "--story" not in proc.stdout:
+        pytest.fail("the installed am has no --story option on am run "
+                    "(reinstall agent-manager: uv tool install --reinstall)")
+
+
+def test_require_tool_fails_naming_the_missing_tool(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(pytest.fail.Exception, match="brd is not on the PATH"):
+        require_tool("brd")
+
+
+def test_story_board_reaches_only_am_brd_and_git_and_its_own_repo(am, story_board, tmp_path):
+    assert am.env["PATH"] == str(tmp_path / "bin")
+    assert sorted(os.listdir(tmp_path / "bin")) == ["am", "brd", "git"]
+    assert not [key for key in am.env if key.startswith("GIT_")], am.env
+    proc = subprocess.run(["git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+                          cwd=am.repo, env=am.env, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.split() == [os.path.realpath(am.repo), "master"], proc.stdout
+
+
+def assert_story_blocked(proc, blocker):
+    """Exit 3 with a StoryBlockedError envelope whose message names `blocker`."""
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["ok"] is False, payload
+    assert payload["error"]["type"] == "StoryBlockedError", payload
+    message = payload["error"]["message"]
+    assert isinstance(message, str) and blocker in message, payload
+
+
+def test_story_dry_run_previews_one_level_with_no_integrate(am, story_board):
+    proc = am.run("run", "--story", story_board.s1, "--branch-prefix", "p", "--dry-run",
+                  "--repo-dir", am.repo)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["ok"] is True, payload
+    data = payload["data"]
+    assert set(data) == STORY_DATA_KEYS, payload
+    assert data["already_done"] == [], payload
+    assert data["integrate"] is None, payload
+    [level] = data["levels"]
+    [story] = level["stories"]
+    assert story["story"] == story_board.s1, payload
+    first, second = story["subtasks"]
+    assert {first["id"], second["id"]} == set(story_board.s1_subtasks), payload
+    assert first["base"] == "master", payload
+    assert second["base"] == first["branch"], payload
+
+
+def test_blocked_story_is_refused_at_dry_run_with_story_blocked_error(am, story_board):
+    proc = am.run("run", "--story", story_board.s2, "--branch-prefix", "p", "--dry-run",
+                  "--repo-dir", am.repo)
+    assert_story_blocked(proc, story_board.s1)
+
+
+def test_blocked_story_is_refused_at_a_detached_start_and_nothing_is_recorded(am, story_board):
+    """Both the dry-run and the detached start refuse a blocked story; the
+    refused start records no run."""
+    proc = am.run("run", "--story", story_board.s2, "--branch-prefix", "p", "--detach",
+                  "--allow-no-verification", "--repo-dir", am.repo)
+    assert_story_blocked(proc, story_board.s1)
+    runs = am.run("runs", "--repo-dir", am.repo)
+    assert runs.returncode == 0, runs.stdout + runs.stderr
+    assert json.loads(runs.stdout) == {"ok": True, "data": {"runs": []}}
+
+
+def test_a_story_run_row_carries_story_id(am, story_board):
+    # No agent CLI is on the PATH: the run is recorded, then escalates at its first phase.
+    am.run("run", "--story", story_board.s1, "--branch-prefix", "p", "--allow-no-verification",
+           "--repo-dir", am.repo)
+    proc = am.run("runs", "--repo-dir", am.repo)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    [row] = json.loads(proc.stdout)["data"]["runs"]
+    assert RUN_ROW_KEYS <= set(row), row
+    assert row["story_id"] == story_board.s1, row
+    assert row["milestone_id"] == story_board.milestone, row
+    assert row["branch_prefix"] == "p", row
+    assert isinstance(row["started_at"], str) and row["started_at"], row
+    if "project" in row:
+        assert isinstance(row["project"], dict), row
+        assert {"id", "repo_dir"} <= set(row["project"]), row

@@ -13,14 +13,16 @@ cannot write files, hence this helper. Prints one JSON line. `get` and
 `get-run-settings` never fail (a missing or corrupt file, or a damaged value, just
 means the default); `set-project` and `set-run-settings` write atomically and keep
 any other keys already in the file. Run settings live under "run_settings", keyed
-by the root path verbatim. There are six, each read on its own:
+by the root path verbatim. There are seven, each read on its own:
 verify (a list of non-empty strings, default []), allowNoVerification and
 notifyOnEscalation (booleans, default false), prefixHistory (a list of at most 20
 non-empty strings, most recent first, default []), parallelism (a whole number
->= 1, default 4) and confirmDispatch (a boolean, default true).
+>= 1, default 4), confirmDispatch (a boolean, default true) and prefixByMilestone
+(an object mapping each milestone id to a non-empty prefix string, default {}).
 `set-run-settings` takes a JSON object with any of them, validates every key
 before writing anything, and changes only the keys given; a list given replaces
-the stored list wholesale.
+the stored list wholesale, and a prefixByMilestone given is merged into the
+stored map per milestone id (a stored map that is not valid is replaced).
 """
 import json
 import os
@@ -36,7 +38,8 @@ USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-setting
          " | set-run-settings <root_path> <json>")
 PREFIX_HISTORY_CAP = 20
 RUN_SETTINGS_DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False,
-                         "prefixHistory": [], "parallelism": 4, "confirmDispatch": True}
+                         "prefixHistory": [], "parallelism": 4, "confirmDispatch": True,
+                         "prefixByMilestone": {}}
 
 
 def state_base():
@@ -86,9 +89,15 @@ def valid_boolean(value):
     return isinstance(value, bool)
 
 
+def valid_prefix_by_milestone(value):
+    return isinstance(value, dict) and all(
+        key.strip() and isinstance(prefix, str) and prefix.strip() for key, prefix in value.items())
+
+
 RUN_SETTINGS_VALID = {"verify": valid_verify, "allowNoVerification": valid_boolean,
                       "notifyOnEscalation": valid_boolean, "prefixHistory": valid_prefix_history,
-                      "parallelism": valid_parallelism, "confirmDispatch": valid_boolean}
+                      "parallelism": valid_parallelism, "confirmDispatch": valid_boolean,
+                      "prefixByMilestone": valid_prefix_by_milestone}
 RUN_SETTINGS_REFUSALS = {
     "verify": "verify must be a list of non-empty strings.",
     "allowNoVerification": "allowNoVerification must be true or false.",
@@ -96,6 +105,7 @@ RUN_SETTINGS_REFUSALS = {
     "prefixHistory": "prefixHistory must be a list of at most %d non-empty strings." % PREFIX_HISTORY_CAP,
     "parallelism": "parallelism must be a whole number of at least 1.",
     "confirmDispatch": "confirmDispatch must be true or false.",
+    "prefixByMilestone": "prefixByMilestone must be an object of non-empty strings keyed by non-empty milestone ids.",
 }
 
 
@@ -158,6 +168,11 @@ def cmd_set_run_settings(root_path, text):
     entry = settings.get(root_path)
     if not isinstance(entry, dict):
         entry = settings[root_path] = {}
+    if "prefixByMilestone" in update:
+        stored = entry.get("prefixByMilestone")
+        merged = dict(stored) if valid_prefix_by_milestone(stored) else {}
+        merged.update(update["prefixByMilestone"])
+        update["prefixByMilestone"] = merged
     entry.update(update)
     return save(data)
 

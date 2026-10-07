@@ -115,7 +115,7 @@ def test_a_newly_created_state_file_is_private(env):
 USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"
          " | set-run-settings <root_path> <json>")
 DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False,
-            "prefixHistory": [], "parallelism": 4, "confirmDispatch": True}
+            "prefixHistory": [], "parallelism": 4, "confirmDispatch": True, "prefixByMilestone": {}}
 
 
 def write_state(env, content):
@@ -174,6 +174,19 @@ def test_get_run_settings_treats_bad_files_as_defaults(env, content):
     ({"confirmDispatch": None, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
     ({"verify": "x", "parallelism": 8, "confirmDispatch": False},
      {**DEFAULTS, "parallelism": 8, "confirmDispatch": False}),
+    ({"prefixByMilestone": [], "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": "m", "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": None, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"": "p"}, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"  ": "p"}, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"m1": ""}, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"m1": "  "}, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"m1": 5}, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"m1": None}, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"m1": ["p"]}, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"m1": "p", "m2": ""}, "parallelism": 8}, {**DEFAULTS, "parallelism": 8}),
+    ({"prefixByMilestone": {"m1": "p"}, "parallelism": 0},
+     {**DEFAULTS, "prefixByMilestone": {"m1": "p"}}),
 ])
 def test_get_run_settings_coerces_each_bad_field_independently(env, entry, expected):
     write_state(env, {"run_settings": {"/p": entry}})
@@ -206,7 +219,7 @@ def test_get_run_settings_reads_a_2_2_entry(env):
                                               "notifyOnEscalation": True}}})
     code, result = run(env, "get-run-settings", "/p")
     expected = {"verify": ["a"], "allowNoVerification": True, "notifyOnEscalation": True,
-                "prefixHistory": [], "parallelism": 4, "confirmDispatch": True}
+                "prefixHistory": [], "parallelism": 4, "confirmDispatch": True, "prefixByMilestone": {}}
     assert code == 0 and json.dumps(result, sort_keys=True) == json.dumps(expected, sort_keys=True)
 
 
@@ -219,7 +232,7 @@ def test_get_run_settings_accepts_a_history_of_exactly_twenty(env):
 def test_get_run_settings_with_every_field_damaged_is_defaults(env):
     write_state(env, {"run_settings": {"/p": {
         "verify": 1, "allowNoVerification": "x", "notifyOnEscalation": None,
-        "prefixHistory": [None], "parallelism": True, "confirmDispatch": 0}}})
+        "prefixHistory": [None], "parallelism": True, "confirmDispatch": 0, "prefixByMilestone": {"m1": 5}}}})
     code, result = run(env, "get-run-settings", "/p")
     assert code == 0 and json.dumps(result, sort_keys=True) == json.dumps(DEFAULTS, sort_keys=True)
 
@@ -323,7 +336,15 @@ BAD_UPDATES = ["", "{", "[]", '"x"', "null", "5", '{"allow_no_verification": tru
                '{"parallelism": -Infinity}', '{"parallelism": [4]}',
                '{"confirmDispatch": 1}', '{"confirmDispatch": 0}', '{"confirmDispatch": "true"}',
                '{"confirmDispatch": null}',
-               '{"parallelism": 2, "confirmDispatch": "yes"}']
+               '{"parallelism": 2, "confirmDispatch": "yes"}',
+               '{"prefixByMilestone": []}', '{"prefixByMilestone": "m"}', '{"prefixByMilestone": null}',
+               '{"prefixByMilestone": 5}', '{"prefixByMilestone": true}',
+               '{"prefixByMilestone": {"": "p"}}', '{"prefixByMilestone": {"  ": "p"}}',
+               '{"prefixByMilestone": {"m1": ""}}', '{"prefixByMilestone": {"m1": "  "}}',
+               '{"prefixByMilestone": {"m1": "\\t\\n"}}', '{"prefixByMilestone": {"m1": 5}}',
+               '{"prefixByMilestone": {"m1": null}}', '{"prefixByMilestone": {"m1": true}}',
+               '{"prefixByMilestone": {"m1": ["p"]}}', '{"prefixByMilestone": {"m1": {"x": "p"}}}',
+               '{"parallelism": 2, "prefixByMilestone": {"m1": ""}}']
 
 
 @pytest.mark.parametrize("update", BAD_UPDATES)
@@ -472,6 +493,8 @@ def test_set_parallelism_has_no_upper_bound(env, value):
     ('{"prefixHistory": "m3"}', "prefixHistory must be a list of at most 20 non-empty strings."),
     ('{"parallelism": 0}', "parallelism must be a whole number of at least 1."),
     ('{"confirmDispatch": 1}', "confirmDispatch must be true or false."),
+    ('{"prefixByMilestone": []}',
+     "prefixByMilestone must be an object of non-empty strings keyed by non-empty milestone ids."),
 ])
 def test_dispatch_setting_errors_are_exact_sentences(env, update, error):
     assert run(env, "set-run-settings", "/p", update) == (2, {"ok": False, "error": error})
@@ -525,3 +548,144 @@ def test_set_parallelism_huge_values(env):
     assert run(env, "set-run-settings", "/p", json.dumps({"parallelism": 10 ** 30})) == (0, {"ok": True})
     code, result = run(env, "get-run-settings", "/p")
     assert code == 0 and json.dumps(result["parallelism"]) == str(10 ** 30)
+
+
+# --- prefix by milestone -----------------------------------------------------------
+
+BY_MILESTONE_REFUSAL = "prefixByMilestone must be an object of non-empty strings keyed by non-empty milestone ids."
+
+
+def set_by_milestone(env, root, by_milestone):
+    return run(env, "set-run-settings", root, json.dumps({"prefixByMilestone": by_milestone}, ensure_ascii=False))
+
+
+def test_get_prefix_by_milestone_default_is_empty_object(env):
+    code, result = run(env, "get-run-settings", "/p")
+    # JSON text: {} must not read as [] or null.
+    assert code == 0 and len(result) == 7 and json.dumps(result["prefixByMilestone"]) == "{}"
+
+
+def test_set_then_get_prefix_by_milestone_round_trips(env):
+    by_milestone = {"m1": "feat/m1", "8a3c0f12": "m2-"}
+    assert set_by_milestone(env, "/p", by_milestone) == (0, {"ok": True})
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and same_json(result, {**DEFAULTS, "prefixByMilestone": by_milestone})
+
+
+def test_set_prefix_by_milestone_keeps_strings_verbatim(env):
+    by_milestone = {"  m1  ": "  feat/x  ", "café": "日本/", "a/b": "m3"}
+    assert set_by_milestone(env, "/p", by_milestone) == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixByMilestone"] == by_milestone
+
+
+def test_prefix_by_milestone_has_no_size_cap(env):
+    by_milestone = {"m%d" % i: "p%d" % i for i in range(50)}
+    assert set_by_milestone(env, "/p", by_milestone) == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixByMilestone"] == by_milestone
+
+
+def test_prefix_by_milestone_duplicate_id_last_wins(env):
+    assert run(env, "set-run-settings", "/p", '{"prefixByMilestone": {"m1": "a", "m1": "b"}}') == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixByMilestone"] == {"m1": "b"}
+
+
+def test_other_settings_keep_the_stored_map(env):
+    assert set_by_milestone(env, "/p", {"m1": "a"}) == (0, {"ok": True})
+    for update in ({"parallelism": 3}, {"prefixHistory": ["m9"]}):
+        assert run(env, "set-run-settings", "/p", json.dumps(update)) == (0, {"ok": True})
+        assert run(env, "get-run-settings", "/p")[1]["prefixByMilestone"] == {"m1": "a"}, update
+    assert json.loads(state_file(env).read_text())["run_settings"]["/p"] == {
+        "prefixByMilestone": {"m1": "a"}, "parallelism": 3, "prefixHistory": ["m9"]}
+
+
+@pytest.mark.parametrize("update", ['{"prefixByMilestone": []}', '{"prefixByMilestone": {"m2": ""}}',
+                                    '{"prefixByMilestone": {"": "p"}}', '{"prefixByMilestone": {"m2": 5}}',
+                                    '{"parallelism": 2, "prefixByMilestone": {"m2": "  "}}'])
+def test_prefix_by_milestone_refusal_is_exact_and_writes_nothing(env, update):
+    write_state(env, {"run_settings": {"/p": {"prefixByMilestone": {"m1": "a"}}}})
+    before = state_file(env).read_bytes()
+    assert run(env, "set-run-settings", "/p", update) == (2, {"ok": False, "error": BY_MILESTONE_REFUSAL})
+    assert state_file(env).read_bytes() == before
+    assert [p.name for p in state_file(env).parent.iterdir()] == ["state.json"]
+
+
+def test_prefix_by_milestone_first_bad_key_in_input_order_is_reported(env):
+    assert run(env, "set-run-settings", "/p", '{"prefixByMilestone": [], "parallelism": 0}') == (
+        2, {"ok": False, "error": BY_MILESTONE_REFUSAL})
+    assert run(env, "set-run-settings", "/p", '{"parallelism": 0, "prefixByMilestone": []}') == (
+        2, {"ok": False, "error": "parallelism must be a whole number of at least 1."})
+    assert not Path(env["XDG_STATE_HOME"]).exists()
+
+
+def test_prefix_by_milestone_is_per_root(env):
+    assert set_by_milestone(env, "/a", {"m1": "a-"}) == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/a")[1]["prefixByMilestone"] == {"m1": "a-"}
+    for root in ("/b", "/a/"):
+        code, result = run(env, "get-run-settings", root)
+        assert code == 0 and same_json(result, DEFAULTS), root
+
+
+def test_set_project_preserves_prefix_by_milestone(env):
+    assert set_by_milestone(env, "/p", {"m1": "a", "m2": "b"}) == (0, {"ok": True})
+    assert run(env, "set-project", "/other") == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixByMilestone"] == {"m1": "a", "m2": "b"}
+    assert run(env, "get") == (0, {"last_project": "/other"})
+
+
+def test_set_prefix_by_milestone_merges_per_milestone(env):
+    def set_and_get(by_milestone):
+        assert set_by_milestone(env, "/p", by_milestone) == (0, {"ok": True})
+        return run(env, "get-run-settings", "/p")[1]["prefixByMilestone"]
+    assert set_and_get({"m1": "a"}) == {"m1": "a"}
+    assert set_and_get({"m2": "b"}) == {"m1": "a", "m2": "b"}
+    assert set_and_get({"m1": "c"}) == {"m1": "c", "m2": "b"}
+    assert set_and_get({}) == {"m1": "c", "m2": "b"}
+
+
+def test_set_prefix_by_milestone_padded_ids_are_distinct(env):
+    assert set_by_milestone(env, "/p", {"m1": "a"}) == (0, {"ok": True})
+    assert set_by_milestone(env, "/p", {" m1": "b"}) == (0, {"ok": True})
+    assert run(env, "get-run-settings", "/p")[1]["prefixByMilestone"] == {"m1": "a", " m1": "b"}
+
+
+# A damaged stored map is replaced, not merged into: merging would leave a bad
+# entry behind and the whole field would read {}.
+@pytest.mark.parametrize("stored", [{"m1": "p", "m2": 5}, "x", [], {"": "p"}, None])
+def test_set_prefix_by_milestone_replaces_a_damaged_stored_map(env, stored):
+    write_state(env, {"run_settings": {"/p": {"verify": ["a"], "prefixByMilestone": stored}}})
+    assert set_by_milestone(env, "/p", {"m3": "q"}) == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text())["run_settings"]["/p"] == {
+        "verify": ["a"], "prefixByMilestone": {"m3": "q"}}
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and same_json(result, {**DEFAULTS, "verify": ["a"], "prefixByMilestone": {"m3": "q"}})
+
+
+def test_set_empty_prefix_by_milestone_on_a_fresh_root(env):
+    assert set_by_milestone(env, "/p", {}) == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {"run_settings": {"/p": {"prefixByMilestone": {}}}}
+    code, result = run(env, "get-run-settings", "/p")
+    assert code == 0 and same_json(result, DEFAULTS)
+
+
+def test_set_prefix_by_milestone_preserves_other_keys(env):
+    write_state(env, {"last_project": "/p", "other": {"x": 1},
+                      "run_settings": {"/q": {"prefixByMilestone": {"m1": "q-"}},
+                                       "/p": {"verify": ["old"], "future": 1, "parallelism": "x",
+                                              "prefixByMilestone": {"m1": "a"}}}})
+    assert set_by_milestone(env, "/p", {"m2": "b"}) == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {
+        "last_project": "/p", "other": {"x": 1},
+        "run_settings": {"/q": {"prefixByMilestone": {"m1": "q-"}},
+                         "/p": {"verify": ["old"], "future": 1, "parallelism": "x",
+                                "prefixByMilestone": {"m1": "a", "m2": "b"}}}}
+    assert [p.name for p in state_file(env).parent.iterdir()] == ["state.json"]
+
+
+def test_set_prefix_by_milestone_merges_into_the_legacy_map(env):
+    old = Path(env["XDG_STATE_HOME"]) / "brd-viewer" / "state.json"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"run_settings": {"/p": {"prefixByMilestone": {"m1": "a"}}}}')
+    assert set_by_milestone(env, "/p", {"m2": "b"}) == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {
+        "run_settings": {"/p": {"prefixByMilestone": {"m1": "a", "m2": "b"}}}}
+    assert old.read_text() == '{"run_settings": {"/p": {"prefixByMilestone": {"m1": "a"}}}}'

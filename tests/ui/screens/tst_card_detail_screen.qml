@@ -34,6 +34,21 @@ TestCase {
       card("x1", "Other milestone", "in_progress", "x desc")]
   }
 
+  // roots() plus two more stories under m1: s2 (brd status blocked, blocked
+  // by s1) and s3 (done). Applied only by the tests that need them, so
+  // roots()'s shape stays what the other tests count on.
+  function storyTree() {
+    return [
+      card("m1", "Milestone one", "todo", "m desc", [
+        card("s1", "Story one", "todo", "s desc",
+          [card("t1", "Subtask one", "done", "t desc")], ["x1", "ghost"]),
+        card("s2", "Blocked story", "blocked", "b desc",
+          [card("t2", "Subtask two", "todo", "t desc")], ["s1"]),
+        card("s3", "Done story", "done", "d desc",
+          [card("t3", "Subtask three", "done", "t desc")])]),
+      card("x1", "Other milestone", "in_progress", "x desc")]
+  }
+
   function make() {
     var host = createTemporaryObject(hostC, tc)
     var appC = Qt.createComponent("../../../core/stores/App.qml")
@@ -461,16 +476,19 @@ TestCase {
 
   // 16
   function test_every_card_has_a_dispatch_button_that_asks_the_owner_data() {
-    return [{ tag: "milestone", id: "m1" }, { tag: "story", id: "s1" }, { tag: "done-subtask", id: "t1" }]
+    return [{ tag: "milestone", id: "m1" }, { tag: "story", id: "s1" }, { tag: "done-subtask", id: "t1" },
+            { tag: "blocked-story", id: "s2", tree: true }, { tag: "done-story", id: "s3", tree: true }]
   }
 
   function test_every_card_has_a_dispatch_button_that_asks_the_owner(data) {
     var s = make(); if (!s) return
     s.app.runs.snapshotRunner.cancel()
+    if (data.tree) s.app.board.applyTreeData(storyTree())
     dispatchSpy.target = s
     dispatchSpy.clear()
     s.navigator.openCard(data.id)
     wait(50)
+    compare(s.app.board.selectedCardId, data.id)
     var button = H.find(s, "cardDispatchButton")
     verify(button, "the Dispatch button")
     compare(button.visible, true)

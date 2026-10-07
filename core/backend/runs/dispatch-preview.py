@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Preview a dispatch: an `am run --dry-run` passthrough, and the repo's default branch.
 
-    dispatch-preview.py ROOT (milestone ID | board) [--base-branch B] [--branch-prefix P]
-                        [--max-concurrent N] [--verify CMD]... [--allow-no-verification]
+    dispatch-preview.py ROOT (milestone ID | story ID | board) [--base-branch B]
+                        [--branch-prefix P] [--max-concurrent N] [--verify CMD]...
+                        [--allow-no-verification]
     dispatch-preview.py --defaults ROOT
 
-Preview runs `am run (--milestone ID | --board) --dry-run --repo-dir ROOT`,
+Preview runs `am run (--milestone ID | --story ID | --board) --dry-run --repo-dir ROOT`,
 then the options given in a fixed order (--base-branch, --branch-prefix,
 --max-concurrent, every --verify pair in the order given,
 --allow-no-verification), as an argv list (no shell, stdin /dev/null, 60 s
-timeout). Every value is the next argument verbatim, even if it starts with
-`-`; am refuses bad ones itself. --pretty, --detach and --card are never sent.
+timeout). The target is a literal word: `story board` names the story "board".
+Every value is the next argument verbatim, even if it starts with `-`; am
+refuses bad ones itself. --pretty, --detach and --card are never sent.
 A dry run writes nothing, so am is not detached: the store SIGTERMs this helper
 when a newer preview starts, and am finishing alone harms nothing.
 
@@ -47,10 +49,11 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = ("usage: dispatch-preview.py ROOT (milestone ID | board) [--base-branch B]"
+USAGE = ("usage: dispatch-preview.py ROOT (milestone ID | story ID | board) [--base-branch B]"
          " [--branch-prefix P] [--max-concurrent N] [--verify CMD]..."
          " [--allow-no-verification] | dispatch-preview.py --defaults ROOT")
 VALUED = ("--base-branch", "--branch-prefix", "--max-concurrent")
+TARGETS = ("milestone", "story")
 AM_TIMEOUT = 60
 GIT_TIMEOUT = 10
 TAIL_LINES = 20
@@ -71,13 +74,13 @@ def good_root(root):
 
 
 def parse(argv):
-    """("defaults", root) or ("preview", root, milestone, options) for a command
+    """("defaults", root) or ("preview", root, target, id, options) for a command
     line USAGE allows, else None.
 
-    milestone is None for the board. options always maps "--verify" to the list
-    of commands in the order given, maps each given VALUED flag to its value and
-    "--allow-no-verification" to True when given; a once-only flag given twice
-    is a usage error."""
+    target is "milestone", "story" or "board"; id is None for the board. options
+    always maps "--verify" to the list of commands in the order given, maps each
+    given VALUED flag to its value and "--allow-no-verification" to True when
+    given; a once-only flag given twice is a usage error."""
     if argv[:1] == ["--defaults"]:
         if len(argv) != 2 or not good_root(argv[1]):
             return None
@@ -85,12 +88,12 @@ def parse(argv):
     if len(argv) < 2 or not good_root(argv[0]):
         return None
     root, target, rest = argv[0], argv[1], argv[2:]
-    if target == "milestone":
+    if target in TARGETS:
         if not rest or not rest[0]:
             return None
-        milestone, rest = rest[0], rest[1:]
+        ident, rest = rest[0], rest[1:]
     elif target == "board":
-        milestone = None
+        ident = None
     else:
         return None
     options = {"--verify": []}
@@ -107,12 +110,12 @@ def parse(argv):
             rest = rest[1:]
         else:
             return None
-    return "preview", root, milestone, options
+    return "preview", root, target, ident, options
 
 
-def preview_argv(root, milestone, options):
+def preview_argv(root, target, ident, options):
     """am's argv after the executable, in a fixed order whatever order the options came in."""
-    argv = ["run", "--board"] if milestone is None else ["run", "--milestone", milestone]
+    argv = ["run", "--board"] if target == "board" else ["run", "--" + target, ident]
     argv += ["--dry-run", "--repo-dir", root]
     for flag in VALUED:
         if flag in options:
@@ -163,11 +166,11 @@ def run_am(am, argv):
     return proc.stdout, proc.stderr, proc.returncode
 
 
-def preview(root, milestone, options):
+def preview(root, target, ident, options):
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
-    return report(*run_am(am, preview_argv(root, milestone, options)))
+    return report(*run_am(am, preview_argv(root, target, ident, options)))
 
 
 def git(exe, root, *args):

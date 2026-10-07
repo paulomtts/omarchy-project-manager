@@ -91,9 +91,8 @@ Column {
     }
   }
 
-  // Every card has it: a story or a finished card opens a dialog that says
-  // why it cannot start (and offers a story's milestone). Without am it is
-  // disabled, and the caption says why.
+  // Every card has it, and a click asks the owner to dispatch this card.
+  // Without am it is disabled, and the caption says why.
   Row {
     spacing: Style.space(8)
 

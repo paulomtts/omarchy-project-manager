@@ -662,10 +662,22 @@ TestCase {
   }
   function dispatched() { return tc.calls.filter(function(c) { return c.indexOf("dispatch:") === 0 }) }
 
+  // m1 holding s1 (todo), s2 (brd status blocked, blocked by s1) and s3
+  // (done), each with one subtask. card() has no blocked_by argument.
+  function storyTree() {
+    var s2 = card("s2", "Blocked story", "blocked", [card("t2", "Sub two", "todo")])
+    s2.blocked_by = ["s1"]
+    return [card("m1", "Milestone", "todo", [
+      card("s1", "Story", "todo", [card("t1", "Sub one", "todo")]),
+      s2,
+      card("s3", "Done story", "done", [card("t3", "Sub three", "done")])])]
+  }
+
   // 6
   function test_d_on_the_board_list_asks_for_the_cursor_cards_dispatch() {
     var s = onBoard(); if (!s) return
     compare(s.app.board.boardCards[0].id, "m1")
+    compare(s.app.board.boardCards.map(function(c) { return c.id }).indexOf("s1"), -1, "a story is never a board-list row")
     compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
     compare(dispatched().join(","), "dispatch:m1")
     compare(s.app.runs.dispatchState, "idle", "the key only asks the panel")
@@ -675,6 +687,7 @@ TestCase {
   function test_d_is_left_alone_data() {
     return [
       { tag: "shift" }, { tag: "ctrl" }, { tag: "search-text" }, { tag: "no-project" }, { tag: "am-missing" },
+      { tag: "am-missing-on-story" },
       { tag: "dropdown" }, { tag: "modal" }, { tag: "dispatch-open" }, { tag: "runs" }, { tag: "graph" },
       { tag: "documents" }, { tag: "empty-board" }, { tag: "cursor-past-the-end" }, { tag: "other-letter" }
     ]
@@ -689,6 +702,11 @@ TestCase {
     case "search-text": s.app.nav.searchQuery = "mile"; break
     case "no-project": s.app.projects.selectedProject = null; s.app.nav.viewMode = "board"; break
     case "am-missing": s.app.runs.amStatus = "missing"; break
+    case "am-missing-on-story":
+      s.navigator.openCard("s1")
+      compare(s.app.nav.viewMode, "entry")
+      s.app.runs.amStatus = "missing"
+      break
     case "dropdown": s.navigator.toggleDropdown(); break
     case "modal": s.app.runs.cancelRunId = "run-0000000000a1"; break
     case "dispatch-open": s.app.runs.dispatchState = "ready"; break
@@ -712,6 +730,39 @@ TestCase {
     compare(dispatched().join(","), "dispatch:s1")
   }
 
+  // S7: d on an open story asks for that story, whatever its status.
+  function test_d_on_an_open_story_asks_for_that_story_data() {
+    return [{ tag: "story", id: "s1" }, { tag: "blocked-story", id: "s2" }, { tag: "done-story", id: "s3" }]
+  }
+
+  function test_d_on_an_open_story_asks_for_that_story(data) {
+    var s = onBoard(); if (!s) return
+    s.app.board.applyTreeData(storyTree())
+    s.navigator.openCard(data.id)
+    compare(s.app.nav.viewMode, "entry")
+    compare(s.app.board.selectedCardId, data.id)
+    compare(s.app.board.cardMap[data.id].depth, 1, "a story")
+    compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
+    compare(dispatched().join(","), "dispatch:" + data.id)
+    compare(s.app.runs.dispatchState, "idle", "the key only asks the panel")
+  }
+
+  // S7: the board list holds roots only, so a story is reached through its
+  // milestone's card detail; d there asks for the story.
+  function test_d_reaches_a_story_from_the_board_list() {
+    var s = onBoard(); if (!s) return
+    compare(s.app.board.boardCards.map(function(c) { return c.id + ":" + c.depth }).join(","), "m1:0",
+            "the board list holds roots only")
+    s.navigator.activateCursor()
+    compare(s.app.nav.viewMode, "entry")
+    compare(s.app.board.selectedCardId, "m1")
+    compare(s.app.nav.cursorIndex, 0)
+    s.navigator.activateCursor()
+    compare(s.app.board.selectedCardId, "s1")
+    compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
+    compare(dispatched().join(","), "dispatch:s1")
+  }
+
   // 9
   function test_an_open_dispatch_is_a_modal() {
     var s = onBoard(); if (!s) return
@@ -727,8 +778,8 @@ TestCase {
   function test_escape_closes_an_open_dispatch_before_anything_else() {
     var s = onBoard(); if (!s) return
     s.navigator.openCard("s1")
-    compare(s.app.runs.openDispatch(s.app.board.cardMap["s1"], s.app.board.cardMap), false, "a story is refused at once")
-    compare(s.app.runs.dispatchState, "refused")
+    compare(s.app.runs.openDispatch(s.app.board.cardMap["s1"], s.app.board.cardMap), true, "a story opens on itself")
+    compare(s.app.runs.dispatchState, "previewing")
     s.closeRequested()
     compare(s.app.runs.dispatchState, "idle")
     compare(s.app.nav.viewMode, "entry", "that Escape closed the dialog only")
