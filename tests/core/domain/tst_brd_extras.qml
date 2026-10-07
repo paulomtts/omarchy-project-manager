@@ -45,6 +45,13 @@ TestCase {
              { src_id: "c1", dst_id: "i1", origin: "explicit" }]
     }
   }
+  // The real brd_export 2 envelope: the same collections, nested per project.
+  function exportV2() {
+    var flat = exportData()
+    var entry = { project: { id: "p1", name: "proj", root_path: "/tmp/proj", created_at: "2026-09-20T09:00:00+00:00" } }
+    ;["cards", "issues", "documents", "comments", "tags", "refs"].forEach(function(k) { entry[k] = flat[k] })
+    return { brd_export: 2, projects: [entry] }
+  }
   function line(data) { return JSON.stringify({ ok: true, data: data }) }
   function ids(list) { return list.map(function(x) { return x.id }).join(",") }
 
@@ -127,6 +134,25 @@ TestCase {
     compare(list[0].body, "")
     compare(list[0].blocks.length, 0)
     compare(list[0].updatedAt, "")
+  }
+
+  function test_parse_export_reads_the_nested_v2_shape() {
+    var result = Extras.parseExport(line(exportV2()), 0)
+    compare(result.ok, true)
+    compare(ids(result.issues), "i3,i1,i2")
+    compare(result.issues[1].blocks.join(","), "c1", "blocks read back off the nested card tree")
+    compare(result.commentsByEntity["c1"].length, 2)
+    compare(result.refsByEntity["i1"].refs.join(","), "c1")
+  }
+
+  function test_flatten_export_concatenates_projects_and_tolerates_junk() {
+    var v2 = exportV2()
+    v2.projects.push({ project: {}, issues: [{ id: "x1", title: "X", status: "open" }] }, null)
+    var flat = Extras.flattenExport(v2)
+    compare(ids(flat.issues), "i1,i2,i3,x1")
+    compare(flat.cards.length, 2)
+    compare(Extras.flattenExport({ brd_export: 2, projects: [] }).issues.length, 0)
+    compare(Extras.flattenExport(exportData()).brd_export, 1, "the flat shape passes through")
   }
 
   function test_parse_export_reads_one_line_and_drops_document_content() {

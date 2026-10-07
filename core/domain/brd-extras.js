@@ -124,6 +124,25 @@ function issueList(data, commentsByEntity) {
   return list
 }
 
+var EXPORT_COLLECTIONS = ["cards", "issues", "documents", "comments", "tags", "refs"]
+
+// brd_export 2 nests the collections per project: { projects: [{ project, cards,
+// issues, ... }] }. Plain `brd export` yields exactly one entry (the current
+// project); several entries (`--all`) are concatenated. The older flat shape
+// (collections at the top level) passes through unchanged.
+function flattenExport(data) {
+  if (!data || !Array.isArray(data.projects)) return data
+  var flat = { brd_export: data.brd_export }
+  EXPORT_COLLECTIONS.forEach(function(key) { flat[key] = [] })
+  data.projects.forEach(function(entry) {
+    if (!entry || typeof entry !== "object") return
+    EXPORT_COLLECTIONS.forEach(function(key) {
+      if (Array.isArray(entry[key])) flat[key] = flat[key].concat(entry[key])
+    })
+  })
+  return flat
+}
+
 // `brd export`'s last stdout line plus its exit code. Anything but a clear
 // success is empty extras: an old brd without `export`, a crash or garbage must
 // leave the panel exactly as it was, never an error.
@@ -133,6 +152,7 @@ function parseExport(stdout, exitCode) {
   if (!result.ok) return { ok: false, issues: [], commentsByEntity: {}, refsByEntity: {}, error: result.error }
   var data = result.data.data
   if (!data || typeof data !== "object" || Array.isArray(data)) return empty
+  data = flattenExport(data)
   var commentsByEntity = indexComments(data)
   return { ok: true, issues: issueList(data, commentsByEntity), commentsByEntity: commentsByEntity,
            refsByEntity: indexRefs(data), error: "" }

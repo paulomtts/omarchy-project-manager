@@ -17,8 +17,8 @@ TestCase {
   // tree, as `blocked_by`. The whole export is handed to the parser, or the
   // issues' `blocks` would come back empty.
   function exportLine() {
-    return JSON.stringify({ ok: true, data: {
-      brd_export: 1,
+    return JSON.stringify({ ok: true, data: { brd_export: 2, projects: [{
+      project: { id: "p1", name: "alpha", root_path: "/home/u/a", created_at: "2026-09-20T09:00:00+00:00" },
       cards: roots(), documents: [], tags: [],
       issues: [
         { id: "i1", title: "Broken build", body: "It fails.", status: "open", close_reason: null,
@@ -27,7 +27,7 @@ TestCase {
           created_at: "2026-09-10T10:00:00+00:00", updated_at: "2026-09-11T10:00:00+00:00" }],
       comments: [{ id: "m1c", entity_id: "m1", author: "paulo", body: "hi", created_at: "2026-09-24T09:00:00+00:00" },
                  { id: "i1c", entity_id: "i1", author: "claude", body: "looking", created_at: "2026-09-24T09:30:00+00:00" }],
-      refs: [{ src_id: "i1", dst_id: "m1", origin: "explicit" }] } })
+      refs: [{ src_id: "i1", dst_id: "m1", origin: "explicit" }] }] } })
   }
   function roots() {
     return [{ id: "m1", title: "Milestone", status: "blocked", description: "d", blocked_by: ["i1"], children: [] }]
