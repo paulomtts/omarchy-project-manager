@@ -20,7 +20,7 @@ case "$1" in
     if [ "$FAKE_EXPORT_FAIL" = 1 ]; then
       echo '{"ok": false, "error": {"type": "ProjectNotFoundError", "message": "boom"}}'; exit 1
     fi
-    echo '{"ok": true, "data": {"brd_export": 1, "cards": [{"id": "a", "title": "T"}], "issues": [], "documents": [], "comments": [], "tags": [], "refs": []}}' ;;
+    echo '{"ok": true, "data": {"brd_export": 2, "projects": [{"project": {"id": "p"}, "cards": [{"id": "a", "title": "T"}], "issues": [], "documents": [], "comments": [], "tags": [], "refs": []}]}}' ;;
   forget)
     echo "snapshot_files_at_forget=$(ls "$OMARCHY_PROJECT_MANAGER_SNAPSHOT_DIR"/*/export.json "$OMARCHY_PROJECT_MANAGER_SNAPSHOT_DIR"/*/project.db 2>/dev/null | wc -l)" >> "$CALLS"
     if [ "$FAKE_FORGET_FAIL" = 1 ]; then
@@ -82,7 +82,7 @@ def test_snapshots_then_forgets(box):
     snap = Path(result["snapshot"])
     assert snap.is_dir() and str(snap).startswith(str(box["snaps"]))
     export = json.loads((snap / "export.json").read_text())
-    assert export["data"]["brd_export"] == 1 and export["data"]["cards"][0]["id"] == "a"
+    assert export["data"]["brd_export"] == 2 and export["data"]["projects"][0]["cards"][0]["id"] == "a"
     assert not (snap / "tree.json").exists()
     meta = json.loads((snap / "project.json").read_text())
     assert meta["name"] == "My Project" and meta["root_path"] == str(box["project"])
