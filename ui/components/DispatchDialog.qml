@@ -26,6 +26,9 @@ Item {
   property var target: null
   // The target card's title; "" for the board.
   property string targetTitle: ""
+  // The owner's ready-made target text (RunStore's dispatchTargetLabel); ""
+  // builds it from the level and targetTitle. Only the target line reads it.
+  property string targetLabel: ""
   // RunStore's dispatchForm: {base, prefix, verify, parallelism,
   // allowNoVerification}; null for a target refused at open.
   property var form: null
@@ -76,6 +79,7 @@ Item {
   readonly property color urgentColor: dialog.theme ? dialog.theme.urgent : Color.urgent
   readonly property color dimColor: dialog.theme ? dialog.theme.dim : Color.foreground
   readonly property string targetText: {
+    if (dialog.targetLabel !== "") return dialog.targetLabel
     var quoted = "\"" + dialog.targetTitle + "\""
     switch (dialog.targetLevel) {
     case "board": return "Whole board"

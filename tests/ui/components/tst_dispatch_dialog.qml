@@ -71,18 +71,54 @@ TestCase {
       { tag: "subtask", level: "subtask", title: "RunStore dispatch", text: "Target   Subtask \"RunStore dispatch\"" },
       { tag: "story", level: "story", title: "Dispatch UI", text: "Target   Story \"Dispatch UI\"" },
       { tag: "unknown-level", level: "", title: "Loose card", text: "Target   \"Loose card\"" },
-      { tag: "no-level-no-title", level: "", title: "", text: "Target   No card" }
+      { tag: "no-level-no-title", level: "", title: "", text: "Target   No card" },
+      { tag: "story-empty-label", level: "story", title: "Dispatch UI", label: "",
+        text: "Target   Story \"Dispatch UI\"" }
     ]
   }
 
   function test_the_target_line_names_the_level(data) {
-    var d = make({ target: { level: data.level }, targetTitle: data.title })
+    var over = { target: { level: data.level }, targetTitle: data.title }
+    if (data.label !== undefined) over.targetLabel = data.label
+    var d = make(over)
     compare(H.find(d, "dispatchTarget").text, data.text)
   }
 
   function test_a_null_target_without_a_title_is_no_card() {
     var d = make({ target: null, targetTitle: "" })
     compare(H.find(d, "dispatchTarget").text, "Target   No card")
+  }
+
+  function test_the_owners_label_is_the_target_line_verbatim_data() {
+    return [
+      { tag: "story", level: "story", title: "Story one", label: "Story \"Story one\" (milestone \"M one\")",
+        text: "Target   Story \"Story one\" (milestone \"M one\")" },
+      { tag: "milestone-over-another-title", level: "milestone", title: "other", label: "Milestone \"M one\"",
+        text: "Target   Milestone \"M one\"" }
+    ]
+  }
+
+  function test_the_owners_label_is_the_target_line_verbatim(data) {
+    var d = make({ target: { level: data.level }, targetTitle: data.title, targetLabel: data.label })
+    compare(H.find(d, "dispatchTarget").text, data.text)
+  }
+
+  function test_the_label_leaves_the_level_driven_areas_alone() {
+    var d = make({ target: { level: "subtask" }, targetTitle: "Do it", targetLabel: "Milestone \"M one\"",
+                   dispatchState: "previewing", preview: null })
+    compare(H.find(d, "dispatchPreviewHeading").text, "Preview")
+    verify(H.find(d, "dispatchSubtaskNote").visible, "the subtask note follows the level")
+    compare(H.find(d, "dispatchWarning").text, "⚠ This starts agents and spends tokens.")
+  }
+
+  function test_a_long_label_elides_on_one_line() {
+    var long = "Story \"" + new Array(40).join("A very long story title ") + "\" (milestone \"M one\")"
+    var d = make({ target: { level: "story" }, targetTitle: "x", targetLabel: long })
+    var line = H.find(d, "dispatchTarget")
+    compare(line.elide, Text.ElideRight)
+    compare(line.text, "Target   " + long)
+    verify(line.truncated, "the label is cut, not wrapped")
+    compare(line.lineCount, 1)
   }
 
   // ---- Start only from ready ----------------------------------------------
