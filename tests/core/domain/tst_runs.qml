@@ -3494,4 +3494,96 @@ TestCase {
     compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify", "no key added to the form")
     compare(Object.keys(story).sort().join(","), "already_done,integrate,levels,max_concurrent", "no key added to the story payload")
   }
+
+  // ---- 2.1: the dispatch target's milestone and label -------------------------------------
+
+  // Milestone m1, its story s1, the story's subtask t1, an orphan story o1
+  // (parentId ""), a story g1 whose parent is not in the map, and their map.
+  function labelCards() {
+    var m = mkCard("m1", 0, "todo", null, "M3 Document runs")
+    var s = mkCard("s1", 1, "todo", "m1", "Dispatch store")
+    var t = mkCard("t1", 2, "todo", "s1", "RunStore dispatch")
+    var o = mkCard("o1", 1, "todo", "", "Orphan")
+    var g = mkCard("g1", 1, "todo", "gone", "Lost")
+    return { m: m, s: s, t: t, o: o, g: g, map: { m1: m, s1: s, t1: t, o1: o, g1: g } }
+  }
+
+  function test_dispatchMilestone_levels() {
+    var f = labelCards()
+    var m1 = '{"id":"m1","title":"M3 Document runs"}'
+    compare(JSON.stringify(Runs.dispatchMilestone(f.s, f.map)), m1, "story")
+    compare(JSON.stringify(Runs.dispatchMilestone(f.m, f.map)), m1, "milestone")
+    compare(JSON.stringify(Runs.dispatchMilestone(f.m)), m1, "milestone without cardMap")
+    compare(JSON.stringify(Runs.dispatchMilestone(f.t, f.map)), m1, "subtask")
+  }
+
+  function test_dispatchMilestone_null() {
+    var f = labelCards()
+    compare(Runs.dispatchMilestone(f.o, f.map), null, "a story whose parentId is empty")
+    compare(Runs.dispatchMilestone(f.g, f.map), null, "a missing parent")
+    var a = mkCard("a1", 1, "todo", "b1", "A")
+    var b = mkCard("b1", 1, "todo", "a1", "B")
+    compare(Runs.dispatchMilestone(a, { a1: a, b1: b }), null, "a cycle")
+    compare(Runs.dispatchMilestone(f.s), null, "no cardMap")
+    compare(Runs.dispatchMilestone("board", f.map), null, "the board")
+    var values = [undefined, null, 0, "m1", [], true]
+    for (var i = 0; i < values.length; i++) compare(Runs.dispatchMilestone(values[i], f.map), null, "card " + i)
+    compare(Runs.dispatchMilestone(mkCard("-m", 0, "todo", null, "M"), {}), null, "an id read as a flag")
+    compare(Runs.dispatchMilestone(mkCard("", 0, "todo", null, "M"), {}), null, "an empty id")
+    compare(Runs.dispatchMilestone(mkCard("s1", 1, "todo", "-m", "S"), { "-m": mkCard("-m", 0, "todo", null, "M") }), null,
+            "a root whose id is read as a flag")
+    var root = { id: "r1", title: "R", parentId: "" }
+    compare(Runs.dispatchMilestone(mkCard("s1", 1, "todo", "r1", "S"), { r1: root }), null, "a root without depth 0")
+  }
+
+  function test_dispatchMilestone_title_and_fresh() {
+    var m = { id: "m1", depth: 0, status: "todo", parentId: null, title: 5 }
+    var s = mkCard("s1", 1, "todo", "m1", "S")
+    compare(JSON.stringify(Runs.dispatchMilestone(s, { m1: m, s1: s })), '{"id":"m1","title":""}', "a title that is not a string")
+    compare(Runs.dispatchMilestone({ id: "m1", depth: 0 }).title, "", "no title key")
+    var f = labelCards()
+    var a = Runs.dispatchMilestone(f.s, f.map)
+    var b = Runs.dispatchMilestone(f.s, f.map)
+    verify(a !== b, "distinct objects")
+    verify(a !== f.m, "not the card itself")
+    compare(Object.keys(a).sort().join(","), "id,title", "only id and title")
+    var before = JSON.stringify(f.map)
+    a.title = "x"
+    compare(JSON.stringify(f.map), before, "the cards are unchanged")
+  }
+
+  function test_dispatchLabel_rows() {
+    var f = labelCards()
+    compare(Runs.dispatchLabel("board", f.map), "Whole board", "board")
+    compare(Runs.dispatchLabel(f.m, f.map), 'Milestone "M3 Document runs"', "milestone")
+    compare(Runs.dispatchLabel(f.s, f.map), 'Story "Dispatch store" (milestone "M3 Document runs")', "story")
+    compare(Runs.dispatchLabel(f.o, f.map), 'Story "Orphan"', "orphan story")
+    compare(Runs.dispatchLabel(f.g, f.map), 'Story "Lost"', "a story whose parent is missing")
+    compare(Runs.dispatchLabel(f.s), 'Story "Dispatch store"', "a story without cardMap")
+    compare(Runs.dispatchLabel(f.t, f.map), 'Subtask "RunStore dispatch"', "subtask")
+    compare(Runs.dispatchLabel(mkCard("t5", 5, "todo", "t1", "Deep"), f.map), 'Subtask "Deep"', "depth 5")
+  }
+
+  function test_dispatchLabel_no_card_and_odd_depths() {
+    var values = [undefined, null, 0, "m1", [], true, {}, mkCard("", 0, "todo", null, "M"), mkCard("-x", 0, "todo", null, "M")]
+    for (var i = 0; i < values.length; i++) compare(Runs.dispatchLabel(values[i], {}), "No card", "card " + i)
+    var depths = [undefined, null, -1, 1.5, "1", NaN, Infinity]
+    for (var j = 0; j < depths.length; j++) {
+      compare(Runs.dispatchLabel({ id: "x1", title: "X", depth: depths[j] }, {}), '"X"', "depth " + j)
+    }
+  }
+
+  function test_dispatchLabel_titles_and_status() {
+    var f = labelCards()
+    compare(Runs.dispatchLabel(mkCard("s2", 1, "done", "m1", "Finished story"), f.map),
+            'Story "Finished story" (milestone "M3 Document runs")', "a done story is labelled")
+    compare(Runs.dispatchLabel(mkCard("m2", 0, "done", null, "M2"), {}), 'Milestone "M2"', "a done milestone is labelled")
+    compare(Runs.dispatchLabel({ id: "m3", depth: 0, title: 7 }, {}), 'Milestone ""', "a title that is not a string")
+    var untitled = { id: "m4", depth: 0, parentId: null }
+    compare(Runs.dispatchLabel(mkCard("s4", 1, "todo", "m4", null), { m4: untitled }), 'Story "" (milestone "")', "no titles")
+    var before = JSON.stringify(f.map)
+    Runs.dispatchLabel(f.s, f.map)
+    Runs.dispatchMilestone(f.t, f.map)
+    compare(JSON.stringify(f.map), before, "the inputs are unchanged")
+  }
 }
