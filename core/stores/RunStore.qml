@@ -112,12 +112,13 @@ Scope {
   // object here is replaced, never changed in place.
   property string dispatchState: "idle"
   property var dispatchTarget: null     // Runs.dispatchPlan of the opened target; null while idle
+  property string dispatchTargetLabel: "" // Runs.dispatchLabel of the opened target; "" while idle
   property var dispatchForm: null       // {base, prefix, verify, parallelism, allowNoVerification}; null while idle
   property var dispatchPreview: null    // Runs.previewSummary of the latest good preview
   property string dispatchError: ""     // the sentence for refused / failed
   property string dispatchErrorType: "" // am's or the helper's error.type, "Form", "Target" or ""
   property var dispatchErrors: []       // Runs.validateDispatch errors of a form refusal
-  property var dispatchSuggest: null    // a refused story's milestone {id, title}
+  property var dispatchSuggest: null    // a blocked story's milestone {id, title}, which retargetToMilestone() opens; else null
   property string dispatchRunId: ""     // the started run's id; "" when none (yet)
   property string dispatchMessage: ""   // start-run.py's message after a start
   property string dispatchLog: ""       // a failed start's log path
@@ -899,7 +900,7 @@ Scope {
 
   // ---- dispatch (S3 3.1)
 
-  // No refusal or failure to show.
+  // No refusal, failure or suggestion to show.
   function clearDispatchError() {
     store.dispatchError = ""
     store.dispatchErrorType = ""
@@ -907,6 +908,7 @@ Scope {
     store.dispatchLog = ""
     store.dispatchLogTail = ""
     store.dispatchExitCode = null
+    store.dispatchSuggest = null
   }
 
   // Every dispatch field back to its "none" value; runSettings stays. The
@@ -919,12 +921,14 @@ Scope {
     dispatchBook.startRunner = null
     dispatchBook.baseTouched = false
     dispatchBook.defaultsPending = false
+    dispatchBook.cardMap = null
+    dispatchBook.milestone = null
     store.dispatchState = "idle"
     store.dispatchTarget = null
+    store.dispatchTargetLabel = ""
     store.dispatchForm = null
     store.dispatchPreview = null
     store.clearDispatchError()
-    store.dispatchSuggest = null
     store.dispatchRunId = ""
     store.dispatchMessage = ""
   }
@@ -932,22 +936,29 @@ Scope {
   // Opens the dispatch for a brd card (as Board.indexTree() leaves it) or
   // "board", with its {id: card} map, and returns whether it may be started.
   // Refused (false, nothing changes) without a project or while a start is in
-  // flight. A target dispatchPlan does not offer is `refused` at once; any
+  // flight. Every opening sets dispatchTargetLabel and records cardMap and
+  // cardMap's entry for the target's milestone (Runs.dispatchMilestone), or
+  // null. A target dispatchPlan does not offer is `refused` at once; any
   // other starts from dispatchDefaults with this project's runSettings and
-  // looks up the default branch before anything is checked.
+  // the Runs snapshot, and looks up the default branch before anything is
+  // checked.
   function openDispatch(card, cardMap) {
     if (store.project === "" || store.dispatchState === "starting") return false
     store.resetDispatch()
     var plan = Runs.dispatchPlan(card, cardMap)
+    var milestone = Runs.dispatchMilestone(card, cardMap)
+    var isMap = cardMap !== null && typeof cardMap === "object"
+    dispatchBook.cardMap = cardMap
+    dispatchBook.milestone = milestone !== null && isMap && store.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
     store.dispatchTarget = plan
+    store.dispatchTargetLabel = Runs.dispatchLabel(card, cardMap)
     if (!plan.offered) {
       store.dispatchState = "refused"
       store.dispatchError = plan.reason
       store.dispatchErrorType = "Target"
-      store.dispatchSuggest = plan.suggest
       return false
     }
-    var d = Runs.dispatchDefaults({ defaultBranch: "", settings: store.runSettings }, card, cardMap)
+    var d = Runs.dispatchDefaults({ defaultBranch: "", settings: store.runSettings }, card, cardMap, store.runs)
     store.dispatchForm = { base: d.base, prefix: d.prefix, verify: d.verify, parallelism: d.parallelism,
                            allowNoVerification: d.allowNoVerification }
     store.dispatchState = "previewing"
@@ -962,6 +973,23 @@ Scope {
     if (store.dispatchState === "starting") return false
     store.resetDispatch()
     return true
+  }
+
+  // The milestone a StoryBlockedError refusal offers: the recorded milestone
+  // card as Runs.dispatchMilestone's {id, title} when the target is a story
+  // and its milestone is known, else null.
+  function blockedSuggest() {
+    if (store.dispatchTarget === null || store.dispatchTarget.level !== "story" || dispatchBook.milestone === null) return null
+    return Runs.dispatchMilestone(dispatchBook.milestone, dispatchBook.cardMap)
+  }
+
+  // From a blocked story's refusal (`refused` with a dispatchSuggest), opens
+  // the dispatch afresh on the milestone card and cardMap recorded at the
+  // story's opening and returns openDispatch's result. Refused (false,
+  // nothing changes) in any other state or refusal.
+  function retargetToMilestone() {
+    if (store.dispatchState !== "refused" || store.dispatchSuggest === null) return false
+    return store.openDispatch(dispatchBook.milestone, dispatchBook.cardMap)
   }
 
   // A copy of the form with one field set as given; verify is copied as a
@@ -1013,8 +1041,8 @@ Scope {
   }
 
   // The form is checked: an invalid one is refused and launches nothing, a
-  // subtask is ready (am has no dry run for one card), a milestone or the
-  // board is previewed. Waits for the defaults lookup, whose reply checks.
+  // subtask is ready (am has no dry run for one card), a milestone, a story
+  // or the board is previewed. Waits for the defaults lookup, whose reply checks.
   function checkDispatch() {
     if (dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
     dispatchDebounceTimer.stop()
@@ -1034,13 +1062,24 @@ Scope {
   }
 
   // The newest preview's reply for this project and these values (a form
-  // change cancels the runner). ok: ready with its summary; am's refusal:
-  // its message verbatim; anything else cannot be read.
+  // change cancels the runner). ok: ready with Runs.previewSummary for the
+  // target's level, except a story with nothing left, refused as `Nothing
+  // left to run` (Empty); am's refusal: its message verbatim, and for a
+  // StoryBlockedError the blockedSuggest() milestone; anything else cannot
+  // be read.
   function dispatchPreviewReplied(stdout) {
     if (store.dispatchState !== "previewing") return
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
-      store.dispatchPreview = Runs.previewSummary(envelope.data)
+      var level = store.dispatchTarget.level
+      var preview = Runs.previewSummary(envelope.data, level)
+      if (level === "story" && preview.summary === "Nothing left to run") {
+        store.dispatchState = "refused"
+        store.dispatchError = preview.summary
+        store.dispatchErrorType = "Empty"
+        return
+      }
+      store.dispatchPreview = preview
       store.dispatchState = "ready"
       return
     }
@@ -1050,6 +1089,7 @@ Scope {
     if (message.trim() !== "") {
       store.dispatchError = message
       store.dispatchErrorType = typeof err.type === "string" ? err.type : ""
+      if (store.dispatchErrorType === "StoryBlockedError") store.dispatchSuggest = store.blockedSuggest()
     } else {
       store.dispatchError = "The preview could not be read"
       store.dispatchErrorType = ""
@@ -1077,12 +1117,22 @@ Scope {
     return true
   }
 
+  // A fresh {milestone id: prefix} map: stored's own entries when stored is
+  // an object that is not an array, then entry's, which override them, as
+  // set-run-settings merges prefixByMilestone.
+  function mergedPrefixes(stored, entry) {
+    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? store.copyMap(stored) : {}
+    for (var id in entry) merged[id] = entry[id]
+    return merged
+  }
+
   // Start: only from ready. start-run.py runs on a HelperRunner of its own
   // (guard "", madeFor this project), which no preview, project switch or
   // other Start stops. The settings a successful start saves are fixed now,
   // from this project's runSettings: the non-blank verify commands sent, the
   // opt-out, the prefix sent followed by the stored history without it (at
-  // most 20), and the parallelism.
+  // most 20), the parallelism and, for a story or milestone whose milestone
+  // card is known, prefixByMilestone {<milestone id>: prefix sent}.
   function dispatchStart() {
     if (store.dispatchState !== "ready") return false
     var form = store.dispatchForm
@@ -1095,6 +1145,12 @@ Scope {
     }
     var saved = { verify: store.dispatchCommands(form), allowNoVerification: form.allowNoVerification === true,
                   prefixHistory: history, parallelism: form.parallelism }
+    var level = store.dispatchTarget.level
+    if ((level === "story" || level === "milestone") && dispatchBook.milestone !== null) {
+      var keyed = {}
+      keyed[dispatchBook.milestone.id] = prefix
+      saved.prefixByMilestone = keyed
+    }
     var runner = dispatchStartC.createObject(store, { madeFor: store.project, savedJson: JSON.stringify(saved) })
     dispatchBook.runners = dispatchBook.runners.concat([runner])
     dispatchBook.startRunner = runner
@@ -1111,8 +1167,10 @@ Scope {
   }
 
   // start-run.py's reply. When it is this dispatch's: ok gives `started`,
-  // the run id and message, the saved values in runSettings, a re-snapshot
-  // and dispatchStarted(id or null); anything else gives `failed` with what
+  // the run id and message, the saved values in runSettings (prefixByMilestone
+  // merged per milestone id), a re-snapshot and dispatchStarted(id or null);
+  // a StoryBlockedError gives `refused` with am's message, no log fields and
+  // the blockedSuggest() milestone; anything else gives `failed` with what
   // the helper said. After any successful start, wherever it was made, the
   // same runner writes the saved values for the project it was made in.
   function dispatchStartReplied(runner, stdout) {
@@ -1130,7 +1188,9 @@ Scope {
         // Parsed from the JSON that is written: a var property hands back a
         // list Runs.dispatchDefaults does not take for an array.
         var saved = JSON.parse(runner.savedJson)
-        for (var key in saved) settings[key] = saved[key]
+        for (var key in saved) {
+          settings[key] = key === "prefixByMilestone" ? store.mergedPrefixes(settings.prefixByMilestone, saved[key]) : saved[key]
+        }
         store.runSettings = settings
         store.dispatchState = "started"
         store.refresh()
@@ -1146,12 +1206,15 @@ Scope {
       var err = failure.error
       var isErr = err !== null && err !== undefined && typeof err === "object"
       var message = isErr && typeof err.message === "string" ? err.message : ""
-      store.dispatchState = "failed"
+      var type = isErr && typeof err.type === "string" ? err.type : ""
+      var blocked = type === "StoryBlockedError"
+      store.dispatchState = blocked ? "refused" : "failed"
       store.dispatchError = message.trim() !== "" ? message : "The launch could not be read"
-      store.dispatchErrorType = isErr && typeof err.type === "string" ? err.type : ""
-      store.dispatchLog = typeof failure.log === "string" ? failure.log : ""
-      store.dispatchLogTail = typeof failure.log_tail === "string" ? failure.log_tail : ""
-      store.dispatchExitCode = typeof failure.exit_code === "number" ? failure.exit_code : null
+      store.dispatchErrorType = type
+      store.dispatchLog = !blocked && typeof failure.log === "string" ? failure.log : ""
+      store.dispatchLogTail = !blocked && typeof failure.log_tail === "string" ? failure.log_tail : ""
+      store.dispatchExitCode = !blocked && typeof failure.exit_code === "number" ? failure.exit_code : null
+      store.dispatchSuggest = blocked ? store.blockedSuggest() : null
     }
     store.dropStartRunner(runner)
   }
@@ -1344,13 +1407,16 @@ Scope {
   // `startRunner` is the runner that put the store into `starting`, forgotten
   // by an idle reset (and so by a project switch); `baseTouched` says the user
   // set base since the opening; `defaultsPending` that the --defaults lookup
-  // has not replied yet.
+  // has not replied yet; `cardMap` and `milestone` are the opening's card map
+  // and its entry for the target's milestone card (null when unknown).
   QtObject {
     id: dispatchBook
     property var runners: []
     property var startRunner: null
     property bool baseTouched: false
     property bool defaultsPending: false
+    property var cardMap: null
+    property var milestone: null
   }
 
   // One HelperRunner per control request, so requests for different runs never

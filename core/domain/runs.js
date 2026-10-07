@@ -934,6 +934,36 @@ function _milestoneOf(card, cardMap) {
   }
 }
 
+
+// The milestone {id, title}, fresh, of the card _milestoneOf reaches from
+// card: card itself at depth 0, a story's parent, a subtask's root. null when
+// the walk gives null, the card reached does not have depth exactly 0, or its
+// id is not a dispatch id. title is the card's title when it is a string, else "".
+function dispatchMilestone(card, cardMap) {
+  var milestone = _milestoneOf(card, cardMap)
+  if (milestone === null || milestone.depth !== 0 || !_isDispatchId(milestone.id)) return null
+  return { id: milestone.id, title: _stringOr(milestone.title) }
+}
+
+// The dispatch dialog's target text: `Whole board` for "board"; `No card`
+// for a non-object card or one without a dispatch id; else, with T the
+// card's title (a string, else ""), `Milestone "T"` at depth 0, `Story "T"
+// (milestone "M")` at depth 1 with M dispatchMilestone's title (`Story "T"`
+// when it is null), `Subtask "T"` at a whole depth >= 2, and `"T"` for any
+// other depth. The card's status is not read.
+function dispatchLabel(card, cardMap) {
+  if (card === "board") return "Whole board"
+  if (!_isObject(card) || !_isDispatchId(card.id)) return "No card"
+  var title = _stringOr(card.title)
+  if (card.depth === 0) return "Milestone \"" + title + "\""
+  if (card.depth === 1) {
+    var milestone = dispatchMilestone(card, cardMap)
+    return milestone !== null ? "Story \"" + title + "\" (milestone \"" + milestone.title + "\")" : "Story \"" + title + "\""
+  }
+  if (_isWholeNumber(card.depth) && card.depth >= 2) return "Subtask \"" + title + "\""
+  return "\"" + title + "\""
+}
+
 // The branch-prefix stem of a milestone title: lower-case [a-z0-9] tokens; a
 // first token like "m3" (letters then digits) is the stem, else the first three
 // tokens joined by "-", cut to 24 characters, without a trailing "-".
