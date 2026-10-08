@@ -77,8 +77,9 @@ def failure(kind, message, code=1):
 
 def parse_args(argv):
     """The arguments after `am watch --all-projects --follow` for the helper's
-    argv: [] for none, ["--since-seq", N] for `--since-seq N` (N ASCII decimal
-    digits, without leading zeros), None for anything else."""
+    argv: [] for none, ["--since-seq", N] for `--since-seq N` (N one or more
+    ASCII decimal digits, passed as its integer's decimal text), None for
+    anything else."""
     if not argv:
         return []
     if len(argv) == 2 and argv[0] == "--since-seq":
