@@ -15,7 +15,8 @@ TestCase {
   width: 900; height: 700
   Component { id: hostC; Item { width: 900; height: 700 } }
 
-  property var pA: ({ root_path: "/home/u/a", name: "alpha" })
+  // The captured runs' project: runs.json's repo_dir, so the store keeps them.
+  property var pA: ({ root_path: "/home/user/Code/omarchy-project-manager", name: "alpha" })
 
   readonly property string startedRun: "20261008T143823Z-e795ad19"
   readonly property string doneRun: "20261008T143807Z-63060df3"
@@ -55,12 +56,14 @@ TestCase {
   }
 
   // The runs-snapshot.py reply for the captured runs: each `am runs` row with
-  // its `status` replaced by that run's `am status` data, as the helper does.
+  // its `status` replaced by that run's `am status` data, and runs.json's
+  // as_of_seq and store_id, as the helper does.
   function snapshot() {
-    var runs = F.load("runs.json").data.runs
+    var data = F.load("runs.json").data
+    var runs = data.runs
     runs[0].status = F.load("status-started.json").data
     runs[1].status = F.load("status-done.json").data
-    return JSON.stringify({ ok: true, runs: runs, data_dir: "/d" }) + "\n"
+    return JSON.stringify({ ok: true, as_of_seq: data.as_of_seq, store_id: data.store_id, runs: runs, data_dir: "/d" }) + "\n"
   }
 
   // The next snapshot of project A is the captured one.
@@ -142,7 +145,7 @@ TestCase {
     var proc = p.app.runs.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
     verify(String(proc.command[1]).indexOf("core/backend/runs/runs-logs.py") > 0, String(proc.command[1]))
-    compare(argv(proc), "/home/u/a|" + doneRun + "|767b5f1c-506a-4daa-9157-0c838165cc63|review|1")
+    compare(argv(proc), tc.pA.root_path + "|" + doneRun + "|767b5f1c-506a-4daa-9157-0c838165cc63|review|1")
   }
 
   // The default fetch is still in flight when the row is activated: the second
@@ -157,7 +160,7 @@ TestCase {
             { card_id: "7442d674-e0d4-4048-96ee-cd27b5ba34f8", phase: "review", attempt: 1 })
     var proc = p.app.runs.logsRunner.current
     verify(proc && proc !== first, "a new launch for the new attempt")
-    compare(argv(proc), "/home/u/a|" + doneRun + "|7442d674-e0d4-4048-96ee-cd27b5ba34f8|review|1")
+    compare(argv(proc), tc.pA.root_path + "|" + doneRun + "|7442d674-e0d4-4048-96ee-cd27b5ba34f8|review|1")
     reply(proc, logsReply(), 0)
     wait(50)
     compare(H.find(p, "runOutputHeading").text, "Output · 7442d674-e0d4-4048-96ee-cd27b5ba34f8 review.1")
@@ -186,7 +189,7 @@ TestCase {
     compare(p.app.runs.selectedAttempt,
             { card_id: "2280a6ab-9c40-434b-9729-63fd1f373754", phase: "explore", attempt: 1 })
     compare(argv(p.app.runs.logsRunner.current),
-            "/home/u/a|" + startedRun + "|2280a6ab-9c40-434b-9729-63fd1f373754|explore|1")
+            tc.pA.root_path + "|" + startedRun + "|2280a6ab-9c40-434b-9729-63fd1f373754|explore|1")
   }
 
   function test_the_graph_story_node_shows_the_started_runs_rollup_and_rings_the_running_subtask() {
