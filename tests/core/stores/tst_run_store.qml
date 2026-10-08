@@ -4173,6 +4173,24 @@ TestCase {
     compare(store.appliedSeq[tc.doneRun], 1100)
   }
 
+  function test_a_read_of_a_run_the_list_dropped_changes_nothing() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    store.refresh()
+    // synthetic: runs.json's list without the done run, at an as_of_seq older
+    // than the read's, landing before it.
+    var data = F.load("runs.json").data
+    var only = data.runs.slice(0, 1)
+    only[0].status = F.load("status-started.json").data
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: true, as_of_seq: 1000, store_id: data.store_id, runs: only, data_dir: "/d" }) + "\n", 0)
+    var before = store.runs
+    // synthetic: status-done.json's run read reply (as_of_seq 1005).
+    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
+    verify(store.runs === before, "a run no longer listed is not read back in")
+    compare(ids(store.runs), tc.startedRun)
+    compare(store.appliedSeq[tc.doneRun], undefined)
+  }
+
   function test_a_read_reply_that_does_not_fit_changes_nothing() {
     var store = capturedStore(); if (!store) return
     var good = JSON.parse(runReply(tc.doneRun, "status-escalated.json"))
