@@ -4082,4 +4082,237 @@ TestCase {
     compare(Object.keys(store.nudges).length, 0)
     compare(store.watchCursor, 1005, "the cursor is not per project")
   }
+
+  // ---- run reads (4.1.3)
+
+  property string readCmd: "python3|/plugin/core/backend/runs/runs-snapshot.py|--run|"
+
+  // runs-snapshot.py --run RUN's reply: `name`'s `am status` data with its own
+  // as_of_seq and store_id, under `run`.
+  function runReply(run, name) {
+    var data = F.load(name).data
+    return JSON.stringify({ ok: true, run: run, as_of_seq: data.as_of_seq, store_id: data.store_id,
+                            status: data, data_dir: "/d" }) + "\n"
+  }
+
+  // The store's run read of `run` in flight after a nudge at `seq` and the
+  // debounce: its Process.
+  function readOf(store, run, seq) {
+    nudge(store, [run, seq])
+    fire(store.debounceTimer)
+    var list = store.readRunners
+    return list.length > 0 ? list[list.length - 1].current : null
+  }
+
+  function test_a_nudge_for_a_held_run_reads_only_that_run() {
+    var store = capturedStore(); if (!store) return
+    var before = store.runs
+    var seq = store.snapshotRunner.seq
+    nudge(store, [tc.doneRun, 1005])
+    compare(store.readRunners.length, 0, "nothing before the debounce")
+    fire(store.debounceTimer)
+    compare(store.snapshotRunner.seq, seq, "no list snapshot")
+    compare(store.readRunners.length, 1)
+    var proc = store.readRunners[0].current
+    compare(argv(proc), tc.readCmd + tc.doneRun)
+    compare(proc.command.length, 4)
+    compare(proc.running, true)
+    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
+    verify(store.runs !== before, "runs is a new array")
+    compare(store.runs.length, 2)
+    verify(store.runs[0] === before[0], "the other run is the same object")
+    verify(store.runs[1] !== before[1], "the read run was rebuilt in its place")
+    compare(store.runs[1].id, tc.doneRun)
+    compare(store.runs[1].status, "done")
+    compare(store.runs[1].project.repo_dir, tc.capRoot, "from its remembered am runs row")
+    compare(store.appliedSeq[tc.doneRun], 1005)
+    compare(store.appliedSeq[tc.startedRun], 989)
+    compare(store.asOfSeq, 989, "a run read leaves asOfSeq")
+    compare(store.readRunners.length, 0, "the runner is gone")
+    nudge(store, [tc.doneRun, 1005])
+    fire(store.debounceTimer)
+    compare(store.readRunners.length, 0, "the read covered 1005")
+  }
+
+  function test_several_nudges_in_a_window_cost_one_read() {
+    var store = capturedStore(); if (!store) return
+    nudge(store, [tc.doneRun, 1000])
+    nudge(store, [tc.doneRun, 1005])
+    fire(store.debounceTimer)
+    compare(store.readRunners.length, 1)
+    compare(store.readRunners[0].nudgeSeq, 1005, "at the highest seq")
+  }
+
+  function test_a_newer_read_of_a_run_supersedes_the_older() {
+    var store = capturedStore(); if (!store) return
+    var older = readOf(store, tc.doneRun, 1000)
+    var newer = readOf(store, tc.doneRun, 1005)
+    compare(store.readRunners.length, 2, "both in flight")
+    compare(older.running, true, "the older one is not stopped")
+    var before = store.runs[1]
+    // synthetic: status-escalated.json's data under the done run's id.
+    reply(older, runReply(tc.doneRun, "status-escalated.json"), 0)
+    verify(store.runs[1] === before, "the superseded reply changes nothing")
+    compare(store.readRunners.length, 1)
+    reply(newer, runReply(tc.doneRun, "status-done.json"), 0)
+    verify(store.runs[1] !== before)
+    compare(store.runs[1].status, "done")
+  }
+
+  function test_a_read_older_than_the_list_changes_nothing() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    store.refresh()
+    // synthetic: a later list at as_of_seq 1100 lands before the read.
+    reply(store.snapshotRunner.current, capturedList([], 1100), 0)
+    var before = store.runs[1]
+    // synthetic: status-escalated.json's data (as_of_seq 1005) under the done run's id.
+    reply(proc, runReply(tc.doneRun, "status-escalated.json"), 0)
+    verify(store.runs[1] === before)
+    compare(store.runs[1].status, "done")
+    compare(store.appliedSeq[tc.doneRun], 1100)
+  }
+
+  function test_a_read_reply_that_does_not_fit_changes_nothing() {
+    var store = capturedStore(); if (!store) return
+    var good = JSON.parse(runReply(tc.doneRun, "status-escalated.json"))
+    // synthetic: status-escalated.json's run read reply, each with one key broken.
+    var breaks = [["run", tc.startedRun], ["run", undefined], ["status", null], ["status", []],
+                  ["as_of_seq", -1], ["as_of_seq", "1005"], ["as_of_seq", undefined]]
+    for (var i = 0; i < breaks.length; i++) {
+      var label = breaks[i][0] + " " + JSON.stringify(breaks[i][1])
+      var proc = readOf(store, tc.doneRun, 1001 + i)
+      var before = store.runs[1]
+      var value = JSON.parse(JSON.stringify(good))
+      if (breaks[i][1] === undefined) delete value[breaks[i][0]]
+      else value[breaks[i][0]] = breaks[i][1]
+      reply(proc, JSON.stringify(value) + "\n", 0)
+      verify(store.runs[1] === before, label)
+      compare(store.appliedSeq[tc.doneRun], 989, label)
+      compare(store.readRunners.length, 0, label)
+    }
+  }
+
+  function test_other_read_failures_change_nothing() {
+    var store = capturedStore(); if (!store) return
+    // synthetic: helper failures runs-snapshot.py --run prints, then output that is not an envelope.
+    var replies = ['{"ok": false, "error": {"type": "AmMissing", "message": "am is not installed."}}',
+                   '{"ok": false, "error": {"type": "SchemaMismatch", "message": "the plugin needs the newer am"}}',
+                   '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}',
+                   '{"ok": false}', "Traceback (most recent call last):", ""]
+    for (var i = 0; i < replies.length; i++) {
+      var label = JSON.stringify(replies[i])
+      var proc = readOf(store, tc.doneRun, 1001 + i)
+      var before = store.runs[1]
+      var seq = store.snapshotRunner.seq
+      reply(proc, replies[i], 1)
+      verify(store.runs[1] === before, label)
+      compare(store.amStatus, "ok", label)
+      compare(store.lastError, "", label)
+      compare(store.stale, false, label)
+      compare(store.snapshotRunner.seq, seq, label + ": no list snapshot")
+      compare(Object.keys(store.nudges).length, 0, label + ": nothing to retry")
+    }
+  }
+
+  function test_two_runs_nudged_together_are_read_in_parallel() {
+    var store = capturedStore(); if (!store) return
+    nudge(store, [tc.doneRun, 1005, tc.startedRun, 1000])
+    fire(store.debounceTimer)
+    compare(store.readRunners.length, 2)
+    var first = store.readRunners[0].current
+    var second = store.readRunners[1].current
+    compare(argv(first), tc.readCmd + tc.doneRun, "in nudge order")
+    compare(argv(second), tc.readCmd + tc.startedRun)
+    compare(first.running, true, "neither stops the other")
+    compare(second.running, true)
+    // synthetic: status-escalated.json's data under the started run's id.
+    reply(second, runReply(tc.startedRun, "status-escalated.json"), 0)
+    reply(first, runReply(tc.doneRun, "status-done.json"), 0)
+    compare(store.runs[0].status, "escalated")
+    compare(store.runs[1].status, "done")
+    compare(store.appliedSeq[tc.startedRun], 1005)
+    compare(store.appliedSeq[tc.doneRun], 1005)
+  }
+
+  function test_a_read_that_escalates_a_run_raises_one_toast() {
+    var store = capturedStore(); if (!store) return
+    compare(store.alertsArmed, true)
+    // synthetic: status-escalated.json's data under the started run's id.
+    reply(readOf(store, tc.startedRun, 1005), runReply(tc.startedRun, "status-escalated.json"), 0)
+    compare(store.toasts.length, 1)
+    compare(store.toasts[0].id, tc.startedRun)
+    compare(store.toasts[0].state, "escalated")
+    compare(store.stale, false)
+    compare(store.staleTimer.running, true, "the stale clock restarts")
+    reply(readOf(store, tc.startedRun, 1006), runReply(tc.startedRun, "status-escalated.json"), 0)
+    compare(store.toasts.length, 1, "still escalated: no second toast")
+  }
+
+  function test_a_project_switch_drops_the_reads_in_flight() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    var old = store.watchProc
+    store.project = rootB
+    reply(store.snapshotRunner.current, okReply([entry("b1", "started", true, rootB)], 1200), 0)
+    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
+    compare(ids(store.runs), "b1", "A's read changes nothing")
+    compare(store.appliedSeq[tc.doneRun], undefined)
+    compare(store.readRunners.length, 0, "its runner still goes")
+    sendLine(old, { changed: [{ run: "b1", seq: 1300 }] })
+    compare(store.debounceTimer.running, false, "A's watch lines change nothing")
+    compare(Object.keys(store.nudges).length, 0)
+  }
+
+  // Review Focus 1: A -> B -> A before the old read lands.
+  function test_a_read_from_before_a_return_to_the_project_changes_nothing() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    store.project = rootB
+    store.project = tc.capRoot
+    reply(store.snapshotRunner.current, capturedList(), 0)
+    var before = store.runs[1]
+    // synthetic: status-escalated.json's data under the done run's id.
+    reply(proc, runReply(tc.doneRun, "status-escalated.json"), 0)
+    verify(store.runs[1] === before)
+    compare(store.appliedSeq[tc.doneRun], 989)
+  }
+
+  // Review Focus 2.
+  function test_a_read_that_moves_the_selected_attempt_fetches_its_logs() {
+    var store = capturedStore(); if (!store) return
+    store.selectedRunId = tc.startedRun
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    var proc = readOf(store, tc.startedRun, 990)
+    // synthetic: status-started.json's data with its open attempt (explore 1) ok.
+    var data = F.load("status-started.json").data
+    data.stories[1].subtasks[1].phases[1].attempts[0].status = "ok"
+    reply(proc, JSON.stringify({ ok: true, run: tc.startedRun, as_of_seq: 990, store_id: data.store_id, status: data, data_dir: "/d" }) + "\n", 0)
+    compare(store.logsRunner.seq, seq + 1, "started -> ok fetches the logs again")
+    compare(argv(store.logsRunner.current), "python3|/plugin/core/backend/runs/runs-logs.py|" + tc.capRoot + "|" + tc.startedRun + "|" + tc.openCard + "|explore|1")
+  }
+
+  // Review Focus 3.
+  function test_a_read_that_moves_the_run_settles_its_pending_request() {
+    var store = capturedStore(); if (!store) return
+    compare(store.control("cancel", tc.startedRun), true)
+    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.pending[tc.startedRun], "cancel")
+    // synthetic: status-escalated.json's data under the started run's id.
+    reply(readOf(store, tc.startedRun, 1005), runReply(tc.startedRun, "status-escalated.json"), 0)
+    compare(store.pending[tc.startedRun], undefined, "the read settled it")
+  }
+
+  // Review Focus 4.
+  function test_a_read_landing_after_the_panel_closed_is_applied_quietly() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.startedRun, 1005)
+    store.active = false
+    // synthetic: status-escalated.json's data under the started run's id.
+    reply(proc, runReply(tc.startedRun, "status-escalated.json"), 0)
+    compare(store.runs[0].status, "escalated", "applied, as a list snapshot is")
+    compare(store.toasts.length, 0, "no toast while closed")
+    compare(store.staleTimer.running, false, "no stale clock while closed")
+  }
 }
