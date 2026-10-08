@@ -1,13 +1,11 @@
-"""runs-watch.py: `am watch --all --follow` turned into debounced change signals.
+"""runs-watch.py: `am watch --all-projects --follow` turned into nudges and a cursor.
 
 Hermetic: a fake `am` on a temp PATH replays FAKE_AM_DIR/script.json: a list of
 steps (a JSON line, raw text, or a sleep), then a chosen stderr text and exit
 code. The JSON lines are copies of the committed captures in tests/fixtures/am/;
-a line no capture holds is labelled `synthetic:`. A step line's "ts" of "PAST"
-(an hour ago) or "NOW" is stamped at the moment the fake am prints it, so PAST
-is backlog and NOW is live for the helper, which records its start time before
-spawning am. The fake am logs its argv to calls.log and its pid to pid. HOME and
-XDG_* are temp. The real `am` and real data are never touched.
+a line no capture holds is labelled `synthetic:`. The fake am logs its argv to
+calls.log and its pid to pid. HOME and XDG_* are temp. The real `am` and real
+data are never touched.
 """
 import json
 import os
@@ -22,9 +20,10 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..", "..", "..", "..")
 SCRIPT = os.path.join(ROOT, "core", "backend", "runs", "runs-watch.py")
+USAGE = "usage: runs-watch.py [--since-seq N]"
 
 FAKE_AM = r'''#!/usr/bin/env python3
-import datetime, json, os, sys, time
+import json, os, sys, time
 d = os.environ["FAKE_AM_DIR"]
 with open(os.path.join(d, "calls.log"), "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\n")
@@ -32,17 +31,6 @@ with open(os.path.join(d, "pid"), "w") as f:
     f.write(str(os.getpid()))
 with open(os.path.join(d, "script.json")) as f:
     script = json.load(f)
-
-
-def stamp(value):
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if value == "PAST":
-        now -= datetime.timedelta(hours=1)
-    elif value != "NOW":
-        return value
-    return now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
 for step in script["steps"]:
     if "sleep" in step:
         time.sleep(step["sleep"])
@@ -50,10 +38,7 @@ for step in script["steps"]:
     if "raw" in step:
         sys.stdout.write(step["raw"] + "\n")
     else:
-        line = dict(step["line"])
-        if "ts" in line:
-            line["ts"] = stamp(line["ts"])
-        sys.stdout.write(json.dumps(line, separators=(",", ":")) + "\n")
+        sys.stdout.write(json.dumps(step["line"], separators=(",", ":")) + "\n")
     sys.stdout.flush()
 sys.stderr.write(script.get("stderr", ""))
 sys.stderr.flush()
@@ -71,8 +56,17 @@ def fixture(name):
         return json.load(f)
 
 
+def events():
+    """A fresh copy of the captured journal lines, in gseq order."""
+    return fixture("watch-events.json")["data"]["events"]
+
+
 # The run of every captured journal line.
-WATCHED = fixture("watch-events.json")["data"]["events"][0]["run_id"]
+RUN = events()[0]["run_id"]
+# The event kinds am 0.2.0 writes; the helper nudges on exactly these.
+KINDS = ["run_upsert", "story_upsert", "subtask_upsert", "phase_upsert", "attempt_upsert",
+         "lease_acquired", "lease_taken_over", "control_requested", "control_handled",
+         "claim_conflict"]
 
 
 def hello_out(line):
@@ -91,8 +85,7 @@ def write_exec(path, text):
 
 @pytest.fixture
 def world(tmp_path):
-    """A temp PATH with a fake am, its script dir, a temp HOME, and a project root
-    whose name would break if it ever went through a shell."""
+    """A temp PATH with a fake am, its script dir and a temp HOME."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     write_exec(bindir / "am", FAKE_AM)
@@ -100,9 +93,7 @@ def world(tmp_path):
     amdir.mkdir()
     home = tmp_path / "home"
     home.mkdir()
-    proj = tmp_path / "my proj; echo x"
-    proj.mkdir()
-    return {"tmp": tmp_path, "bin": bindir, "am": amdir, "home": home, "proj": proj}
+    return {"tmp": tmp_path, "bin": bindir, "am": amdir, "home": home}
 
 
 def env_for(world, **extra):
@@ -137,46 +128,35 @@ def hello(schema=2, **edits):
     return {"line": line}
 
 
-def ev(event="phase_upsert", ts="NOW"):
-    """The first captured journal line whose event is `event` (a WATCHED line).
-    edited copy: ts is the fake am's PAST/NOW marker."""
-    line = next(e for e in fixture("watch-events.json")["data"]["events"]
-                if e["event"] == event)
-    line["ts"] = ts
-    return {"line": line}
+def ev(event="phase_upsert"):
+    """The first captured journal line whose event is `event`."""
+    return {"line": next(e for e in events() if e["event"] == event)}
 
 
-def upsert(ts="NOW"):
-    """The captured run_upsert, carrying its repo_dir (not the run's first line:
-    lease_acquired comes before it)."""
-    return ev("run_upsert", ts)
+def nth(i):
+    """Captured journal line i (gseq 358 + i)."""
+    return {"line": events()[i]}
 
 
-def other(run_id, event="phase_upsert", ts="NOW", repo_dir=None, payload_keys=None,
-          **extra):
+def gseq(step):
+    return step["line"]["gseq"]
+
+
+def other(run_id, gseq, event="phase_upsert", payload_keys=None, **extra):
     """synthetic: a line the single-run capture has no copy of, built on a copy of
-    ev(event): run_id set to the given id (MISSING drops it); an event no capture
-    has laid on a phase_upsert copy; ts set to any value (MISSING drops it);
-    repo_dir sets a run_upsert's payload.id and payload.repo_dir; payload_keys
+    ev(event) (an event no capture has is laid on a phase_upsert copy): run_id,
+    gseq and event set to the given values, MISSING drops the key; payload_keys
     and extra add keys to the payload and the top level."""
-    captured = {e["event"] for e in fixture("watch-events.json")["data"]["events"]}
-    step = ev(event if event in captured else "phase_upsert")
-    line = step["line"]
-    line["event"] = event
-    if run_id is MISSING:
-        del line["run_id"]
-    else:
-        line["run_id"] = run_id
-    if ts is MISSING:
-        del line["ts"]
-    else:
-        line["ts"] = ts
-    if repo_dir is not None:
-        line["payload"]["id"] = run_id
-        line["payload"]["repo_dir"] = repo_dir
+    kinds = [e["event"] for e in events()]
+    line = ev(event if event in kinds else "phase_upsert")["line"]
+    for key, value in (("run_id", run_id), ("gseq", gseq), ("event", event)):
+        if value is MISSING:
+            del line[key]
+        else:
+            line[key] = value
     line["payload"].update(payload_keys or {})
     line.update(extra)
-    return step
+    return {"line": line}
 
 
 def pause(seconds):
@@ -192,25 +172,34 @@ def set_script(world, steps, exit=0, stderr=""):
         json.dumps({"steps": steps, "exit": exit, "stderr": stderr}))
 
 
-def run_helper(world, args=None, timeout=30, **extra):
-    """Run the helper until it exits (default argv: project root, run id WATCHED).
-    Every stdout line must be JSON. Returns (exit code, parsed lines, stderr)."""
-    argv = [str(world["proj"]), WATCHED] if args is None else args
-    p = subprocess.run([sys.executable, SCRIPT, *argv], capture_output=True, text=True,
+def run_helper(world, args=(), timeout=30, **extra):
+    """Run the helper until it exits (default argv: none). Every stdout line must
+    be JSON. Returns (exit code, parsed lines, stderr)."""
+    p = subprocess.run([sys.executable, SCRIPT, *args], capture_output=True, text=True,
                        env=env_for(world, **extra), timeout=timeout)
     return p.returncode, [json.loads(line) for line in p.stdout.splitlines()], p.stderr
 
 
 def changed(lines):
-    """Each line's run ids, sorted (order inside a line is not part of the
-    contract). Every line must be a non-empty, duplicate-free changed line that
-    carries nothing but run ids."""
-    for line in lines:
+    """`lines` as changed/cursor pairs: [(sorted [(run, seq)], cursor), ...]
+    (entry order inside a changed line is not part of the contract). Each changed
+    line is exactly {"changed": [...]}, non-empty, its entries exactly
+    {"run": str, "seq": int} with no run twice, and is followed directly by
+    exactly {"cursor": int}."""
+    assert len(lines) % 2 == 0, lines
+    pairs = []
+    for line, cursor in zip(lines[::2], lines[1::2]):
         assert set(line) == {"changed"}, line
-        assert line["changed"], line
-        assert all(isinstance(i, str) for i in line["changed"]), line
-        assert len(line["changed"]) == len(set(line["changed"])), line
-    return [sorted(line["changed"]) for line in lines]
+        entries = line["changed"]
+        assert isinstance(entries, list) and entries, line
+        for entry in entries:
+            assert set(entry) == {"run", "seq"}, line
+            assert isinstance(entry["run"], str) and type(entry["seq"]) is int, line
+        runs = [entry["run"] for entry in entries]
+        assert len(runs) == len(set(runs)), line
+        assert set(cursor) == {"cursor"} and type(cursor["cursor"]) is int, cursor
+        pairs.append((sorted((e["run"], e["seq"]) for e in entries), cursor["cursor"]))
+    return pairs
 
 
 def split(lines, greeting=HELLO):
@@ -228,45 +217,68 @@ def calls(world):
 # --- the lines are capture copies -----------------------------------------------
 
 def test_lines_are_capture_copies():
-    events = fixture("watch-events.json")["data"]["events"]
-    for name in ["run_upsert", "subtask_upsert", "phase_upsert", "attempt_upsert"]:
-        first = next(e for e in events if e["event"] == name)
-        line = ev(name, "NOW")["line"]
-        assert set(line) == set(first)
-        assert line["ts"] == "NOW"
-        assert {k: v for k, v in line.items() if k != "ts"} == \
-            {k: v for k, v in first.items() if k != "ts"}
-    # An unedited run_upsert is a WATCHED line: it is kept for argv, never adopted.
-    assert upsert()["line"] == ev("run_upsert")["line"]
-    assert upsert()["line"]["run_id"] == WATCHED
+    captured = events()
+    for name in ["lease_acquired", "run_upsert", "story_upsert", "subtask_upsert",
+                 "phase_upsert", "attempt_upsert"]:
+        assert ev(name)["line"] == next(e for e in captured if e["event"] == name)
+    for i in (0, 18, 59):
+        assert nth(i)["line"] == captured[i]
     assert hello(1) == {"line": fixture("watch-hello.json")["schema_1"]}
     assert "head" not in hello(1)["line"]
     assert hello() == hello(2) == {"line": fixture("watch-hello.json")["schema_2"]}
     assert HELLO == {"hello": {"schema": 2, "am": "0.1.0", "head": 1005, "cursorReset": False,
                                "storeId": "91b9e8afc25044c385859292bfabfde7"}}
+    # What the tests below rely on: one run, gseq strictly increasing from 358,
+    # and a per-run seq that never equals the gseq.
+    assert {e["run_id"] for e in captured} == {RUN}
+    assert [e["gseq"] for e in captured] == list(range(358, 358 + len(captured)))
+    assert all(e["seq"] != e["gseq"] for e in captured)
+    assert gseq(ev()) == 376
 
 
-# --- usage, am missing, clean exit --------------------------------------------
+# --- argv, am missing, clean exit -----------------------------------------------
 
-def test_clean_exit_zero(world):
+def test_argv_default(world):
     set_script(world, [hello()])
-    code, lines, err = run_helper(world)
+    code, lines, _ = run_helper(world)
     assert code == 0
     assert lines == [HELLO]
-    assert "Traceback" not in err
-    # argv list, no shell: the fake am sees exactly these three arguments.
-    assert calls(world) == [["watch", "--all", "--follow"]]
+    # argv list, no shell: the fake am sees exactly these arguments.
+    assert calls(world) == [["watch", "--all-projects", "--follow"]]
 
 
-def test_usage(world):
+@pytest.mark.parametrize("value, passed", [("0", "0"), ("1005", "1005"), ("007", "7")])
+def test_argv_since_seq(world, value, passed):
     set_script(world, [hello()])
-    code, lines, _ = run_helper(world, [])
+    code, lines, _ = run_helper(world, ["--since-seq", value])
+    assert code == 0
+    assert lines == [HELLO]
+    assert calls(world) == [["watch", "--all-projects", "--follow", "--since-seq", passed]]
+
+
+@pytest.mark.parametrize("args", [
+    ["/some/root"], ["/root", RUN], [RUN], ["--since-seq"], ["--since-seq", "-1"],
+    ["--since-seq", "abc"], ["--since-seq", "5.0"], ["--since-seq", ""],
+    ["--since-seq", "1", "--since-seq", "2"], ["--since-seq=5"], ["--from-now"],
+    ["--since-seq", "5", "extra"], ["--since-seq", "٣"], ["--since-seq", "+5"],
+    ["--since-seq", " 5"],
+], ids=["root", "root-and-run", "run", "no-value", "negative", "letters", "float", "empty",
+        "twice", "equals-form", "other-flag", "trailing-arg", "arabic-indic-digit", "plus-sign",
+        "leading-space"])
+def test_usage(world, args):
+    set_script(world, [hello()])
+    code, lines, _ = run_helper(world, args)
     assert code == 2
-    assert len(lines) == 1, lines
-    assert lines[0]["ok"] is False
-    assert lines[0]["error"]["type"] == "Usage"
-    assert "runs-watch.py <project_root>" in lines[0]["error"]["message"]
-    assert calls(world) == []
+    assert lines == [{"ok": False, "error": {"type": "Usage", "message": USAGE}}]
+    assert calls(world) == []  # am never spawned
+
+
+def test_usage_before_am_lookup(world):
+    empty = world["tmp"] / "empty-bin"
+    empty.mkdir()
+    code, lines, _ = run_helper(world, ["/some/root"], PATH=str(empty))
+    assert code == 2
+    assert lines == [{"ok": False, "error": {"type": "Usage", "message": USAGE}}]
 
 
 def test_am_missing(world):
@@ -277,116 +289,15 @@ def test_am_missing(world):
     assert len(lines) == 1, lines
     assert lines[0]["ok"] is False
     assert lines[0]["error"]["type"] == "AmMissing"
-    assert lines[0]["error"]["message"]
+    assert lines[0]["error"]["message"] == "am is not installed."
 
 
-# --- backlog, filter, unknown input ------------------------------------------
-
-def test_forwards_hello_and_drops_backlog(world):
-    # WATCHED's lines were written an hour before the helper started: backlog,
-    # dropped. r2's line is live and proves the helper is reading at all.
-    set_script(world, [hello(), ev(ts="PAST"), ev("subtask_upsert", ts="PAST"),
-                       other("r2")])
-    code, lines, _ = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
+def test_clean_exit_zero(world):
+    set_script(world, [hello()])
+    code, lines, err = run_helper(world)
     assert code == 0
-    assert changed(split(lines)) == [["r2"]]
-
-
-def test_live_event_for_watched_run_emits_changed(world):
-    set_script(world, [hello(), ev()])
-    code, lines, _ = run_helper(world)
-    assert code == 0
-    # Exactly this object: run ids only, no event contents.
-    assert lines == [HELLO, {"changed": [WATCHED]}]
-
-
-def test_filters_unwatched_runs(world):
-    # WATCHED's live line is the positive control: the helper is reading, and
-    # only the unwatched runs are dropped.
-    set_script(world, [hello(), other("r9"), other("r8", "attempt_upsert"),
-                       other("r7", "run_upsert", repo_dir="/somewhere/else"), ev()])
-    code, lines, _ = run_helper(world)
-    assert code == 0
-    assert changed(split(lines)) == [[WATCHED]]
-
-
-def test_ignores_unknown_events_and_keys(world):
-    set_script(world, [
-        hello(),
-        raw("not json"),                               # synthetic: garbage lines
-        raw("[1, 2]"),
-        raw(""),
-        other("r2", "future_upsert"),                  # unknown event: ignored
-        other(MISSING),                                # no run_id: ignored
-        other(WATCHED, payload_keys={"shiny": {"new": 1}},
-              brand_new_key=[1, 2, 3]),                # extra keys: kept
-    ])
-    code, lines, err = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
-    assert code == 0
+    assert lines == [HELLO]
     assert "Traceback" not in err
-    assert changed(split(lines)) == [[WATCHED]]
-
-
-def test_missing_or_unparseable_ts_is_kept(world):
-    # Not provably backlog, so kept.
-    set_script(world, [hello(), other(WATCHED, ts=MISSING), other("r2", ts="yesterday-ish")])
-    code, lines, _ = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
-    assert code == 0
-    assert changed(split(lines)) == [sorted([WATCHED, "r2"])]
-
-
-# --- debounce -------------------------------------------------------------------
-
-def test_debounce_batches_and_dedupes(world):
-    set_script(world, [hello(), ev(), other("r2"), ev(), other("r2", "attempt_upsert"),
-                       ev("subtask_upsert"), pause(0.6)])
-    code, lines, _ = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
-    assert code == 0
-    assert changed(split(lines)) == [sorted([WATCHED, "r2"])]
-
-
-def test_debounce_separate_windows(world):
-    set_script(world, [hello(), ev(), pause(0.6), ev(), pause(0.6)])
-    code, lines, _ = run_helper(world)
-    assert code == 0
-    assert changed(split(lines)) == [[WATCHED], [WATCHED]]
-
-
-def test_debounce_continuous_stream_is_rate_limited(world):
-    # An event every 50 ms for over a second: the window must still close on
-    # time (more than one line), and lines never come faster than one per 250 ms.
-    steps = [hello()]
-    for _ in range(20):
-        steps += [ev(), pause(0.05)]
-    set_script(world, steps)
-    began = time.monotonic()
-    code, lines, _ = run_helper(world)
-    elapsed = time.monotonic() - began
-    assert code == 0
-    got = changed(split(lines))
-    assert all(ids == [WATCHED] for ids in got)
-    assert len(got) >= 2, got
-    assert len(got) <= int(elapsed / 0.25) + 1, (len(got), elapsed)
-
-
-# --- adoption of new runs in this project -------------------------------------
-
-@pytest.mark.parametrize("form", ["exact", "trailing-slash", "dot-segment"])
-def test_new_run_upsert_in_project_is_adopted(world, form):
-    root = str(world["proj"])
-    repo_dir = {"exact": root, "trailing-slash": root + "/", "dot-segment": root + "/./"}[form]
-    set_script(world, [
-        hello(),
-        other("n1", "run_upsert", repo_dir=repo_dir),          # this project: adopted and signalled
-        other("n2", "run_upsert", repo_dir="/somewhere/else"),  # other repo: ignored
-        other("n2"),                                            # still not watched
-        pause(0.6),
-        other("n1"),                                            # adopted: kept from now on
-        pause(0.6),
-    ])
-    code, lines, _ = run_helper(world, [root])  # zero run ids on argv is valid
-    assert code == 0
-    assert changed(split(lines)) == [["n1"], ["n1"]]
 
 
 # --- the hello line ---------------------------------------------------------------
@@ -502,48 +413,209 @@ def test_later_bad_hello_is_schema_mismatch(world, steps, needle):
 
 
 def test_hello_mid_batch_keeps_the_batch(world):
-    # WATCHED's line opens a batch; the hello is printed at once without
-    # flushing or clearing it, so r2 joins the same changed line.
-    set_script(world, [ev(), hello(), other("r2"), pause(0.6)])
-    code, lines, _ = run_helper(world, [str(world["proj"]), WATCHED, "r2"])
+    # RUN's line opens a batch; the hello is printed at once without flushing
+    # or clearing it, so r2 joins the same changed line.
+    r2 = other("r2", 9000)
+    set_script(world, [ev(), hello(), r2, pause(0.6)])
+    code, lines, _ = run_helper(world)
     assert code == 0
-    assert changed(split(lines)) == [sorted([WATCHED, "r2"])]
+    assert changed(split(lines)) == [(sorted([(RUN, gseq(ev())), ("r2", 9000)]), 9000)]
 
 
 def test_no_hello_still_streams(world):
     set_script(world, [ev()])
     code, lines, _ = run_helper(world)
     assert code == 0
-    assert lines == [{"changed": [WATCHED]}]
+    assert changed(lines) == [([(RUN, gseq(ev()))], gseq(ev()))]
 
 
-# --- error paths -----------------------------------------------------------------
+# --- nudges, batching and the cursor -------------------------------------------
+
+def test_changed_one_run_highest_gseq(world):
+    steps = [nth(i) for i in range(10, 20)]
+    top = gseq(steps[-1])
+    set_script(world, [hello(), *steps, pause(0.6)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert changed(split(lines)) == [([(RUN, top)], top)]
+    assert steps[-1]["line"]["seq"] != top  # the per-run seq is not what is printed
+
+
+def test_changed_batches_runs_highest_each(world):
+    set_script(world, [hello(), nth(0), other("r2", 5000), nth(1), other("r2", 5001), nth(2),
+                       pause(0.6)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert changed(split(lines)) == [(sorted([(RUN, gseq(nth(2))), ("r2", 5001)]), 5001)]
+
+
+def test_changed_lower_gseq_never_lowers(world):
+    # synthetic: r2's gseqs arrive out of order; the second window holds a
+    # lower gseq than the cursor.
+    set_script(world, [hello(), nth(5), nth(2), other("r2", 900), other("r2", 400), pause(0.6),
+                       nth(1), pause(0.6)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert changed(split(lines)) == [
+        (sorted([(RUN, gseq(nth(5))), ("r2", 900)]), 900),
+        ([(RUN, gseq(nth(1)))], 900),
+    ]
+
+
+def test_changed_never_carries_event_contents(world):
+    secret = "synthetic: do-not-forward"
+    set_script(world, [hello(), nth(0), nth(1), nth(18),
+                       other("r2", 5000, payload_keys={"secret": secret}), pause(0.6)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    for line in lines:
+        assert set(line) in ({"hello"}, {"changed"}, {"cursor"}), line
+    for entry in [e for line in lines if "changed" in line for e in line["changed"]]:
+        assert set(entry) == {"run", "seq"}, entry
+    text = json.dumps(lines)
+    for value in (secret, nth(1)["line"]["payload"]["repo_dir"], nth(18)["line"]["card"],
+                  nth(18)["line"]["story"], nth(18)["line"]["ts"], "phase_upsert",
+                  "lease_acquired", "run_upsert"):
+        assert value not in text, value
+
+
+def test_cursor_with_each_changed_line(world):
+    set_script(world, [hello(), nth(0), pause(0.6), nth(1), nth(2), pause(0.6)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    pairs = changed(split(lines))
+    assert pairs == [([(RUN, gseq(nth(0)))], gseq(nth(0))),
+                     ([(RUN, gseq(nth(2)))], gseq(nth(2)))]
+    assert pairs[1][1] >= pairs[0][1]
+
+
+def test_debounce_separate_windows(world):
+    set_script(world, [hello(), ev(), pause(0.6), ev(), pause(0.6)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert changed(split(lines)) == [([(RUN, gseq(ev()))], gseq(ev()))] * 2
+
+
+def test_debounce_continuous_stream_is_rate_limited(world):
+    # A line every 50 ms for over a second: the window must still close on time
+    # (more than one changed line), and changed lines never come faster than one
+    # per 250 ms.
+    steps = [hello()]
+    for i in range(20):
+        steps += [nth(i), pause(0.05)]
+    set_script(world, steps)
+    began = time.monotonic()
+    code, lines, _ = run_helper(world)
+    elapsed = time.monotonic() - began
+    assert code == 0
+    pairs = changed(split(lines))
+    assert len(pairs) >= 2, pairs
+    assert len(pairs) <= int(elapsed / 0.25) + 1, (len(pairs), elapsed)
+    seqs = []
+    for entries, cursor in pairs:
+        [(run, seq)] = entries
+        assert run == RUN
+        assert cursor == seq  # one run, increasing gseqs: each window's highest is the cursor
+        seqs.append(seq)
+    assert seqs == sorted(set(seqs)), seqs
+    assert seqs[-1] == gseq(nth(19))
+
+
+@pytest.mark.parametrize("kind", KINDS, ids=[
+    k if k in {e["event"] for e in events()} else "synthetic: " + k for k in KINDS])
+def test_every_known_event_nudges(world, kind):
+    captured = [e["event"] for e in events()]
+    # synthetic: the capture has no line of this kind; it is set on a copy.
+    step = ev(kind) if kind in captured else other(RUN, 9000, kind)
+    set_script(world, [hello(), step])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert changed(split(lines)) == [([(RUN, gseq(step))], gseq(step))]
+
+
+# synthetic: lines that are not nudges. Each carries a gseq above every nudge in
+# the tests that use it, so a leak would raise the cursor.
+IGNORED = [
+    other(RUN, 9001, "future_event"),
+    other(RUN, 9002, "watch_extra"),
+    other(RUN, 9003, 5),
+    other(RUN, 9004, ["phase_upsert"]),
+    other(RUN, 9005, {"kind": "phase_upsert"}),
+    other(RUN, 9006, MISSING),
+    other(MISSING, 9007),
+    other("", 9008),
+    other(5, 9009),
+    other(["r"], 9010),
+    other(RUN, MISSING),
+    other(RUN, 0),
+    other(RUN, -1),
+    other(RUN, True),
+    other(RUN, "9011"),
+    other(RUN, 9012.0),
+    raw("not json"),
+    raw("[1, 2]"),
+    raw('"a string"'),
+    raw(""),
+    raw("9013"),
+    raw("null"),
+]
+
+
+def test_ignores_unknown_events_and_keys(world):
+    # synthetic: a valid line with unknown top-level and payload keys still nudges.
+    kept = other(RUN, 100, payload_keys={"shiny": {"new": 1}}, brand_new_key=[1, 2, 3])
+    set_script(world, [hello(), *IGNORED, kept, pause(0.6)])
+    code, lines, err = run_helper(world)
+    assert code == 0
+    assert "Traceback" not in err
+    assert changed(split(lines)) == [([(RUN, 100)], 100)]
+
+
+def test_only_ignored_lines_print_nothing(world):
+    set_script(world, [hello(), *IGNORED, pause(0.6)])
+    code, lines, err = run_helper(world)
+    assert code == 0
+    assert "Traceback" not in err
+    assert lines == [HELLO]
+
+
+def test_pending_batch_flushed_at_eof(world):
+    # am exits 0 inside the window.
+    set_script(world, [hello(), nth(0), nth(3)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [HELLO, {"changed": [{"run": RUN, "seq": gseq(nth(3))}]},
+                     {"cursor": gseq(nth(3))}]
+
+
+# --- how am ended ----------------------------------------------------------------
 
 def test_exit_3_corrupt_journal(world):
     # synthetic: am's stderr text for a corrupt journal.
     set_script(world, [hello(), ev()], exit=3,
                stderr="am watch: journal line 4 of run r1 is not JSON\n")
     code, lines, _ = run_helper(world)
-    assert code != 0
-    assert len(lines) == 3, lines
+    assert code == 1
+    assert len(lines) == 4, lines
     assert lines[0] == HELLO
-    assert lines[1] == {"changed": [WATCHED]}  # the pending batch is flushed first
-    assert lines[2]["ok"] is False
-    assert lines[2]["error"]["type"] == "CorruptJournal"
-    assert "journal line 4 of run r1 is not JSON" in lines[2]["error"]["message"]
+    # the pending batch is flushed first
+    assert changed(lines[1:3]) == [([(RUN, gseq(ev()))], gseq(ev()))]
+    assert lines[3]["ok"] is False
+    assert lines[3]["error"]["type"] == "CorruptJournal"
+    assert "journal line 4 of run r1 is not JSON" in lines[3]["error"]["message"]
 
 
 def test_other_exit_is_helper_error(world):
     # synthetic: am's stderr text for a crash.
     set_script(world, [hello(), ev()], exit=1, stderr="boom\n")
     code, lines, _ = run_helper(world)
-    assert code != 0
-    assert len(lines) == 3, lines
+    assert code == 1
+    assert len(lines) == 4, lines
     assert lines[0] == HELLO
-    assert lines[1] == {"changed": [WATCHED]}
-    assert lines[2]["ok"] is False
-    assert lines[2]["error"]["type"] == "HelperError"
-    assert "boom" in lines[2]["error"]["message"]
+    assert changed(lines[1:3]) == [([(RUN, gseq(ev()))], gseq(ev()))]
+    assert lines[3]["ok"] is False
+    assert lines[3]["error"]["type"] == "HelperError"
+    assert "boom" in lines[3]["error"]["message"]
 
 
 def test_refusal_exit_3_is_corrupt_journal(world):
@@ -552,7 +624,7 @@ def test_refusal_exit_3_is_corrupt_journal(world):
                           "type": "CorruptJournalError"}, "ok": False}
     set_script(world, [{"line": envelope}], exit=3)
     code, lines, _ = run_helper(world)
-    assert code != 0
+    assert code == 1
     assert len(lines) == 1, lines
     assert lines[0]["ok"] is False
     assert lines[0]["error"]["type"] == "CorruptJournal"
@@ -564,24 +636,23 @@ def test_refusal_other_exit_is_reemitted(world):
     envelope = {"error": {"message": "something else", "type": "OddError"}, "ok": False}
     set_script(world, [{"line": envelope}], exit=0)
     code, lines, _ = run_helper(world)
-    assert code != 0
+    assert code == 1
     assert lines == [envelope]
 
 
 def test_refusal_after_hello_is_reemitted(world):
     # synthetic: an am refusal envelope; no capture holds one.
     envelope = {"error": {"message": "something else", "type": "OddError"}, "ok": False}
-    set_script(world, [hello(2), {"line": envelope}], exit=0)
+    set_script(world, [hello(), {"line": envelope}], exit=0)
     code, lines, _ = run_helper(world)
-    assert code != 0
+    assert code == 1
     assert lines == [HELLO, envelope]
 
 
 # --- stopping: signals and a closed stdout ---------------------------------------
 
-def start_helper(world, args=None):
-    argv = [str(world["proj"]), WATCHED] if args is None else args
-    return subprocess.Popen([sys.executable, SCRIPT, *argv], stdin=subprocess.DEVNULL,
+def start_helper(world, args=()):
+    return subprocess.Popen([sys.executable, SCRIPT, *args], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             env=env_for(world))
 
@@ -609,8 +680,9 @@ def test_signal_stops_am_and_exits_zero(world, sig):
     p = start_helper(world)
     try:
         assert json.loads(p.stdout.readline()) == HELLO
-        second = p.stdout.readline()  # sync point: am is running, helper is streaming
-        assert json.loads(second) == {"changed": [WATCHED]}
+        # sync point: am is running, helper is streaming
+        assert json.loads(p.stdout.readline()) == {"changed": [{"run": RUN, "seq": gseq(ev())}]}
+        assert json.loads(p.stdout.readline()) == {"cursor": gseq(ev())}
         p.send_signal(sig)
         code = p.wait(timeout=10)
     finally:

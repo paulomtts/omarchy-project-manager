@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
-"""Signal which watched am runs changed, from `am watch --all --follow`.
+"""Nudge the plugin when am runs change, from `am watch --all-projects --follow`.
 
-    runs-watch.py <project_root> [run_id ...]
+    runs-watch.py [--since-seq N]
 
-Long-lived. Spawns `am watch --all --follow` (an argv list, never a shell) and
-prints one JSON line per output event, flushed at once:
-  {"hello": {"schema": N, "am": "<version>"}}  for the first accepted hello
-                                  line only: N is its journal schema, 1 or 2;
-                                  am is its am version, "" when not a string
-  {"changed": ["<run id>", ...]}  at most once per 250 ms, never empty, run ids
-                                  only (event contents are never forwarded)
-  {"ok": false, "error": {"type", "message"}}  then exit 1, with type
-                                  SchemaMismatch, CorruptJournal, HelperError or
-                                  AmMissing (Usage exits 2); an am refusal
-                                  envelope with an exit other than 3 is
-                                  re-emitted unchanged.
-Every hello line (event "watch") must announce journal schema 1 or 2, else
-SchemaMismatch; only its schema and am are forwarded. Journal lines are handled
-the same under either schema. Journal lines written before the helper started
-(the backlog) are dropped. A journal line is kept when its event is one of the
-five journal events and its run id is watched: the argv run ids, plus every run
-whose run_upsert payload.repo_dir is this project root. Unknown events, unknown
-keys and non-JSON lines are ignored. am exiting 0, SIGINT, SIGTERM or a closed
-stdout end the helper with exit 0. Only the `am` command is used; am's database
-and on-disk layout are never read.
+Long-lived. Spawns `am watch --all-projects --follow`, plus `--since-seq N` when
+given (N: one or more ASCII decimal digits, passed as its integer), as an argv
+list, never a shell. Any other argv is a Usage error (exit 2) and am is not
+started. Prints one JSON object per line, flushed at once:
+  {"hello": {"schema": N, "am": V, "head": H, "cursorReset": B, "storeId": S}}
+      for the first hello line (event "watch") only. Every hello must carry an
+      integer schema of 1 or higher and a non-negative integer head, else
+      SchemaMismatch. am and storeId are "" when not strings; cursorReset is
+      true only for a JSON true. No other hello key is forwarded.
+  {"changed": [{"run": "<run id>", "seq": G}, ...]}
+      at most once per 250 ms, never empty, one entry per run holding the
+      highest gseq of that run's nudges in the window; directly followed by
+  {"cursor": C}
+      the highest gseq of every nudge since the helper started.
+  {"ok": false, "error": {"type", "message"}}
+      then exit 1, with type SchemaMismatch, CorruptJournal (am exited 3),
+      HelperError or AmMissing (Usage exits 2). An am refusal envelope is
+      re-emitted unchanged when am exits other than 3.
+A nudge is a JSON object whose event is one of EVENTS, whose run_id is a
+non-empty string and whose gseq is an integer of 1 or more. Every other line is
+ignored; event contents are never forwarded. am exiting 0, SIGINT, SIGTERM or a
+closed stdout end the helper with exit 0. Only the `am` command is used; am's
+database and on-disk layout are never read.
 """
-import datetime
 import json
 import os
 import queue
@@ -39,13 +40,14 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = "usage: runs-watch.py <project_root> [run_id ...]"
+USAGE = "usage: runs-watch.py [--since-seq N]"
 IDLE_POLL = 1.0  # seconds; the longest the main loop blocks with nothing pending
 WINDOW = 0.25  # seconds; at most one {"changed": [...]} line per window
 EOF = object()
-# The journal events. Any other `event` value is ignored.
+# The event kinds that nudge. Any other `event` value is ignored.
 EVENTS = frozenset({"run_upsert", "story_upsert", "subtask_upsert", "phase_upsert",
-                    "attempt_upsert"})
+                    "attempt_upsert", "lease_acquired", "lease_taken_over",
+                    "control_requested", "control_handled", "claim_conflict"})
 
 
 class SchemaMismatch(Exception):
@@ -72,55 +74,16 @@ def failure(kind, message, code=1):
     return say({"ok": False, "error": {"type": kind, "message": message}}, code)
 
 
-def parse_ts(value):
-    """A journal `ts` (ISO 8601, UTC, usually ending in Z) as an aware datetime,
-    or None when it is missing or unparseable."""
-    if not isinstance(value, str):
-        return None
-    text = value[:-1] + "+00:00" if value.endswith("Z") else value
-    try:
-        ts = datetime.datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=datetime.timezone.utc)
-    return ts
-
-
-# --- Backlog drop (S4 workaround) ------------------------------------------------
-# `am watch --follow` replays every journal line before going live. Until
-# `am watch --from-now` exists (S4), lines written before this helper started
-# are dropped here. When S4 lands: pass --from-now in spawn(), delete this
-# function, and delete its one call in keep().
-def is_backlog(line, started):
-    ts = parse_ts(line.get("ts"))
-    return ts is not None and ts < started
-
-
-def same_dir(a, b):
-    """True when two paths name the same directory (normalized, absolute)."""
-    return os.path.realpath(a) == os.path.realpath(b)
-
-
-def keep(line, watched, root, started):
-    """The run id a parsed stream line signals, or None to ignore the line. A
-    live run_upsert whose payload.repo_dir is the project root adds its run to
-    `watched` for good."""
-    if not isinstance(line, dict):
-        return None
-    run_id = line.get("run_id")
-    if not (isinstance(run_id, str) and run_id) or line.get("event") not in EVENTS:
-        return None
-    if is_backlog(line, started):
-        return None
-    if run_id in watched:
-        return run_id
-    payload = line.get("payload")
-    if (line["event"] == "run_upsert" and isinstance(payload, dict)
-            and isinstance(payload.get("repo_dir"), str)
-            and same_dir(payload["repo_dir"], root)):
-        watched.add(run_id)
-        return run_id
+def parse_args(argv):
+    """The arguments after `am watch --all-projects --follow` for the helper's
+    argv: [] for none, ["--since-seq", N] for `--since-seq N` (N ASCII decimal
+    digits, without leading zeros), None for anything else."""
+    if not argv:
+        return []
+    if len(argv) == 2 and argv[0] == "--since-seq":
+        value = argv[1]
+        if value and value.isascii() and value.isdigit():
+            return ["--since-seq", value.lstrip("0") or "0"]
     return None
 
 
@@ -141,10 +104,23 @@ def check_hello(hello):
             "storeId": store if isinstance(store, str) else ""}
 
 
-def spawn(am):
-    return subprocess.Popen([am, "watch", "--all", "--follow"], stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace")
+def nudge(line):
+    """(run id, gseq) for a parsed stream line that is a nudge, else None."""
+    if not isinstance(line, dict):
+        return None
+    event, run_id, gseq = line.get("event"), line.get("run_id"), line.get("gseq")
+    if not (isinstance(event, str) and event in EVENTS):
+        return None
+    if not (isinstance(run_id, str) and run_id and type(gseq) is int and gseq >= 1):
+        return None
+    return run_id, gseq
+
+
+def spawn(am, extra):
+    return subprocess.Popen([am, "watch", "--all-projects", "--follow", *extra],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            errors="replace")
 
 
 def pump(stream, sink):
@@ -170,20 +146,25 @@ def stop(proc):
             proc.wait()
 
 
-def stream(lines, watched, root, started):
-    """Turn am's stream into the hello line and debounced {"changed": [...]}
-    lines until it ends. Every hello line (event "watch") is checked; the first
-    is printed at once as {"hello": {"schema", "am"}}, am "" when not a string,
-    without touching the batch; later ones print nothing. Trailing edge: the
-    first kept run id into an empty batch opens a WINDOW; when it closes the
-    batch is printed once and cleared. A pending batch is printed when the
-    stream ends. Returns am's refusal envelope (the only line with an "ok" key)
-    if it printed one, else None. Raises SchemaMismatch."""
-    batch, deadline, refusal, greeted = [], None, None, False
+def flush(batch, cursor):
+    """Print a non-empty batch (run id -> highest gseq) and the cursor after it."""
+    say({"changed": [{"run": run_id, "seq": gseq} for run_id, gseq in batch.items()]})
+    say({"cursor": cursor})
+
+
+def stream(lines):
+    """Turn am's stream into the hello line and debounced changed + cursor lines
+    until it ends. Every hello line (event "watch") is checked; the first is
+    printed at once without touching the batch; later ones print nothing.
+    Trailing edge: the first nudge into an empty batch opens a WINDOW; when it
+    closes the batch is printed once and cleared. A pending batch is printed
+    when the stream ends. Returns am's refusal envelope (the last line with an
+    "ok" key) if it printed one, else None. Raises SchemaMismatch."""
+    batch, deadline, refusal, greeted, cursor = {}, None, None, False, 0
     while True:
         if deadline is not None and time.monotonic() >= deadline:
-            say({"changed": batch})
-            batch, deadline = [], None
+            flush(batch, cursor)
+            batch, deadline = {}, None
         wait = IDLE_POLL if deadline is None else max(0.0, deadline - time.monotonic())
         try:
             raw = lines.get(timeout=wait)
@@ -191,7 +172,7 @@ def stream(lines, watched, root, started):
             continue
         if raw is EOF:
             if batch:
-                say({"changed": batch})
+                flush(batch, cursor)
             return refusal
         try:
             line = json.loads(raw)
@@ -206,11 +187,14 @@ def stream(lines, watched, root, started):
                 say({"hello": fields})
                 greeted = True
             continue
-        run_id = keep(line, watched, root, started)
-        if run_id is not None and run_id not in batch:
-            batch.append(run_id)
-            if deadline is None:
-                deadline = time.monotonic() + WINDOW
+        hit = nudge(line)
+        if hit is None:
+            continue
+        run_id, gseq = hit
+        batch[run_id] = max(gseq, batch.get(run_id, 0))
+        cursor = max(cursor, gseq)
+        if deadline is None:
+            deadline = time.monotonic() + WINDOW
 
 
 def finish(code, refusal, stderr):
@@ -231,21 +215,20 @@ def finish(code, refusal, stderr):
 
 
 def main(argv):
-    if not argv:
+    extra = parse_args(argv)
+    if extra is None:
         return failure("Usage", USAGE, 2)
-    root, watched = argv[0], set(argv[1:])
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
-    started = datetime.datetime.now(datetime.timezone.utc)  # before am starts
-    proc = spawn(am)
+    proc = spawn(am, extra)
     lines, err = queue.Queue(), []
     threading.Thread(target=pump, args=(proc.stdout, lines), daemon=True).start()
     err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
     err_reader.start()
     try:
         try:
-            refusal = stream(lines, watched, root, started)
+            refusal = stream(lines)
         except SchemaMismatch as e:
             return failure("SchemaMismatch", str(e))
         code = proc.wait()
