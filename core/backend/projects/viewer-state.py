@@ -28,6 +28,9 @@ stored map per milestone id (a stored map that is not valid is replaced).
 Global settings live under "global_settings". There is one, notifyOnEscalation,
 a boolean; when no boolean is stored, `get-global-settings` answers true when any
 project's stored run-settings notifyOnEscalation is true, else false.
+`set-global-settings` takes a JSON object, validates every key before writing
+anything, and changes only the keys given, keeping any other keys under
+"global_settings".
 """
 import json
 import os
@@ -112,6 +115,8 @@ RUN_SETTINGS_REFUSALS = {
     "confirmDispatch": "confirmDispatch must be true or false.",
     "prefixByMilestone": "prefixByMilestone must be an object of non-empty strings keyed by non-empty milestone ids.",
 }
+GLOBAL_SETTINGS_VALID = {"notifyOnEscalation": valid_boolean}
+GLOBAL_SETTINGS_REFUSALS = {"notifyOnEscalation": RUN_SETTINGS_REFUSALS["notifyOnEscalation"]}
 
 
 def run_settings_entry(data, root_path):
@@ -140,19 +145,21 @@ def cmd_get_global_settings():
     return emit({"notifyOnEscalation": value}, 0)
 
 
-def parse_run_settings(text):
-    """The update in `text` and None, or None and a sentence saying what is wrong."""
+def parse_settings(text, noun, valid, refusals):
+    """The update in `text` and None, or None and a sentence saying what is wrong.
+    `noun` names one setting ("run setting"); `valid` and `refusals` map each allowed
+    key to its check and to the sentence refusing a value that fails it."""
     try:
         update = json.loads(text)
     except (ValueError, RecursionError):
-        return None, "The run settings are not valid JSON."
+        return None, "The %ss are not valid JSON." % noun
     if not isinstance(update, dict):
-        return None, "The run settings must be a JSON object."
+        return None, "The %ss must be a JSON object." % noun
     for key, value in update.items():
-        if key not in RUN_SETTINGS_DEFAULTS:
-            return None, "Unknown run setting: %s." % key
-        if not RUN_SETTINGS_VALID[key](value):
-            return None, RUN_SETTINGS_REFUSALS[key]
+        if key not in valid:
+            return None, "Unknown %s: %s." % (noun, key)
+        if not valid[key](value):
+            return None, refusals[key]
     return update, None
 
 
@@ -174,7 +181,7 @@ def cmd_set_project(root_path):
 
 
 def cmd_set_run_settings(root_path, text):
-    update, error = parse_run_settings(text)
+    update, error = parse_settings(text, "run setting", RUN_SETTINGS_VALID, RUN_SETTINGS_REFUSALS)
     if update is None:
         return emit({"ok": False, "error": error}, 2)
     data = load()
@@ -193,6 +200,18 @@ def cmd_set_run_settings(root_path, text):
     return save(data)
 
 
+def cmd_set_global_settings(text):
+    update, error = parse_settings(text, "global setting", GLOBAL_SETTINGS_VALID, GLOBAL_SETTINGS_REFUSALS)
+    if update is None:
+        return emit({"ok": False, "error": error}, 2)
+    data = load()
+    settings = data.get("global_settings")
+    if not isinstance(settings, dict):
+        settings = data["global_settings"] = {}
+    settings.update(update)
+    return save(data)
+
+
 def main(argv):
     if argv[:1] == ["get"] and len(argv) == 1:
         return cmd_get()
@@ -204,6 +223,8 @@ def main(argv):
         return cmd_set_run_settings(argv[1], argv[2])
     if argv == ["get-global-settings"]:
         return cmd_get_global_settings()
+    if argv[:1] == ["set-global-settings"] and len(argv) == 2:
+        return cmd_set_global_settings(argv[1])
     return emit({"ok": False, "error": USAGE}, 2)
 
 
