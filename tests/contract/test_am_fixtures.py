@@ -6,13 +6,15 @@ level has one exact key set (keys starting with "_" are annotations and are
 ignored); status values come from am's run and attempt vocabularies. am status
 data has no top-level "subtasks".
 
-Live check: in the main checkout (the parent of git's common dir), am runs and
-am status of the newest run must print the same key sets, with the keys the
-captures predate allowed as extras: "story_id" and "project" (exactly "id" and
-"repo_dir") on a runs row, "story_id" on the status run, and "as_of_seq",
-"store_id" and "warnings" on the status data. Read-only:
-only --repo-dir is passed and the user's real runs are read, never written.
-Skipped when am or git is absent or the checkout has no runs.
+Live check: am runs with HOME, XDG_DATA_HOME and XDG_STATE_HOME under a scratch
+dir, never the user's data dir. am runs data must carry "as_of_seq" and the
+first line of am watch --all --follow (the hello) must carry "head", each a
+non-negative int; a missing one fails naming the key and "the plugin needs the
+newer am". Rows present, and am status of the newest, must print the capture
+key sets, with the keys the captures predate allowed as extras: "story_id" and
+"project" (exactly "id" and "repo_dir") on a runs row, "story_id" on the status
+run, and "as_of_seq", "store_id" and "warnings" on the status data. Skipped only
+when am is absent.
 """
 import json
 import os
@@ -23,6 +25,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from test_am_shapes import FOLLOW_TIMEOUT, read_lines
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE.parent / "fixtures" / "am"
@@ -310,9 +314,32 @@ def require_count(where, obj, key):
         pytest.fail(f"{where}.{key}: {value!r}")
 
 
+def watch_hello(env):
+    """The first line `am watch --all --follow` prints with `env`, as an object; am is
+    terminated afterwards. A silent or hung am fails within FOLLOW_TIMEOUT."""
+    with subprocess.Popen(["am", "watch", "--all", "--follow"], env=env,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) as proc:
+        try:
+            try:
+                (hello,) = read_lines(proc.stdout, 1, FOLLOW_TIMEOUT)
+            except json.JSONDecodeError as err:
+                pytest.fail(f"live am watch hello: not JSON: {err}")
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    if not isinstance(hello, dict):
+        pytest.fail(f"live am watch hello: expected an object, got {hello!r}")
+    return hello
+
+
 def live_check(env, repo_dir):
-    """am run with `env` prints am runs data carrying as_of_seq; rows present match the capture
-    key sets with the LIVE_EXTRA allowances, and so does am status of the newest row."""
+    """am run with `env` prints am runs data carrying as_of_seq and an am watch hello carrying
+    head; rows present match the capture key sets with the LIVE_EXTRA allowances, and so does
+    am status of the newest row."""
     code, out, err = am_json(env, "runs", "--repo-dir", str(repo_dir))
     if code != 0:
         pytest.fail(f"live am runs exited {code}: {out}{err}")
@@ -332,6 +359,10 @@ def live_check(env, repo_dir):
         code, out, err = am_json(env, "status", newest["id"], "--repo-dir", str(repo_dir))
         assert code == 0, f"am status {newest['id']} exited {code}: {out}{err}"
         check_status_data(f"live am status {newest['id']}", json.loads(out)["data"], LIVE_EXTRA)
+    hello = watch_hello(env)
+    if hello.get("event") != "watch":
+        pytest.fail(f"live am watch hello: event {hello.get('event')!r}")
+    require_count("live am watch hello", hello, "head")
 
 
 def test_installed_am_prints_the_fixture_key_sets(tmp_path):
@@ -454,3 +485,54 @@ def test_live_check_fails_when_am_runs_exits_non_zero(tmp_path):
                             runs_exit=3)
     with pytest.raises(pytest.fail.Exception, match=r"^live am runs exited 3: "):
         live_check(env, repo_dir)
+
+
+def test_live_check_fails_naming_head_when_the_watch_hello_lacks_it(tmp_path):
+    # synthetic: as_of_seq added
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(as_of_seq=0), json.dumps(stub_hello()))
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception) as failure:
+        live_check(env, repo_dir)
+    assert str(failure.value) == "live am watch hello: no head: the plugin needs the newer am"
+    # The stub sleeps 30 s after the hello: returning sooner means it was terminated.
+    assert time.monotonic() - started < 20
+    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == ["runs", "watch"]
+
+
+def test_live_check_passes_when_am_has_as_of_seq_and_head(tmp_path):
+    # synthetic: as_of_seq added; synthetic: head added
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(as_of_seq=0), json.dumps(stub_hello(head=0)))
+    live_check(env, repo_dir)
+    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == ["runs", "watch"]
+
+
+def test_live_check_rejects_a_bool_head(tmp_path):
+    # synthetic: as_of_seq added; synthetic: head added as a bool
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(as_of_seq=0), json.dumps(stub_hello(head=True)))
+    with pytest.raises(pytest.fail.Exception) as failure:
+        live_check(env, repo_dir)
+    assert str(failure.value) == "live am watch hello.head: True"
+
+
+def test_live_check_fails_naming_the_hello_when_it_is_not_json(tmp_path):
+    # synthetic: as_of_seq added; synthetic: a first watch line that is not JSON
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(as_of_seq=0), "synthetic: not json")
+    with pytest.raises(pytest.fail.Exception, match=r"^live am watch hello: not JSON"):
+        live_check(env, repo_dir)
+
+
+def test_live_check_fails_when_the_first_watch_line_is_not_the_hello(tmp_path):
+    # synthetic: as_of_seq added; synthetic: head added, event changed
+    hello = stub_hello(head=0, event="run_upsert")
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(as_of_seq=0), json.dumps(hello))
+    with pytest.raises(pytest.fail.Exception) as failure:
+        live_check(env, repo_dir)
+    assert str(failure.value) == "live am watch hello: event 'run_upsert'"
+
+
+def test_live_check_accepts_a_schema_1_hello_with_head_and_unknown_keys(tmp_path):
+    # synthetic: as_of_seq and an unknown key added; synthetic: head and an unknown key added, schema 1
+    runs_data = stub_runs_data(as_of_seq=7, future_key=1)
+    hello = stub_hello(head=7, schema=1, future_key=1)
+    env, repo_dir = stub_am(tmp_path, runs_data, json.dumps(hello))
+    live_check(env, repo_dir)
