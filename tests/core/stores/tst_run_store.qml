@@ -4748,4 +4748,88 @@ TestCase {
     compare(store.asOfSeq, 1200)
     compare(store.runs.length, 2)
   }
+
+  // synthetic: runReply(run, name) with store_id `id` (the key absent when
+  // undefined).
+  function storeRead(run, name, id) {
+    var value = JSON.parse(runReply(run, name))
+    value.store_id = id
+    return JSON.stringify(value) + "\n"
+  }
+
+  function test_a_run_read_from_another_store_is_not_applied_and_starts_over() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    var proc = readOf(store, tc.startedRun, 1005)
+    var seq = store.snapshotRunner.seq
+    reply(proc, storeRead(tc.startedRun, "status-escalated.json", otherStore()), 0)
+    compare(store.storeId, otherStore())
+    compare(store.appliedSeq[tc.startedRun], undefined, "not applied: the coverage starts over")
+    compare(store.asOfSeq, 0)
+    compare(store.watchCursor, 0)
+    compare(store.runs.length, 0)
+    compare(store.alertsArmed, false)
+    compare(store.toasts.length, 0, "the escalation is not alerted")
+    compare(store.lastError, "")
+    compare(store.amStatus, "ok")
+    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot")
+    reply(store.snapshotRunner.current, storeList(otherStore(), 1200, true), 0)
+    compare(store.runs[0].status, "escalated")
+    compare(store.toasts.length, 0, "the new store's first list only arms")
+    compare(store.alertsArmed, true)
+    compare(store.snapshotRunner.seq, seq + 1, "its reply launches no further snapshot")
+  }
+
+  function test_a_run_read_with_the_seen_or_a_first_store_id_is_applied() {
+    var store = capturedStore(); if (!store) return
+    var seq = store.snapshotRunner.seq
+    reply(readOf(store, tc.doneRun, 1005), runReply(tc.doneRun, "status-done.json"), 0)
+    compare(store.appliedSeq[tc.doneRun], 1005, "the seen store")
+    compare(store.storeId, fixtureStore())
+    compare(store.snapshotRunner.seq, seq)
+    var fresh = unnamedStore(); if (!fresh) return
+    var freshSeq = fresh.snapshotRunner.seq
+    reply(readOf(fresh, tc.doneRun, 1005), runReply(tc.doneRun, "status-done.json"), 0)
+    compare(fresh.appliedSeq[tc.doneRun], 1005, "a first store id")
+    compare(fresh.storeId, fixtureStore(), "is recorded")
+    compare(fresh.snapshotRunner.seq, freshSeq)
+  }
+
+  function test_a_run_read_without_a_store_id_is_applied() {
+    var store = capturedStore(); if (!store) return
+    var bad = ["", 7, null, { id: "x" }, undefined]
+    for (var i = 0; i < bad.length; i++) {
+      var label = "store_id " + JSON.stringify(bad[i])
+      var proc = readOf(store, tc.doneRun, 1006 + i)
+      var seq = store.snapshotRunner.seq
+      reply(proc, storeRead(tc.doneRun, "status-done.json", bad[i]), 0)
+      compare(store.appliedSeq[tc.doneRun], 1005, label)
+      compare(store.storeId, fixtureStore(), label)
+      compare(store.runs.length, 2, label)
+      compare(store.snapshotRunner.seq, seq, label + ": no list snapshot")
+    }
+  }
+
+  function test_a_refused_run_read_naming_another_store_changes_no_store_id() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    // synthetic: am's StoreBusyError envelope carrying another store's id.
+    reply(proc, JSON.stringify({ ok: false, store_id: otherStore(),
+          error: { type: "StoreBusyError", message: "the am store is busy; try again" } }) + "\n", 1)
+    compare(store.storeId, fixtureStore())
+    compare(store.stale, true)
+    compare(store.runs.length, 2)
+  }
+
+  // Review Focus 2.
+  function test_a_superseded_run_read_naming_another_store_changes_nothing() {
+    var store = capturedStore(); if (!store) return
+    var older = readOf(store, tc.doneRun, 1000)
+    readOf(store, tc.doneRun, 1005)
+    var seq = store.snapshotRunner.seq
+    reply(older, storeRead(tc.doneRun, "status-done.json", otherStore()), 0)
+    compare(store.storeId, fixtureStore())
+    compare(store.runs.length, 2)
+    compare(store.snapshotRunner.seq, seq, "no list snapshot")
+  }
 }

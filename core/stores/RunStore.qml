@@ -12,10 +12,13 @@ import "../domain/runs.js" as Runs
 // state: once per debounce window, a nudge newer than the snapshot that last
 // covered its run (appliedSeq) costs one run read (runs-snapshot.py --run RUN,
 // one HelperRunner per run) for a run it holds, or one list snapshot for a run
-// it does not know. A cursorReset hello starts over from a list snapshot.
-// asOfSeq is the last list's as_of_seq and watchCursor the watch's last
-// cursor, held in memory only. Logs are fetched on a selection, on Refresh and
-// when a snapshot changes the selected attempt's status -- never on a timer.
+// it does not know. A cursorReset hello starts over from a list snapshot, as
+// does a hello or a run read naming a store_id other than the one last seen
+// (storeId); a list snapshot naming one is applied as the new store's full
+// snapshot. The first store_id seen resets nothing. asOfSeq is the last
+// list's as_of_seq and watchCursor the watch's last cursor, held in memory
+// only. Logs are fetched on a selection, on Refresh and when a snapshot
+// changes the selected attempt's status -- never on a timer.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
@@ -717,7 +720,10 @@ Scope {
 
   // One run read's reply. The runner leaves readRunners and is destroyed. A
   // reply that is not its run's latest read, or for a project the user has
-  // left, changes nothing. ok:true goes to applyRunRead. UnknownRunError
+  // left, changes nothing. ok:true records its store_id (seeStore): one
+  // naming another store than the one last seen is not applied and starts
+  // over (resetCursor), raising no toast and leaving amStatus and lastError;
+  // else it goes to applyRunRead. UnknownRunError
   // launches one list snapshot: the run stays until am no longer lists it.
   // StoreBusyError marks the runs stale and puts the nudge back for the next
   // trigger. Neither raises a toast or touches amStatus or lastError. Any other
@@ -738,7 +744,8 @@ Scope {
     var envelope = store.parseEnvelope(stdout)
     if (envelope === null) return
     if (envelope.ok === true) {
-      store.applyRunRead(runId, envelope)
+      if (store.seeStore(envelope.store_id)) store.resetCursor()
+      else store.applyRunRead(runId, envelope)
       return
     }
     if (envelope.ok !== false) return
