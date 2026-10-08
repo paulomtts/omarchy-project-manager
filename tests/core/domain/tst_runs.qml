@@ -31,7 +31,7 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow", label)
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,tree,workflow", label)
     compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
@@ -40,6 +40,7 @@ TestCase {
     compare(r.base_branch, "", label)
     compare(r.branch_prefix, "", label)
     compare(r.lease, null, label)
+    compare(r.project, null, label)
     compare(Array.isArray(r.rows), true, label)
     compare(r.rows.length, 0, label)
     compare(Array.isArray(r.tree.stories), true, label)
@@ -228,7 +229,7 @@ TestCase {
 
   function test_normalize_scalars_from_fixture() {
     var r = Runs.normalizeRun(amRun("status-started.json"))
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow")
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,tree,workflow")
     compare(r.id, "20261008T143823Z-e795ad19")
     compare(r.repo_dir, "/home/user/Code/omarchy-project-manager")
     compare(r.milestone_id, "e795ad19-c81f-43ec-bdda-ef61ab5f860b", "only the am runs row carries it")
@@ -384,6 +385,224 @@ TestCase {
     }
     compare(r.tree.subtasks[3].card_id, "2280a6ab-9c40-434b-9729-63fd1f373754", "the rest is copied")
     compare(r.tree.subtasks[3].phases[1].name, "explore")
+  }
+
+  // ---- 4.0.3: the run's project and am 0.2.0's new keys ------------------------------------
+
+  function hasOwn(o, key) { return Object.prototype.hasOwnProperty.call(o, key) }
+
+  // The project normalizeRun gives for the status-started.json run whose row's
+  // project is replaced by `project`.
+  function projectOf(project) {
+    var raw = amRun("status-started.json")
+    raw.row.project = project
+    return Runs.normalizeRun(raw).project
+  }
+
+  function test_normalize_project_from_fixture() {
+    var names = ["status-started.json", "status-done.json", "status-escalated.json", "status-done-integrate.json"]
+    for (var i = 0; i < names.length; i++) {
+      var raw = amRun(names[i])
+      verify(!hasOwn(raw.status.run, "project"), names[i] + ": the am status run has no project")
+      var p = Runs.normalizeRun(raw).project
+      compare(Object.keys(p).sort().join(","), "id,repo_dir", names[i] + " keys")
+      compare(p.id, 1, names[i] + " id")
+      compare(p.repo_dir, "/home/user/Code/omarchy-project-manager", names[i] + " repo_dir")
+    }
+
+    // the am runs rows alone, before any am status
+    var rows = F.load("runs.json").data.runs
+    for (var j = 0; j < rows.length; j++) {
+      var bare = Runs.normalizeRun({ row: rows[j] }).project
+      compare(JSON.stringify(bare), JSON.stringify({ id: 1, repo_dir: "/home/user/Code/omarchy-project-manager" }), "row " + j + " alone")
+    }
+  }
+
+  function test_normalize_project_absent() {
+    var missing = amRun("status-started.json")
+    verify(hasOwn(missing.row, "project"), "the capture's row carries a project")
+    // synthetic: the row's project deleted
+    delete missing.row.project
+    compare(Runs.normalizeRun(missing).project, null, "missing")
+
+    // synthetic: the row's project replaced by each non-object
+    var cases = [["null", null], ["string", "/home/user/Code/omarchy-project-manager"], ["number", 1],
+                 ["array", [1, "/home/user/Code/omarchy-project-manager"]], ["true", true], ["false", false]]
+    for (var i = 0; i < cases.length; i++) compare(projectOf(cases[i][1]), null, cases[i][0])
+  }
+
+  function test_normalize_project_coercion() {
+    // synthetic: the row's project with each id that is not a finite number
+    var badIds = [["string", "1"], ["null", null], ["NaN", NaN], ["Infinity", Infinity], ["-Infinity", -Infinity],
+                  ["object", {}], ["array", [1]], ["boolean", true]]
+    for (var i = 0; i < badIds.length; i++) {
+      compare(projectOf({ id: badIds[i][1], repo_dir: "/p" }).id, null, "id " + badIds[i][0])
+    }
+    compare(projectOf({ repo_dir: "/p" }).id, null, "id missing")
+
+    // synthetic: finite ids, falsy and fractional included, are kept as given
+    var goodIds = [0, -3, 1.5, 2]
+    for (var j = 0; j < goodIds.length; j++) compare(projectOf({ id: goodIds[j], repo_dir: "/p" }).id, goodIds[j], "id " + goodIds[j])
+
+    // synthetic: repo_dir as text
+    compare(projectOf({ id: 1 }).repo_dir, "", "repo_dir missing")
+    compare(projectOf({ id: 1, repo_dir: null }).repo_dir, "", "repo_dir null")
+    compare(projectOf({ id: 1, repo_dir: 42 }).repo_dir, "42", "repo_dir number")
+    compare(projectOf({ id: 1, repo_dir: true }).repo_dir, "true", "repo_dir boolean")
+    compare(projectOf({ id: 1, repo_dir: "" }).repo_dir, "", "repo_dir empty")
+
+    // synthetic: extra keys inside the project are dropped
+    var extra = projectOf({ id: 1, repo_dir: "/p", name: "x", root_path: "/r", story_id: "s" })
+    compare(Object.keys(extra).sort().join(","), "id,repo_dir")
+    compare(extra.id, 1)
+    compare(extra.repo_dir, "/p")
+  }
+
+  function test_normalize_project_ignores_status() {
+    // synthetic: a project only on the am status run and on am status itself
+    var raw = amRun("status-started.json")
+    delete raw.row.project
+    raw.status.run.project = { id: 2, repo_dir: "/from/run" }
+    raw.status.project = { id: 3, repo_dir: "/from/status" }
+    compare(Runs.normalizeRun(raw).project, null, "am status never supplies the project")
+
+    // synthetic: a project on the row, the am status run and am status
+    var both = amRun("status-started.json")
+    both.status.run.project = { id: 2, repo_dir: "/from/run" }
+    both.status.project = { id: 3, repo_dir: "/from/status" }
+    var p = Runs.normalizeRun(both).project
+    compare(p.id, 1, "the row's id wins")
+    compare(p.repo_dir, "/home/user/Code/omarchy-project-manager", "the row's repo_dir wins")
+  }
+
+  function test_normalize_project_independent_of_repo_dir() {
+    // synthetic: the row's repo_dir and its project's repo_dir edited to differ
+    var differ = amRun("status-started.json")
+    differ.row.repo_dir = "/row/dir"
+    differ.row.project.repo_dir = "/project/dir"
+    var d = Runs.normalizeRun(differ)
+    compare(d.repo_dir, "/row/dir")
+    compare(d.project.repo_dir, "/project/dir")
+
+    // synthetic: the row's and the am status run's repo_dir blanked
+    var blank = amRun("status-started.json")
+    blank.row.repo_dir = ""
+    blank.status.run.repo_dir = ""
+    var b = Runs.normalizeRun(blank)
+    compare(b.repo_dir, "", "project.repo_dir is never the run's fallback")
+    compare(b.project.repo_dir, "/home/user/Code/omarchy-project-manager")
+
+    // synthetic: the project's repo_dir blanked
+    var emptyProject = amRun("status-started.json")
+    emptyProject.row.project.repo_dir = ""
+    var e = Runs.normalizeRun(emptyProject)
+    compare(e.project.repo_dir, "", "the run's repo_dir never fills the project's")
+    compare(e.repo_dir, "/home/user/Code/omarchy-project-manager")
+  }
+
+  function test_normalize_project_is_a_copy() {
+    var raw = amRun("status-started.json")
+    var before = JSON.stringify(raw)
+    var r = Runs.normalizeRun(raw)
+    verify(r.project !== raw.row.project, "project is a copy")
+    r.project.id = 99
+    r.project.repo_dir = "changed"
+    r.project.extra = 1
+    compare(JSON.stringify(raw), before, "changing the output leaves the input unchanged")
+
+    var later = amRun("status-started.json")
+    var out = Runs.normalizeRun(later)
+    var outBefore = JSON.stringify(out)
+    later.row.project.id = 42
+    later.row.project.repo_dir = "later"
+    later.row.project.extra = 1
+    compare(JSON.stringify(out), outBefore, "changing the input after the call leaves the output unchanged")
+  }
+
+  function test_normalize_project_own_proto_key() {
+    // synthetic: an own __proto__ key inside the row's project, which no capture contains
+    var p = projectOf(JSON.parse('{"__proto__": {"id": 5, "repo_dir": "/evil"}, "id": 1, "repo_dir": "/p"}'))
+    compare(Object.getPrototypeOf(p) === Object.prototype, true, "prototype")
+    compare(Object.keys(p).sort().join(","), "id,repo_dir")
+    compare(p.id, 1)
+    compare(p.repo_dir, "/p")
+
+    var only = projectOf(JSON.parse('{"__proto__": {"id": 5, "repo_dir": "/evil"}}'))
+    compare(only.id, null, "an id behind __proto__ is not read")
+    compare(only.repo_dir, "", "a repo_dir behind __proto__ is not read")
+  }
+
+  function test_normalize_as_of_seq_not_kept() {
+    var raw = amRun("status-started.json")
+    compare(raw.status.as_of_seq, 989, "the am status capture carries as_of_seq")
+    compare(raw.status.store_id, "91b9e8afc25044c385859292bfabfde7", "the am status capture carries store_id")
+    var plain = Runs.normalizeRun(raw)
+    var keys = Object.keys(plain)
+    compare(keys.indexOf("as_of_seq"), -1, "as_of_seq from am status")
+    compare(keys.indexOf("store_id"), -1, "store_id from am status")
+
+    // synthetic: the am runs envelope's as_of_seq and store_id placed on the row
+    var envelope = F.load("runs.json").data
+    compare(envelope.as_of_seq, 989, "the am runs capture carries as_of_seq")
+    compare(envelope.store_id, "91b9e8afc25044c385859292bfabfde7", "the am runs capture carries store_id")
+    var onRow = amRun("status-started.json")
+    onRow.row.as_of_seq = envelope.as_of_seq
+    onRow.row.store_id = envelope.store_id
+    var r = Runs.normalizeRun(onRow)
+    compare(Object.keys(r).indexOf("as_of_seq"), -1, "as_of_seq from the row")
+    compare(Object.keys(r).indexOf("store_id"), -1, "store_id from the row")
+    compare(JSON.stringify(r), JSON.stringify(plain), "the row's as_of_seq and store_id change nothing")
+  }
+
+  function test_normalize_unknown_keys_ignored() {
+    var plain = Runs.normalizeRun(amRun("status-started.json"))
+
+    // synthetic: keys normalizeRun does not read, on raw, the row, am status and the am status run
+    var raw = amRun("status-started.json")
+    raw.extra = { a: 1 }
+    raw.row.future_key = "x"
+    raw.status.future_key = [1]
+    raw.status.run.future_key = { b: 2 }
+    compare(JSON.stringify(Runs.normalizeRun(raw)), JSON.stringify(plain), "unknown keys change nothing")
+
+    var fixture = amRun("status-started.json")
+    var keys = Object.keys(plain)
+    var rowKeys = ["story_id", "card_id", "progress"]
+    for (var i = 0; i < rowKeys.length; i++) {
+      verify(hasOwn(fixture.row, rowKeys[i]), "the capture's row carries " + rowKeys[i])
+      compare(keys.indexOf(rowKeys[i]), -1, "row " + rowKeys[i] + " is not kept")
+    }
+    var statusKeys = ["warnings", "integrity"]
+    for (var j = 0; j < statusKeys.length; j++) {
+      verify(hasOwn(fixture.status, statusKeys[j]), "the capture's am status carries " + statusKeys[j])
+      compare(keys.indexOf(statusKeys[j]), -1, "am status " + statusKeys[j] + " is not kept")
+    }
+  }
+
+  function test_normalize_takes_no_events() {
+    var plain = JSON.stringify(Runs.normalizeRun(amRun("status-started.json")))
+    var log = F.load("events.json").data
+    verify(log.events.length > 0, "the events capture has events")
+
+    // synthetic: events.json's events and cursors placed on raw and on am status
+    var raw = amRun("status-started.json")
+    var targets = [raw, raw.status]
+    for (var i = 0; i < targets.length; i++) {
+      targets[i].events = log.events
+      targets[i].gseq = log.events[log.events.length - 1].gseq
+      targets[i].seq = log.events[0].seq
+      targets[i].head = log.head
+      targets[i].cursor_reset = true
+    }
+    compare(JSON.stringify(Runs.normalizeRun(raw)), plain, "events and cursors change nothing")
+  }
+
+  function test_normalize_project_garbage_never_throws() {
+    // synthetic: a project whose id and repo_dir are the wrong types
+    compare(JSON.stringify(projectOf({ id: {}, repo_dir: [] })), JSON.stringify({ id: null, repo_dir: "" }), "wrong types")
+
+    // synthetic: a project with no prototype
+    compare(JSON.stringify(projectOf(Object.create(null))), JSON.stringify({ id: null, repo_dir: "" }), "no prototype")
   }
 
   function test_fixture_current_phase_and_default_attempt() {
