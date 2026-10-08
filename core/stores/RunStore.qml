@@ -44,6 +44,13 @@ Scope {
   // The one filtered list: the screen's rows and the navigator's cursor list.
   readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery)
 
+  // Snapshot coverage. `asOfSeq` is the last good list snapshot's as_of_seq
+  // (0 before one). `appliedSeq` is {runId: seq}: the as_of_seq of the
+  // snapshot that last covered each run the list named, of every project.
+  // Both are replaced, never changed in place.
+  property int asOfSeq: 0
+  property var appliedSeq: ({})
+
   // A watch has been started since the last activation or project switch:
   // later snapshots never start another (the helper picks up the project's new
   // runs itself), and a watch that ended is not restarted until the next
@@ -158,11 +165,12 @@ Scope {
     return false
   }
 
-  // Asks for a fresh snapshot of the current project. A newer call replaces an
-  // older one (the runner's latest-wins rule).
+  // Asks for a list snapshot: runs-snapshot.py with no argument, every
+  // project's runs, filtered to `project` on arrival. Nothing without a
+  // project. A newer call replaces an older one (the runner's latest-wins rule).
   function refresh() {
     if (store.project === "") return
-    snapshotRunner.run([store.project])
+    snapshotRunner.run([])
   }
 
   // A chip was chosen: the All chip, or the active one again, means All.
@@ -314,6 +322,8 @@ Scope {
     store.stopWatch()
     store.watchTried = false
     debounceTimer.stop()
+    store.appliedSeq = {}
+    store.asOfSeq = 0
     store.stopPoll()
     store.watchWarning = ""
     store.restartStale()
@@ -487,22 +497,56 @@ Scope {
     return row
   }
 
-  // One snapshot reply. ok:true replaces the runs (none at all is fine).
-  // AmMissing empties them: no badges while am is not there. Any other failure
-  // -- an ok:false envelope or output that is not one -- keeps what the last
-  // good snapshot said and only reports why this one failed. Never throws.
+  // A non-negative integer: an as_of_seq or a cursor.
+  function isSeq(value) {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0
+  }
+
+  // The entry's project root: project.repo_dir when project is an object with
+  // a string repo_dir, else repo_dir when it is a string, else null.
+  function entryProject(e) {
+    var p = e.project
+    if (p !== null && typeof p === "object" && !Array.isArray(p) && typeof p.repo_dir === "string") return p.repo_dir
+    return typeof e.repo_dir === "string" ? e.repo_dir : null
+  }
+
+  // A path without its trailing "/" characters; a lone "/" stays "/".
+  function trimSlashes(path) {
+    var s = path
+    while (s.length > 1 && s.charAt(s.length - 1) === "/") s = s.slice(0, -1)
+    return s
+  }
+
+  // One list snapshot reply. ok:true keeps the entries whose project is
+  // `project` (trailing "/" ignored on both sides) and replaces the runs with
+  // them, in am's order (none at all is fine); asOfSeq becomes its as_of_seq
+  // (a non-negative integer, else 0) and appliedSeq {id: asOfSeq} for every
+  // entry with an id, of every project. StoreBusyError keeps everything and
+  // only marks the runs stale. AmMissing empties them and the coverage: no
+  // badges while am is not there. Any other failure -- an ok:false envelope or
+  // output that is not one -- keeps what the last good snapshot said and only
+  // reports why this one failed. Never throws.
   // A reply for a project the user has left never gets here: the runner only
   // emits `finished` when the launch guard still equals its (project) guard.
   function applySnapshot(stdout, exitCode) {
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var list = Array.isArray(envelope.runs) ? envelope.runs : []
+      var asOf = store.isSeq(envelope.as_of_seq) ? envelope.as_of_seq : 0
+      var root = store.trimSlashes(store.project)
       var out = []
+      var applied = {}
       for (var i = 0; i < list.length; i++) {
         var e = list[i]
         if (e === null || typeof e !== "object" || Array.isArray(e)) continue
+        var id = typeof e.id === "string" && e.id !== "" ? e.id : ""
+        if (id !== "") applied[id] = asOf
+        var owner = store.entryProject(e)
+        if (owner === null || store.trimSlashes(owner) !== root) continue
         out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
       }
+      store.asOfSeq = asOf
+      store.appliedSeq = applied
       // Compared before the runs are replaced; raised below only while open.
       var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, out)
       store.runs = out
@@ -528,9 +572,15 @@ Scope {
     if (envelope !== null && envelope.ok === false) {
       var err = envelope.error
       var type = err !== null && typeof err === "object" ? err.type : ""
+      if (type === "StoreBusyError") {
+        store.stale = true
+        return
+      }
       store.lastError = Runs.errorText(envelope)
       if (type === "AmMissing") {
         store.runs = []
+        store.appliedSeq = {}
+        store.asOfSeq = 0
         store.amStatus = "missing"
         // Comparing the next good snapshot against [] would alert every
         // escalated run again.

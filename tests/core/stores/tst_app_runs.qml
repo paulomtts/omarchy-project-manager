@@ -76,7 +76,8 @@ TestCase {
     verify(proc, "selecting a project starts a snapshot")
     compare(proc.command[0], "python3")
     compare(proc.command[1], "/plugin/core/backend/runs/runs-snapshot.py")
-    compare(proc.command[2], "/home/u/my proj")
+    compare(proc.command.length, 2, "every project, filtered to the root path by the store")
+    compare(proc.launchGuard, "/home/u/my proj")
   }
 
   function test_clearing_the_selection_empties_project_and_runs() {

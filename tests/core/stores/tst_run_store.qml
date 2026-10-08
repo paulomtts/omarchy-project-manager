@@ -41,12 +41,12 @@ TestCase {
   }
 
   // One snapshot entry: an `am runs` summary whose `status` string the helper
-  // has replaced with the `am status` data.
-  function entry(id, runStatus, live) {
+  // has replaced with the `am status` data. Its repo_dir is `root`, else rootA.
+  function entry(id, runStatus, live, root) {
     var run = { id: id, milestone_id: "m-" + id }
     if (runStatus !== "") run.status = runStatus
     return {
-      id: id, workflow: "orchestrator", repo_dir: "/home/u/my proj", started_at: "2026-10-01T00:00:00Z",
+      id: id, workflow: "orchestrator", repo_dir: root || tc.rootA, started_at: "2026-10-01T00:00:00Z",
       status: {
         run: run,
         rows: [],
@@ -57,8 +57,11 @@ TestCase {
     }
   }
 
-  function okReply(entries) {
-    return JSON.stringify({ ok: true, runs: entries, data_dir: "/home/u/.local/share" }) + "\n"
+  // A list snapshot reply; with `asOf`, it carries that as_of_seq.
+  function okReply(entries, asOf) {
+    var envelope = { ok: true, runs: entries, data_dir: "/home/u/.local/share" }
+    if (asOf !== undefined) envelope.as_of_seq = asOf
+    return JSON.stringify(envelope) + "\n"
   }
 
   // ---- defaults and the snapshot command
@@ -79,10 +82,9 @@ TestCase {
     var store = makeWithProject(rootA); if (!store) return
     var proc = store.snapshotRunner.current
     verify(proc, "a snapshot was launched")
-    compare(proc.command.length, 3)
+    compare(proc.command.length, 2, "every project: no root argument")
     compare(proc.command[0], "python3")
     compare(proc.command[1], "/plugin/core/backend/runs/runs-snapshot.py")
-    compare(proc.command[2], "/home/u/my proj", "the path with a space is one argument")
     compare(proc.running, true)
     compare(proc.launchGuard, "/home/u/my proj", "the launch is guarded by the NEW project")
   }
@@ -103,7 +105,7 @@ TestCase {
     compare(store.amStatus, "ok")
     var procB = store.snapshotRunner.current
     verify(procB !== procA, "a new snapshot was launched")
-    compare(procB.command[2], "/home/u/b")
+    compare(procB.command.length, 2)
     compare(procB.launchGuard, "/home/u/b")
     compare(procA.running, false, "A's snapshot is stopped")
   }
@@ -189,11 +191,11 @@ TestCase {
     compare(store.selectedRunId, "", "the selection belongs to the old project")
     var procB = store.snapshotRunner.current
     verify(procB !== procA2, "a snapshot for B was launched")
-    compare(procB.command[2], "/home/u/b")
+    compare(procB.launchGuard, "/home/u/b")
     reply(procA2, okReply([entry("a2", "started", true)]), 0)
     compare(store.runs.length, 0, "A's late reply changes nothing")
     compare(store.amStatus, "ok")
-    reply(procB, okReply([entry("b1", "done", false)]), 0)
+    reply(procB, okReply([entry("b1", "done", false, rootB)]), 0)
     compare(store.runs.length, 1, "B's reply is applied")
     compare(store.runs[0].id, "b1")
   }
@@ -219,7 +221,7 @@ TestCase {
 
   function test_malformed_runs_are_skipped_without_throwing() {
     var store = makeWithProject(rootA); if (!store) return
-    var mixed = JSON.stringify({ ok: true, runs: [null, 3, "x", [1], entry("r1", "started", true), { id: "r2" }] })
+    var mixed = JSON.stringify({ ok: true, runs: [null, 3, "x", [1], entry("r1", "started", true), { id: "r2", repo_dir: rootA }] })
     reply(store.snapshotRunner.current, mixed, 0)
     compare(store.runs.length, 2, "only the object entries are kept")
     compare(store.runs[0].id, "r1")
@@ -342,7 +344,7 @@ TestCase {
     var seq = store.snapshotRunner.seq
     store.active = true
     compare(store.snapshotRunner.seq, seq + 1, "opening the panel fetches a fresh snapshot")
-    compare(store.snapshotRunner.current.command[2], "/home/u/my proj")
+    compare(store.snapshotRunner.current.command.length, 2)
   }
 
   function test_activation_without_a_project_launches_nothing() {
@@ -362,7 +364,7 @@ TestCase {
 
   function test_watch_argv_after_first_snapshot() {
     var store = activeStore(rootA); if (!store) return
-    var noId = { workflow: "orchestrator" }
+    var noId = { workflow: "orchestrator", repo_dir: rootA }
     reply(store.snapshotRunner.current, okReply([entry("a", "started", true), noId, entry("b", "done", false)]), 0)
     compare(store.runs.length, 3)
     var w = store.watchProc
@@ -671,7 +673,7 @@ TestCase {
     store.project = rootB
     compare(store.amSchema, 0, "A's hello says nothing about B")
     compare(store.amVersion, "")
-    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false, rootB)]), 0)
     sendLine(store.watchProc, helloLine("schema_1"))
     compare(store.amSchema, 1, "B's watch says hello")
     compare(store.amVersion, "0.1.0")
@@ -685,7 +687,7 @@ TestCase {
     var old = store.watchProc
     sendLine(old, helloLine("schema_2"))
     store.project = rootB
-    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false, rootB)]), 0)
     verify(store.watchProc !== old, "B runs its own watch")
     sendLine(old, helloLine("schema_2"))
     compare(store.amSchema, 0, "A's late hello is dropped")
@@ -895,14 +897,14 @@ TestCase {
     compare(store.watching, false)
     compare(store.debounceTimer.running, false, "its pending refresh is dropped")
     compare(store.runs.length, 0)
-    compare(store.snapshotRunner.current.command[2], "/home/u/b", "B's snapshot is requested")
+    compare(store.snapshotRunner.current.launchGuard, "/home/u/b", "B's snapshot is requested")
   }
 
   function test_new_project_watch_starts_after_its_snapshot() {
     var store = watchedStore([entry("a", "started", true)]); if (!store) return
     var old = store.watchProc
     store.project = rootB
-    reply(store.snapshotRunner.current, okReply([entry("b1", "started", true)]), 0)
+    reply(store.snapshotRunner.current, okReply([entry("b1", "started", true, rootB)]), 0)
     var w = store.watchProc
     verify(w !== old, "B gets its own watch")
     compare(w.command.length, 4)
@@ -918,7 +920,7 @@ TestCase {
     store.project = rootB
     sendLine(old, { changed: ["a"] })
     compare(store.debounceTimer.running, false, "the old watch's late line is dropped")
-    reply(store.snapshotRunner.current, okReply([entry("b1", "started", true)]), 0)
+    reply(store.snapshotRunner.current, okReply([entry("b1", "started", true, rootB)]), 0)
     sendLine(old, { changed: ["a"] })
     compare(store.debounceTimer.running, false, "even once B's watch runs")
     sendLine(store.watchProc, { changed: ["b1"] })
@@ -1110,7 +1112,7 @@ TestCase {
     compare(store.watchWarning, "")
     compare(store.pollTimer.running, false)
     compare(store.watching, false)
-    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false)]), 0)
+    reply(store.snapshotRunner.current, okReply([entry("b1", "done", false, rootB)]), 0)
     compare(store.watching, true, "B's watch is tried")
     compare(store.watchProc.command[2], "/home/u/b")
   }
@@ -1170,12 +1172,13 @@ TestCase {
   // A snapshot entry of the started capture: runs.json's first `am runs` row
   // whose `status` is status-started.json's `am status` data. Its open attempt
   // is openCard explore 1 and doneCard spec 1 is an earlier, ok attempt. The
-  // run id and repo dir are the test's; so is the open attempt's status, in
-  // am's attempt vocabulary (started, ok).
-  function treeEntry(id, status) {
+  // run id and project root (`root`, else rootA) are the test's; so is the
+  // open attempt's status, in am's attempt vocabulary (started, ok).
+  function treeEntry(id, status, root) {
     var e = F.load("runs.json").data.runs[0]
     e.id = id
-    e.repo_dir = tc.rootA
+    e.repo_dir = root || tc.rootA
+    e.project.repo_dir = root || tc.rootA
     e.status = F.load("status-started.json").data
     e.status.run.id = id
     e.status.stories[1].subtasks[1].phases[1].attempts[0].status = status
@@ -1367,6 +1370,7 @@ TestCase {
     var r2 = F.load("runs.json").data.runs[1]
     r2.id = "r2"
     r2.repo_dir = tc.rootA
+    r2.project.repo_dir = tc.rootA
     r2.status = F.load("status-done.json").data
     r2.status.run.id = "r2"
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started"), r2]), 0)
@@ -1485,7 +1489,7 @@ TestCase {
     compare(procA.command.length, 7, "five arguments after python3 and the script")
     compare(procA.command[2], "/home/u/my proj", "the root with a space is one argument")
     store.project = tc.rootB
-    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started", tc.rootB)]), 0)
     compare(store.logsRunner.current, procA, "nothing is launched after the switch until a run is selected")
     compare(procA.running, false, "A's fetch is stopped, not re-sent")
     store.selectedRunId = "r1"
@@ -1502,7 +1506,7 @@ TestCase {
     var store = opened(); if (!store) return
     reply(store.logsRunner.current, logsReply("a\n"), 0)
     store.project = tc.rootB
-    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started", tc.rootB)]), 0)
     store.selectedRunId = "r1"
     reply(store.logsRunner.current, logsReply("b\n"), 0)
     store.refreshLogs()
@@ -1512,7 +1516,7 @@ TestCase {
     store.selectAttempt(tc.openCard, "explore", 1)
     reply(store.logsRunner.current, logsReply("b\n"), 0)
     var seq = store.logsRunner.seq
-    snapshot(store, [treeEntry("r1", "ok")])
+    snapshot(store, [treeEntry("r1", "ok", tc.rootB)])
     compare(store.logsRunner.seq, seq + 1, "started -> ok fetches again")
     compare(argv(store.logsRunner.current), bCmd + "r1|" + tc.openCard + "|explore|1", "the snapshot's refetch")
     store.project = tc.rootA
@@ -1525,7 +1529,7 @@ TestCase {
   function test_logs_argv_keeps_an_odd_root_verbatim() {
     var odd = "/home/u/o'dd; $x/"
     var store = makeWithProject(odd); if (!store) return
-    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started", odd)]), 0)
     store.selectedRunId = "r1"
     var proc = store.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
@@ -2327,7 +2331,7 @@ TestCase {
     store.project = rootB
     compare(store.toasts.length, 0)
     compare(store.alertsArmed, false)
-    reply(store.snapshotRunner.current, okReply([escalated("z")]), 0)
+    reply(store.snapshotRunner.current, okReply([entry("z", "escalated", false, rootB)]), 0)
     compare(store.toasts.length, 0, "B's first snapshot raises nothing")
     compare(store.alertsArmed, true)
   }
@@ -3115,7 +3119,7 @@ TestCase {
     compare(spy.count, 1)
     compare(spy.signalArguments[0][0], "r-1")
     compare(store.snapshotRunner.seq, seq + 1, "the runs are fetched again")
-    compare(argv(store.snapshotRunner.current), "python3|/plugin/core/backend/runs/runs-snapshot.py|/home/u/my proj")
+    compare(argv(store.snapshotRunner.current), "python3|/plugin/core/backend/runs/runs-snapshot.py")
     compare(store.dispatchStartRunners.length, 1, "the same runner writes the settings")
     verify(store.dispatchStartRunners[0] === runner)
     var save = runner.current
@@ -3863,5 +3867,112 @@ TestCase {
     compare(back.dispatchErrorType, "")
     compare(back.dispatchSuggest, null)
     compare(back.dispatchTargetLabel, 'Milestone "M3 Document runs"')
+  }
+
+  // ---- list snapshots (4.1.3)
+
+  // The captured runs' project root, and their run ids (runs.json).
+  readonly property string capRoot: "/home/user/Code/omarchy-project-manager"
+  readonly property string startedRun: "20261008T143823Z-e795ad19"
+  readonly property string doneRun: "20261008T143807Z-63060df3"
+
+  // runs-snapshot.py's list reply for the captures: runs.json's two `am runs`
+  // rows, each with `status` replaced by its `am status` data
+  // (status-started.json, status-done.json), runs.json's store_id and its
+  // as_of_seq (989) unless `asOf` is given; `extra` entries come last.
+  function capturedList(extra, asOf) {
+    var data = F.load("runs.json").data
+    var runs = data.runs
+    runs[0].status = F.load("status-started.json").data
+    runs[1].status = F.load("status-done.json").data
+    return JSON.stringify({ ok: true, as_of_seq: asOf === undefined ? data.as_of_seq : asOf,
+                            store_id: data.store_id, runs: runs.concat(extra || []), data_dir: "/d" }) + "\n"
+  }
+
+  function test_a_list_snapshot_asks_for_every_project() {
+    var store = makeWithProject(tc.capRoot); if (!store) return
+    compare(argv(store.snapshotRunner.current), "python3|/plugin/core/backend/runs/runs-snapshot.py")
+    compare(store.snapshotRunner.current.launchGuard, tc.capRoot, "guarded by the project")
+    store.refresh()
+    compare(argv(store.snapshotRunner.current), "python3|/plugin/core/backend/runs/runs-snapshot.py")
+  }
+
+  function test_a_list_reply_keeps_this_projects_runs_and_covers_every_listed_run() {
+    var store = makeWithProject(tc.capRoot + "/"); if (!store) return
+    // synthetic: entries runs-snapshot.py lists beside the captures -- another
+    // project's; this project's by repo_dir alone with trailing "/"; this
+    // project's by repo_dir under a project object with no repo_dir; another
+    // project's by project.repo_dir though its repo_dir is this one; and one
+    // with no project at all.
+    var other = entry("other1", "started", true, "/home/u/elsewhere")
+    var flat = entry("flat1", "done", false, tc.capRoot + "//")
+    var partial = entry("partial1", "done", false, tc.capRoot)
+    partial.project = { id: 9 }
+    var moved = entry("moved1", "done", false, tc.capRoot)
+    moved.project = { id: 2, repo_dir: "/home/u/elsewhere" }
+    var lost = entry("lost1", "done", false)
+    delete lost.repo_dir
+    reply(store.snapshotRunner.current, capturedList([other, flat, partial, moved, lost]), 0)
+    compare(ids(store.runs), tc.startedRun + "," + tc.doneRun + ",flat1,partial1", "this project's, in am's order")
+    compare(store.asOfSeq, 989)
+    compare(Object.keys(store.appliedSeq).sort().join(","),
+            [tc.startedRun, tc.doneRun, "other1", "flat1", "partial1", "moved1", "lost1"].sort().join(","),
+            "every listed run of every project is covered")
+    compare(store.appliedSeq[tc.startedRun], 989)
+    compare(store.appliedSeq.other1, 989)
+  }
+
+  // Review Focus 5.
+  function test_a_list_reply_without_a_usable_as_of_seq_covers_at_0() {
+    var bad = [undefined, -1, 2.5, "989", null]
+    for (var i = 0; i < bad.length; i++) {
+      var label = "as_of_seq " + JSON.stringify(bad[i])
+      var store = makeWithProject(rootA); if (!store) return
+      reply(store.snapshotRunner.current, okReply([entry("r1", "started", true)], 989), 0)
+      compare(store.appliedSeq.r1, 989, label)
+      store.refresh()
+      reply(store.snapshotRunner.current, okReply([entry("r2", "started", true)], bad[i]), 0)
+      compare(store.asOfSeq, 0, label)
+      compare(store.appliedSeq.r2, 0, label)
+      compare(store.appliedSeq.r1, undefined, label + ": the list replaces the coverage")
+      compare(ids(store.runs), "r2", label)
+    }
+  }
+
+  function test_a_busy_store_keeps_the_last_list_and_marks_it_stale() {
+    var store = activeStore(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true)], 989), 0)
+    compare(store.stale, false)
+    store.refresh()
+    // synthetic: am's StoreBusyError envelope, which runs-snapshot.py re-emits unchanged.
+    reply(store.snapshotRunner.current, '{"error": {"message": "the am store is busy; try again", "type": "StoreBusyError"}, "ok": false}\n', 1)
+    compare(ids(store.runs), "a", "the last good list stays")
+    compare(store.stale, true)
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    compare(store.toasts.length, 0)
+    compare(store.asOfSeq, 989)
+    compare(store.appliedSeq.a, 989)
+    var seq = store.snapshotRunner.seq
+    store.livenessTimer.triggered()
+    compare(store.snapshotRunner.seq, seq + 1, "the next tick retries")
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true)], 990), 0)
+    compare(store.stale, false)
+    compare(store.asOfSeq, 990)
+  }
+
+  function test_am_missing_and_a_project_switch_forget_the_coverage() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([entry("r1", "started", true)], 989), 0)
+    store.refresh()
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "AmMissing", "message": "am is not installed."}}\n', 1)
+    compare(store.asOfSeq, 0, "AmMissing")
+    compare(Object.keys(store.appliedSeq).length, 0, "AmMissing")
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([entry("r1", "started", true)], 989), 0)
+    compare(store.asOfSeq, 989)
+    store.project = rootB
+    compare(store.asOfSeq, 0, "a project switch")
+    compare(Object.keys(store.appliedSeq).length, 0, "a project switch")
   }
 }
