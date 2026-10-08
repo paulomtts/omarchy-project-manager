@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Nudge the plugin when am runs change, from `am watch --all-projects --follow`.
 
-    runs-watch.py [--since-seq N]
+    runs-watch.py <root> [<root> ...] [run_id ...] [--since-seq N]
 
+Arguments, in any order: one beginning with `/` is a root (used as given, never
+checked for existence), `--since-seq` takes the next one as N (one or more ASCII
+decimal digits, passed as its integer), and any other non-empty one not
+beginning with `-` is a run id. No root, a second --since-seq, or any other
+argument is a Usage error (exit 2) and am is not looked up or started.
 Long-lived. Spawns `am watch --all-projects --follow`, plus `--since-seq N` when
-given (N: one or more ASCII decimal digits, passed as its integer), as an argv
-list, never a shell. Any other argv is a Usage error (exit 2) and am is not
-started. Prints one JSON object per line, flushed at once:
+given, as an argv list, never a shell; roots and run ids never reach am. Prints
+one JSON object per line, flushed at once:
   {"hello": {"schema": N, "am": V, "head": H, "cursorReset": B, "storeId": S}}
       for the first hello line (event "watch") only. Every hello must carry an
       integer schema of 1 or higher and a non-negative integer head, else
@@ -41,7 +45,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = "usage: runs-watch.py [--since-seq N]"
+USAGE = "usage: runs-watch.py <root> [<root> ...] [run_id ...] [--since-seq N]"
 IDLE_POLL = 1.0  # seconds; the longest the main loop blocks with nothing pending
 WINDOW = 0.25  # seconds; at most one {"changed": [...]} line per window
 EOF = object()
@@ -76,17 +80,33 @@ def failure(kind, message, code=1):
 
 
 def parse_args(argv):
-    """The arguments after `am watch --all-projects --follow` for the helper's
-    argv: [] for none, ["--since-seq", N] for `--since-seq N` (N one or more
-    ASCII decimal digits, passed as its integer's decimal text), None for
-    anything else."""
-    if not argv:
-        return []
-    if len(argv) == 2 and argv[0] == "--since-seq":
-        value = argv[1]
-        if value and value.isascii() and value.isdigit():
-            return ["--since-seq", value.lstrip("0") or "0"]
-    return None
+    """(roots, run ids, extra) for the helper's argv, or None for a Usage error.
+    Left to right: `--since-seq` takes the next argument as N (one or more ASCII
+    decimal digits; extra is ["--since-seq", N's integer as decimal text], else
+    []); an argument beginning with `/` is a root; any other non-empty argument
+    not beginning with `-` is a run id. No root, a second --since-seq, or an
+    empty or other `-` argument is None."""
+    roots, run_ids, extra = [], [], None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--since-seq":
+            value = argv[i + 1] if i + 1 < len(argv) else ""
+            if extra is not None or not (value and value.isascii() and value.isdigit()):
+                return None
+            extra = ["--since-seq", value.lstrip("0") or "0"]
+            i += 2
+            continue
+        if arg.startswith("/"):
+            roots.append(arg)
+        elif not arg or arg.startswith("-"):
+            return None
+        else:
+            run_ids.append(arg)
+        i += 1
+    if not roots:
+        return None
+    return roots, run_ids, extra or []
 
 
 def check_hello(hello):
@@ -217,9 +237,10 @@ def finish(code, refusal, stderr):
 
 
 def main(argv):
-    extra = parse_args(argv)
-    if extra is None:
+    parsed = parse_args(argv)
+    if parsed is None:
         return failure("Usage", USAGE, 2)
+    roots, run_ids, extra = parsed
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")

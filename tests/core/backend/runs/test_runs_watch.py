@@ -20,7 +20,7 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..", "..", "..", "..")
 SCRIPT = os.path.join(ROOT, "core", "backend", "runs", "runs-watch.py")
-USAGE = "usage: runs-watch.py [--since-seq N]"
+USAGE = "usage: runs-watch.py <root> [<root> ...] [run_id ...] [--since-seq N]"
 
 FAKE_AM = r'''#!/usr/bin/env python3
 import json, os, sys, time
@@ -63,6 +63,12 @@ def events():
 
 # The run of every captured journal line.
 RUN = events()[0]["run_id"]
+# The project root of the captured run: its run_upsert's payload.repo_dir.
+CAPTURE_ROOT = events()[1]["payload"]["repo_dir"]
+# The default argv: the capture's root, the captured run and the synthetic r2.
+ARGS = [CAPTURE_ROOT, RUN, "r2"]
+# A root for argv tests; it never has to exist.
+SOME_ROOT = "/some/root"
 # The event kinds am 0.2.0 writes; the helper nudges on exactly these.
 KINDS = ["run_upsert", "story_upsert", "subtask_upsert", "phase_upsert", "attempt_upsert",
          "lease_acquired", "lease_taken_over", "control_requested", "control_handled",
@@ -172,11 +178,12 @@ def set_script(world, steps, exit=0, stderr=""):
         json.dumps({"steps": steps, "exit": exit, "stderr": stderr}))
 
 
-def run_helper(world, args=(), timeout=30, **extra):
-    """Run the helper until it exits (default argv: none). Every stdout line must
-    be JSON. Returns (exit code, parsed lines, stderr)."""
+def run_helper(world, args=ARGS, timeout=30, cwd=None, **extra):
+    """Run the helper until it exits (default argv: ARGS) in `cwd` (default: this
+    process's). Every stdout line must be JSON. Returns (exit code, parsed lines,
+    stderr)."""
     p = subprocess.run([sys.executable, SCRIPT, *args], capture_output=True, text=True,
-                       env=env_for(world, **extra), timeout=timeout)
+                       env=env_for(world, **extra), timeout=timeout, cwd=cwd)
     return p.returncode, [json.loads(line) for line in p.stdout.splitlines()], p.stderr
 
 
@@ -234,6 +241,11 @@ def test_lines_are_capture_copies():
     assert [e["gseq"] for e in captured] == list(range(358, 358 + len(captured)))
     assert all(e["seq"] != e["gseq"] for e in captured)
     assert gseq(ev()) == 376
+    # The capture's only run_upsert is nth(1); nth(0) (lease_acquired) comes before it.
+    assert [i for i, e in enumerate(captured) if e["event"] == "run_upsert"] == [1]
+    assert captured[0]["event"] == "lease_acquired"
+    assert CAPTURE_ROOT == nth(1)["line"]["payload"]["repo_dir"]
+    assert CAPTURE_ROOT == "/home/user/Code/omarchy-project-manager"
 
 
 # --- argv, am missing, clean exit -----------------------------------------------
@@ -250,21 +262,39 @@ def test_argv_default(world):
 @pytest.mark.parametrize("value, passed", [("0", "0"), ("1005", "1005"), ("007", "7")])
 def test_argv_since_seq(world, value, passed):
     set_script(world, [hello()])
-    code, lines, _ = run_helper(world, ["--since-seq", value])
+    code, lines, _ = run_helper(world, [CAPTURE_ROOT, "--since-seq", value])
     assert code == 0
     assert lines == [HELLO]
     assert calls(world) == [["watch", "--all-projects", "--follow", "--since-seq", passed]]
 
 
+@pytest.mark.parametrize("args, passed", [
+    (["/repoA", RUN, "/repoB", "--since-seq", "7", "x1"], ["--since-seq", "7"]),
+    (["x1", "/repoA"], []),
+], ids=["mixed-with-since-seq", "run-id-first"])
+def test_argv_roots_and_run_ids_never_reach_am(world, args, passed):
+    set_script(world, [hello()])
+    code, lines, _ = run_helper(world, args)
+    assert code == 0
+    assert lines == [HELLO]
+    assert calls(world) == [["watch", "--all-projects", "--follow", *passed]]
+
+
 @pytest.mark.parametrize("args", [
-    ["/some/root"], ["/root", RUN], [RUN], ["--since-seq"], ["--since-seq", "-1"],
+    [RUN], ["--since-seq"], ["--since-seq", "-1"],
     ["--since-seq", "abc"], ["--since-seq", "5.0"], ["--since-seq", ""],
     ["--since-seq", "1", "--since-seq", "2"], ["--since-seq=5"], ["--from-now"],
     ["--since-seq", "5", "extra"], ["--since-seq", "٣"], ["--since-seq", "+5"],
     ["--since-seq", " 5"],
-], ids=["root", "root-and-run", "run", "no-value", "negative", "letters", "float", "empty",
+    [SOME_ROOT, "--since-seq"], [SOME_ROOT, "--since-seq", "-1"],
+    [SOME_ROOT, "--since-seq", "abc"], [SOME_ROOT, "--since-seq", "1", "--since-seq", "2"],
+    [SOME_ROOT, "--since-seq=5"], [SOME_ROOT, "--from-now"], [SOME_ROOT, "-x"],
+    [SOME_ROOT, ""], [RUN, "--since-seq", "5"], [],
+], ids=["run", "no-value", "negative", "letters", "float", "empty",
         "twice", "equals-form", "other-flag", "trailing-arg", "arabic-indic-digit", "plus-sign",
-        "leading-space"])
+        "leading-space",
+        "root-no-value", "root-negative", "root-letters", "root-twice", "root-equals-form",
+        "root-other-flag", "root-dash-x", "root-empty", "run-since-seq-no-root", "no-argument"])
 def test_usage(world, args):
     set_script(world, [hello()])
     code, lines, _ = run_helper(world, args)
@@ -276,7 +306,7 @@ def test_usage(world, args):
 def test_usage_before_am_lookup(world):
     empty = world["tmp"] / "empty-bin"
     empty.mkdir()
-    code, lines, _ = run_helper(world, ["/some/root"], PATH=str(empty))
+    code, lines, _ = run_helper(world, [RUN], PATH=str(empty))  # no root
     assert code == 2
     assert lines == [{"ok": False, "error": {"type": "Usage", "message": USAGE}}]
 
@@ -674,7 +704,7 @@ def test_refusal_store_busy_after_batch_is_reemitted(world):
 
 # --- stopping: signals and a closed stdout ---------------------------------------
 
-def start_helper(world, args=()):
+def start_helper(world, args=ARGS):
     return subprocess.Popen([sys.executable, SCRIPT, *args], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             env=env_for(world))
