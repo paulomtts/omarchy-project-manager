@@ -4617,4 +4617,135 @@ TestCase {
     compare(store.watchCursor, 1005)
     compare(store.asOfSeq, 989)
   }
+
+  // synthetic: runs-watch.py's forwarded schema_2 hello (resetHello) with
+  // storeId `id` (the key absent when undefined), head `head` and
+  // cursorReset `reset`.
+  function storeHello(id, head, reset) {
+    var value = resetHello(reset)
+    value.hello.head = head
+    if (id === undefined) delete value.hello.storeId
+    else value.hello.storeId = id
+    return value
+  }
+
+  function test_a_hello_with_the_seen_store_id_keeps_the_live_state() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    nudge(store, [tc.doneRun, 1005])
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, storeHello(fixtureStore(), 1005, false))
+    compare(store.amSchema, 2)
+    compare(store.storeId, fixtureStore())
+    compare(store.snapshotRunner.seq, seq, "no list snapshot")
+    compare(store.runs.length, 2)
+    compare(store.asOfSeq, 989)
+    compare(store.watchCursor, 1005)
+    compare(store.nudges[tc.doneRun], 1005)
+    compare(store.alertsArmed, true)
+  }
+
+  function test_a_hello_from_another_store_starts_over_from_a_list_snapshot() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    var proc = readOf(store, tc.doneRun, 1005)
+    nudge(store, [tc.startedRun, 1006])
+    store.selectedRunId = tc.doneRun
+    var seq = store.snapshotRunner.seq
+    // A head above the cursor: cursorReset is false, yet the store changed.
+    sendLine(store.watchProc, storeHello(otherStore(), 1200, false))
+    compare(store.amSchema, 2, "still a hello")
+    compare(store.storeId, otherStore())
+    compare(Object.keys(store.appliedSeq).length, 0)
+    compare(store.asOfSeq, 0)
+    compare(store.watchCursor, 0)
+    compare(Object.keys(store.nudges).length, 0)
+    compare(store.debounceTimer.running, false)
+    compare(store.runs.length, 0)
+    compare(store.alertsArmed, false)
+    compare(store.selectedRunId, tc.doneRun, "the selection is untouched")
+    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot")
+    var list = store.snapshotRunner.current
+    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
+    compare(store.runs.length, 0, "the dropped read changes nothing")
+    compare(Object.keys(store.appliedSeq).length, 0)
+    compare(store.storeId, otherStore(), "the dropped read names no store")
+    reply(list, storeList(otherStore(), 1200, true), 0)
+    compare(store.runs[0].status, "escalated")
+    compare(store.toasts.length, 0, "the new store's first list only arms")
+    compare(store.alertsArmed, true)
+    compare(store.asOfSeq, 1200)
+    compare(store.snapshotRunner.seq, seq + 1, "its reply launches no further snapshot")
+  }
+
+  function test_a_hello_from_another_store_with_cursor_reset_launches_one_list() {
+    var store = capturedStore(); if (!store) return
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, storeHello(otherStore(), 900, true))
+    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot, not two")
+    compare(store.storeId, otherStore())
+    compare(store.runs.length, 0)
+  }
+
+  function test_the_first_store_id_a_hello_names_resets_nothing() {
+    var store = unnamedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, storeHello(fixtureStore(), 1005, false))
+    compare(store.storeId, fixtureStore())
+    compare(store.runs.length, 2)
+    compare(store.asOfSeq, 989)
+    compare(store.watchCursor, 1005)
+    compare(store.snapshotRunner.seq, seq, "no list snapshot")
+  }
+
+  function test_a_hello_without_a_store_id_is_ignored() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    nudge(store, [tc.doneRun, 1005])
+    var bad = ["", 7, null, { id: "x" }, undefined]
+    for (var i = 0; i < bad.length; i++) {
+      var label = "storeId " + JSON.stringify(bad[i])
+      var seq = store.snapshotRunner.seq
+      sendLine(store.watchProc, storeHello(bad[i], 1200, false))
+      compare(store.storeId, fixtureStore(), label)
+      compare(store.snapshotRunner.seq, seq, label + ": no list snapshot")
+      compare(store.runs.length, 2, label)
+      compare(store.watchCursor, 1005, label)
+      compare(store.nudges[tc.doneRun], 1005, label)
+    }
+    var before = store.snapshotRunner.seq
+    sendLine(store.watchProc, storeHello(undefined, 900, true))
+    compare(store.snapshotRunner.seq, before + 1, "cursorReset alone still starts over")
+    compare(store.storeId, fixtureStore())
+  }
+
+  // Review Focus 3.
+  function test_a_store_that_changes_back_starts_over_again() {
+    var store = capturedStore(); if (!store) return
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, storeHello(otherStore(), 1200, false))
+    reply(store.snapshotRunner.current, storeList(otherStore(), 1200), 0)
+    compare(store.snapshotRunner.seq, seq + 1)
+    sendLine(store.watchProc, { cursor: 1210 })
+    sendLine(store.watchProc, storeHello(fixtureStore(), 1300, false))
+    compare(store.storeId, fixtureStore(), "the first store again is a change too")
+    compare(store.watchCursor, 0)
+    compare(store.runs.length, 0)
+    compare(store.snapshotRunner.seq, seq + 2)
+  }
+
+  // Review Focus 4.
+  function test_a_list_of_the_old_store_in_flight_at_a_hello_reset_is_never_applied() {
+    var store = capturedStore(); if (!store) return
+    store.refresh()
+    var old = store.snapshotRunner.current
+    sendLine(store.watchProc, storeHello(otherStore(), 1200, false))
+    reply(old, capturedList(), 0)
+    compare(store.runs.length, 0, "the old store's list was superseded")
+    compare(store.storeId, otherStore(), "and names no store")
+    reply(store.snapshotRunner.current, storeList(otherStore(), 1200), 0)
+    compare(store.asOfSeq, 1200)
+    compare(store.runs.length, 2)
+  }
 }

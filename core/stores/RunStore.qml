@@ -265,9 +265,11 @@ Scope {
   // One stdout line of the watch, a nudge source never folded into state.
   // {"changed": [{run, seq}, ...]} records each nudge (recordNudges).
   // {"ok": false, ...} is kept as the envelope its exit explains. The hello,
-  // {"hello": {"schema": N, "am": V, "cursorReset": B}}, sets amSchema to N
-  // (an integer of 1 or more, else 0) and amVersion to V (a string, else "");
-  // B === true starts over (resetCursor), anything else starts nothing.
+  // {"hello": {"schema": N, "am": V, "head": H, "cursorReset": B,
+  // "storeId": S}}, sets amSchema to N (an integer of 1 or more, else 0) and
+  // amVersion to V (a string, else ""), and records S (seeStore). B === true,
+  // or an S naming another store than the one last seen, starts over
+  // (resetCursor) once; anything else starts nothing. H is not read.
   // {"cursor": C} sets watchCursor when C is an integer of 0 or more.
   // Anything else -- blank, not JSON, not an object, a hello that is not an
   // object -- is ignored. Never throws.
@@ -284,7 +286,8 @@ Scope {
       var schema = value.hello.schema
       store.amSchema = typeof schema === "number" && Number.isInteger(schema) && schema >= 1 ? schema : 0
       store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
-      if (value.hello.cursorReset === true) store.resetCursor()
+      var changed = store.seeStore(value.hello.storeId)
+      if (changed || value.hello.cursorReset === true) store.resetCursor()
     } else if (store.hasKey(value, "cursor")) {
       if (store.isSeq(value.cursor)) store.watchCursor = value.cursor
     }
