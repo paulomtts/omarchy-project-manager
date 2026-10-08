@@ -4446,4 +4446,175 @@ TestCase {
       compare(store.alertsArmed, true, label)
     }
   }
+
+  // ---- store id reset (4.1.4)
+
+  // The captures' store_id: every capture shares it.
+  function fixtureStore() { return F.load("runs.json").data.store_id }
+
+  // synthetic: another am store's id -- the fixture id with its last
+  // character changed.
+  function otherStore() {
+    var id = fixtureStore()
+    return id.slice(0, -1) + (id.charAt(id.length - 1) === "0" ? "1" : "0")
+  }
+
+  // synthetic: capturedList's reply at `asOf` (989 when undefined) with
+  // store_id `id` (the key absent when undefined); with `escalate`, the
+  // started run's status is status-escalated.json's data.
+  function storeList(id, asOf, escalate) {
+    var value = JSON.parse(capturedList([], asOf))
+    if (id === undefined) delete value.store_id
+    else value.store_id = id
+    if (escalate) value.runs[0].status = F.load("status-escalated.json").data
+    return JSON.stringify(value) + "\n"
+  }
+
+  // An active store on the captured runs' project whose first list named no
+  // store (synthetic: storeList without store_id): storeId is still "" and
+  // the watch runs.
+  function unnamedStore() {
+    var store = activeStore(tc.capRoot); if (!store) return null
+    reply(store.snapshotRunner.current, storeList(undefined), 0)
+    verify(store.watchProc, "the watch was started")
+    return store
+  }
+
+  function test_a_store_id_starts_as_none() {
+    var store = make(); if (!store) return
+    compare(store.storeId, "")
+  }
+
+  function test_a_list_with_the_seen_store_id_keeps_the_live_state() {
+    var store = capturedStore(); if (!store) return
+    compare(store.storeId, fixtureStore(), "the first list named the store")
+    sendLine(store.watchProc, { cursor: 1005 })
+    nudge(store, [tc.doneRun, 1005])
+    store.refresh()
+    var seq = store.snapshotRunner.seq
+    reply(store.snapshotRunner.current, capturedList(), 0)
+    compare(store.storeId, fixtureStore())
+    compare(store.watchCursor, 1005)
+    compare(store.nudges[tc.doneRun], 1005)
+    compare(store.debounceTimer.running, true)
+    compare(store.snapshotRunner.seq, seq, "no further list snapshot")
+  }
+
+  function test_a_list_from_another_store_starts_over_in_place() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    var proc = readOf(store, tc.doneRun, 1005)
+    nudge(store, [tc.startedRun, 1006])
+    store.refresh()
+    var seq = store.snapshotRunner.seq
+    reply(store.snapshotRunner.current, storeList(otherStore(), 1200, true), 0)
+    compare(store.storeId, otherStore())
+    compare(store.watchCursor, 0)
+    compare(Object.keys(store.nudges).length, 0)
+    compare(store.debounceTimer.running, false)
+    compare(ids(store.runs), tc.startedRun + "," + tc.doneRun, "the reply is the new store's full snapshot")
+    compare(store.runs[0].status, "escalated")
+    compare(store.asOfSeq, 1200)
+    compare(store.appliedSeq[tc.startedRun], 1200)
+    compare(store.appliedSeq[tc.doneRun], 1200)
+    compare(store.toasts.length, 0, "the new store's first list only arms")
+    compare(store.alertsArmed, true)
+    compare(store.snapshotRunner.seq, seq, "no further list snapshot")
+    var before = store.runs
+    // synthetic: status-done.json's run read under the new store, newer than the list.
+    var late = JSON.parse(runReply(tc.doneRun, "status-done.json"))
+    late.store_id = otherStore()
+    late.as_of_seq = 1300
+    reply(proc, JSON.stringify(late) + "\n", 0)
+    verify(store.runs === before, "the old store's read in flight was dropped")
+    compare(store.appliedSeq[tc.doneRun], 1200)
+    compare(store.storeId, otherStore())
+  }
+
+  // Review Focus 1.
+  function test_a_list_from_another_store_while_closed_is_applied_without_arming() {
+    var store = makeWithProject(tc.capRoot); if (!store) return
+    reply(store.snapshotRunner.current, capturedList(), 0)
+    compare(store.storeId, fixtureStore())
+    store.refresh()
+    reply(store.snapshotRunner.current, storeList(otherStore(), 1200, true), 0)
+    compare(store.storeId, otherStore())
+    compare(store.runs[0].status, "escalated")
+    compare(store.asOfSeq, 1200)
+    compare(store.alertsArmed, false, "a closed panel never arms")
+    compare(store.toasts.length, 0)
+  }
+
+  // Review Focus 5.
+  function test_a_list_from_another_store_keeps_the_selection() {
+    var store = capturedStore(); if (!store) return
+    store.selectedRunId = tc.startedRun
+    verify(store.selectedAttempt !== null, "its default attempt is shown")
+    var attempt = store.selectedAttempt
+    store.refresh()
+    reply(store.snapshotRunner.current, storeList(otherStore(), 1200), 0)
+    compare(store.storeId, otherStore())
+    compare(store.selectedRunId, tc.startedRun)
+    verify(store.selectedAttempt === attempt, "the pane stays on its attempt")
+  }
+
+  function test_the_first_store_id_a_list_names_resets_nothing() {
+    var store = unnamedStore(); if (!store) return
+    compare(store.storeId, "", "a list without store_id names no store")
+    sendLine(store.watchProc, { cursor: 1005 })
+    nudge(store, [tc.doneRun, 1005])
+    store.refresh()
+    var seq = store.snapshotRunner.seq
+    reply(store.snapshotRunner.current, capturedList(), 0)
+    compare(store.storeId, fixtureStore())
+    compare(store.watchCursor, 1005)
+    compare(store.nudges[tc.doneRun], 1005)
+    compare(store.debounceTimer.running, true)
+    compare(store.snapshotRunner.seq, seq, "no further list snapshot")
+  }
+
+  function test_a_list_without_a_store_id_is_ignored() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    nudge(store, [tc.doneRun, 1005])
+    var bad = ["", 7, null, { id: "x" }, undefined]
+    for (var i = 0; i < bad.length; i++) {
+      var label = "store_id " + JSON.stringify(bad[i])
+      store.refresh()
+      var seq = store.snapshotRunner.seq
+      reply(store.snapshotRunner.current, storeList(bad[i]), 0)
+      compare(store.storeId, fixtureStore(), label)
+      compare(store.watchCursor, 1005, label)
+      compare(store.nudges[tc.doneRun], 1005, label)
+      compare(store.runs.length, 2, label)
+      compare(store.snapshotRunner.seq, seq, label + ": no further list snapshot")
+    }
+  }
+
+  function test_the_store_id_outlives_the_watch_a_project_switch_and_am_missing() {
+    var store = capturedStore(); if (!store) return
+    endWatch(store.watchProc, "", 0)
+    compare(store.storeId, fixtureStore(), "the watch ending")
+    store.active = false
+    compare(store.storeId, fixtureStore(), "the panel closing")
+    store.project = rootB
+    compare(store.storeId, fixtureStore(), "a project switch")
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "AmMissing", "message": "am is not installed."}}\n', 1)
+    compare(store.amStatus, "missing")
+    compare(store.storeId, fixtureStore(), "AmMissing")
+  }
+
+  function test_a_refused_list_naming_another_store_changes_no_store_id() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    store.refresh()
+    // synthetic: am's StoreBusyError envelope carrying another store's id.
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, store_id: otherStore(),
+          error: { type: "StoreBusyError", message: "the am store is busy; try again" } }) + "\n", 1)
+    compare(store.storeId, fixtureStore())
+    compare(store.stale, true)
+    compare(ids(store.runs), tc.startedRun + "," + tc.doneRun)
+    compare(store.watchCursor, 1005)
+    compare(store.asOfSeq, 989)
+  }
 }

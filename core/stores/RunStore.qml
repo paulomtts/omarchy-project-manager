@@ -60,6 +60,10 @@ Scope {
   // {runId: seq}: the highest changed seq per run since the last debounce
   // trigger. Replaced, never changed in place.
   property var nudges: ({})
+  // am's store_id from the last hello or snapshot that named one; "" = none
+  // yet. Replaced, never derived. A project switch, the watch ending and
+  // AmMissing keep it.
+  property string storeId: ""
 
   // A watch has been started since the last activation or project switch:
   // later snapshots never start another (the helper picks up the project's new
@@ -324,20 +328,37 @@ Scope {
     for (var j = 0; j < reads.length; j++) store.readRun(reads[j], taken[reads[j]])
   }
 
-  // The watch's hello says its cursor no longer holds: the coverage, the
-  // cursor and the nudges are forgotten, the runs emptied, the alerts disarmed
-  // (the next list snapshot only arms), every run read in flight dropped, and
-  // one list snapshot launched. Selection, logs, controls and dispatch stay.
+  // Starts over: the coverage (appliedSeq, asOfSeq) and the live state
+  // (forgetLive) are forgotten and one list snapshot is launched.
   function resetCursor() {
     store.appliedSeq = {}
     store.asOfSeq = 0
+    store.forgetLive()
+    store.refresh()
+  }
+
+  // The live state of the store last seen is forgotten: the cursor, the
+  // nudges and their debounce, every run read in flight (its reply changes
+  // nothing), the runs, and the alerts (the next list snapshot only arms).
+  // Selection, logs, controls and dispatch stay.
+  function forgetLive() {
     store.watchCursor = 0
     store.nudges = {}
     debounceTimer.stop()
+    store.dropReads()
     store.runs = []
     store.alertsArmed = false
-    store.dropReads()
-    store.refresh()
+  }
+
+  // A store id seen in a hello or a good snapshot. A non-empty string is
+  // recorded as storeId; anything else is no store id and changes nothing.
+  // Returns whether it names another store than the one last seen: storeId
+  // was non-empty and differs. The first one seen is no change.
+  function seeStore(id) {
+    if (typeof id !== "string" || id === "") return false
+    var changed = store.storeId !== "" && store.storeId !== id
+    store.storeId = id
+    return changed
   }
 
   // amSchema and amVersion back to unknown: no current watch has said hello.
@@ -590,7 +611,11 @@ Scope {
   // `project` (trailing "/" ignored on both sides) and replaces the runs with
   // them, in am's order (none at all is fine); asOfSeq becomes its as_of_seq
   // (a non-negative integer, else 0) and appliedSeq {id: asOfSeq} for every
-  // entry with an id, of every project. StoreBusyError keeps everything and
+  // entry with an id, of every project. Its store_id is recorded (seeStore);
+  // one naming another store than the one last seen first forgets the old
+  // store's live state (forgetLive), so the reply is applied as the new
+  // store's full snapshot, raises no toast and launches no other snapshot.
+  // StoreBusyError keeps everything and
   // only marks the runs stale. AmMissing empties them and the coverage: no
   // badges while am is not there. Any other failure -- an ok:false envelope or
   // output that is not one -- keeps what the last good snapshot said and only
@@ -600,6 +625,7 @@ Scope {
   function applySnapshot(stdout, exitCode) {
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
+      if (store.seeStore(envelope.store_id)) store.forgetLive()
       var list = Array.isArray(envelope.runs) ? envelope.runs : []
       var asOf = store.isSeq(envelope.as_of_seq) ? envelope.as_of_seq : 0
       var root = store.trimSlashes(store.project)
