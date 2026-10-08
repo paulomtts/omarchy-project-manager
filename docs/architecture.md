@@ -252,8 +252,9 @@ would load its own type instead of ours.
   status run; it is skipped when `am` or `git` is absent, `am runs` fails or
   the checkout has no runs.
 - `tests/fixtures/am/` holds real captured am payloads: `runs.json`, five
-  `status-*.json`, `watch-events.json`, `watch-hello.json` and
-  `logs-attempt.json`; keys starting with `_` are annotations readers ignore.
+  `status-*.json`, `watch-events.json`, `watch-hello.json`,
+  `logs-attempt.json` and `events.json` (an `am events RUN` page with `head`);
+  keys starting with `_` are annotations readers ignore.
   Tests of code that reads am output (`normalizeRun`, `logTail`, the `runs-*`
   helpers, `run-control.py`, `RunStore`'s snapshot, logs and watch handling)
   build their input from these fixtures; a hand-written am payload is used only

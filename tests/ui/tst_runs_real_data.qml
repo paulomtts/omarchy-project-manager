@@ -17,16 +17,16 @@ TestCase {
 
   property var pA: ({ root_path: "/home/u/a", name: "alpha" })
 
-  readonly property string startedRun: "20261005T021400Z-837c4431"
-  readonly property string doneRun: "20261004T204141Z-cb11063d"
-  readonly property string milestone: "837c4431-7a24-4531-96a8-881698ea8c5e"
-  readonly property string storyDone: "1c665cfd-9a72-4a9d-a539-4c83f0f6ddc1"
-  readonly property string storyStarted: "d3d879b9-cb74-41ca-9a37-63f477de9711"
-  readonly property string storyPending1: "3d877d1f-e4f8-49c8-8910-7475c541bba2"
-  readonly property string storyPending2: "c56468c7-ade1-4b28-9450-78e480149003"
-  readonly property string subDone: "a19ca446-659e-4735-86ed-5a583c1730bf"
-  readonly property string subRunning: "299ec9c0-b935-4c44-a7a0-982a104cbfe5"
-  readonly property string subPending: "fdb5feb1-0907-40b2-9937-d9b4cc2875f0"
+  readonly property string startedRun: "20261008T143823Z-e795ad19"
+  readonly property string doneRun: "20261008T143807Z-63060df3"
+  readonly property string milestone: "e795ad19-c81f-43ec-bdda-ef61ab5f860b"
+  readonly property string storyDone: "9f0f68fc-f231-4ef2-b646-00a7af925ea2"
+  readonly property string storyStarted: "7a7effb4-6ec5-4596-bcf1-be24546d4ac1"
+  readonly property string storyPending1: "56fad616-3588-4bb7-a154-4ef2a8ab4c91"
+  readonly property string storyPending2: "031fc666-339c-4b6e-b03d-6e66f62b39ac"
+  readonly property string subDone: "e4214f55-1580-42fe-b0da-94a4e8b10912"
+  readonly property string subRunning: "2280a6ab-9c40-434b-9729-63fd1f373754"
+  readonly property string subPending: "0849081e-b432-465e-81b1-0d2bc834f5fa"
 
   function make() {
     var host = createTemporaryObject(hostC, tc)
@@ -130,7 +130,7 @@ TestCase {
     }
     verify(!H.find(p, "runStory4"), "four stories")
     var label = String(H.find(p, "runSubtaskLabel0_0").text)
-    verify(label.indexOf("adff6c85-ba42-4586-8066-b93e8ac877bb") >= 0, label)
+    verify(label.indexOf("7442d674-e0d4-4048-96ee-cd27b5ba34f8") >= 0, label)
     verify(label.endsWith("· review.1"), label)
   }
 
@@ -138,11 +138,11 @@ TestCase {
   function test_opening_the_done_run_fetches_its_default_attempt_under_the_project_root() {
     var p = openDoneRun(); if (!p) return
     compare(p.app.runs.selectedAttempt,
-            { card_id: "22153f5f-9632-4b5f-a7dd-664c39d89e5c", phase: "review", attempt: 1 })
+            { card_id: "767b5f1c-506a-4daa-9157-0c838165cc63", phase: "review", attempt: 1 })
     var proc = p.app.runs.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
     verify(String(proc.command[1]).indexOf("core/backend/runs/runs-logs.py") > 0, String(proc.command[1]))
-    compare(argv(proc), "/home/u/a|" + doneRun + "|22153f5f-9632-4b5f-a7dd-664c39d89e5c|review|1")
+    compare(argv(proc), "/home/u/a|" + doneRun + "|767b5f1c-506a-4daa-9157-0c838165cc63|review|1")
   }
 
   // The default fetch is still in flight when the row is activated: the second
@@ -154,13 +154,13 @@ TestCase {
     verify(first, "the default fetch is in flight")
     H.find(p, "runSubtask0_0").activated()
     compare(p.app.runs.selectedAttempt,
-            { card_id: "adff6c85-ba42-4586-8066-b93e8ac877bb", phase: "review", attempt: 1 })
+            { card_id: "7442d674-e0d4-4048-96ee-cd27b5ba34f8", phase: "review", attempt: 1 })
     var proc = p.app.runs.logsRunner.current
     verify(proc && proc !== first, "a new launch for the new attempt")
-    compare(argv(proc), "/home/u/a|" + doneRun + "|adff6c85-ba42-4586-8066-b93e8ac877bb|review|1")
+    compare(argv(proc), "/home/u/a|" + doneRun + "|7442d674-e0d4-4048-96ee-cd27b5ba34f8|review|1")
     reply(proc, logsReply(), 0)
     wait(50)
-    compare(H.find(p, "runOutputHeading").text, "Output · adff6c85-ba42-4586-8066-b93e8ac877bb review.1")
+    compare(H.find(p, "runOutputHeading").text, "Output · 7442d674-e0d4-4048-96ee-cd27b5ba34f8 review.1")
     var stdout = F.load("logs-attempt.json").data.artifacts.stdout.text
     compare(H.find(p, "runOutputText").text, stdout.slice(0, stdout.length - 1))
     compare(H.find(p, "runOutputError").visible, false)
@@ -172,7 +172,7 @@ TestCase {
     compare(p.app.runs.logsText, stdout.slice(0, stdout.length - 1), "the superseded fetch changes nothing")
     feedFixtures(p)
     compare(p.app.runs.selectedAttempt,
-            { card_id: "adff6c85-ba42-4586-8066-b93e8ac877bb", phase: "review", attempt: 1 })
+            { card_id: "7442d674-e0d4-4048-96ee-cd27b5ba34f8", phase: "review", attempt: 1 })
     compare(p.app.runs.logsLoading, false, "the same capture again fetches nothing")
     compare(H.find(p, "runOutputText").text, stdout.slice(0, stdout.length - 1))
   }
@@ -184,9 +184,9 @@ TestCase {
     p.navigator.openRun(startedRun)
     wait(50)
     compare(p.app.runs.selectedAttempt,
-            { card_id: "299ec9c0-b935-4c44-a7a0-982a104cbfe5", phase: "explore", attempt: 1 })
+            { card_id: "2280a6ab-9c40-434b-9729-63fd1f373754", phase: "explore", attempt: 1 })
     compare(argv(p.app.runs.logsRunner.current),
-            "/home/u/a|" + startedRun + "|299ec9c0-b935-4c44-a7a0-982a104cbfe5|explore|1")
+            "/home/u/a|" + startedRun + "|2280a6ab-9c40-434b-9729-63fd1f373754|explore|1")
   }
 
   function test_the_graph_story_node_shows_the_started_runs_rollup_and_rings_the_running_subtask() {

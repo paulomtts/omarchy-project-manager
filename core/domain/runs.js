@@ -8,9 +8,10 @@
 //   raw = {
 //     row:    one `am runs` entry without its `status`:
 //             { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
-//               milestone_id, card_id, lease, progress }
+//               milestone_id, card_id, lease, progress, project: { id, repo_dir } }
 //     status: `am status` data, may be absent:
-//             { run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at },
+//             { as_of_seq, store_id,
+//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at },
 //               stories: [{ card_id, title, level, status, tip_branch,
 //                           subtasks: [{ card_id, branch, base_branch, status, worktree_path,
 //                                        phases: [{ name, kind, status, started_at, ended_at, detail,
@@ -25,6 +26,9 @@
 // the am status run's, else the row's. `lease` keeps pid, host, heartbeat_at,
 // accepting and live. `requests` are am's control requests in the order made;
 // handled_at "" means the run has not acted on it yet.
+// `project` is the row's { id, repo_dir }: id a finite number else null,
+// repo_dir text. It is null when the row has no project object; am status
+// never supplies it, and the run's repo_dir is independent of it.
 // tree.stories: every object story in am's order, the synthetic `integrate` and
 // `bases` included; its `subtasks` is the card_id strings of its subtasks.
 // tree.subtasks: the subtasks of every other story, flattened in am's order,
@@ -33,6 +37,8 @@
 // phase, attempt and state, in am's order. A row under `integrate` or `bases`
 // whose subtask is a real card id (an Integrate resolver) is dropped.
 //
+// as_of_seq and store_id are not kept: the store reads them. Keys not named
+// here are ignored. Only `row` and `status` are read; it takes no events.
 // The status always comes from `am`, never from a brd card. The output holds
 // copies, never am's objects. Never throws: anything missing or malformed
 // becomes its default, and a missing lease means the run is not live.
@@ -77,6 +83,15 @@ function normalizeRun(raw) {
       heartbeat_at: asGiven(l.heartbeat_at),
       accepting: l.accepting === true,
       live: l.live === true
+    }
+  }
+
+  var project = null
+  if (isObject(row.project)) {
+    var p = row.project
+    project = {
+      id: typeof p.id === "number" && isFinite(p.id) ? p.id : null,
+      repo_dir: text(p.repo_dir)
     }
   }
 
@@ -135,6 +150,7 @@ function normalizeRun(raw) {
     branch_prefix: firstText(row.branch_prefix, run.branch_prefix),
     workflow: firstText(row.workflow, run.workflow),
     lease: lease,
+    project: project,
     requests: requests,
     rows: rows,
     tree: { stories: stories, subtasks: subtasks }

@@ -251,11 +251,11 @@ TestCase {
     verify(Qt.colorEqual(H.find(s.screen, "runSynthetic0").color, urgent), "a dead bookkeeping row")
   }
 
-  // Real am: review.1 of eb8b1851 is the gate_failed attempt that escalated
+  // Real am: review.1 of 10e26d57 is the gate_failed attempt that escalated
   // status-escalated.json; explore.1 of the same subtask is ok.
   function test_a_gate_failed_attempt_of_real_am_shows_the_dead_glyph_in_urgent() {
     var run = Runs.normalizeRun(amRun("status-escalated.json"))
-    var card = "eb8b1851-8245-45c3-9a29-d1fcefaad0b9"
+    var card = "10e26d57-374c-48d3-bc45-09389b42cfac"
     var key = ""
     var stories = Runs.runTree(run).stories
     for (var si = 0; si < stories.length; si++) {

@@ -1,5 +1,5 @@
 {
-  "_note": "Captured 2026-10-08 from agent-manager 0.2.0 (its hello reports am 0.1.0): the stdout of `am watch 20261008T143807Z-63060df3` on a scratch store (HOME, XDG_DATA_HOME and XDG_STATE_HOME under a fresh dir), a scratch git repo with a brd board at /home/user/Code/omarchy-project-manager, and agent-manager's tests/e2e/fake_claude.py first on PATH as claude; the done run (a milestone of four chained stories (2, 3, 1 and 4 subtasks) run to done). Only the scratch root is rewritten so paths read /home/user/...; truncated to its first 60 of 475 events. Nothing else edited.",
+  "_note": "Captured 2026-10-08 from agent-manager 0.2.0 (its hello reports am 0.1.0): the stdout of `am events 20261008T143807Z-63060df3 --limit 60` on a scratch store (HOME, XDG_DATA_HOME and XDG_STATE_HOME under a fresh dir), a scratch git repo with a brd board at /home/user/Code/omarchy-project-manager, and agent-manager's tests/e2e/fake_claude.py first on PATH as claude; the done run (a milestone of four chained stories (2, 3, 1 and 4 subtasks) run to done). Only the scratch root is rewritten so paths read /home/user/...; one unedited page. Nothing else edited.",
   "data": {
     "events": [
       {
@@ -1294,7 +1294,8 @@
         "story": "ae1e3ba6-cc07-4e9d-aff7-db161c3be234",
         "ts": "2026-10-08T14:38:09.361551Z"
       }
-    ]
+    ],
+    "head": 1005
   },
   "ok": true
 }

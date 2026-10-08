@@ -152,7 +152,8 @@ def ev(event="phase_upsert", ts="NOW"):
 
 
 def upsert(ts="NOW"):
-    """The captured run_upsert, the first line of the run, carrying its repo_dir."""
+    """The captured run_upsert, carrying its repo_dir (not the run's first line:
+    lease_acquired comes before it)."""
     return ev("run_upsert", ts)
 
 

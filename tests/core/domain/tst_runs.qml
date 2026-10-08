@@ -31,7 +31,7 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow", label)
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,tree,workflow", label)
     compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
@@ -40,6 +40,7 @@ TestCase {
     compare(r.base_branch, "", label)
     compare(r.branch_prefix, "", label)
     compare(r.lease, null, label)
+    compare(r.project, null, label)
     compare(Array.isArray(r.rows), true, label)
     compare(r.rows.length, 0, label)
     compare(Array.isArray(r.tree.stories), true, label)
@@ -228,19 +229,19 @@ TestCase {
 
   function test_normalize_scalars_from_fixture() {
     var r = Runs.normalizeRun(amRun("status-started.json"))
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,repo_dir,requests,rows,started_at,status,tree,workflow")
-    compare(r.id, "20261005T021400Z-837c4431")
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,tree,workflow")
+    compare(r.id, "20261008T143823Z-e795ad19")
     compare(r.repo_dir, "/home/user/Code/omarchy-project-manager")
-    compare(r.milestone_id, "837c4431-7a24-4531-96a8-881698ea8c5e", "only the am runs row carries it")
+    compare(r.milestone_id, "e795ad19-c81f-43ec-bdda-ef61ab5f860b", "only the am runs row carries it")
     compare(r.status, "started")
     compare(r.workflow, "milestone")
     compare(r.base_branch, "main")
     compare(r.branch_prefix, "dsp")
-    compare(r.started_at, "2026-10-05 02:14:00.590972+00:00")
+    compare(r.started_at, "2026-10-08 14:38:23.739155+00:00")
     compare(Object.keys(r.lease).sort().join(","), "accepting,heartbeat_at,host,live,pid", "acquired_at is not kept")
-    compare(r.lease.pid, 3736962)
+    compare(r.lease.pid, 1991)
     compare(r.lease.host, "mtts-desktop")
-    compare(r.lease.heartbeat_at, "2026-10-05T03:30:22.281942+00:00")
+    compare(r.lease.heartbeat_at, "2026-10-08T14:38:28.740774+00:00")
     compare(r.lease.accepting, true)
     compare(r.lease.live, true)
     compare(Array.isArray(r.requests), true)
@@ -251,10 +252,10 @@ TestCase {
     var raw = amRun("status-started.json")
     var am = raw.status.stories[1]
     var s = Runs.normalizeRun(raw).tree.stories[1]
-    compare(s.card_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
-    compare(JSON.stringify(s.subtasks), JSON.stringify(["a19ca446-659e-4735-86ed-5a583c1730bf",
-                                                        "299ec9c0-b935-4c44-a7a0-982a104cbfe5",
-                                                        "fdb5feb1-0907-40b2-9937-d9b4cc2875f0"]))
+    compare(s.card_id, "7a7effb4-6ec5-4596-bcf1-be24546d4ac1")
+    compare(JSON.stringify(s.subtasks), JSON.stringify(["e4214f55-1580-42fe-b0da-94a4e8b10912",
+                                                        "2280a6ab-9c40-434b-9729-63fd1f373754",
+                                                        "0849081e-b432-465e-81b1-0d2bc834f5fa"]))
     for (var i = 0; i < s.subtasks.length; i++) compare(typeof s.subtasks[i], "string", "id " + i)
     compare(s.title, am.title)
     compare(s.level, am.level)
@@ -277,8 +278,8 @@ TestCase {
     compare(cardIds(r.tree.subtasks), ids.join(","), "am's flattened order")
     for (var k = 0; k < r.tree.subtasks.length; k++) compare(r.tree.subtasks[k].story_id, storyIds[k], "story_id " + k)
     var open = r.tree.subtasks[3]
-    compare(open.card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
-    compare(open.story_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
+    compare(open.card_id, "2280a6ab-9c40-434b-9729-63fd1f373754")
+    compare(open.story_id, "7a7effb4-6ec5-4596-bcf1-be24546d4ac1")
     compare(Object.keys(open).sort().join(","), "base_branch,branch,card_id,phases,status,story_id,worktree_path")
     compare(open.phases[1].name, "explore")
     compare(open.phases[1].attempts[0].n, 1)
@@ -287,13 +288,13 @@ TestCase {
   function test_normalize_rows_renamed() {
     var r = Runs.normalizeRun(amRun("status-started.json"))
     compare(Object.keys(r.rows[0]).sort().join(","), "attempt,card_id,phase,status,story_id")
-    compare(r.rows[0].story_id, "1c665cfd-9a72-4a9d-a539-4c83f0f6ddc1")
-    compare(r.rows[0].card_id, "5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff")
+    compare(r.rows[0].story_id, "9f0f68fc-f231-4ef2-b646-00a7af925ea2")
+    compare(r.rows[0].card_id, "5560d0fe-2b8e-4ef9-ad71-96b50ee89daa")
     compare(r.rows[0].phase, "worktree")
     compare(r.rows[0].attempt, null)
     compare(r.rows[0].status, "done")
-    compare(r.rows[43].story_id, "d3d879b9-cb74-41ca-9a37-63f477de9711")
-    compare(r.rows[43].card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    compare(r.rows[43].story_id, "7a7effb4-6ec5-4596-bcf1-be24546d4ac1")
+    compare(r.rows[43].card_id, "2280a6ab-9c40-434b-9729-63fd1f373754")
     compare(r.rows[43].phase, "explore")
     compare(r.rows[43].attempt, 1)
     compare(r.rows[43].status, "started")
@@ -303,11 +304,11 @@ TestCase {
     var r = Runs.normalizeRun(amRun("status-done-integrate.json"))
     var integrate = r.tree.stories[2]
     compare(integrate.card_id, "integrate")
-    compare(JSON.stringify(integrate.subtasks), JSON.stringify(["b429248c-c69e-4df5-8f7d-52776253ea14"]))
+    compare(JSON.stringify(integrate.subtasks), JSON.stringify(["862eb9b7-bb74-452f-9148-0f6a34434ab3"]))
     compare(integrate.status, "done")
     for (var i = 0; i < r.tree.subtasks.length; i++) {
       verify(r.tree.subtasks[i].story_id !== "integrate", "no subtask of integrate at " + i)
-      verify(r.tree.subtasks[i].card_id !== "b429248c-c69e-4df5-8f7d-52776253ea14", "no resolver subtask at " + i)
+      verify(r.tree.subtasks[i].card_id !== "862eb9b7-bb74-452f-9148-0f6a34434ab3", "no resolver subtask at " + i)
     }
     compare(r.rows.length, 28, "the two resolver rows are dropped")
     for (var j = 0; j < r.rows.length; j++) verify(r.rows[j].story_id !== "integrate", "no integrate row at " + j)
@@ -316,7 +317,7 @@ TestCase {
   function test_normalize_base_rows_kept() {
     // synthetic: a bases story, which no capture contains
     var raw = amRun("status-done-integrate.json")
-    var baseId = "base-2f88f774-d2b6-4c8d-adc1-6ac9eb978017"
+    var baseId = "base-99f81fdf-94df-47da-abd3-ed625f851142"
     raw.status.stories.push({ card_id: "bases", title: "Bases", level: 0, status: "done", tip_branch: "m3-bases",
                               subtasks: [{ card_id: baseId, branch: "m3-" + baseId, base_branch: "main", status: "done",
                                            worktree_path: "/tmp/m3-bases", phases: [] }] })
@@ -382,16 +383,234 @@ TestCase {
       compare(Object.getPrototypeOf(copies[i][1]) === Object.prototype, true, copies[i][0] + " prototype")
       compare(copies[i][1].x, undefined, copies[i][0] + " x")
     }
-    compare(r.tree.subtasks[3].card_id, "299ec9c0-b935-4c44-a7a0-982a104cbfe5", "the rest is copied")
+    compare(r.tree.subtasks[3].card_id, "2280a6ab-9c40-434b-9729-63fd1f373754", "the rest is copied")
     compare(r.tree.subtasks[3].phases[1].name, "explore")
+  }
+
+  // ---- 4.0.3: the run's project and am 0.2.0's new keys ------------------------------------
+
+  function hasOwn(o, key) { return Object.prototype.hasOwnProperty.call(o, key) }
+
+  // The project normalizeRun gives for the status-started.json run whose row's
+  // project is replaced by `project`.
+  function projectOf(project) {
+    var raw = amRun("status-started.json")
+    raw.row.project = project
+    return Runs.normalizeRun(raw).project
+  }
+
+  function test_normalize_project_from_fixture() {
+    var names = ["status-started.json", "status-done.json", "status-escalated.json", "status-done-integrate.json"]
+    for (var i = 0; i < names.length; i++) {
+      var raw = amRun(names[i])
+      verify(!hasOwn(raw.status.run, "project"), names[i] + ": the am status run has no project")
+      var p = Runs.normalizeRun(raw).project
+      compare(Object.keys(p).sort().join(","), "id,repo_dir", names[i] + " keys")
+      compare(p.id, 1, names[i] + " id")
+      compare(p.repo_dir, "/home/user/Code/omarchy-project-manager", names[i] + " repo_dir")
+    }
+
+    // the am runs rows alone, before any am status
+    var rows = F.load("runs.json").data.runs
+    for (var j = 0; j < rows.length; j++) {
+      var bare = Runs.normalizeRun({ row: rows[j] }).project
+      compare(JSON.stringify(bare), JSON.stringify({ id: 1, repo_dir: "/home/user/Code/omarchy-project-manager" }), "row " + j + " alone")
+    }
+  }
+
+  function test_normalize_project_absent() {
+    var missing = amRun("status-started.json")
+    verify(hasOwn(missing.row, "project"), "the capture's row carries a project")
+    // synthetic: the row's project deleted
+    delete missing.row.project
+    compare(Runs.normalizeRun(missing).project, null, "missing")
+
+    // synthetic: the row's project replaced by each non-object
+    var cases = [["null", null], ["string", "/home/user/Code/omarchy-project-manager"], ["number", 1],
+                 ["array", [1, "/home/user/Code/omarchy-project-manager"]], ["true", true], ["false", false]]
+    for (var i = 0; i < cases.length; i++) compare(projectOf(cases[i][1]), null, cases[i][0])
+  }
+
+  function test_normalize_project_coercion() {
+    // synthetic: the row's project with each id that is not a finite number
+    var badIds = [["string", "1"], ["null", null], ["NaN", NaN], ["Infinity", Infinity], ["-Infinity", -Infinity],
+                  ["object", {}], ["array", [1]], ["boolean", true]]
+    for (var i = 0; i < badIds.length; i++) {
+      compare(projectOf({ id: badIds[i][1], repo_dir: "/p" }).id, null, "id " + badIds[i][0])
+    }
+    compare(projectOf({ repo_dir: "/p" }).id, null, "id missing")
+
+    // synthetic: finite ids, falsy and fractional included, are kept as given
+    var goodIds = [0, -3, 1.5, 2]
+    for (var j = 0; j < goodIds.length; j++) compare(projectOf({ id: goodIds[j], repo_dir: "/p" }).id, goodIds[j], "id " + goodIds[j])
+
+    // synthetic: repo_dir as text
+    compare(projectOf({ id: 1 }).repo_dir, "", "repo_dir missing")
+    compare(projectOf({ id: 1, repo_dir: null }).repo_dir, "", "repo_dir null")
+    compare(projectOf({ id: 1, repo_dir: 42 }).repo_dir, "42", "repo_dir number")
+    compare(projectOf({ id: 1, repo_dir: true }).repo_dir, "true", "repo_dir boolean")
+    compare(projectOf({ id: 1, repo_dir: "" }).repo_dir, "", "repo_dir empty")
+
+    // synthetic: extra keys inside the project are dropped
+    var extra = projectOf({ id: 1, repo_dir: "/p", name: "x", root_path: "/r", story_id: "s" })
+    compare(Object.keys(extra).sort().join(","), "id,repo_dir")
+    compare(extra.id, 1)
+    compare(extra.repo_dir, "/p")
+  }
+
+  function test_normalize_project_ignores_status() {
+    // synthetic: a project only on the am status run and on am status itself
+    var raw = amRun("status-started.json")
+    delete raw.row.project
+    raw.status.run.project = { id: 2, repo_dir: "/from/run" }
+    raw.status.project = { id: 3, repo_dir: "/from/status" }
+    compare(Runs.normalizeRun(raw).project, null, "am status never supplies the project")
+
+    // synthetic: a project on the row, the am status run and am status
+    var both = amRun("status-started.json")
+    both.status.run.project = { id: 2, repo_dir: "/from/run" }
+    both.status.project = { id: 3, repo_dir: "/from/status" }
+    var p = Runs.normalizeRun(both).project
+    compare(p.id, 1, "the row's id wins")
+    compare(p.repo_dir, "/home/user/Code/omarchy-project-manager", "the row's repo_dir wins")
+  }
+
+  function test_normalize_project_independent_of_repo_dir() {
+    // synthetic: the row's repo_dir and its project's repo_dir edited to differ
+    var differ = amRun("status-started.json")
+    differ.row.repo_dir = "/row/dir"
+    differ.row.project.repo_dir = "/project/dir"
+    var d = Runs.normalizeRun(differ)
+    compare(d.repo_dir, "/row/dir")
+    compare(d.project.repo_dir, "/project/dir")
+
+    // synthetic: the row's and the am status run's repo_dir blanked
+    var blank = amRun("status-started.json")
+    blank.row.repo_dir = ""
+    blank.status.run.repo_dir = ""
+    var b = Runs.normalizeRun(blank)
+    compare(b.repo_dir, "", "project.repo_dir is never the run's fallback")
+    compare(b.project.repo_dir, "/home/user/Code/omarchy-project-manager")
+
+    // synthetic: the project's repo_dir blanked
+    var emptyProject = amRun("status-started.json")
+    emptyProject.row.project.repo_dir = ""
+    var e = Runs.normalizeRun(emptyProject)
+    compare(e.project.repo_dir, "", "the run's repo_dir never fills the project's")
+    compare(e.repo_dir, "/home/user/Code/omarchy-project-manager")
+  }
+
+  function test_normalize_project_is_a_copy() {
+    var raw = amRun("status-started.json")
+    var before = JSON.stringify(raw)
+    var r = Runs.normalizeRun(raw)
+    verify(r.project !== raw.row.project, "project is a copy")
+    r.project.id = 99
+    r.project.repo_dir = "changed"
+    r.project.extra = 1
+    compare(JSON.stringify(raw), before, "changing the output leaves the input unchanged")
+
+    var later = amRun("status-started.json")
+    var out = Runs.normalizeRun(later)
+    var outBefore = JSON.stringify(out)
+    later.row.project.id = 42
+    later.row.project.repo_dir = "later"
+    later.row.project.extra = 1
+    compare(JSON.stringify(out), outBefore, "changing the input after the call leaves the output unchanged")
+  }
+
+  function test_normalize_project_own_proto_key() {
+    // synthetic: an own __proto__ key inside the row's project, which no capture contains
+    var p = projectOf(JSON.parse('{"__proto__": {"id": 5, "repo_dir": "/evil"}, "id": 1, "repo_dir": "/p"}'))
+    compare(Object.getPrototypeOf(p) === Object.prototype, true, "prototype")
+    compare(Object.keys(p).sort().join(","), "id,repo_dir")
+    compare(p.id, 1)
+    compare(p.repo_dir, "/p")
+
+    var only = projectOf(JSON.parse('{"__proto__": {"id": 5, "repo_dir": "/evil"}}'))
+    compare(only.id, null, "an id behind __proto__ is not read")
+    compare(only.repo_dir, "", "a repo_dir behind __proto__ is not read")
+  }
+
+  function test_normalize_as_of_seq_not_kept() {
+    var raw = amRun("status-started.json")
+    compare(raw.status.as_of_seq, 989, "the am status capture carries as_of_seq")
+    compare(raw.status.store_id, "91b9e8afc25044c385859292bfabfde7", "the am status capture carries store_id")
+    var plain = Runs.normalizeRun(raw)
+    var keys = Object.keys(plain)
+    compare(keys.indexOf("as_of_seq"), -1, "as_of_seq from am status")
+    compare(keys.indexOf("store_id"), -1, "store_id from am status")
+
+    // synthetic: the am runs envelope's as_of_seq and store_id placed on the row
+    var envelope = F.load("runs.json").data
+    compare(envelope.as_of_seq, 989, "the am runs capture carries as_of_seq")
+    compare(envelope.store_id, "91b9e8afc25044c385859292bfabfde7", "the am runs capture carries store_id")
+    var onRow = amRun("status-started.json")
+    onRow.row.as_of_seq = envelope.as_of_seq
+    onRow.row.store_id = envelope.store_id
+    var r = Runs.normalizeRun(onRow)
+    compare(Object.keys(r).indexOf("as_of_seq"), -1, "as_of_seq from the row")
+    compare(Object.keys(r).indexOf("store_id"), -1, "store_id from the row")
+    compare(JSON.stringify(r), JSON.stringify(plain), "the row's as_of_seq and store_id change nothing")
+  }
+
+  function test_normalize_unknown_keys_ignored() {
+    var plain = Runs.normalizeRun(amRun("status-started.json"))
+
+    // synthetic: keys normalizeRun does not read, on raw, the row, am status and the am status run
+    var raw = amRun("status-started.json")
+    raw.extra = { a: 1 }
+    raw.row.future_key = "x"
+    raw.status.future_key = [1]
+    raw.status.run.future_key = { b: 2 }
+    compare(JSON.stringify(Runs.normalizeRun(raw)), JSON.stringify(plain), "unknown keys change nothing")
+
+    var fixture = amRun("status-started.json")
+    var keys = Object.keys(plain)
+    var rowKeys = ["story_id", "card_id", "progress"]
+    for (var i = 0; i < rowKeys.length; i++) {
+      verify(hasOwn(fixture.row, rowKeys[i]), "the capture's row carries " + rowKeys[i])
+      compare(keys.indexOf(rowKeys[i]), -1, "row " + rowKeys[i] + " is not kept")
+    }
+    var statusKeys = ["warnings", "integrity"]
+    for (var j = 0; j < statusKeys.length; j++) {
+      verify(hasOwn(fixture.status, statusKeys[j]), "the capture's am status carries " + statusKeys[j])
+      compare(keys.indexOf(statusKeys[j]), -1, "am status " + statusKeys[j] + " is not kept")
+    }
+  }
+
+  function test_normalize_takes_no_events() {
+    var plain = JSON.stringify(Runs.normalizeRun(amRun("status-started.json")))
+    var log = F.load("events.json").data
+    verify(log.events.length > 0, "the events capture has events")
+
+    // synthetic: events.json's events and cursors placed on raw and on am status
+    var raw = amRun("status-started.json")
+    var targets = [raw, raw.status]
+    for (var i = 0; i < targets.length; i++) {
+      targets[i].events = log.events
+      targets[i].gseq = log.events[log.events.length - 1].gseq
+      targets[i].seq = log.events[0].seq
+      targets[i].head = log.head
+      targets[i].cursor_reset = true
+    }
+    compare(JSON.stringify(Runs.normalizeRun(raw)), plain, "events and cursors change nothing")
+  }
+
+  function test_normalize_project_garbage_never_throws() {
+    // synthetic: a project whose id and repo_dir are the wrong types
+    compare(JSON.stringify(projectOf({ id: {}, repo_dir: [] })), JSON.stringify({ id: null, repo_dir: "" }), "wrong types")
+
+    // synthetic: a project with no prototype
+    compare(JSON.stringify(projectOf(Object.create(null))), JSON.stringify({ id: null, repo_dir: "" }), "no prototype")
   }
 
   function test_fixture_current_phase_and_default_attempt() {
     var expected = [
-      ["explore", "299ec9c0-b935-4c44-a7a0-982a104cbfe5/explore/1"],
-      ["", "22153f5f-9632-4b5f-a7dd-664c39d89e5c/review/1"],
-      ["", "eb8b1851-8245-45c3-9a29-d1fcefaad0b9/review/1"],
-      ["", "5d5114f9-8d86-4712-95f3-87dd9d56feef/review/1"]
+      ["explore", "2280a6ab-9c40-434b-9729-63fd1f373754/explore/1"],
+      ["", "767b5f1c-506a-4daa-9157-0c838165cc63/review/1"],
+      ["", "10e26d57-374c-48d3-bc45-09389b42cfac/review/1"],
+      ["", "f74961fc-1d90-4ef4-9130-2246229bb71a/review/1"]
     ]
     var runs = fixtureRuns()
     for (var i = 0; i < runs.length; i++) {
@@ -402,26 +621,26 @@ TestCase {
 
   function test_fixture_card_run_state_and_runs_touching() {
     var runs = fixtureRuns()
-    var open = Runs.cardRunState(runs, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    var open = Runs.cardRunState(runs, "2280a6ab-9c40-434b-9729-63fd1f373754")
     compare(open.state, "running")
-    compare(open.runId, "20261005T021400Z-837c4431")
+    compare(open.runId, "20261008T143823Z-e795ad19")
     compare(open.dimmed, false)
     compare(open.phase, "explore")
     compare(open.attempt, 1)
-    var escalated = Runs.cardRunState(runs, "eb8b1851-8245-45c3-9a29-d1fcefaad0b9")
+    var escalated = Runs.cardRunState(runs, "10e26d57-374c-48d3-bc45-09389b42cfac")
     compare(escalated.state, "escalated")
-    compare(escalated.runId, "20261005T032543Z-bcc4e411")
+    compare(escalated.runId, "20261008T143755Z-f18d342f")
     compare(escalated.dimmed, true)
     compare(escalated.phase, "review")
     compare(escalated.attempt, 1)
 
-    var touchingOpen = Runs.runsTouching(runs, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    var touchingOpen = Runs.runsTouching(runs, "2280a6ab-9c40-434b-9729-63fd1f373754")
     compare(touchingOpen.length, 1)
     verify(touchingOpen[0] === runs[0], "the started run")
-    var touchingReal = Runs.runsTouching(runs, "5d5114f9-8d86-4712-95f3-87dd9d56feef")
+    var touchingReal = Runs.runsTouching(runs, "f74961fc-1d90-4ef4-9130-2246229bb71a")
     compare(touchingReal.length, 1)
     verify(touchingReal[0] === runs[3], "the done-integrate run")
-    var touchingStory = Runs.runsTouching(runs, "b429248c-c69e-4df5-8f7d-52776253ea14")
+    var touchingStory = Runs.runsTouching(runs, "862eb9b7-bb74-452f-9148-0f6a34434ab3")
     compare(touchingStory.length, 1, "through its real story only")
     verify(touchingStory[0] === runs[3], "the done-integrate run, through its real story")
   }
@@ -480,24 +699,24 @@ TestCase {
 
     var started = Runs.runTree(Runs.normalizeRun(amRun("status-started.json")))
     var expected = [
-      ["5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff", "review/1"],
-      ["45cc9067-d6b3-441f-b8d2-6602a81311d2", "review/1"],
-      ["a19ca446-659e-4735-86ed-5a583c1730bf", "review/1"],
-      ["299ec9c0-b935-4c44-a7a0-982a104cbfe5", "explore/1"],
-      ["fdb5feb1-0907-40b2-9937-d9b4cc2875f0", "/0"],
-      ["66a6b6c0-5032-4598-b80c-0afb0d0d46b5", "/0"],
-      ["dfc0ac87-978b-4419-87c2-61f10b9d0cd1", "/0"],
-      ["46141e11-da16-4aa2-8e1a-10e0e23e6980", "/0"]
+      ["5560d0fe-2b8e-4ef9-ad71-96b50ee89daa", "review/1"],
+      ["0bddd95f-7876-4cfb-9064-f48a62b3aaed", "review/1"],
+      ["e4214f55-1580-42fe-b0da-94a4e8b10912", "review/1"],
+      ["2280a6ab-9c40-434b-9729-63fd1f373754", "explore/1"],
+      ["0849081e-b432-465e-81b1-0d2bc834f5fa", "/0"],
+      ["ddabd94d-4a4d-418e-a93e-c09470679a53", "/0"],
+      ["d44f4062-a413-43b9-a355-ff0bd95c2716", "/0"],
+      ["cf1814c9-e1ff-4dc9-96b7-592a904983e3", "/0"]
     ]
     for (var k = 0; k < expected.length; k++)
       compare(opensOn(treeNode(started, expected[k][0])), expected[k][1], "started run " + expected[k][0])
 
     var escalated = Runs.runTree(Runs.normalizeRun(amRun("status-escalated.json")))
     var expectedEscalated = [
-      ["c5e41536-7e1b-448b-aa2d-55e9550e63b2", "review/1"],
-      ["231a23cc-91bc-4516-924d-5b19476d5237", "review/1"],
-      ["eb8b1851-8245-45c3-9a29-d1fcefaad0b9", "review/1"],
-      ["ca31fde7-d22a-43a3-b3da-b1d2d6f9f41e", "/0"]
+      ["f6ac3b15-77df-4921-a9c0-0b442db53bb5", "review/1"],
+      ["618d1b92-fe77-420d-b4b7-8e0165fad51a", "review/1"],
+      ["10e26d57-374c-48d3-bc45-09389b42cfac", "review/1"],
+      ["460aaaa9-0520-40f7-aaa5-f162afab8bc0", "/0"]
     ]
     for (var e = 0; e < expectedEscalated.length; e++)
       compare(opensOn(treeNode(escalated, expectedEscalated[e][0])), expectedEscalated[e][1], "escalated run " + expectedEscalated[e][0])
@@ -509,7 +728,7 @@ TestCase {
     for (var i = 0; i < raw.status.stories.length; i++) {
       var list = raw.status.stories[i].subtasks
       for (var j = 0; j < list.length; j++) {
-        if (list[j].card_id === "299ec9c0-b935-4c44-a7a0-982a104cbfe5") subtask = list[j]
+        if (list[j].card_id === "2280a6ab-9c40-434b-9729-63fd1f373754") subtask = list[j]
       }
     }
     verify(subtask !== null, "the started subtask is in the capture")
@@ -521,7 +740,7 @@ TestCase {
     compare(Object.keys(added).sort().join(","), Object.keys(subtask.phases[0]).sort().join(","), "same keys as its neighbours")
     subtask.phases.push(added)
 
-    var node = treeNode(Runs.runTree(Runs.normalizeRun(raw)), "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    var node = treeNode(Runs.runTree(Runs.normalizeRun(raw)), "2280a6ab-9c40-434b-9729-63fd1f373754")
     compare(opensOn(node), "mark_in_progress/0", "a started phase wins over an earlier numbered one, attempt 0 without attempts")
   }
 
@@ -888,11 +1107,11 @@ TestCase {
 
   function test_rollup_fixture_milestones() {
     var cases = [
-      ["status-started.json", "837c4431-7a24-4531-96a8-881698ea8c5e", "1,0,0,3,4,8"],
-      ["status-done.json", "cb11063d-78b9-4537-8569-fb5c249519f8", "0,0,0,10,0,10"],
-      ["status-escalated.json", "bcc4e411-504c-48f4-8712-198a5c04ec8b", "0,0,1,2,1,4"],
-      ["status-escalated-integrate.json", "5a2d70ff-b0c8-4bb8-8a87-1cb2c679a754", "0,0,0,2,0,2"],
-      ["status-done-integrate.json", "2f6878ac-7e83-449f-9b6c-3b1f65acd30e", "0,0,0,2,0,2"]
+      ["status-started.json", "e795ad19-c81f-43ec-bdda-ef61ab5f860b", "1,0,0,3,4,8"],
+      ["status-done.json", "63060df3-f582-4eb9-a56e-44cadb15b693", "0,0,0,10,0,10"],
+      ["status-escalated.json", "f18d342f-4887-4cd8-a86e-dd2755237c2c", "0,0,1,2,1,4"],
+      ["status-escalated-integrate.json", "76043cd6-2077-47d4-afbb-c0ab60e62416", "0,0,0,2,0,2"],
+      ["status-done-integrate.json", "f7f73454-b9c5-464a-b8d4-659dd5b353af", "0,0,0,2,0,2"]
     ]
     for (var i = 0; i < cases.length; i++) {
       var name = cases[i][0]
@@ -910,13 +1129,13 @@ TestCase {
     var escalated = [Runs.normalizeRun(amRun("status-escalated.json"))]
     var doneIntegrate = [Runs.normalizeRun(amRun("status-done-integrate.json"))]
     var cases = [
-      [started, "d3d879b9-cb74-41ca-9a37-63f477de9711", "1,0,0,1,1,3", "started: story"],
-      [started, "299ec9c0-b935-4c44-a7a0-982a104cbfe5", "1,0,0,0,0,1", "started: subtask with 2 rows"],
-      [done, "f03629a7-5912-4b36-82b2-12f3b567294a", "0,0,0,4,0,4", "done: story"],
-      [done, "22153f5f-9632-4b5f-a7dd-664c39d89e5c", "0,0,0,1,0,1", "done: subtask with 14 rows"],
-      [escalated, "3f5aadb9-67b1-49b9-aec5-fb0bf81e46f9", "0,0,1,0,0,1", "escalated: story"],
-      [escalated, "eb8b1851-8245-45c3-9a29-d1fcefaad0b9", "0,0,1,0,0,1", "escalated: subtask with 12 rows"],
-      [doneIntegrate, "b429248c-c69e-4df5-8f7d-52776253ea14", "0,0,0,1,0,1",
+      [started, "7a7effb4-6ec5-4596-bcf1-be24546d4ac1", "1,0,0,1,1,3", "started: story"],
+      [started, "2280a6ab-9c40-434b-9729-63fd1f373754", "1,0,0,0,0,1", "started: subtask with 2 rows"],
+      [done, "c9965561-026a-4747-a3f3-3fdfa6a99ded", "0,0,0,4,0,4", "done: story"],
+      [done, "767b5f1c-506a-4daa-9157-0c838165cc63", "0,0,0,1,0,1", "done: subtask with 14 rows"],
+      [escalated, "bf8154fc-e65c-46f5-b6e8-92b616a6e62b", "0,0,1,0,0,1", "escalated: story"],
+      [escalated, "10e26d57-374c-48d3-bc45-09389b42cfac", "0,0,1,0,0,1", "escalated: subtask with 12 rows"],
+      [doneIntegrate, "862eb9b7-bb74-452f-9148-0f6a34434ab3", "0,0,0,1,0,1",
        "done-integrate: real story whose id the Integrate resolver carries"]
     ]
     for (var i = 0; i < cases.length; i++) {
@@ -926,7 +1145,7 @@ TestCase {
 
   function test_rollup_never_reads_rows() {
     var run = Runs.normalizeRun(amRun("status-done.json"))
-    compare(run.milestone_id, "cb11063d-78b9-4537-8569-fb5c249519f8")
+    compare(run.milestone_id, "63060df3-f582-4eb9-a56e-44cadb15b693")
     var milestone = { id: run.milestone_id }
     compare(run.rows.length, 140, "rows are per attempt")
     compare(counts(Runs.rollup([run], milestone)), "0,0,0,10,0,10", "one count per subtask")
@@ -1192,7 +1411,7 @@ TestCase {
   // tree has no failed phase and whose rows have no failure status.
   function escalatedFixtures() {
     return [
-      ["status-escalated.json", "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-eb8b1851"],
+      ["status-escalated.json", "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-10e26d57"],
       ["status-escalated-integrate.json", "escalated"]
     ]
   }
@@ -1268,7 +1487,7 @@ TestCase {
   // ---- 5.1: the Runs screen's helpers -----------------------------------------------------
 
   function test_normalize_keeps_started_at() {
-    compare(Runs.normalizeRun(amRun("status-started.json")).started_at, "2026-10-05 02:14:00.590972+00:00",
+    compare(Runs.normalizeRun(amRun("status-started.json")).started_at, "2026-10-08 14:38:23.739155+00:00",
             "from the am runs row")
     // synthetic: bare am status runs and rows, one field each
     compare(Runs.normalizeRun({ status: { run: { started_at: "2026-10-01T00:00:00Z" } } }).started_at,
@@ -1334,7 +1553,7 @@ TestCase {
   function test_run_progress_reads_status_not_phases() {
     // synthetic: between two phases -- the started subtask's phases cut to its first, `worktree` done
     var started = Runs.normalizeRun(amRun("status-started.json"))
-    var between = subtaskOf(started, "299ec9c0-b935-4c44-a7a0-982a104cbfe5")
+    var between = subtaskOf(started, "2280a6ab-9c40-434b-9729-63fd1f373754")
     compare(between.status, "started")
     compare(between.phases.length, 2)
     between.phases = [between.phases[0]]
@@ -1343,14 +1562,14 @@ TestCase {
 
     // synthetic: a done subtask's status set to started, its phases left all done
     var stalled = Runs.normalizeRun(amRun("status-done.json"))
-    var restarted = subtaskOf(stalled, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
+    var restarted = subtaskOf(stalled, "767b5f1c-506a-4daa-9157-0c838165cc63")
     compare(restarted.status, "done")
     restarted.status = "started"
     compare(progressText(Runs.runProgress(stalled)), "9/10", "status started is not done")
 
     // synthetic: a done subtask's phases emptied
     var bare = Runs.normalizeRun(amRun("status-done.json"))
-    var emptied = subtaskOf(bare, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
+    var emptied = subtaskOf(bare, "767b5f1c-506a-4daa-9157-0c838165cc63")
     compare(emptied.status, "done")
     emptied.phases = []
     compare(progressText(Runs.runProgress(bare)), "10/10", "status done without phases is done")
@@ -1550,7 +1769,7 @@ TestCase {
 
   // A fresh logs-attempt.json `am logs` data object whose stdout and stderr
   // artifact texts are `stdout` and `stderr`; an undefined argument keeps the
-  // fixture's text (stdout: 19 lines, stderr: null).
+  // fixture's text (stdout: 1 line, stderr: null).
   function logsData(stdout, stderr) {
     var data = F.load("logs-attempt.json").data
     // synthetic: the texts are the test's; the shape is the capture's.
@@ -1559,7 +1778,7 @@ TestCase {
     return data
   }
 
-  // The capture's stdout text as its 19 lines.
+  // The capture's stdout text as its lines (it has 1).
   function fixtureStdoutLines() {
     var text = F.load("logs-attempt.json").data.artifacts.stdout.text
     return text.slice(0, -1).split("\n")
@@ -1621,15 +1840,15 @@ TestCase {
     var tail = Runs.logTail(data, 200)
     compare(tail.text, stdout.slice(0, -1), "the stdout artifact without its trailing newline")
     var lines = tail.text.split("\n")
-    compare(lines.length, 19)
-    verify(lines[0].indexOf("Permission allow rule") === 0, lines[0])
-    compare(lines[18], "| plan_hash | `e8f781ba` |")
+    compare(lines.length, 1)
+    compare(lines[0], "fake-claude ok phase=review")
     compare(tail.truncated, false)
     verify(tail.text.indexOf("# Reviewer") < 0, "the prompt artifact is not shown")
 
-    var ten = Runs.logTail(F.load("logs-attempt.json").data, 10)
-    compare(ten.text, lines.slice(9).join("\n"), "the last 10 of the 19 lines")
-    compare(ten.truncated, true)
+    // The capture's stdout is one line: a tail of exactly that many lines is all of it.
+    var one = Runs.logTail(F.load("logs-attempt.json").data, 1)
+    compare(one.text, lines[0], "the last 1 of the 1 line")
+    compare(one.truncated, false)
   }
 
   function test_log_tail_reads_only_the_stream_artifacts() {

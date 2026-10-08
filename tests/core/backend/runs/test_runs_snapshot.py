@@ -281,7 +281,10 @@ def test_am_does_not_inherit_stdin(world):
 def test_fake_am_serves_the_captures(world):
     runs = runs_rows()
     seed(world, runs)
-    assert json.loads((world["am"] / "runs.out").read_text()) == fixture("runs.json")
+    # set_runs serves the captured rows; the capture's data-level as_of_seq and
+    # store_id and its `_note` are not part of what it serves.
+    assert json.loads((world["am"] / "runs.out").read_text()) == \
+        {"data": {"runs": fixture("runs.json")["data"]["runs"]}, "ok": True}
     for row, name in zip(runs, ["status-started.json", "status-done.json"]):
         served = json.loads((world["am"] / ("status-" + row["id"] + ".out")).read_text())
         assert served == status_envelope(name)
@@ -294,9 +297,9 @@ def test_fake_am_serves_the_captures(world):
     want = status_envelope("status-escalated.json")
     want["data"]["run"]["id"] = "e1"
     assert served == want
-    # Every row_for row, capture status or not, has a real am runs row's 11 keys.
+    # Every row_for row, capture status or not, has a real am runs row's 13 keys.
     keys = set(runs[0])
-    assert len(keys) == 11
+    assert len(keys) == 13
     for status in ["started", "done", "escalated", "cancelled", "canceled", "something-new"]:
         row = row_for("e1", status)
         assert set(row) == keys
