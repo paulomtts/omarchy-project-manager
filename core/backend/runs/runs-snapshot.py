@@ -1,21 +1,36 @@
 #!/usr/bin/env python3
-"""List an am project's runs and each selected run's status.
+"""Snapshot am runs: every project's, one project's, or a single run.
 
-    runs-snapshot.py <project_root>
+    runs-snapshot.py                   all projects
+    runs-snapshot.py <project_root>    one project
+    runs-snapshot.py --run RUN         one run
 
-Runs `am runs --repo-dir R` (newest first), keeps am's order and selects every
-non-terminal run plus the first 10 terminal ones (terminal: done, escalated,
-stopped, cancelled, canceled), then runs `am status <id> --repo-dir R` for each
-selected run.
+<project_root> and RUN are non-empty and do not start with -. Any other argv is
+a Usage error (exit 2) and am is not run.
+
+List modes run `am runs --all-projects --limit 200` (or `am runs --repo-dir R
+--limit 200` for one project), then `am status <id>` for every selected run, in
+am's (newest-first) order. Selected: every non-terminal run plus the first 10
+terminal ones (terminal: done, escalated, stopped, cancelled, canceled; exact
+match) among those 200 rows; a run older than the 200th row is not in the
+snapshot. Single-run mode runs `am status RUN` alone. `am status` never gets
+--repo-dir.
 
 Prints exactly one JSON line on EVERY path:
-{"ok": true, "runs": [{<am runs summary fields>, "status": <am status data>}],
- "data_dir": <XDG_DATA_HOME in effect, else ~/.local/share>}
-or {"ok": false, "error": {"type", "message"}} with type AmMissing, AmBadOutput,
-Usage (exit 2) or HelperError; an `ok:false` envelope from am is re-emitted
-unchanged. Exit 0 ok, 1 failure, 2 usage. If any `am status` call fails the whole
-snapshot fails (no partial result). Only `am` commands are used, always as argv
-lists; am's database and on-disk layout are never read.
+{"ok": true, "as_of_seq": <am runs as_of_seq>, "store_id": <am runs store_id>,
+ "runs": [{<am runs row>, "status": <am status data>}], "data_dir": D}
+or, for --run,
+{"ok": true, "run": RUN, "as_of_seq": <am status as_of_seq>,
+ "store_id": <am status store_id>, "status": <am status data>, "data_dir": D}
+where store_id is "" when am's is not a string and D is XDG_DATA_HOME when
+absolute, else ~/.local/share;
+or {"ok": false, "error": {"type", "message"}} with type Usage (exit 2),
+AmMissing, AmBadOutput, SchemaMismatch (am runs or am status data without a
+non-negative integer as_of_seq: the plugin needs the newer am) or HelperError.
+An `ok:false` envelope from am (StoreBusyError, UnknownRunError, RepoDirError,
+...) is re-emitted unchanged. Exit 0 ok, 1 failure, 2 usage. A failure stops at
+the failing am call; a list is never partial. Only `am` commands are used,
+always as argv lists; am's database and on-disk layout are never read.
 """
 import json
 import os

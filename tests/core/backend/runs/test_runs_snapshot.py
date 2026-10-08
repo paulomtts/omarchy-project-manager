@@ -662,3 +662,35 @@ def test_am_bad_output_single_run(world, text, exit_code):
     assert out["error"]["type"] == "AmBadOutput"
     assert out["error"]["message"].startswith("am status")
     assert calls(world) == [STATUS("R1")]
+
+
+# --- StoreBusyError ------------------------------------------------------------
+
+# synthetic: am's StoreBusyError envelope (the shape of am's error_envelope);
+# no capture holds one.
+STORE_BUSY = {"error": {"message": "the am store is busy; try again",
+                        "type": "StoreBusyError"}, "ok": False}
+
+
+@pytest.mark.parametrize("where", ["runs", "status-list", "run"])
+def test_store_busy_is_passthrough(world, where):
+    busy = json.dumps(STORE_BUSY) + "\n"
+    if where == "runs":
+        runs = runs_rows()
+        seed(world, runs)
+        set_raw(world, "runs", busy, 3)
+        code, out = run(world)
+        want_calls = [ALL]
+    elif where == "status-list":
+        runs = runs_rows()
+        seed(world, runs)
+        set_raw(world, "status-" + runs[0]["id"], busy, 3)
+        code, out = run(world)
+        want_calls = [ALL, STATUS(runs[0]["id"])]
+    else:
+        set_raw(world, "status-R1", busy, 3)
+        code, out = run(world, ["--run", "R1"])
+        want_calls = [STATUS("R1")]
+    assert code == 1
+    assert out == STORE_BUSY
+    assert calls(world) == want_calls
