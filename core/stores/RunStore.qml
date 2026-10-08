@@ -3,37 +3,51 @@ import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
 
-// The am run monitor's data: a list snapshot of every project's runs
-// (runs-snapshot.py) kept to the selected project and normalized by the run
-// domain model, plus the selected run, the attempt the Run detail pane shows
-// and that attempt's `am logs` snapshot (runs-logs.py), and whether `am` could
-// be asked at all. While `active` (the panel is open) a long-lived
+// The am run monitor's data. One list snapshot covers every registered
+// project: runs-snapshot-all.py with each usable root of `projectRoots`, in
+// registry order. `runsByProject` holds each root's runs, normalized by the
+// run domain model and tagged with their project; `projectErrors` the roots
+// whose latest entry failed; `runs` every root's runs merged in registry
+// order, a run id listed once, under the first root that lists it. A project
+// switch leaves the run list alone: `project`, the open project, decides only
+// the run settings, the dispatch, the run controls and the attempt logs'
+// root. Plus the selected run, the attempt the Run detail pane shows and that
+// attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
+// asked at all. While `active` (the panel is open) a long-lived
 // runs-watch.py nudges it, "run X changed at seq N", and is never folded into
-// state: once per debounce window, a nudge newer than the snapshot that last
-// covered its run (appliedSeq) costs one run read (runs-snapshot.py --run RUN,
-// one HelperRunner per run) for a run it holds, or one list snapshot for a run
-// it does not know. A cursorReset hello starts over from a list snapshot, as
-// does a hello or a run read naming a store_id other than the one last seen
-// (storeId); a list snapshot naming one is applied as the new store's full
-// snapshot. The first store_id seen resets nothing. asOfSeq is the last
-// list's as_of_seq and watchCursor the watch's last cursor, held in memory
+// state: once per debounce window, a nudge newer than the coverage of its run
+// (appliedSeq) costs one run read (runs-snapshot.py --run RUN, one
+// HelperRunner per run) for a run it holds, or one list snapshot for a run it
+// does not know. A list snapshot covers its runs at 0. A cursorReset hello
+// starts over from a list snapshot, as does a hello or a run read naming a
+// store_id other than the one last seen (storeId); the first store_id seen
+// resets nothing. watchCursor is the watch's last cursor, held in memory
 // only. Logs are fetched on a selection, on Refresh and when a snapshot
 // changes the selected attempt's status -- never on a timer.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
 // Start.
-// The project root and the backend directory are handed to it from outside --
-// it never reaches for another store. App composes it as `app.runs` and binds
-// `active` to the panel being open.
+// The registry, the open project's root and the backend directory are handed
+// to it from outside -- it never reaches for another store. App composes it
+// as `app.runs` and binds `active` to the panel being open.
 Scope {
   id: store
 
-  property string project: ""         // project root path
+  property var projectRoots: []       // [{root, name}], the registry in its order; App binds it
+  property string project: ""         // the open project's root path; "" when none is open
   property string backendDir: ""      // <plugin>/core/backend/
   property bool active: false         // App binds this to "panel open" (app.panelOpen)
 
-  property var runs: []               // Runs.normalizeRun output, am's order
+  // Each usable root's runs, {root: runs[]}: am's order, each run
+  // Runs.withProject(Runs.normalizeRun(..), root, name). One key per usable
+  // root a reply has covered.
+  property var runsByProject: ({})
+  // {root: Runs.errorText sentence} for each usable root whose latest entry failed.
+  property var projectErrors: ({})
+  // runsByProject's lists over the usable roots in registry order, a run id
+  // an earlier root lists dropped from a later one.
+  property var runs: []
   property string selectedRunId: ""   // set by the UI
   property string amStatus: "ok"      // "ok" | "missing" | "schema" | "error"
   property int amSchema: 0            // journal schema from the current watch's hello; 0 = unknown
@@ -44,7 +58,7 @@ Scope {
 
   // The Runs screen's chip ("" means All, else "attention" | "live" | "parked")
   // and search text. App binds searchQuery to the navigation store; the chip
-  // survives a section switch and is reset by a project switch.
+  // survives a section switch and a project switch.
   property string runFilter: ""
   property string searchQuery: ""
   // The chip changed: a different list, so the cursor goes home (App's job).
@@ -52,10 +66,10 @@ Scope {
   // The one filtered list: the screen's rows and the navigator's cursor list.
   readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery)
 
-  // Snapshot coverage. `asOfSeq` is the last good list snapshot's as_of_seq
-  // (0 before one). `appliedSeq` is {runId: seq}: the as_of_seq of the
-  // snapshot that last covered each run the list named, of every project.
-  // Both are replaced, never changed in place.
+  // Snapshot coverage. `asOfSeq` is 0: the list snapshot names no as_of_seq.
+  // `appliedSeq` is {runId: seq}: 0 for every run the last list put in
+  // `runs`, then the as_of_seq of each run read applied since. Both are
+  // replaced, never changed in place.
   property int asOfSeq: 0
   property var appliedSeq: ({})
   // The current watch's last {"cursor": C} (0 = none), held in memory only.
@@ -63,15 +77,14 @@ Scope {
   // {runId: seq}: the highest changed seq per run since the last debounce
   // trigger. Replaced, never changed in place.
   property var nudges: ({})
-  // am's store_id from the last hello or snapshot that named one; "" = none
+  // am's store_id from the last hello or run read that named one; "" = none
   // yet. Replaced, never derived. A project switch, the watch ending and
   // AmMissing keep it.
   property string storeId: ""
 
-  // A watch has been started since the last activation or project switch:
-  // later snapshots never start another (the helper picks up the project's new
-  // runs itself), and a watch that ended is not restarted until the next
-  // activation or project switch.
+  // A watch has been started since the last activation: later snapshots never
+  // start another (the helper picks up new runs itself), and a watch that
+  // ended is not restarted until the next activation.
   property bool watchTried: false
   property int watchSeq: 0            // bumped on every watch start and stop: the launch guard
   property string watchSchemaError: "" // the schema banner text while its fallback poll runs
@@ -109,7 +122,7 @@ Scope {
 
   // Alerts (S2 4.4): a toast for every run that newly needs a human while the
   // panel is open. `alertsArmed` says the current `runs` may be compared
-  // against: the first good snapshot after an opening, a project switch or an
+  // against: the first good snapshot after an opening, a store change or an
   // am-missing spell only arms, so history is never replayed. `toasts` is
   // {key, id, title, state, reason, expiresMs}, oldest first, at most 3, and
   // is replaced, never changed in place.
@@ -183,12 +196,21 @@ Scope {
     return false
   }
 
-  // Asks for a list snapshot: runs-snapshot.py with no argument, every
-  // project's runs, filtered to `project` on arrival. Nothing without a
-  // project. A newer call replaces an older one (the runner's latest-wins rule).
+  // Asks for a list snapshot: runs-snapshot-all.py with every usable root, in
+  // registry order, whether or not a project is open. With no usable root
+  // nothing is launched, a snapshot in flight is stopped, and the run list,
+  // runsByProject and projectErrors are emptied. A newer call replaces an
+  // older one (the runner's latest-wins rule).
   function refresh() {
-    if (store.project === "") return
-    snapshotRunner.run([])
+    var usable = store.usableRoots()
+    if (usable.length === 0) {
+      snapshotRunner.cancel()
+      store.runs = []
+      store.runsByProject = {}
+      store.projectErrors = {}
+      return
+    }
+    snapshotRunner.run(usable.map(function(p) { return p.root }))
   }
 
   // A chip was chosen: the All chip, or the active one again, means All.
@@ -228,11 +250,10 @@ Scope {
     store.closeDispatch()
   }
 
-  // Nothing is stale yet; the 30 s clock starts again while there is something
-  // to watch.
+  // Nothing is stale yet; the 30 s clock starts again while the panel is open.
   function restartStale() {
     store.stale = false
-    if (store.active && store.project !== "") staleTimer.restart()
+    if (store.active) staleTimer.restart()
     else staleTimer.stop()
   }
 
@@ -251,18 +272,18 @@ Scope {
     store.watchSeq += 1
     store.watchTried = true
     store.forgetHello()
-    var proc = watchC.createObject(store, { launchSeq: store.watchSeq, launchProject: store.project })
+    var proc = watchC.createObject(store, { launchSeq: store.watchSeq })
     proc.command = ["python3", store.backendDir + "runs/runs-watch.py"]
     watchState.proc = proc
     watchState.watching = true
     proc.running = true
   }
 
-  // A line or exit counts only from the newest launch, for the project it was
-  // launched for: a watch that was stopped (project switch, panel closed) may
-  // still print or exit late.
+  // A line or exit counts only from the newest launch: a watch that was
+  // stopped (the panel closed) may still print or exit late. Which project
+  // is open does not matter.
   function isCurrentWatch(proc) {
-    return proc.launchSeq === store.watchSeq && proc.launchProject === store.project
+    return proc.launchSeq === store.watchSeq
   }
 
   // One stdout line of the watch, a nudge source never folded into state.
@@ -317,7 +338,7 @@ Scope {
   // does not know costs one list snapshot, which covers every run, and no run
   // read. Otherwise each nudge newer than appliedSeq[run] for a run in `runs`
   // costs one run read, in nudge order. A nudge no newer than
-  // appliedSeq[run], or for another project's listed run, is ignored.
+  // appliedSeq[run], or for a run no longer in `runs`, is ignored.
   function triggerNudges() {
     var taken = store.nudges
     store.nudges = {}
@@ -345,18 +366,19 @@ Scope {
 
   // The live state of the store last seen is forgotten: the cursor, the
   // nudges and their debounce, every run read in flight (its reply changes
-  // nothing), the runs, and the alerts (the next list snapshot only arms).
-  // Selection, logs, controls and dispatch stay.
+  // nothing), the runs and every root's list of them, and the alerts (the
+  // next list snapshot only arms). Selection, logs, controls and dispatch stay.
   function forgetLive() {
     store.watchCursor = 0
     store.nudges = {}
     debounceTimer.stop()
     store.dropReads()
     store.runs = []
+    store.runsByProject = {}
     store.alertsArmed = false
   }
 
-  // A store id seen in a hello or a good snapshot. A non-empty string is
+  // A store id seen in a hello or a good run read. A non-empty string is
   // recorded as storeId; anything else is no store id and changes nothing.
   // Returns whether it names another store than the one last seen: storeId
   // was non-empty and differs. The first one seen is no change.
@@ -377,7 +399,7 @@ Scope {
   // and amVersion are reset. Exit 0: it was stopped (by us, or because am
   // exited). Otherwise the last envelope line it printed says why: a journal
   // the helper cannot read switches to the 5 s poll; anything else is reported
-  // and the watch stays off until the next activation or project switch.
+  // and the watch stays off until the next activation.
   function watchExited(proc, exitCode) {
     if (!store.isCurrentWatch(proc)) return
     watchState.watching = false
@@ -399,8 +421,7 @@ Scope {
     }
   }
 
-  // The poll replaces the watch signal until the panel closes or the project
-  // changes.
+  // The poll replaces the watch signal until the panel closes.
   function startPoll() {
     pollTimer.start()
   }
@@ -410,35 +431,12 @@ Scope {
     store.watchSchemaError = ""
   }
 
-  // A different project: nothing the old one left behind may show, and its
-  // runs are fetched straight away.
+  // Another project was opened, or none. The run list, the selection, the
+  // logs, the watch, the coverage, the requests and the alerts belong to
+  // every registered project and stay, and no snapshot is launched. Reset:
+  // the notify switch and the run settings (loaded for the new project), the
+  // dispatch, the cancel dialog, the control error and the footer flash.
   function projectSwitched() {
-    store.stopWatch()
-    store.watchTried = false
-    debounceTimer.stop()
-    store.nudges = {}
-    store.appliedSeq = {}
-    store.asOfSeq = 0
-    store.dropReads()
-    store.stopPoll()
-    store.watchWarning = ""
-    store.restartStale()
-    store.runs = []
-    store.selectedRunId = ""
-    store.clearLogs()
-    store.runFilter = ""
-    store.lastError = ""
-    store.amStatus = "ok"
-    // Control requests already launched still complete in am; their replies
-    // are dropped by their runners' guard. Nothing of the old project's stays.
-    store.pending = {}
-    store.stillWaiting = {}
-    controlState.requests = {}
-    store.dismissControlError()
-    store.closeCancel()
-    store.flash("")
-    store.alertsArmed = false
-    store.toasts = []
     // The switch reads off until this project's own reply. Notifications
     // already launched still run.
     store.notifyOnEscalation = false
@@ -448,12 +446,94 @@ Scope {
     // The dispatch is the old project's, even mid-start: a start already
     // launched still runs, and its reply is no longer this dispatch's.
     store.resetDispatch()
+    store.dismissControlError()
+    store.closeCancel()
+    store.flash("")
     settingsLoadRunner.guard = store.project
-    if (store.project !== "") {
-      store.refresh()
-      settingsLoadRunner.run(["get-run-settings", store.project])
-    }
+    if (store.project !== "") settingsLoadRunner.run(["get-run-settings", store.project])
   }
+
+  onProjectChanged: store.projectSwitched()
+
+  // The registry's usable entries, {root, name}, in registry order: an object
+  // whose root is a non-empty string not starting with "-" (runs-snapshot-all.py
+  // refuses any other), each root once, at its first position with its first
+  // name.
+  function usableRoots() {
+    var list = store.projectRoots
+    var n = list !== null && typeof list === "object" && typeof list.length === "number" ? list.length : 0
+    var out = []
+    var seen = {}
+    for (var i = 0; i < n; i++) {
+      var p = list[i]
+      if (p === null || typeof p !== "object" || Array.isArray(p)) continue
+      var root = p.root
+      if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || store.hasKey(seen, root)) continue
+      seen[root] = true
+      out.push({ root: root, name: p.name })
+    }
+    return out
+  }
+
+  // byProject cut to the usable roots, each run carrying its root's current
+  // project (Runs.withProject); a run that already carries it stays the same
+  // object.
+  function taggedByProject(byProject, usable) {
+    var out = {}
+    for (var i = 0; i < usable.length; i++) {
+      var p = usable[i]
+      if (!store.hasKey(byProject, p.root)) continue
+      var tag = Runs.withProject({}, p.root, p.name).project
+      out[p.root] = byProject[p.root].map(function(run) {
+        var cur = run !== null && typeof run === "object" ? run.project : null
+        if (cur && cur.root === tag.root && cur.name === tag.name) return run
+        return Runs.withProject(run, p.root, p.name)
+      })
+    }
+    return out
+  }
+
+  // byProject's lists over the usable roots in registry order, as {runs,
+  // owner}: a run id an earlier root already listed is dropped (the first root
+  // wins; a run without a non-empty string id is never dropped), and owner is
+  // {id: root} of every run id kept.
+  function mergedRuns(byProject, usable) {
+    var out = []
+    var owner = {}
+    for (var i = 0; i < usable.length; i++) {
+      var root = usable[i].root
+      var list = store.hasKey(byProject, root) ? byProject[root] : []
+      for (var j = 0; j < list.length; j++) {
+        var run = list[j]
+        var id = run !== null && typeof run === "object" && typeof run.id === "string" ? run.id : ""
+        if (id !== "") {
+          if (store.hasKey(owner, id)) continue
+          owner[id] = root
+        }
+        out.push(run)
+      }
+    }
+    return { runs: out, owner: owner }
+  }
+
+  // The registry changed. First the roots no longer usable lose their runs
+  // and their errors, and `runs` is merged again in the new order with the
+  // new names; no alert is raised. Then every usable root is snapshotted.
+  function registryChanged() {
+    var usable = store.usableRoots()
+    var errors = {}
+    for (var i = 0; i < usable.length; i++) {
+      var root = usable[i].root
+      if (store.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
+    }
+    var byProject = store.taggedByProject(store.runsByProject, usable)
+    store.runsByProject = byProject
+    store.projectErrors = errors
+    store.runs = store.mergedRuns(byProject, usable).runs
+    store.refresh()
+  }
+
+  onProjectRootsChanged: store.registryChanged()
 
   // ---- attempt logs (5.2)
 
@@ -598,14 +678,6 @@ Scope {
     return typeof value === "number" && Number.isInteger(value) && value >= 0
   }
 
-  // The entry's project root: project.repo_dir when project is an object with
-  // a string repo_dir, else repo_dir when it is a string, else null.
-  function entryProject(e) {
-    var p = e.project
-    if (p !== null && typeof p === "object" && !Array.isArray(p) && typeof p.repo_dir === "string") return p.repo_dir
-    return typeof e.repo_dir === "string" ? e.repo_dir : null
-  }
-
   // A path without its trailing "/" characters; a lone "/" stays "/".
   function trimSlashes(path) {
     var s = path
@@ -613,90 +685,143 @@ Scope {
     return s
   }
 
-  // One list snapshot reply. ok:true keeps the entries whose project is
-  // `project` (trailing "/" ignored on both sides) and replaces the runs with
-  // them, in am's order (none at all is fine); asOfSeq becomes its as_of_seq
-  // (a non-negative integer, else 0) and appliedSeq {id: asOfSeq} for every
-  // entry with an id, of every project. Its store_id is recorded (seeStore);
-  // one naming another store than the one last seen first forgets the old
-  // store's live state (forgetLive), so the reply is applied as the new
-  // store's full snapshot, raises no toast and launches no other snapshot.
-  // StoreBusyError keeps everything and only marks the runs stale. AmMissing
-  // empties them and the coverage: no badges while am is not there. Any other
-  // failure -- an ok:false envelope or output that is not one -- keeps what
-  // the last good snapshot said and only reports why this one failed. Never
-  // throws.
-  // A reply for a project the user has left never gets here: the runner only
-  // emits `finished` when the launch guard still equals its (project) guard.
+  // One list snapshot reply. {ok: true, projects} goes to applyProjects. An
+  // ok:false envelope (Usage, HelperError) or output that is not one keeps
+  // the runs, runsByProject and projectErrors and only reports why this one
+  // failed. Never reads a store_id. Never throws.
   function applySnapshot(stdout, exitCode) {
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
-      if (store.seeStore(envelope.store_id)) store.forgetLive()
-      var list = Array.isArray(envelope.runs) ? envelope.runs : []
-      var asOf = store.isSeq(envelope.as_of_seq) ? envelope.as_of_seq : 0
-      var root = store.trimSlashes(store.project)
-      var out = []
-      var rows = {}
-      var applied = {}
-      for (var i = 0; i < list.length; i++) {
-        var e = list[i]
-        if (e === null || typeof e !== "object" || Array.isArray(e)) continue
-        var id = typeof e.id === "string" && e.id !== "" ? e.id : ""
-        if (id !== "") applied[id] = asOf
-        var owner = store.entryProject(e)
-        if (owner === null || store.trimSlashes(owner) !== root) continue
-        var row = store.rowOf(e)
-        if (id !== "") rows[id] = row
-        out.push(Runs.normalizeRun({ row: row, status: e.status }))
-      }
-      store.asOfSeq = asOf
-      store.appliedSeq = applied
-      readState.rows = rows
-      // Compared before the runs are replaced; raised below only while open.
-      var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, out)
-      store.runs = out
-      store.settleAfterSnapshot()
-      store.logsAfterSnapshot()
-      if (pollTimer.running && store.watchSchemaError !== "") {
-        // The watch's schema banner outlives the polling snapshots.
-        store.amStatus = "schema"
-        store.lastError = store.watchSchemaError
-      } else {
-        store.amStatus = "ok"
-        store.lastError = ""
-      }
-      store.stale = false
-      if (store.active) {
-        staleTimer.restart()
-        if (!store.watchTried) store.startWatch()
-        store.raiseAlerts(alerts)
-        store.alertsArmed = true
-      }
-      return
-    }
-    if (envelope !== null && envelope.ok === false) {
-      var err = envelope.error
-      var type = err !== null && typeof err === "object" ? err.type : ""
-      if (type === "StoreBusyError") {
-        store.stale = true
-        return
-      }
-      store.lastError = Runs.errorText(envelope)
-      if (type === "AmMissing") {
-        store.runs = []
-        store.appliedSeq = {}
-        store.asOfSeq = 0
-        store.amStatus = "missing"
-        // Comparing the next good snapshot against [] would alert every
-        // escalated run again.
-        store.alertsArmed = false
-      } else {
-        store.amStatus = "error"
-      }
+      store.applyProjects(Array.isArray(envelope.projects) ? envelope.projects : [], exitCode)
       return
     }
     store.amStatus = "error"
-    store.lastError = "The runs snapshot gave no usable result (exit " + exitCode + ")."
+    if (envelope !== null && envelope.ok === false) store.lastError = Runs.errorText(envelope)
+    else store.lastError = "The runs snapshot gave no usable result (exit " + exitCode + ")."
+  }
+
+  // A list reply's entries, {root, ok, runs | error}, matched to the usable
+  // roots by exact root: the first entry of a root counts, any other entry is
+  // ignored. No matched entry at all is a reply with no usable result. Every
+  // matched entry AmMissing: the runs, runsByProject, projectErrors and the
+  // coverage are emptied and amStatus is "missing", disarming the alerts.
+  // Otherwise an ok entry replaces its root's runs and clears its error
+  // (entries that are not objects are skipped); a failed one keeps its
+  // root's runs ([] when it had none) and records Runs.errorText of its
+  // error; a usable root with no entry keeps both. `runs` is merged again,
+  // asOfSeq is 0, appliedSeq {id: 0} for every run in it, and readState.rows
+  // each kept run's `am runs` row: the winning root's from this reply, else
+  // the row kept from before. With an entry ok, everything after a good
+  // snapshot follows. With none, amStatus is "error" with the first failed
+  // entry's sentence, and the alerts and `stale` stay as they are.
+  function applyProjects(entries, exitCode) {
+    var usable = store.usableRoots()
+    var names = {}
+    for (var u = 0; u < usable.length; u++) names[usable[u].root] = usable[u].name
+    var matched = []
+    var seen = {}
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i]
+      if (e === null || typeof e !== "object" || Array.isArray(e)) continue
+      if (typeof e.root !== "string" || !store.hasKey(names, e.root) || store.hasKey(seen, e.root)) continue
+      seen[e.root] = true
+      matched.push(e)
+    }
+    if (matched.length === 0) {
+      store.amStatus = "error"
+      store.lastError = "The runs snapshot gave no usable result (exit " + exitCode + ")."
+      return
+    }
+    var missing = true
+    for (var m = 0; m < matched.length; m++) {
+      var err = matched[m].error
+      var type = err !== null && typeof err === "object" ? err.type : ""
+      if (matched[m].ok === true || type !== "AmMissing") missing = false
+    }
+    if (missing) {
+      store.runs = []
+      store.runsByProject = {}
+      store.projectErrors = {}
+      store.appliedSeq = {}
+      store.asOfSeq = 0
+      store.amStatus = "missing"
+      store.lastError = Runs.errorText(matched[0].error)
+      // Comparing the next good snapshot against [] would alert every
+      // escalated run again.
+      store.alertsArmed = false
+      return
+    }
+    var byProject = store.copyMap(store.runsByProject)
+    var errors = store.copyMap(store.projectErrors)
+    var fresh = {}          // {root: {id: am runs row}} of this reply's ok entries
+    var anyOk = false
+    var firstError = ""
+    for (var k = 0; k < matched.length; k++) {
+      var entry = matched[k]
+      var root = entry.root
+      if (entry.ok === true) {
+        anyOk = true
+        var list = Array.isArray(entry.runs) ? entry.runs : []
+        var out = []
+        var rows = {}
+        for (var r = 0; r < list.length; r++) {
+          var item = list[r]
+          if (item === null || typeof item !== "object" || Array.isArray(item)) continue
+          var row = store.rowOf(item)
+          if (typeof item.id === "string" && item.id !== "" && !store.hasKey(rows, item.id)) rows[item.id] = row
+          out.push(Runs.withProject(Runs.normalizeRun({ row: row, status: item.status }), root, names[root]))
+        }
+        byProject[root] = out
+        fresh[root] = rows
+        delete errors[root]
+      } else {
+        if (!store.hasKey(byProject, root)) byProject[root] = []
+        errors[root] = Runs.errorText(entry.error)
+        if (firstError === "") firstError = errors[root]
+      }
+    }
+    byProject = store.taggedByProject(byProject, usable)
+    var merged = store.mergedRuns(byProject, usable)
+    var applied = {}
+    var keptRows = {}
+    var ids = Object.keys(merged.owner)
+    for (var d = 0; d < ids.length; d++) {
+      var id = ids[d]
+      var owner = merged.owner[id]
+      applied[id] = 0
+      if (store.hasKey(fresh, owner) && store.hasKey(fresh[owner], id)) keptRows[id] = fresh[owner][id]
+      else if (store.hasKey(readState.rows, id)) keptRows[id] = readState.rows[id]
+    }
+    // Compared before the runs are replaced; raised below only while open.
+    var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, merged.runs)
+    store.runsByProject = byProject
+    store.projectErrors = errors
+    store.asOfSeq = 0
+    store.appliedSeq = applied
+    readState.rows = keptRows
+    store.runs = merged.runs
+    if (!anyOk) {
+      store.amStatus = "error"
+      store.lastError = firstError
+      return
+    }
+    store.settleAfterSnapshot()
+    store.logsAfterSnapshot()
+    if (pollTimer.running && store.watchSchemaError !== "") {
+      // The watch's schema banner outlives the polling snapshots.
+      store.amStatus = "schema"
+      store.lastError = store.watchSchemaError
+    } else {
+      store.amStatus = "ok"
+      store.lastError = ""
+    }
+    store.stale = false
+    if (store.active) {
+      staleTimer.restart()
+      if (!store.watchTried) store.startWatch()
+      store.raiseAlerts(alerts)
+      store.alertsArmed = true
+    }
   }
 
   // ---- run reads
@@ -1497,23 +1622,17 @@ Scope {
     runner.destroy()
   }
 
-  // The guard is the project root, so a snapshot launched for a project the
-  // user has since left is dropped. The project-change reaction hangs off the
-  // guard, not off `project`: the guard has already followed the project by the
-  // time it changes, so the snapshot launched here is always guarded by the NEW
-  // project (QML does not order a binding against a sibling change handler).
+  // The list snapshot of every usable root. No guard: its reply is matched to
+  // the registry by root, whatever project is open.
   HelperRunner {
     id: snapshotRunner
-    script: store.backendDir + "runs/runs-snapshot.py"
-    guard: store.project
-    onGuardChanged: store.projectSwitched()
+    script: store.backendDir + "runs/runs-snapshot-all.py"
     onFinished: function(stdout, exitCode) { store.applySnapshot(stdout, exitCode) }
   }
 
-  // The attempt-logs helper. Guarded by the project like the snapshot, so a
-  // reply for a project the user has left is dropped; a newer fetch (another
-  // attempt, a Refresh) wins over an older one. No onGuardChanged here: the
-  // snapshot runner's already runs projectSwitched() once per switch.
+  // The attempt-logs helper. Guarded by the project, so a reply for a project
+  // the user has left is dropped; a newer fetch (another attempt, a Refresh)
+  // wins over an older one.
   HelperRunner {
     id: logsRunner
     script: store.backendDir + "runs/runs-logs.py"
@@ -1522,9 +1641,9 @@ Scope {
   }
 
   // get-run-settings on a project switch. Its guard is set by projectSwitched()
-  // itself rather than bound to `project`: projectSwitched() runs from the
-  // snapshot runner's guard change, before a binding here is sure to have
-  // followed the project, and this launch must carry the NEW project.
+  // itself rather than bound to `project`: projectSwitched() runs from
+  // onProjectChanged, before a binding here is sure to have followed the
+  // project, and this launch must carry the NEW project.
   HelperRunner {
     id: settingsLoadRunner
     script: store.backendDir + "projects/viewer-state.py"
@@ -1543,8 +1662,7 @@ Scope {
   }
 
   // dispatch-preview.py --defaults, once per opening. Guarded by the project:
-  // a reply for a project the user has left is dropped. No onGuardChanged:
-  // the snapshot runner's already runs projectSwitched().
+  // a reply for a project the user has left is dropped.
   HelperRunner {
     id: dispatchDefaultsRunner
     script: store.backendDir + "runs/dispatch-preview.py"
@@ -1657,7 +1775,7 @@ Scope {
   // The run reads' own state; kept apart so consumers cannot write it.
   // `runners` are the reads in flight, oldest first; `latest` is {runId:
   // runner}, the read whose reply counts; `rows` is {runId: am runs row} of
-  // the runs the last good list snapshot kept, which a run read rebuilds from.
+  // the runs in `runs`, which a run read rebuilds from.
   QtObject {
     id: readState
     property var runners: []
@@ -1772,7 +1890,6 @@ Scope {
       id: wp
       objectName: "watchProc"
       property int launchSeq: 0
-      property string launchProject: ""
       property var envelope: null       // the last {"ok": false, ...} line it printed
       stdout: SplitParser { onRead: function(data) { store.watchLine(wp, data) } }
       stderr: StdioCollector { waitForEnd: true }
