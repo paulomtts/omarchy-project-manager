@@ -405,9 +405,9 @@ function _compareGroups(a, b) {
 // The runs grouped by registered project, in display order. Entries that are
 // not plain objects are dropped. Each group is
 //   { project: { root, name }, runs, counts: { live, parked, attention } }
-// root: the entry's `project.root` with every trailing "/" removed, else ""
-// when `project` is not a plain object or its root is not a string; otherwise
-// compared exactly. name: the `project.name` of the group's first entry when a
+// root: the entry's `project.root` with every trailing "/" removed ("/" for a
+// root of only slashes), else "" when `project` is not a plain object or its
+// root is not a string; otherwise compared exactly. name: the `project.name` of the group's first entry when a
 // string, else ""; always "" for root "". runs: the same objects, input order.
 // counts, by runState: live = running; parked = parked; attention = escalated
 // or dead (the runs `attention` returns). A group exists only for a root some
