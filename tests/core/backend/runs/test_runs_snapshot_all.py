@@ -485,3 +485,85 @@ def test_am_does_not_inherit_stdin(world):
     assert code == 0
     assert [json.loads(line) for line in lines] == [
         {"ok": True, "projects": [ok_entry(a, [])], "data_dir": str(world["data"])}]
+
+
+# --- concurrency and timeouts -------------------------------------------------------
+
+def max_overlap(world):
+    """The most am calls in flight at once, from spans.log (an end at the same
+    instant as a start counts as finished first)."""
+    events = []
+    for line in (world["am"] / "spans.log").read_text().splitlines():
+        kind, t = line.split()
+        events.append((float(t), 0 if kind == "end" else 1))
+    depth = peak = 0
+    for _, starts in sorted(events):
+        depth += 1 if starts else -1
+        peak = max(peak, depth)
+    return peak
+
+
+def test_argv_order_not_finish_order(world):
+    roots = [project(world, "proj-" + n) for n in "abc"]
+    for root in roots:
+        # synthetic: the captured am runs data with an empty run list.
+        set_runs(world, root, [])
+    set_sleep(world, "runs-proj-a", 1)
+    code, out = run(world, roots)
+    assert code == 0
+    assert [p["root"] for p in out["projects"]] == roots
+
+
+def test_concurrency_bound(world):
+    roots = [project(world, "proj-" + str(i)) for i in range(6)]
+    for root in roots:
+        # synthetic: the captured am runs data with an empty run list.
+        set_runs(world, root, [])
+        set_sleep(world, "runs-" + os.path.basename(root), 1)
+    code, out = run(world, roots)
+    assert code == 0
+    assert out["projects"] == [ok_entry(root, []) for root in roots]
+    assert 2 <= max_overlap(world) <= 4
+
+
+def test_per_root_timeout(world, monkeypatch, capsys):
+    import time
+    a, b = project(world, "proj-a"), project(world, "proj-b")
+    set_runs(world, a, [])
+    set_sleep(world, "runs-proj-a", 10)
+    set_runs(world, b, [])
+    helper = in_process(world, monkeypatch)
+    monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
+    started = time.monotonic()
+    code = helper.guarded([a, b])
+    elapsed = time.monotonic() - started
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    assert len(lines) == 1, lines
+    out = json.loads(lines[0])
+    assert out["projects"] == [
+        {"root": a, "ok": False,
+         "error": {"type": "AmTimeout", "message": "am did not answer within 0.5 s."}},
+        ok_entry(b, []),
+    ]
+    assert elapsed < 5
+
+
+def test_status_timeout_is_per_root(world, monkeypatch, capsys):
+    a, b = project(world, "proj-a"), project(world, "proj-b")
+    seed(world, a, "a1")
+    set_sleep(world, "status-a1", 10)
+    b_runs = seed(world, b, "b1")
+    helper = in_process(world, monkeypatch)
+    monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
+    code = helper.guarded([a, b])
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    assert len(lines) == 1, lines
+    out = json.loads(lines[0])
+    assert out["projects"] == [
+        {"root": a, "ok": False,
+         "error": {"type": "AmTimeout", "message": "am did not answer within 0.5 s."}},
+        ok_entry(b, b_runs),
+    ]
+    assert FILTER(a) in calls(world)

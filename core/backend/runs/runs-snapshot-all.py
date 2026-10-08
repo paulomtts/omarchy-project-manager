@@ -30,13 +30,16 @@ never read.
 """
 import os
 import shutil
+import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.am_runs import AM_TIMEOUT, AmFailure, data_dir, list_snapshot  # noqa: E402
 from common.json_line import emit  # noqa: E402
 
 USAGE = "usage: runs-snapshot-all.py <root> [<root> ...]"
+WORKERS = 4
 
 
 def failure(kind, message, code=1):
@@ -63,6 +66,8 @@ def project_entry(am, root, timeout):
         snapshot = list_snapshot(am, ["--repo-dir", root], timeout)
     except AmFailure as e:
         return {"root": root, "ok": False, "error": e.payload.get("error")}
+    except subprocess.TimeoutExpired:
+        return entry_error(root, "AmTimeout", "am did not answer within " + str(timeout) + " s.")
     except Exception as e:  # noqa: BLE001 - one root's failure is its own entry
         reason = str(e) or e.__class__.__name__
         return entry_error(root, "HelperError", "The runs snapshot failed: " + reason)
@@ -78,7 +83,8 @@ def main(argv):
         projects = [entry_error(root, "AmMissing", "am is not installed.") for root in roots]
     else:
         timeout = AM_TIMEOUT
-        projects = [project_entry(am, root, timeout) for root in roots]
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            projects = list(pool.map(lambda root: project_entry(am, root, timeout), roots))
     return emit({"ok": True, "projects": projects, "data_dir": data_dir()})
 
 
