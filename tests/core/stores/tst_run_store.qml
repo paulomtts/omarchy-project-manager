@@ -364,18 +364,14 @@ TestCase {
 
   function test_watch_argv_after_first_snapshot() {
     var store = activeStore(rootA); if (!store) return
-    var noId = { workflow: "orchestrator", repo_dir: rootA }
-    reply(store.snapshotRunner.current, okReply([entry("a", "started", true), noId, entry("b", "done", false)]), 0)
-    compare(store.runs.length, 3)
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true), entry("b", "done", false)]), 0)
+    compare(store.runs.length, 2)
     var w = store.watchProc
     verify(w, "the first good snapshot starts the watch")
     compare(w.objectName, "watchProc")
-    compare(w.command.length, 5, "a run without an id adds no empty argument")
+    compare(w.command.length, 2, "no project, no run ids, no --since-seq")
     compare(w.command[0], "python3")
     compare(w.command[1], "/plugin/core/backend/runs/runs-watch.py")
-    compare(w.command[2], "/home/u/my proj", "the path with a space is one argument")
-    compare(w.command[3], "a")
-    compare(w.command[4], "b")
     compare(w.running, true)
     compare(store.watching, true)
   }
@@ -385,8 +381,7 @@ TestCase {
     reply(store.snapshotRunner.current, okReply([]), 0)
     var w = store.watchProc
     verify(w, "an empty project is watched too: its first run must show up")
-    compare(w.command.length, 3)
-    compare(w.command[2], "/home/u/my proj")
+    compare(w.command.length, 2)
     compare(w.running, true)
     compare(store.watching, true)
   }
@@ -407,7 +402,7 @@ TestCase {
     store.refresh()
     reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
     verify(store.watchProc, "the first GOOD snapshot starts it")
-    compare(store.watchProc.command[3], "a")
+    compare(store.watchProc.command.length, 2)
     compare(store.watching, true)
   }
 
@@ -418,7 +413,7 @@ TestCase {
     reply(store.snapshotRunner.current, okReply([entry("a", "started", true), entry("c", "started", true)]), 0)
     verify(store.watchProc === w, "the running watch is kept")
     compare(w.running, true)
-    compare(w.command.length, 4, "its argv is not rewritten: the helper picks up new runs itself")
+    compare(w.command.length, 2, "its argv is not rewritten: the helper watches every run itself")
   }
 
   // ---- debounce
@@ -436,7 +431,7 @@ TestCase {
     compare(t.repeat, false)
     compare(t.running, false, "idle until a line arrives")
     var seq = store.snapshotRunner.seq
-    sendLine(store.watchProc, { changed: ["a"] })
+    sendLine(store.watchProc, { changed: [{ run: "a", seq: 990 }] })
     compare(t.running, true)
     compare(store.snapshotRunner.seq, seq, "a line alone launches no snapshot")
   }
@@ -444,9 +439,10 @@ TestCase {
   function test_burst_coalesces_to_one_snapshot() {
     var store = watchedStore([entry("a", "started", true)]); if (!store) return
     var seq = store.snapshotRunner.seq
-    sendLine(store.watchProc, { changed: ["a"] })
-    sendLine(store.watchProc, { changed: ["b"] })
-    sendLine(store.watchProc, '{"changed": ["a", "c"]}')
+    // synthetic: runs-watch.py changed lines for runs the list did not name.
+    sendLine(store.watchProc, { changed: [{ run: "b", seq: 990 }] })
+    sendLine(store.watchProc, { changed: [{ run: "c", seq: 991 }] })
+    sendLine(store.watchProc, '{"changed": [{"run": "b", "seq": 992}, {"run": "c", "seq": 993}]}')
     compare(store.snapshotRunner.seq, seq, "no snapshot during the burst")
     store.debounceTimer.triggered()
     compare(store.snapshotRunner.seq, seq + 1, "the burst cost exactly one snapshot")
@@ -507,7 +503,7 @@ TestCase {
     compare(store.watchWarning, "")
     compare(store.watchSchemaError, "")
     verify(!store.watchProc.envelope, "a hello is not an envelope")
-    sendLine(store.watchProc, { changed: ["a"] })
+    sendLine(store.watchProc, { changed: [{ run: "a", seq: 990 }] })
     compare(store.debounceTimer.running, true, "a changed line still starts the debounce")
   }
 
@@ -580,7 +576,7 @@ TestCase {
     var store = watchedStore([entry("a", "done", false)]); if (!store) return
     // synthetic: a changed line that also carries schema_2's hello.
     var changed = helloLine("schema_2")
-    changed.changed = ["a"]
+    changed.changed = [{ run: "a", seq: 990 }]
     sendLine(store.watchProc, changed)
     compare(store.debounceTimer.running, true, "a changed array still restarts the debounce")
     compare(store.amSchema, 0, "its hello is not read")
@@ -599,7 +595,8 @@ TestCase {
   function test_hello_mid_burst_keeps_the_debounce() {
     var store = watchedStore([entry("a", "done", false)]); if (!store) return
     var seq = store.snapshotRunner.seq
-    sendLine(store.watchProc, { changed: ["a"] })
+    // synthetic: a runs-watch.py changed line for a run the list did not name.
+    sendLine(store.watchProc, { changed: [{ run: "z", seq: 990 }] })
     compare(store.debounceTimer.running, true)
     sendLine(store.watchProc, helloLine("schema_2"))
     compare(store.amSchema, 2)
@@ -760,13 +757,14 @@ TestCase {
     var store = watchedStore([entry("a", "started", true)]); if (!store) return
     store.selectedRunId = "a"
     var w = store.watchProc
-    sendLine(w, { changed: ["a"] })
+    sendLine(w, { changed: [{ run: "a", seq: 990 }] })
     compare(store.debounceTimer.running, true)
     compare(store.livenessTimer.running, true)
     store.active = false
     compare(w.running, false, "the watch is killed")
     compare(store.watching, false)
     compare(store.debounceTimer.running, false, "the pending refresh is dropped")
+    compare(Object.keys(store.nudges).length, 0, "and its nudges")
     compare(store.livenessTimer.running, false)
     compare(store.runs.length, 1, "the runs stay for the next opening")
     compare(store.runs[0].id, "a")
@@ -792,7 +790,7 @@ TestCase {
     var fresh = store.watchProc
     verify(fresh !== old, "the latest opening's first good snapshot starts a new watch")
     compare(fresh.running, true)
-    compare(fresh.command[3], "a")
+    compare(fresh.command.length, 2)
     compare(store.watching, true)
   }
 
@@ -890,7 +888,7 @@ TestCase {
   function test_project_switch_stops_watch_and_clears_runs() {
     var store = watchedStore([entry("a", "started", true)]); if (!store) return
     var old = store.watchProc
-    sendLine(old, { changed: ["a"] })
+    sendLine(old, { changed: [{ run: "a", seq: 990 }] })
     compare(store.debounceTimer.running, true)
     store.project = rootB
     compare(old.running, false, "the old project's watch is stopped")
@@ -907,9 +905,8 @@ TestCase {
     reply(store.snapshotRunner.current, okReply([entry("b1", "started", true, rootB)]), 0)
     var w = store.watchProc
     verify(w !== old, "B gets its own watch")
-    compare(w.command.length, 4)
-    compare(w.command[2], "/home/u/b")
-    compare(w.command[3], "b1")
+    compare(w.command.length, 2)
+    compare(w.launchProject, "/home/u/b")
     compare(w.running, true)
     compare(store.watching, true)
   }
@@ -918,12 +915,13 @@ TestCase {
     var store = watchedStore([entry("a", "started", true)]); if (!store) return
     var old = store.watchProc
     store.project = rootB
-    sendLine(old, { changed: ["a"] })
+    sendLine(old, { changed: [{ run: "a", seq: 990 }] })
     compare(store.debounceTimer.running, false, "the old watch's late line is dropped")
     reply(store.snapshotRunner.current, okReply([entry("b1", "started", true, rootB)]), 0)
-    sendLine(old, { changed: ["a"] })
+    sendLine(old, { changed: [{ run: "a", seq: 991 }] })
     compare(store.debounceTimer.running, false, "even once B's watch runs")
-    sendLine(store.watchProc, { changed: ["b1"] })
+    compare(Object.keys(store.nudges).length, 0, "nothing was recorded")
+    sendLine(store.watchProc, { changed: [{ run: "b1", seq: 992 }] })
     compare(store.debounceTimer.running, true, "B's own lines still count")
   }
 
@@ -931,12 +929,12 @@ TestCase {
     var store = watchedStore([entry("a", "started", true)]); if (!store) return
     var old = store.watchProc
     store.active = false
-    sendLine(old, { changed: ["a"] })
+    sendLine(old, { changed: [{ run: "a", seq: 990 }] })
     compare(store.debounceTimer.running, false, "a killed watch's late line is dropped")
     store.active = true
     reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
     verify(store.watchProc !== old)
-    sendLine(old, { changed: ["a"] })
+    sendLine(old, { changed: [{ run: "a", seq: 991 }] })
     compare(store.debounceTimer.running, false, "same project, but an older launch")
   }
 
@@ -1068,7 +1066,7 @@ TestCase {
 
   function test_watch_exit_zero_only_clears_watching() {
     var store = watchedStore([entry("a", "started", true)]); if (!store) return
-    sendLine(store.watchProc, { changed: ["a"] })
+    sendLine(store.watchProc, { changed: [{ run: "a", seq: 990 }] })
     endWatch(store.watchProc, "", 0)
     compare(store.watching, false)
     compare(store.amStatus, "ok")
@@ -1114,7 +1112,7 @@ TestCase {
     compare(store.watching, false)
     reply(store.snapshotRunner.current, okReply([entry("b1", "done", false, rootB)]), 0)
     compare(store.watching, true, "B's watch is tried")
-    compare(store.watchProc.command[2], "/home/u/b")
+    compare(store.watchProc.launchProject, "/home/u/b")
   }
 
   // ---- the Runs screen's filter and search (5.1)
@@ -3974,5 +3972,114 @@ TestCase {
     store.project = rootB
     compare(store.asOfSeq, 0, "a project switch")
     compare(Object.keys(store.appliedSeq).length, 0, "a project switch")
+  }
+
+  // ---- nudges (4.1.3)
+
+  // An active store on the captured runs' project whose first list snapshot
+  // was capturedList(extra): both captured runs are covered at 989 and the
+  // watch runs.
+  function capturedStore(extra) {
+    var store = activeStore(tc.capRoot); if (!store) return null
+    reply(store.snapshotRunner.current, capturedList(extra), 0)
+    verify(store.watchProc, "the watch was started")
+    return store
+  }
+
+  // synthetic: one runs-watch.py changed line, {"changed": [{run, seq}, ...]},
+  // for pairs [run, seq, run, seq, ...].
+  function nudge(store, pairs) {
+    var list = []
+    for (var i = 0; i < pairs.length; i += 2) list.push({ run: pairs[i], seq: pairs[i + 1] })
+    sendLine(store.watchProc, { changed: list })
+  }
+
+  function test_invalid_changed_entries_are_ignored() {
+    var store = capturedStore(); if (!store) return
+    // synthetic: changed entries runs-watch.py never prints.
+    var lines = ['{"changed": ["' + tc.doneRun + '"]}', '{"changed": [{"run": "x", "seq": 0}]}',
+                 '{"changed": [{"run": "x", "seq": -3}]}', '{"changed": [{"run": "x", "seq": 2.5}]}',
+                 '{"changed": [{"run": "x", "seq": "990"}]}', '{"changed": [{"run": "", "seq": 990}]}',
+                 '{"changed": [{"run": 7, "seq": 990}]}', '{"changed": [{"seq": 990}]}',
+                 '{"changed": [null, [], 3]}', '{"changed": []}']
+    for (var i = 0; i < lines.length; i++) {
+      sendLine(store.watchProc, lines[i])
+      compare(store.debounceTimer.running, false, lines[i])
+      compare(Object.keys(store.nudges).length, 0, lines[i])
+    }
+    sendLine(store.watchProc, '{"changed": ["x", {"run": "' + tc.doneRun + '", "seq": 990}, {"run": "y", "seq": 0}]}')
+    compare(store.debounceTimer.running, true, "one valid entry is enough")
+    compare(Object.keys(store.nudges).join(","), tc.doneRun)
+    compare(store.nudges[tc.doneRun], 990)
+  }
+
+  function test_nudges_keep_the_highest_seq_per_run() {
+    var store = capturedStore(); if (!store) return
+    nudge(store, [tc.doneRun, 995])
+    nudge(store, [tc.doneRun, 993, tc.startedRun, 990])
+    nudge(store, [tc.doneRun, 997])
+    compare(store.nudges[tc.doneRun], 997)
+    compare(store.nudges[tc.startedRun], 990)
+    compare(Object.keys(store.nudges).join(","), tc.doneRun + "," + tc.startedRun, "in first-nudge order")
+  }
+
+  function test_a_cursor_line_sets_the_watch_cursor() {
+    var store = capturedStore(); if (!store) return
+    compare(store.watchCursor, 0)
+    // synthetic: runs-watch.py's cursor lines.
+    sendLine(store.watchProc, { cursor: 1005 })
+    compare(store.watchCursor, 1005)
+    var bad = ['{"cursor": -1}', '{"cursor": 2.5}', '{"cursor": "1006"}', '{"cursor": null}', '{"cursor": true}']
+    for (var i = 0; i < bad.length; i++) {
+      sendLine(store.watchProc, bad[i])
+      compare(store.watchCursor, 1005, bad[i])
+    }
+    sendLine(store.watchProc, { cursor: 0 })
+    compare(store.watchCursor, 0, "0 is a cursor too")
+    compare(store.debounceTimer.running, false, "a cursor is not a change")
+  }
+
+  function test_a_nudge_no_newer_than_the_list_launches_nothing() {
+    var store = capturedStore(); if (!store) return
+    var seq = store.snapshotRunner.seq
+    nudge(store, [tc.startedRun, 989, tc.doneRun, 900])
+    compare(store.debounceTimer.running, true, "recorded: the trigger compares")
+    fire(store.debounceTimer)
+    compare(store.snapshotRunner.seq, seq, "no list snapshot")
+    compare(store.readRunners.length, 0, "no run read")
+    compare(Object.keys(store.nudges).length, 0, "the nudges were taken")
+  }
+
+  function test_a_nudge_for_an_unknown_run_costs_one_list_snapshot() {
+    var store = capturedStore(); if (!store) return
+    var seq = store.snapshotRunner.seq
+    // synthetic: a run am started after the list, beside a held run.
+    nudge(store, [tc.doneRun, 1005, "20261008T150000Z-0a1b2c3d", 1006])
+    nudge(store, ["20261008T150000Z-0a1b2c3d", 1007])
+    fire(store.debounceTimer)
+    compare(store.snapshotRunner.seq, seq + 1, "exactly one list snapshot")
+    compare(argv(store.snapshotRunner.current), "python3|/plugin/core/backend/runs/runs-snapshot.py")
+    compare(store.readRunners.length, 0, "and no run read in that trigger")
+    compare(Object.keys(store.nudges).length, 0)
+  }
+
+  function test_a_nudge_for_another_projects_run_launches_nothing() {
+    // synthetic: another project's run listed beside the captures.
+    var store = capturedStore([entry("other1", "started", true, "/home/u/elsewhere")]); if (!store) return
+    compare(store.appliedSeq.other1, 989)
+    var seq = store.snapshotRunner.seq
+    nudge(store, ["other1", 1200])
+    fire(store.debounceTimer)
+    compare(store.snapshotRunner.seq, seq, "no list snapshot")
+    compare(store.readRunners.length, 0, "no run read")
+  }
+
+  function test_a_project_switch_forgets_the_nudges_but_keeps_the_cursor() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    nudge(store, [tc.doneRun, 1005])
+    store.project = rootB
+    compare(Object.keys(store.nudges).length, 0)
+    compare(store.watchCursor, 1005, "the cursor is not per project")
   }
 }

@@ -50,6 +50,11 @@ Scope {
   // Both are replaced, never changed in place.
   property int asOfSeq: 0
   property var appliedSeq: ({})
+  // The current watch's last {"cursor": C} (0 = none), held in memory only.
+  property int watchCursor: 0
+  // {runId: seq}: the highest changed seq per run since the last debounce
+  // trigger. Replaced, never changed in place.
+  property var nudges: ({})
 
   // A watch has been started since the last activation or project switch:
   // later snapshots never start another (the helper picks up the project's new
@@ -138,6 +143,7 @@ Scope {
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
+  readonly property alias readRunners: readState.runners  // in-flight run reads, oldest first
   readonly property alias debounceTimer: debounceTimer
   readonly property alias livenessTimer: livenessTimer
   readonly property alias staleTimer: staleTimer
@@ -199,6 +205,7 @@ Scope {
   function stopLive() {
     store.stopWatch()
     debounceTimer.stop()
+    store.nudges = {}
     store.stopPoll()
     staleTimer.stop()
     store.stale = false
@@ -225,20 +232,15 @@ Scope {
     store.forgetHello()
   }
 
-  // runs-watch.py for this project and the runs the snapshot just listed, in
-  // its order. Long-lived, so a plain Process rather than the HelperRunner.
-  // It starts with am's schema and version unknown until its own hello.
+  // runs-watch.py with no argument: every project's nudges, from now.
+  // Long-lived, so a plain Process rather than the HelperRunner. It starts
+  // with am's schema and version unknown until its own hello.
   function startWatch() {
     store.watchSeq += 1
     store.watchTried = true
     store.forgetHello()
-    var ids = []
-    for (var i = 0; i < store.runs.length; i++) {
-      var id = store.runs[i].id
-      if (typeof id === "string" && id !== "") ids.push(id)
-    }
     var proc = watchC.createObject(store, { launchSeq: store.watchSeq, launchProject: store.project })
-    proc.command = ["python3", store.backendDir + "runs/runs-watch.py", store.project].concat(ids)
+    proc.command = ["python3", store.backendDir + "runs/runs-watch.py"]
     watchState.proc = proc
     watchState.watching = true
     proc.running = true
@@ -251,10 +253,12 @@ Scope {
     return proc.launchSeq === store.watchSeq && proc.launchProject === store.project
   }
 
-  // One stdout line of the watch. {"changed": [...]} (re)starts the debounce;
+  // One stdout line of the watch, a nudge source never folded into state.
+  // {"changed": [{run, seq}, ...]} records each nudge (recordNudges).
   // {"ok": false, ...} is kept as the envelope its exit explains. The hello,
   // {"hello": {"schema": N, "am": V}}, sets amSchema to N (an integer of 1 or
   // more, else 0) and amVersion to V (a string, else "") and starts nothing.
+  // {"cursor": C} sets watchCursor when C is an integer of 0 or more.
   // Anything else -- blank, not JSON, not an object, a hello that is not an
   // object -- is ignored. Never throws.
   function watchLine(proc, data) {
@@ -264,12 +268,47 @@ Scope {
     var value = null
     try { value = JSON.parse(text) } catch (e) { return }
     if (value === null || typeof value !== "object" || Array.isArray(value)) return
-    if (Array.isArray(value.changed)) debounceTimer.restart()
+    if (Array.isArray(value.changed)) store.recordNudges(value.changed)
     else if (value.ok === false) proc.envelope = value
     else if (value.hello !== null && typeof value.hello === "object" && !Array.isArray(value.hello)) {
       var schema = value.hello.schema
       store.amSchema = typeof schema === "number" && Number.isInteger(schema) && schema >= 1 ? schema : 0
       store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
+    } else if (store.hasKey(value, "cursor")) {
+      if (store.isSeq(value.cursor)) store.watchCursor = value.cursor
+    }
+  }
+
+  // A changed line's entries: each {run: non-empty string, seq: integer of 1
+  // or more} raises nudges[run] to seq; every other entry is ignored. The
+  // debounce restarts when at least one entry was recorded.
+  function recordNudges(entries) {
+    var next = null
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i]
+      if (e === null || typeof e !== "object" || Array.isArray(e)) continue
+      if (typeof e.run !== "string" || e.run === "" || !store.isSeq(e.seq) || e.seq < 1) continue
+      if (next === null) next = store.copyMap(store.nudges)
+      if (!store.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
+    }
+    if (next === null) return
+    store.nudges = next
+    debounceTimer.restart()
+  }
+
+  // The debounce fired: the nudges are taken. A nudge for a run appliedSeq
+  // does not know costs one list snapshot, which covers every run. A nudge no
+  // newer than appliedSeq[run], or for another project's listed run, is
+  // ignored.
+  function triggerNudges() {
+    var taken = store.nudges
+    store.nudges = {}
+    var ids = Object.keys(taken)
+    for (var i = 0; i < ids.length; i++) {
+      if (!store.hasKey(store.appliedSeq, ids[i])) {
+        store.refresh()
+        return
+      }
     }
   }
 
@@ -322,6 +361,7 @@ Scope {
     store.stopWatch()
     store.watchTried = false
     debounceTimer.stop()
+    store.nudges = {}
     store.appliedSeq = {}
     store.asOfSeq = 0
     store.stopPoll()
@@ -1347,13 +1387,13 @@ Scope {
     onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
   }
 
-  // A burst of changed lines costs one snapshot.
+  // A burst of changed lines is taken in one go (triggerNudges).
   Timer {
     id: debounceTimer
     objectName: "debounceTimer"
     interval: 250
     repeat: false
-    onTriggered: store.refresh()
+    onTriggered: store.triggerNudges()
   }
 
   // Only while the panel is open and a run is running: no timer while idle.
@@ -1439,6 +1479,13 @@ Scope {
     property var runners: []
     property var requests: ({})
     property int nextToken: 0
+  }
+
+  // The run reads' own state; kept apart so consumers cannot write it.
+  // `runners` are the reads in flight, oldest first.
+  QtObject {
+    id: readState
+    property var runners: []
   }
 
   // The toast keys only grow, so a stale Dismiss never removes a newer toast.
