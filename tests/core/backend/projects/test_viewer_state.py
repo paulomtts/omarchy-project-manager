@@ -110,6 +110,11 @@ def test_a_newly_created_state_file_is_private(env):
     assert (state_file(env).stat().st_mode & 0o777) == 0o600
 
 
+def test_the_script_runs_by_its_own_path(env):
+    proc = subprocess.run([SCRIPT, "get"], env=env, capture_output=True, text=True)
+    assert (proc.returncode, json.loads(proc.stdout)) == (0, {"last_project": None})
+
+
 # --- run settings ----------------------------------------------------------------
 
 USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"

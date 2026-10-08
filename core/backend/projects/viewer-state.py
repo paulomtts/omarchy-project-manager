@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Remembers which brd project the panel was last showing, each project's run
 settings, and the viewer-wide global settings.
 
