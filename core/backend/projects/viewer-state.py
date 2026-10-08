@@ -1,19 +1,21 @@
-#!/usr/bin/env python3
-"""Remembers which brd project the panel was last showing, and each project's
-run settings.
+"""Remembers which brd project the panel was last showing, each project's run
+settings, and the viewer-wide global settings.
 
     viewer-state.py get
     viewer-state.py set-project <root_path>
     viewer-state.py get-run-settings <root_path>
     viewer-state.py set-run-settings <root_path> <json>
+    viewer-state.py get-global-settings
+    viewer-state.py set-global-settings <json>
 
 State lives in ${XDG_STATE_HOME:-~/.local/state}/omarchy-project-manager/state.json
 (reads fall back to the old brd-viewer/state.json until a new one is written). QML
-cannot write files, hence this helper. Prints one JSON line. `get` and
-`get-run-settings` never fail (a missing or corrupt file, or a damaged value, just
-means the default); `set-project` and `set-run-settings` write atomically and keep
-any other keys already in the file. Run settings live under "run_settings", keyed
-by the root path verbatim. There are seven, each read on its own:
+cannot write files, hence this helper. Prints one JSON line. `get`,
+`get-run-settings` and `get-global-settings` never fail (a missing or corrupt file,
+or a damaged value, just means the default); `set-project`, `set-run-settings` and
+`set-global-settings` write atomically and keep any other keys already in the file.
+Run settings live under "run_settings", keyed by the root path verbatim. There are
+seven, each read on its own:
 verify (a list of non-empty strings, default []), allowNoVerification and
 notifyOnEscalation (booleans, default false), prefixHistory (a list of at most 20
 non-empty strings, most recent first, default []), parallelism (a whole number
@@ -23,6 +25,9 @@ non-empty strings, most recent first, default []), parallelism (a whole number
 before writing anything, and changes only the keys given; a list given replaces
 the stored list wholesale, and a prefixByMilestone given is merged into the
 stored map per milestone id (a stored map that is not valid is replaced).
+Global settings live under "global_settings". There is one, notifyOnEscalation,
+a boolean; when no boolean is stored, `get-global-settings` answers true when any
+project's stored run-settings notifyOnEscalation is true, else false.
 """
 import json
 import os
@@ -35,7 +40,7 @@ from common.json_line import emit  # noqa: E402
 
 
 USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"
-         " | set-run-settings <root_path> <json>")
+         " | set-run-settings <root_path> <json> | get-global-settings | set-global-settings <json>")
 PREFIX_HISTORY_CAP = 20
 RUN_SETTINGS_DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False,
                          "prefixHistory": [], "parallelism": 4, "confirmDispatch": True,
@@ -61,7 +66,7 @@ def load():
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             return {}
         return data if isinstance(data, dict) else {}
     return {}
@@ -122,6 +127,17 @@ def cmd_get_run_settings(root_path):
         value = entry.get(key)
         result[key] = value if RUN_SETTINGS_VALID[key](value) else default
     return emit(result, 0)
+
+
+def cmd_get_global_settings():
+    data = load()
+    stored = data.get("global_settings")
+    value = stored.get("notifyOnEscalation") if isinstance(stored, dict) else None
+    if not valid_boolean(value):
+        settings = data.get("run_settings")
+        entries = settings.values() if isinstance(settings, dict) else ()
+        value = any(isinstance(entry, dict) and entry.get("notifyOnEscalation") is True for entry in entries)
+    return emit({"notifyOnEscalation": value}, 0)
 
 
 def parse_run_settings(text):
@@ -186,6 +202,8 @@ def main(argv):
         return cmd_get_run_settings(argv[1])
     if argv[:1] == ["set-run-settings"] and len(argv) == 3 and argv[1]:
         return cmd_set_run_settings(argv[1], argv[2])
+    if argv == ["get-global-settings"]:
+        return cmd_get_global_settings()
     return emit({"ok": False, "error": USAGE}, 2)
 
 
