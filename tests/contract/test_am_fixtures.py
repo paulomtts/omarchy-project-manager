@@ -4,16 +4,16 @@ and the installed am still prints them.
 Fixture contract: every capture is read with json.load and never written. Each
 level has one exact key set (keys starting with "_" are annotations and are
 ignored); status values come from am's run and attempt vocabularies. am status
-data has no top-level "subtasks".
+data has no top-level "subtasks". Every capture carries a "_note" naming
+agent-manager 0.2.0; the captures share one store_id; an event's gseq strictly
+increases and an am events page's head is at least its last gseq.
 
 Live check: am runs with HOME, XDG_DATA_HOME and XDG_STATE_HOME under a scratch
 dir, never the user's data dir. am runs data must carry "as_of_seq" and the
 first line of am watch --all --follow (the hello) must carry "head", each a
 non-negative int; a missing one fails naming the key and "the plugin needs the
-newer am". Rows present, and am status of the newest, must print the capture
-key sets, with the keys the captures predate allowed as extras: "story_id" and
-"project" (exactly "id" and "repo_dir") on a runs row, "story_id" on the status
-run, and "as_of_seq", "store_id" and "warnings" on the status data. Skipped only
+newer am". Rows present, and am status of the newest, must print exactly the
+capture key sets: a missing or an unknown key fails naming it. Skipped only
 when am is absent.
 """
 import json
@@ -35,25 +35,29 @@ AM_TIMEOUT = 30
 FIXTURE_NAMES = (
     "runs.json", "status-started.json", "status-done.json", "status-escalated.json",
     "status-escalated-integrate.json", "status-done-integrate.json", "watch-events.json",
-    "watch-hello.json", "logs-attempt.json",
+    "watch-hello.json", "logs-attempt.json", "events.json",
 )
 STATUS_FIXTURES = (
     "status-started.json", "status-done.json", "status-escalated.json",
     "status-escalated-integrate.json", "status-done-integrate.json",
 )
 E2E_FIXTURES = ("status-escalated.json", "status-escalated-integrate.json", "status-done-integrate.json")
-NOTED_FIXTURES = E2E_FIXTURES + ("watch-events.json", "watch-hello.json")
+NOTED_FIXTURES = FIXTURE_NAMES
+NOTE_AM = "agent-manager 0.2.0"
 
 ENVELOPE_KEYS = frozenset({"ok", "data"})
+RUNS_DATA_KEYS = frozenset({"as_of_seq", "runs", "store_id"})
 RUN_ROW_KEYS = frozenset({"id", "workflow", "repo_dir", "base_branch", "branch_prefix", "status",
-                          "started_at", "milestone_id", "card_id", "lease", "progress"})
+                          "started_at", "milestone_id", "card_id", "lease", "progress", "project",
+                          "story_id"})
 RUN_LEASE_KEYS = frozenset({"pid", "host", "heartbeat_at", "accepting", "live"})
 PROGRESS_KEYS = frozenset({"stories", "subtasks", "current"})
 COUNT_KEYS = frozenset({"done", "total"})
 CURRENT_KEYS = frozenset({"card", "phase", "attempt"})
-STATUS_DATA_KEYS = frozenset({"run", "stories", "rows", "control", "integrity"})
+STATUS_DATA_KEYS = frozenset({"run", "stories", "rows", "control", "integrity", "as_of_seq",
+                              "store_id", "warnings"})
 STATUS_RUN_KEYS = frozenset({"id", "workflow", "repo_dir", "base_branch", "branch_prefix", "status",
-                             "started_at"})
+                             "started_at", "story_id"})
 STORY_KEYS = frozenset({"card_id", "title", "level", "status", "tip_branch", "subtasks"})
 SUBTASK_KEYS = frozenset({"card_id", "branch", "base_branch", "status", "worktree_path", "phases"})
 PHASE_KEYS = frozenset({"name", "kind", "status", "started_at", "ended_at", "detail", "attempts"})
@@ -67,20 +71,18 @@ LOGS_KEYS = frozenset({"run_id", "story_id", "card", "phase", "attempt", "status
 ARTIFACTS_KEYS = frozenset({"prompt", "result", "stdout", "stderr"})
 ARTIFACT_KEYS = frozenset({"path", "present", "text"})
 WATCH_DATA_KEYS = frozenset({"events"})
-EVENT_KEYS = frozenset({"seq", "ts", "run_id", "event", "story", "card", "phase", "attempt", "payload"})
+EVENTS_DATA_KEYS = frozenset({"events", "head"})
+EVENT_KEYS = frozenset({"seq", "ts", "run_id", "event", "story", "card", "phase", "attempt", "payload",
+                        "gseq"})
 HELLO_FILE_KEYS = frozenset({"schema_1", "schema_2"})
-HELLO_KEYS = frozenset({"event", "schema", "am", "runs_dir"})
+HELLO_KEYS = frozenset({"am", "cursor_reset", "event", "head", "runs_dir", "schema", "store_id"})
+HELLO_V1_KEYS = frozenset({"am", "event", "runs_dir", "schema"})
 
 RUN_STATUSES = frozenset({"pending", "started", "done", "failed", "escalated", "stopped",
                           "cancelled", "canceled"})
 ATTEMPT_STATUSES = frozenset({"started", "ok", "schema_invalid", "gate_failed", "harness_error"})
 
 PROJECT_KEYS = frozenset({"id", "repo_dir"})
-
-# The installed am prints these extra keys on these three levels only; the captures predate them.
-LIVE_EXTRA = {RUN_ROW_KEYS: frozenset({"story_id", "project"}),
-              STATUS_RUN_KEYS: frozenset({"story_id"}),
-              STATUS_DATA_KEYS: frozenset({"as_of_seq", "store_id", "warnings"})}
 
 
 def load(name):
@@ -92,10 +94,10 @@ def key_set(obj):
     return {key for key in obj if not key.startswith("_")}
 
 
-def assert_keys(source, where, obj, expected, extra_allowed=frozenset()):
+def assert_keys(source, where, obj, expected):
     assert isinstance(obj, dict), f"{source} {where}: expected an object, got {obj!r}"
     keys = key_set(obj)
-    if keys == expected or keys == expected | extra_allowed:
+    if keys == expected:
         return
     missing = sorted(expected - keys)
     extra = sorted(keys - expected)
@@ -105,6 +107,7 @@ def assert_keys(source, where, obj, expected, extra_allowed=frozenset()):
 def run_row_levels(where, row):
     """(where, obj, expected key set) for an am runs row and every object inside it."""
     yield where, row, RUN_ROW_KEYS
+    yield f"{where}.project", row.get("project"), PROJECT_KEYS
     if row.get("lease") is not None:
         yield f"{where}.lease", row["lease"], RUN_LEASE_KEYS
     progress = row.get("progress")
@@ -116,16 +119,16 @@ def run_row_levels(where, row):
             yield f"{where}.progress.current", progress["current"], CURRENT_KEYS
 
 
-def check_runs_row(source, where, row, extra_allowed=None):
-    """A row's key sets and status; extra_allowed maps an expected set to keys also accepted."""
+def check_runs_row(source, where, row):
+    """A row's key sets, its project's included, and its status."""
     for level, obj, expected in run_row_levels(where, row):
-        assert_keys(source, level, obj, expected, (extra_allowed or {}).get(expected, frozenset()))
+        assert_keys(source, level, obj, expected)
     assert row["status"] in RUN_STATUSES, f"{source} {where}.status: {row['status']!r}"
 
 
-def check_runs_rows(source, rows, extra_allowed=None):
+def check_runs_rows(source, rows):
     for i, row in enumerate(rows):
-        check_runs_row(source, f"runs[{i}]", row, extra_allowed)
+        check_runs_row(source, f"runs[{i}]", row)
 
 
 def runs_rows_of_fixtures():
@@ -169,12 +172,36 @@ def status_statuses(data):
                     yield f"{where}.attempts[{a}].status", attempt["status"], ATTEMPT_STATUSES
 
 
-def check_status_data(source, data, extra_allowed=None):
+def check_status_data(source, data):
     """Every level's key set and every status of am status data."""
     for where, obj, expected in status_levels(data):
-        assert_keys(source, where, obj, expected, (extra_allowed or {}).get(expected, frozenset()))
+        assert_keys(source, where, obj, expected)
     for where, status, vocabulary in status_statuses(data):
         assert status in vocabulary, f"{source} {where}: {status!r} not in {sorted(vocabulary)}"
+
+
+def check_count(where, value):
+    """value is a non-negative int; a bool is not."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        pytest.fail(f"{where}: {value!r}")
+
+
+def check_store_id(where, value):
+    """value is a non-empty string."""
+    if not isinstance(value, str) or not value:
+        pytest.fail(f"{where}: {value!r}")
+
+
+def check_gseqs(source, events):
+    """Every event's gseq is an int and each is greater than the one before."""
+    previous = None
+    for i, event in enumerate(events):
+        gseq = event["gseq"]
+        if isinstance(gseq, bool) or not isinstance(gseq, int):
+            pytest.fail(f"{source} events[{i}].gseq: {gseq!r}")
+        if previous is not None and gseq <= previous:
+            pytest.fail(f"{source} events[{i}].gseq: {gseq} after {previous}")
+        previous = gseq
 
 
 @pytest.mark.parametrize("name", FIXTURE_NAMES)
@@ -212,6 +239,34 @@ def test_runs_rows_key_sets():
         check_runs_row(source, where, row)
 
 
+def test_runs_data_key_set_and_scalars():
+    data = load("runs.json")["data"]
+    assert_keys("runs.json", "data", data, RUNS_DATA_KEYS)
+    check_count("runs.json data.as_of_seq", data["as_of_seq"])
+    check_store_id("runs.json data.store_id", data["store_id"])
+
+
+def test_runs_row_project_failures_name_the_level():
+    # synthetic: a capture row with project dropped, then with an unknown project key
+    row = load("runs.json")["data"]["runs"][0]
+    del row["project"]
+    with pytest.raises(pytest.fail.Exception) as failure:
+        check_runs_row("runs.json", "runs[0]", row)
+    assert str(failure.value) == "runs.json runs[0]: missing ['project'], extra []"
+    row = load("runs.json")["data"]["runs"][0]
+    row["project"]["name"] = "x"
+    with pytest.raises(pytest.fail.Exception) as failure:
+        check_runs_row("runs.json", "runs[0]", row)
+    assert str(failure.value) == "runs.json runs[0].project: missing [], extra ['name']"
+
+
+def test_runs_rows_pair_with_the_started_and_done_captures():
+    rows = load("runs.json")["data"]["runs"]
+    assert len(rows) >= 2, f"runs.json: {len(rows)} rows"
+    assert rows[0]["id"] == load("status-started.json")["data"]["run"]["id"], rows[0]["id"]
+    assert rows[1]["id"] == load("status-done.json")["data"]["run"]["id"], rows[1]["id"]
+
+
 def test_runs_row_statuses_are_in_the_run_vocabulary():
     for source, where, row in runs_rows_of_fixtures():
         assert row["status"] in RUN_STATUSES, f"{source} {where}.status: {row['status']!r}"
@@ -237,6 +292,17 @@ def test_status_key_sets_at_every_level(name):
         assert_keys(name, where, obj, expected)
     assert isinstance(data["control"]["requests"], list), f"{name} control.requests: not a list"
     assert isinstance(data["control"]["claims"], list), f"{name} control.claims: not a list"
+
+
+@pytest.mark.parametrize("name", STATUS_FIXTURES)
+def test_status_data_scalars(name):
+    data = load(name)["data"]
+    check_count(f"{name} data.as_of_seq", data["as_of_seq"])
+    check_store_id(f"{name} data.store_id", data["store_id"])
+    warnings = data["warnings"]
+    assert isinstance(warnings, list), f"{name} data.warnings: {warnings!r}"
+    for i, warning in enumerate(warnings):
+        assert isinstance(warning, str), f"{name} data.warnings[{i}]: {warning!r}"
 
 
 def test_status_fixtures_reach_attempts_and_a_control_lease():
@@ -266,23 +332,63 @@ def test_watch_event_key_sets():
     assert data["events"], "watch-events.json: no events"
     for i, event in enumerate(data["events"]):
         assert_keys("watch-events.json", f"events[{i}]", event, EVENT_KEYS)
+    check_gseqs("watch-events.json", data["events"])
+
+
+def test_events_page_key_sets_and_head():
+    data = load("events.json")["data"]
+    assert_keys("events.json", "data", data, EVENTS_DATA_KEYS)
+    assert data["events"], "events.json: no events"
+    for i, event in enumerate(data["events"]):
+        assert_keys("events.json", f"events[{i}]", event, EVENT_KEYS)
+    check_gseqs("events.json", data["events"])
+    check_count("events.json data.head", data["head"])
+    last = data["events"][-1]["gseq"]
+    assert data["head"] >= last, f"events.json data.head: {data['head']} below the last gseq {last}"
+
+
+def test_check_gseqs_names_the_file_and_the_values():
+    # synthetic: gseqs that repeat, then one that is not an int
+    with pytest.raises(pytest.fail.Exception) as failure:
+        check_gseqs("x.json", [{"gseq": 3}, {"gseq": 3}])
+    assert str(failure.value) == "x.json events[1].gseq: 3 after 3"
+    with pytest.raises(pytest.fail.Exception) as failure:
+        check_gseqs("x.json", [{"gseq": True}])
+    assert str(failure.value) == "x.json events[0].gseq: True"
 
 
 def test_hello_key_sets_and_schemas():
     hellos = load("watch-hello.json")
     assert_keys("watch-hello.json", "top level", hellos, HELLO_FILE_KEYS)
-    for key, schema in (("schema_1", 1), ("schema_2", 2)):
+    for key, schema, expected in (("schema_1", 1, HELLO_V1_KEYS), ("schema_2", 2, HELLO_KEYS)):
         hello = hellos[key]
-        assert_keys("watch-hello.json", key, hello, HELLO_KEYS)
+        assert_keys("watch-hello.json", key, hello, expected)
         assert hello["schema"] == schema, f"watch-hello.json {key}: schema {hello['schema']!r}"
         assert hello["event"] == "watch", f"watch-hello.json {key}: event {hello['event']!r}"
+    hello = hellos["schema_2"]
+    check_count("watch-hello.json schema_2.head", hello["head"])
+    assert isinstance(hello["cursor_reset"], bool), \
+        f"watch-hello.json schema_2.cursor_reset: {hello['cursor_reset']!r}"
+    check_store_id("watch-hello.json schema_2.store_id", hello["store_id"])
 
 
-def test_note_is_on_exactly_the_annotated_captures():
-    noted = sorted(name for name in FIXTURE_NAMES if "_note" in load(name))
-    assert noted == sorted(NOTED_FIXTURES), noted
+def test_note_is_on_every_capture_and_names_the_am():
+    for name in FIXTURE_NAMES:
+        note = load(name).get("_note")
+        assert isinstance(note, str), f"{name}: _note is {note!r}"
+        assert NOTE_AM in note, f"{name}: _note does not name {NOTE_AM}"
+    assert NOTED_FIXTURES == FIXTURE_NAMES
     with_row = sorted(name for name in FIXTURE_NAMES if "_am_runs_row" in load(name))
     assert with_row == sorted(E2E_FIXTURES), with_row
+
+
+def test_captures_share_one_store_id():
+    seen = {"runs.json": load("runs.json")["data"]["store_id"],
+            "watch-hello.json schema_2": load("watch-hello.json")["schema_2"]["store_id"]}
+    seen.update((name, load(name)["data"]["store_id"]) for name in STATUS_FIXTURES)
+    (first, store_id), *rest = seen.items()
+    for name, other in rest:
+        assert other == store_id, f"store_id {other!r} in {name}, {store_id!r} in {first}"
 
 
 def am_json(env, *args):
@@ -338,8 +444,8 @@ def watch_hello(env):
 
 def live_check(env, repo_dir):
     """am run with `env` prints am runs data carrying as_of_seq and an am watch hello carrying
-    head; rows present match the capture key sets with the LIVE_EXTRA allowances, and so does
-    am status of the newest row."""
+    head; rows present match the capture key sets exactly, and so does am status of the
+    newest row."""
     code, out, err = am_json(env, "runs", "--repo-dir", str(repo_dir))
     if code != 0:
         pytest.fail(f"live am runs exited {code}: {out}{err}")
@@ -351,14 +457,12 @@ def live_check(env, repo_dir):
         pytest.fail(f"live am runs: no data object in {out!r}")
     require_count("live am runs data", data, "as_of_seq")
     rows = data.get("runs") or []
-    check_runs_rows("live am runs", rows, LIVE_EXTRA)
-    for i, row in enumerate(rows):
-        assert_keys("live am runs", f"runs[{i}].project", row["project"], PROJECT_KEYS)
+    check_runs_rows("live am runs", rows)
     if rows:
         newest = max(rows, key=lambda row: row["started_at"])
         code, out, err = am_json(env, "status", newest["id"], "--repo-dir", str(repo_dir))
         assert code == 0, f"am status {newest['id']} exited {code}: {out}{err}"
-        check_status_data(f"live am status {newest['id']}", json.loads(out)["data"], LIVE_EXTRA)
+        check_status_data(f"live am status {newest['id']}", json.loads(out)["data"])
     hello = watch_hello(env)
     if hello.get("event") != "watch":
         pytest.fail(f"live am watch hello: event {hello.get('event')!r}")
@@ -371,30 +475,41 @@ def test_installed_am_prints_the_fixture_key_sets(tmp_path):
     live_check(*scratch_env(tmp_path))
 
 
-def test_live_allowance_is_on_the_runs_row_status_run_and_status_data_only():
-    assert set(LIVE_EXTRA) == {RUN_ROW_KEYS, STATUS_RUN_KEYS, STATUS_DATA_KEYS}
-    run = dict.fromkeys(STATUS_RUN_KEYS | {"story_id"})
-    assert_keys("live", "data.run", run, STATUS_RUN_KEYS, LIVE_EXTRA[STATUS_RUN_KEYS])
-    # The extras come as a set: a runs row with story_id but no project fails.
-    row = dict.fromkeys(RUN_ROW_KEYS | {"story_id"})
-    with pytest.raises(pytest.fail.Exception, match=r"missing \[\], extra \['story_id'\]"):
-        assert_keys("live", "runs[0]", row, RUN_ROW_KEYS, LIVE_EXTRA[RUN_ROW_KEYS])
-    story = dict.fromkeys(STORY_KEYS | {"story_id"})
-    with pytest.raises(pytest.fail.Exception, match=r"extra \['story_id'\]"):
-        assert_keys("live", "stories[0]", story, STORY_KEYS, LIVE_EXTRA.get(STORY_KEYS, frozenset()))
+def test_live_rows_and_status_must_match_the_capture_key_sets_exactly():
+    # synthetic: a capture row with project dropped, then with an unknown key added
+    row = load("runs.json")["data"]["runs"][0]
+    del row["project"]
+    with pytest.raises(pytest.fail.Exception) as failure:
+        check_runs_rows("live am runs", [row])
+    assert str(failure.value) == "live am runs runs[0]: missing ['project'], extra []"
+    row = load("runs.json")["data"]["runs"][0]
+    row["future_key"] = 1
+    with pytest.raises(pytest.fail.Exception) as failure:
+        check_runs_rows("live am runs", [row])
+    assert str(failure.value) == "live am runs runs[0]: missing [], extra ['future_key']"
+    # synthetic: capture status data with story_id dropped from the run, then warnings dropped
+    data = load("status-done.json")["data"]
+    del data["run"]["story_id"]
+    with pytest.raises(pytest.fail.Exception) as failure:
+        check_status_data("live", data)
+    assert str(failure.value) == "live data.run: missing ['story_id'], extra []"
+    data = load("status-done.json")["data"]
+    del data["warnings"]
+    with pytest.raises(pytest.fail.Exception) as failure:
+        check_status_data("live", data)
+    assert str(failure.value) == "live data: missing ['warnings'], extra []"
 
 
 def test_live_status_check_rejects_a_status_outside_the_vocabularies():
     data = load("status-done.json")["data"]
-    data["run"]["story_id"] = "s"
-    check_status_data("live", data, LIVE_EXTRA)
+    check_status_data("live", data)
     data["stories"][0]["subtasks"][0]["phases"][1]["attempts"][0]["status"] = "done"
     attempt = r"stories\[0\]\.subtasks\[0\]\.phases\[1\]\.attempts\[0\]\.status"
     with pytest.raises(AssertionError, match=rf"^live {attempt}: 'done'"):
-        check_status_data("live", data, LIVE_EXTRA)
+        check_status_data("live", data)
     data["run"]["status"] = "bogus"
     with pytest.raises(AssertionError, match=r"^live data\.run\.status: 'bogus'"):
-        check_status_data("live", data, LIVE_EXTRA)
+        check_status_data("live", data)
 
 
 def test_live_check_skips_when_am_is_not_on_path(monkeypatch, tmp_path):
@@ -404,21 +519,31 @@ def test_live_check_skips_when_am_is_not_on_path(monkeypatch, tmp_path):
 
 
 def stub_runs_data(**extra):
-    """runs.json's data with no rows and no as_of_seq, updated with `extra`."""
+    """runs.json's data with no rows, no as_of_seq and no store_id (an older am's), updated
+    with `extra`."""
     data = load("runs.json")["data"]
     data.pop("as_of_seq", None)
+    data.pop("store_id", None)
     data["runs"] = []
     data.update(extra)
     return data
 
 
 def stub_hello(**extra):
-    """watch-hello.json's schema_2 hello without "_" keys and without head, updated with `extra`."""
+    """watch-hello.json's schema_2 hello without "_" keys and without head, cursor_reset and
+    store_id (an older am's), updated with `extra`."""
     hello = {key: value for key, value in load("watch-hello.json")["schema_2"].items()
              if not key.startswith("_")}
-    hello.pop("head", None)
+    for key in ("head", "cursor_reset", "store_id"):
+        hello.pop(key, None)
     hello.update(extra)
     return hello
+
+
+def test_stubs_model_an_older_am():
+    assert not {"as_of_seq", "store_id"} & set(stub_runs_data())
+    assert not {"head", "cursor_reset", "store_id"} & set(stub_hello())
+    assert stub_hello()["schema"] == 2
 
 
 def stub_am(tmp_path, runs_data, hello_line, runs_exit=0):

@@ -17,8 +17,8 @@ TestCase {
   property string logsCmd: "python3|/plugin/core/backend/runs/runs-logs.py|" + rootA + "|"
   // The started capture's open subtask (explore attempt 1 is started) and a
   // done subtask of it (spec attempt 1 is ok).
-  readonly property string openCard: "299ec9c0-b935-4c44-a7a0-982a104cbfe5"
-  readonly property string doneCard: "5eb7ec0c-9bb1-41cd-a0ca-506b4ab4f4ff"
+  readonly property string openCard: "2280a6ab-9c40-434b-9729-63fd1f373754"
+  readonly property string doneCard: "5560d0fe-2b8e-4ef9-ad71-96b50ee89daa"
 
   Component { id: spyC; SignalSpy {} }
 
@@ -1294,7 +1294,7 @@ TestCase {
     var envelope = F.load("logs-attempt.json")
     reply(store.logsRunner.current, JSON.stringify(envelope) + "\n", 0)
     compare(store.logsText, envelope.data.artifacts.stdout.text.slice(0, -1), "the attempt's stdout")
-    compare(store.logsText.split("\n").length, 19)
+    compare(store.logsText.split("\n").length, 1)
     compare(store.logsTruncated, false)
     compare(store.logsError, "")
     compare(store.logsLoading, false)
@@ -1374,12 +1374,12 @@ TestCase {
     reply(store.logsRunner.current, logsReply("r1 text\n"), 0)
     store.selectAttempt(tc.doneCard, "spec", 1)
     store.selectedRunId = "r2"
-    compare(store.selectedAttempt.card_id, "22153f5f-9632-4b5f-a7dd-664c39d89e5c")
+    compare(store.selectedAttempt.card_id, "767b5f1c-506a-4daa-9157-0c838165cc63")
     compare(store.selectedAttempt.phase, "review")
     compare(store.selectedAttempt.attempt, 1)
     compare(store.logsText, "")
     compare(store.logsFetchedMs, 0)
-    compare(argv(store.logsRunner.current), tc.logsCmd + "r2|22153f5f-9632-4b5f-a7dd-664c39d89e5c|review|1")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r2|767b5f1c-506a-4daa-9157-0c838165cc63|review|1")
     var pending = store.logsRunner.current
     store.selectedRunId = ""
     compare(store.selectedAttempt, null, "clearing the run clears the selection")
