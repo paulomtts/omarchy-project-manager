@@ -832,8 +832,6 @@ def test_global_settings_bad_usage_is_rejected(env, args):
     assert not Path(env["XDG_STATE_HOME"]).exists()
 
 
-
-
 @pytest.mark.parametrize("first, second", [(True, False), (False, True)])
 def test_set_then_get_global_settings_round_trips(env, first, second):
     for value in (first, second):
