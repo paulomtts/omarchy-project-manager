@@ -42,7 +42,6 @@ STATUS_FIXTURES = (
     "status-escalated-integrate.json", "status-done-integrate.json",
 )
 E2E_FIXTURES = ("status-escalated.json", "status-escalated-integrate.json", "status-done-integrate.json")
-NOTED_FIXTURES = FIXTURE_NAMES
 NOTE_AM = "agent-manager 0.2.0"
 
 ENVELOPE_KEYS = frozenset({"ok", "data"})
@@ -377,7 +376,6 @@ def test_note_is_on_every_capture_and_names_the_am():
         note = load(name).get("_note")
         assert isinstance(note, str), f"{name}: _note is {note!r}"
         assert NOTE_AM in note, f"{name}: _note does not name {NOTE_AM}"
-    assert NOTED_FIXTURES == FIXTURE_NAMES
     with_row = sorted(name for name in FIXTURE_NAMES if "_am_runs_row" in load(name))
     assert with_row == sorted(E2E_FIXTURES), with_row
 
