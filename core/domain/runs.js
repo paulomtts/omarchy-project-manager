@@ -51,22 +51,6 @@ function normalizeRun(raw) {
   function asGiven(v) { return v === undefined || v === null ? "" : v }
   function stringOr(v) { return typeof v === "string" ? v : "" }
   function isSyntheticStory(id) { return id === "integrate" || id === "bases" }
-  // A JSON-like deep copy of arrays and objects. An own `__proto__` key is
-  // dropped, so every copied object's prototype is Object.prototype.
-  function copyOf(v) {
-    if (Array.isArray(v)) {
-      var list = []
-      for (var a = 0; a < v.length; a++) list.push(copyOf(v[a]))
-      return list
-    }
-    if (!isObject(v)) return v
-    var out = {}
-    var keys = Object.keys(v)
-    for (var k = 0; k < keys.length; k++) {
-      if (keys[k] !== "__proto__") out[keys[k]] = copyOf(v[keys[k]])
-    }
-    return out
-  }
 
   var r = objectOr(raw)
   var row = objectOr(r.row)
@@ -116,11 +100,11 @@ function normalizeRun(raw) {
       if (!isObject(subtask)) continue
       if (typeof subtask.card_id === "string") ids.push(subtask.card_id)
       if (!real) continue
-      var copied = copyOf(subtask)
+      var copied = _copyOf(subtask)
       copied.story_id = stringOr(story.card_id)
       subtasks.push(copied)
     }
-    var storyCopy = copyOf(story)
+    var storyCopy = _copyOf(story)
     storyCopy.subtasks = ids
     stories.push(storyCopy)
   }
@@ -189,6 +173,23 @@ function _stringOr(v) { return typeof v === "string" ? v : "" }
 function _isFiniteNumber(v) { return typeof v === "number" && isFinite(v) }
 function _treeOf(run) { return _isObject(run) && _isObject(run.tree) ? run.tree : {} }
 function _lastOf(list) { var a = _arrayOr(list); return a.length > 0 ? a[a.length - 1] : null }
+
+// A JSON-like deep copy of arrays and objects. An own `__proto__` key is
+// dropped, so every copied object's prototype is Object.prototype.
+function _copyOf(v) {
+  if (Array.isArray(v)) {
+    var list = []
+    for (var a = 0; a < v.length; a++) list.push(_copyOf(v[a]))
+    return list
+  }
+  if (!_isObject(v)) return v
+  var out = {}
+  var keys = Object.keys(v)
+  for (var k = 0; k < keys.length; k++) {
+    if (keys[k] !== "__proto__") out[keys[k]] = _copyOf(v[keys[k]])
+  }
+  return out
+}
 
 // `integrate`, `bases` and `base-*` are orchestrator bookkeeping ids, never cards.
 function _isSynthetic(id) {
@@ -338,6 +339,52 @@ function attention(runs) {
   for (var i = 0; i < list.length; i++) {
     var s = runState(list[i])
     if (s === "escalated" || s === "dead") out.push(list[i])
+  }
+  return out
+}
+
+// `path` with every trailing "/" removed; a path of only slashes is "/". A
+// non-string is "".
+function _trimSlashes(path) {
+  if (typeof path !== "string") return ""
+  var end = path.length
+  while (end > 0 && path.charAt(end - 1) === "/") end--
+  if (end === 0) return path === "" ? "" : "/"
+  return path.substring(0, end)
+}
+
+// A copy of `run` whose `project` is { root, name }, the registered project it
+// belongs to; whatever `project` it held before is dropped. root: `root` with
+// every trailing "/" removed ("/" for a root of only slashes), else "" when not
+// a string; nothing else is normalised. name: `name` trimmed when that is
+// non-empty, else root's last "/"-separated segment ("/" for "/", "" for "").
+// The copy is deep and JSON-like (an own `__proto__` key is dropped). A `run`
+// that is not a plain object is returned as is. Never mutates, never throws.
+function withProject(run, root, name) {
+  if (!_isObject(run)) return run
+  var out = _copyOf(run)
+  var r = _trimSlashes(root)
+  var n = typeof name === "string" ? name.trim() : ""
+  if (n === "") n = r === "/" ? "/" : r.substring(r.lastIndexOf("/") + 1)
+  out.project = { root: r, name: n }
+  return out
+}
+
+// The runs of the project at `root`: the entries whose `project.root` is a
+// string equal to `root`, both compared with trailing "/" removed and otherwise
+// exactly. A `root` of null, undefined or "" keeps every entry. Any other
+// non-string `root`, or a `runs` that is not an array, gives []. Returns a new
+// array of the same objects, input order. Never mutates, never throws.
+function filterByProject(runs, root) {
+  var list = _arrayOr(runs)
+  if (root === null || root === undefined || root === "") return list.slice()
+  if (typeof root !== "string") return []
+  var want = _trimSlashes(root)
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var run = list[i]
+    if (_isObject(run) && _isObject(run.project) && typeof run.project.root === "string" &&
+        _trimSlashes(run.project.root) === want) out.push(run)
   }
   return out
 }

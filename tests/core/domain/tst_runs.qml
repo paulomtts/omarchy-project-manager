@@ -3805,4 +3805,281 @@ TestCase {
     Runs.dispatchMilestone(f.t, f.map)
     compare(JSON.stringify(f.map), before, "the inputs are unchanged")
   }
+
+  // ---- S6 1.1: the run's registered project -----------------------------------------------
+
+  function test_with_project_from_fixture() {
+    var runs = fixtureRuns()
+    for (var i = 0; i < runs.length; i++) {
+      var run = runs[i]
+      var label = "fixture " + i
+      compare(run.project.repo_dir, "/home/user/Code/omarchy-project-manager", label + " repo_dir")
+      var out = Runs.withProject(run, run.project.repo_dir, "omarchy-project-manager")
+      compare(Object.keys(out.project).sort().join(","), "name,root", label + " project keys")
+      compare(out.project.root, "/home/user/Code/omarchy-project-manager", label + " root")
+      compare(out.project.name, "omarchy-project-manager", label + " name")
+      compare(Object.keys(out).sort().join(","), Object.keys(run).sort().join(","), label + " keys")
+      var keys = Object.keys(run)
+      for (var k = 0; k < keys.length; k++) {
+        if (keys[k] === "project") continue
+        compare(JSON.stringify(out[keys[k]]), JSON.stringify(run[keys[k]]), label + " " + keys[k])
+      }
+    }
+  }
+
+  function test_with_project_is_a_copy() {
+    var run = Runs.normalizeRun(amRun("status-started.json"))
+    var before = JSON.stringify(run)
+    var out = Runs.withProject(run, "/p/one", "One")
+    compare(JSON.stringify(run), before, "input unchanged by the call")
+    verify(out !== run, "a new run")
+    verify(out.tree !== run.tree, "a new tree")
+    verify(out.tree.stories !== run.tree.stories, "new stories")
+    verify(out.tree.stories[0] !== run.tree.stories[0], "a new story")
+    verify(out.tree.subtasks[0] !== run.tree.subtasks[0], "a new subtask")
+    verify(out.rows !== run.rows, "new rows")
+    verify(out.lease !== run.lease, "a new lease")
+    verify(out.requests !== run.requests, "new requests")
+
+    out.tree.stories[0].title = "changed"
+    out.tree.stories[0].subtasks.push("x")
+    out.tree.subtasks[0].phases = []
+    out.rows[0].status = "changed"
+    out.rows.push({})
+    out.lease.live = false
+    out.requests.push({ command: "pause" })
+    out.project.root = "/elsewhere"
+    compare(JSON.stringify(run), before, "input unchanged by mutating the result")
+    compare(run.project.repo_dir, "/home/user/Code/omarchy-project-manager", "input project kept")
+
+    // re-projecting a projected run: the new project wins, the first result is untouched
+    var again = Runs.withProject(out, "/p/two/", null)
+    compare(Object.keys(again.project).sort().join(","), "name,root", "re-projected keys")
+    compare(again.project.root, "/p/two", "re-projected root")
+    compare(again.project.name, "two", "re-projected name")
+    compare(out.project.root, "/elsewhere", "first result unchanged")
+  }
+
+  function test_with_project_trailing_slash() {
+    var run = Runs.normalizeRun(amRun("status-done.json"))
+    // synthetic: roots with trailing slashes, only slashes, empty, padded and unresolved
+    var cases = [["/a/b/", "/a/b"], ["/a/b///", "/a/b"], ["/a/b", "/a/b"], ["/", "/"], ["//", "/"], ["", ""],
+                 [" /a/b ", " /a/b "], ["/a/b/ ", "/a/b/ "], ["/A/./b/../c/", "/A/./b/../c"], ["~/x/", "~/x"]]
+    for (var i = 0; i < cases.length; i++) {
+      compare(Runs.withProject(run, cases[i][0], "N").project.root, cases[i][1], JSON.stringify(cases[i][0]))
+    }
+  }
+
+  function test_with_project_name_fallback() {
+    var run = Runs.normalizeRun(amRun("status-done.json"))
+    // synthetic: names that are missing, null, blank or not a string
+    var blanks = [["undefined", undefined], ["null", null], ["empty", ""], ["spaces", "   "], ["tab", "\t"],
+                  ["number", 42], ["object", {}], ["array", ["x"]], ["boolean", true]]
+    for (var i = 0; i < blanks.length; i++) {
+      compare(Runs.withProject(run, "/a/proj/", blanks[i][1]).project.name, "proj", blanks[i][0])
+    }
+    compare(Runs.withProject(run, "/a/proj/").project.name, "proj", "name argument omitted")
+    compare(Runs.withProject(run, "/", null).project.name, "/", "root /")
+    compare(Runs.withProject(run, "//", "").project.name, "/", "root //")
+    compare(Runs.withProject(run, "", null).project.name, "", "root empty")
+    compare(Runs.withProject(run, 5, null).project.name, "", "root not a string")
+    compare(Runs.withProject(run, "proj", null).project.name, "proj", "a relative root is its own name")
+    compare(Runs.withProject(run, "proj", null).project.root, "proj", "a relative root is kept")
+    compare(Runs.withProject(run, "/home/user/Code/omarchy-project-manager", null).project.name,
+            "omarchy-project-manager", "the fixture root")
+    compare(Runs.withProject(run, "/a/proj", "  My Proj  ").project.name, "My Proj", "a given name is trimmed")
+    compare(Runs.withProject(run, "/a/proj", "team/app").project.name, "team/app", "a given name is kept verbatim")
+    compare(Runs.withProject(run, "/a/proj", "Proj").project.name, "Proj", "case kept")
+  }
+
+  function test_with_project_garbage() {
+    var run = Runs.normalizeRun(amRun("status-done.json"))
+    // synthetic: values that are not a run are returned as is
+    var notRuns = [undefined, null, "x", 5, true, [], [run]]
+    for (var i = 0; i < notRuns.length; i++) {
+      verify(Runs.withProject(notRuns[i], "/p", "P") === notRuns[i], "not a run " + i)
+    }
+
+    // synthetic: roots that are not a string
+    var badRoots = [undefined, null, 5, true, {}, [], ["/p"]]
+    for (var j = 0; j < badRoots.length; j++) {
+      var p = Runs.withProject(run, badRoots[j], "P").project
+      compare(p.root, "", "root " + j)
+      compare(p.name, "P", "name with root " + j)
+    }
+
+    // synthetic: a prototype-less run and an empty run
+    var bare = Object.create(null)
+    bare.id = "b1"
+    var fromBare = Runs.withProject(bare, "/p/x", null)
+    compare(fromBare.id, "b1", "prototype-less id")
+    compare(fromBare.project.root, "/p/x", "prototype-less root")
+    compare(fromBare.project.name, "x", "prototype-less name")
+    verify(Object.getPrototypeOf(fromBare) === Object.prototype, "the copy has Object.prototype")
+    var fromEmpty = Runs.withProject({}, "/p/y", "Y")
+    compare(Object.keys(fromEmpty).join(","), "project", "an empty run gains only project")
+    compare(fromEmpty.project.root, "/p/y", "empty run root")
+    compare(fromEmpty.project.name, "Y", "empty run name")
+
+    // synthetic: whatever project the run held is replaced
+    var olds = [null, "x", 5, [], { id: 1, repo_dir: "/old" }, { root: "/old", name: "Old", extra: 1 }]
+    for (var k = 0; k < olds.length; k++) {
+      var g = Runs.withProject({ id: "g", project: olds[k] }, "/new", null).project
+      compare(Object.keys(g).sort().join(","), "name,root", "old project " + k + " keys")
+      compare(g.root, "/new", "old project " + k + " root")
+      compare(g.name, "new", "old project " + k + " name")
+    }
+    var missing = Runs.withProject({ id: "m" }, "/new", "New")
+    compare(missing.project.root, "/new", "no project before")
+
+    // synthetic: own __proto__ keys, which no capture contains
+    var poisoned = JSON.parse('{"id": "p1", "__proto__": {"polluted": true}, "tree": {"__proto__": {"x": 1}, "stories": []}}')
+    verify(hasOwn(poisoned, "__proto__"), "the input carries an own __proto__ key")
+    var clean = Runs.withProject(poisoned, "/p", "P")
+    compare(hasOwn(clean, "__proto__"), false, "top-level __proto__ dropped")
+    compare(hasOwn(clean.tree, "__proto__"), false, "nested __proto__ dropped")
+    verify(Object.getPrototypeOf(clean) === Object.prototype, "top-level prototype")
+    verify(Object.getPrototypeOf(clean.tree) === Object.prototype, "nested prototype")
+    compare(clean.polluted, undefined, "nothing read through __proto__")
+    compare(clean.tree.x, undefined, "nothing read through a nested __proto__")
+    compare(clean.id, "p1", "other keys kept")
+    compare(clean.tree.stories.length, 0, "nested keys kept")
+  }
+
+  function test_filter_by_project() {
+    var runs = fixtureRuns()
+    var a = Runs.withProject(runs[0], "/p/one", "One")
+    var b = Runs.withProject(runs[1], "/p/two", "Two")
+    var c = Runs.withProject(runs[2], "/p/one", "One")
+    var d = Runs.withProject(runs[3], "/p/one/", null)
+    var list = [a, b, c, d]
+    var before = JSON.stringify(list)
+    var out = Runs.filterByProject(list, "/p/one")
+    verify(out !== list, "a new array")
+    compare(out.length, 3, "three runs of /p/one")
+    verify(out[0] === a, "same object, input order")
+    verify(out[1] === c, "same object, input order")
+    verify(out[2] === d, "same object, input order")
+    var two = Runs.filterByProject(list, "/p/two")
+    compare(two.length, 1, "one run of /p/two")
+    verify(two[0] === b, "same object")
+    compare(Runs.filterByProject(list, "/p/three").length, 0, "no run of /p/three")
+    compare(list.length, 4, "input length unchanged")
+    verify(list[0] === a && list[1] === b && list[2] === c && list[3] === d, "input order unchanged")
+    compare(JSON.stringify(list), before, "input entries unchanged")
+  }
+
+  function test_filter_by_project_no_root_keeps_all() {
+    var runs = fixtureRuns()
+    // synthetic: entries that are not runs, and a run with no project
+    var list = [runs[0], null, "x", Runs.withProject(runs[1], "/p/one", "One"), { id: "bare" }, 5, runs[2]]
+    var roots = [["null", null], ["undefined", undefined], ["empty", ""]]
+    for (var i = 0; i < roots.length; i++) {
+      var out = Runs.filterByProject(list, roots[i][1])
+      verify(out !== list, roots[i][0] + ": a new array")
+      compare(out.length, list.length, roots[i][0] + ": every entry")
+      for (var j = 0; j < list.length; j++) verify(out[j] === list[j], roots[i][0] + ": entry " + j)
+    }
+    var omitted = Runs.filterByProject(list)
+    compare(omitted.length, list.length, "root omitted")
+    verify(omitted !== list, "root omitted: a new array")
+    var empty = []
+    var fromEmpty = Runs.filterByProject(empty, null)
+    compare(fromEmpty.length, 0, "an empty list")
+    verify(fromEmpty !== empty, "an empty list: a new array")
+  }
+
+  function test_filter_by_project_trailing_slash() {
+    var runs = fixtureRuns()
+    var one = Runs.withProject(runs[0], "/p/one", "One")
+    // synthetic: a project root set by hand with its trailing slash
+    var slashed = Runs.normalizeRun(amRun("status-done.json"))
+    slashed.project = { root: "/p/one/", name: "One" }
+    var list = [one, slashed]
+    var roots = ["/p/one", "/p/one/", "/p/one//"]
+    for (var i = 0; i < roots.length; i++) {
+      var out = Runs.filterByProject(list, roots[i])
+      compare(out.length, 2, roots[i])
+      verify(out[0] === one, roots[i] + ": first")
+      verify(out[1] === slashed, roots[i] + ": second")
+    }
+    compare(Runs.filterByProject(list, "/P/one").length, 0, "case-sensitive")
+    compare(Runs.filterByProject(list, "/p/on").length, 0, "no prefix match")
+    compare(Runs.filterByProject(list, "/p").length, 0, "no parent match")
+    compare(Runs.filterByProject(list, "/p/one/sub").length, 0, "no child match")
+    compare(Runs.filterByProject(list, " /p/one").length, 0, "no trimming")
+    compare(Runs.filterByProject(list, "/p/./one").length, 0, "no path resolution")
+
+    // the filesystem root is a project of its own, not a match-all
+    var top = Runs.withProject(runs[1], "/", null)
+    // synthetic: a project root of only slashes, set by hand
+    var topSlashed = { id: "t", project: { root: "//", name: "/" } }
+    var rooted = Runs.filterByProject([one, top, topSlashed], "/")
+    compare(rooted.length, 2, "root /")
+    verify(rooted[0] === top, "root /: first")
+    verify(rooted[1] === topSlashed, "root /: second")
+    var doubled = Runs.filterByProject([one, top], "//")
+    compare(doubled.length, 1, "root //")
+    verify(doubled[0] === top, "root //: the / project")
+  }
+
+  function test_filter_by_project_without_project() {
+    var root = "/home/user/Code/omarchy-project-manager"
+    var runs = fixtureRuns()
+    compare(runs[1].project.repo_dir, root, "the normalizeRun project names the root as repo_dir")
+    var kept = Runs.withProject(runs[0], root, null)
+    // synthetic: projects without a string root, and entries that are not runs
+    var list = [runs[1], { id: "n", project: null }, { id: "m" }, { id: "s", project: "x" },
+                { id: "num", project: { root: 5 } }, { id: "arr", project: [root] },
+                { id: "rd", project: { repo_dir: root } }, null, "x", 5, kept, [kept]]
+    var out = Runs.filterByProject(list, root)
+    compare(out.length, 1, "only the projected run")
+    verify(out[0] === kept, "same object")
+  }
+
+  function test_filter_by_project_garbage() {
+    var run = Runs.withProject(Runs.normalizeRun(amRun("status-done.json")), "/p/one", "One")
+    // synthetic: runs that are not an array
+    var badRuns = [undefined, null, "x", 5, true, {}, { length: 1, 0: run }]
+    for (var i = 0; i < badRuns.length; i++) {
+      var withRoot = Runs.filterByProject(badRuns[i], "/p/one")
+      compare(Array.isArray(withRoot), true, "runs " + i + " with a root")
+      compare(withRoot.length, 0, "runs " + i + " with a root")
+      var noRoot = Runs.filterByProject(badRuns[i], null)
+      compare(Array.isArray(noRoot), true, "runs " + i + " without a root")
+      compare(noRoot.length, 0, "runs " + i + " without a root")
+    }
+    // synthetic: roots that are neither a string nor null/undefined
+    var list = [run]
+    var badRoots = [5, 0, true, false, NaN, {}, [], ["/p/one"], { root: "/p/one" }]
+    for (var j = 0; j < badRoots.length; j++) {
+      var out = Runs.filterByProject(list, badRoots[j])
+      compare(Array.isArray(out), true, "root " + j)
+      compare(out.length, 0, "root " + j)
+    }
+    compare(list.length, 1, "input unchanged")
+    verify(list[0] === run, "input entry unchanged")
+  }
+
+  function test_attention_across_projects() {
+    var runs = fixtureRuns()
+    var running = Runs.withProject(runs[0], "/p/a", "A")
+    var escalated = Runs.withProject(runs[2], "/p/a", "A")
+    var done = Runs.withProject(runs[1], "/p/b", "B")
+    var dead = Runs.withProject(runs[0], "/p/b", "B")
+    // synthetic: the started capture's lease marked dead
+    dead.lease.live = false
+    compare(Runs.runState(running), "running", "the started capture is running")
+    compare(Runs.runState(dead), "dead", "its dead copy")
+    var list = [running, escalated, done, dead]
+    var out = Runs.attention(list)
+    compare(out.length, 2, "one run of each project")
+    verify(out[0] === escalated, "same object, input order")
+    verify(out[1] === dead, "same object, input order")
+    compare(list.length, 4, "input not modified")
+
+    var onlyB = Runs.attention(Runs.filterByProject(list, "/p/b"))
+    compare(onlyB.length, 1, "attention of one project")
+    verify(onlyB[0] === dead, "the dead run of /p/b")
+  }
 }
