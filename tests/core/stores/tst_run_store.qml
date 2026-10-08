@@ -4315,4 +4315,60 @@ TestCase {
     compare(store.toasts.length, 0, "no toast while closed")
     compare(store.staleTimer.running, false, "no stale clock while closed")
   }
+
+  // ---- run read refusals (4.1.3)
+
+  function test_a_read_of_a_run_am_does_not_know_relists() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    var seq = store.snapshotRunner.seq
+    // synthetic: am's UnknownRunError envelope, which runs-snapshot.py --run re-emits unchanged.
+    reply(proc, '{"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": false}\n', 1)
+    compare(store.toasts.length, 0, "no toast")
+    compare(store.lastError, "")
+    compare(store.amStatus, "ok")
+    compare(ids(store.runs), tc.startedRun + "," + tc.doneRun, "the run stays until the next list")
+    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot")
+    compare(argv(store.snapshotRunner.current), "python3|/plugin/core/backend/runs/runs-snapshot.py")
+    // synthetic: runs.json's list without the done run, at a later as_of_seq.
+    var data = F.load("runs.json").data
+    var only = data.runs.slice(0, 1)
+    only[0].status = F.load("status-started.json").data
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: true, as_of_seq: 1010, store_id: data.store_id, runs: only, data_dir: "/d" }) + "\n", 0)
+    compare(ids(store.runs), tc.startedRun, "it drops when am no longer lists it")
+    compare(store.appliedSeq[tc.doneRun], undefined)
+    compare(store.lastError, "")
+  }
+
+  function test_a_busy_store_on_a_read_keeps_the_run_and_retries_it() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    var before = store.runs[1]
+    var seq = store.snapshotRunner.seq
+    // synthetic: am's StoreBusyError envelope, which runs-snapshot.py --run re-emits unchanged.
+    reply(proc, '{"error": {"message": "the am store is busy; try again", "type": "StoreBusyError"}, "ok": false}\n', 1)
+    verify(store.runs[1] === before, "the last good run stays")
+    compare(store.stale, true)
+    compare(store.toasts.length, 0)
+    compare(store.lastError, "")
+    compare(store.amStatus, "ok")
+    compare(store.snapshotRunner.seq, seq, "no list snapshot")
+    compare(store.nudges[tc.doneRun], 1005, "the nudge is put back")
+    compare(store.debounceTimer.running, false, "without restarting the debounce")
+    nudge(store, [tc.startedRun, 1000])
+    fire(store.debounceTimer)
+    compare(store.readRunners.length, 2, "the next trigger retries it")
+    compare(argv(store.readRunners[0].current), tc.readCmd + tc.doneRun)
+    compare(argv(store.readRunners[1].current), tc.readCmd + tc.startedRun)
+  }
+
+  function test_a_busy_read_keeps_a_newer_nudge() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    nudge(store, [tc.doneRun, 1010])
+    // synthetic: am's StoreBusyError envelope, which runs-snapshot.py --run re-emits unchanged.
+    reply(proc, '{"error": {"message": "the am store is busy; try again", "type": "StoreBusyError"}, "ok": false}\n', 1)
+    compare(store.nudges[tc.doneRun], 1010, "the higher seq wins")
+    compare(store.debounceTimer.running, true, "the newer line's debounce still runs")
+  }
 }

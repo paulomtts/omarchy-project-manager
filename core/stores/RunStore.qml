@@ -665,10 +665,14 @@ Scope {
 
   // One run read's reply. The runner leaves readRunners and is destroyed. A
   // reply that is not its run's latest read, or for a project the user has
-  // left, changes nothing; ok:true goes to applyRunRead; anything else changes
-  // nothing.
+  // left, changes nothing. ok:true goes to applyRunRead. UnknownRunError
+  // launches one list snapshot: the run stays until am no longer lists it.
+  // StoreBusyError marks the runs stale and puts the nudge back for the next
+  // trigger. Neither raises a toast or touches amStatus or lastError. Any other
+  // failure changes nothing: the list snapshot reports such conditions.
   function readReplied(runner, stdout) {
     var runId = runner.runId
+    var seq = runner.nudgeSeq
     var latest = store.hasKey(readState.latest, runId) && readState.latest[runId] === runner
     var current = latest && runner.madeFor === store.project
     readState.runners = readState.runners.filter(function(r) { return r !== runner })
@@ -680,7 +684,29 @@ Scope {
     runner.destroy()
     if (!current) return
     var envelope = store.parseEnvelope(stdout)
-    if (envelope !== null && envelope.ok === true) store.applyRunRead(runId, envelope)
+    if (envelope === null) return
+    if (envelope.ok === true) {
+      store.applyRunRead(runId, envelope)
+      return
+    }
+    if (envelope.ok !== false) return
+    var err = envelope.error
+    var type = err !== null && typeof err === "object" ? err.type : ""
+    if (type === "UnknownRunError") {
+      store.refresh()
+    } else if (type === "StoreBusyError") {
+      store.stale = true
+      store.keepNudge(runId, seq)
+    }
+  }
+
+  // nudges[runId] raised to seq (never lowered), without touching the
+  // debounce: the next trigger takes it.
+  function keepNudge(runId, seq) {
+    if (store.hasKey(store.nudges, runId) && store.nudges[runId] >= seq) return
+    var next = store.copyMap(store.nudges)
+    next[runId] = seq
+    store.nudges = next
   }
 
   // A good run read, {run, as_of_seq, status}: for the run asked, with a
