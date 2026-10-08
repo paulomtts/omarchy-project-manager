@@ -258,8 +258,9 @@ would load its own type instead of ours.
   keys starting with `_` are annotations readers ignore.
   Tests of code that reads am output (`normalizeRun`, `logTail`, the `runs-*`
   helpers, `run-control.py`, `RunStore`'s list snapshot, run read, logs and
-  watch handling) build their input from these fixtures; a hand-written am payload is used only
-  for a synthetic edge case and is marked with a `synthetic:` comment. Tests of
+  watch handling) build their input from these fixtures; a hand-written am
+  payload is used only for a synthetic edge case and is marked with a
+  `synthetic:` comment. Tests of
   code that takes a normalized run may build it by hand. A test that edits a
   fixture edits a fresh copy. Python reads them with `json.load`, QML with
   `tests/helpers/amFixtures.js` (see `tests/helpers/README.md`).
