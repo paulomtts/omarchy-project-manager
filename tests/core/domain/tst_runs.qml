@@ -4232,6 +4232,13 @@ TestCase {
     compare(rooted[0].project.root, "/", "/ is a project group")
     compare(rooted[0].project.name, "/", "named /")
     compare(rooted[1].project.root, "", "the no-project group last")
+
+    // synthetic: a root of only slashes set by hand shares the / group
+    var slashes = { id: "s", status: "done", project: { root: "///", name: "S" } }
+    var tops = Runs.groupByProject([top, slashes])
+    compare(tops.length, 1, "one / group")
+    compare(tops[0].project.root, "/", "root /")
+    compare(tops[0].runs.length, 2, "both runs")
   }
 
   function test_group_by_project_empty() {
