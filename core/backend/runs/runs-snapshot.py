@@ -26,7 +26,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = "usage: runs-snapshot.py [<project_root>]"
+USAGE = "usage: runs-snapshot.py [<project_root> | --run RUN]"
 AM_TIMEOUT = 60
 LIST_LIMIT = 200
 # The finished statuses, matched exactly. A cancelled run is terminal under either
@@ -154,26 +154,38 @@ def list_snapshot(am, scope):
             "data_dir": data_dir()}
 
 
+def single_snapshot(am, run_id):
+    """`am status RUN` alone: the run id as given, its status data verbatim and
+    that data's as_of_seq and store_id."""
+    status = run_status(am, run_id)
+    return {"ok": True, "run": run_id, "as_of_seq": status["as_of_seq"],
+            "store_id": store_id(status), "status": status, "data_dir": data_dir()}
+
+
 def parse_args(argv):
-    """The `am runs` scope arguments for the helper's argv: --all-projects for
-    none, --repo-dir R for one <project_root> (non-empty, not starting with -);
-    None for anything else."""
+    """("list", the `am runs` scope arguments) or ("run", RUN) for the helper's
+    argv: --all-projects for none, --repo-dir R for one <project_root>, RUN for
+    `--run RUN` (R and RUN non-empty, not starting with -); None for anything
+    else."""
     if not argv:
-        return ["--all-projects"]
+        return "list", ["--all-projects"]
     if len(argv) == 1 and argv[0] and not argv[0].startswith("-"):
-        return ["--repo-dir", argv[0]]
+        return "list", ["--repo-dir", argv[0]]
+    if len(argv) == 2 and argv[0] == "--run" and argv[1] and not argv[1].startswith("-"):
+        return "run", argv[1]
     return None
 
 
 def main(argv):
-    scope = parse_args(argv)
-    if scope is None:
+    mode = parse_args(argv)
+    if mode is None:
         return failure("Usage", USAGE, 2)
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
+    kind, arg = mode
     try:
-        result = list_snapshot(am, scope)
+        result = list_snapshot(am, arg) if kind == "list" else single_snapshot(am, arg)
     except AmFailure as e:
         return emit(e.payload, 1)
     return emit(result)

@@ -47,6 +47,7 @@ STATUS_CAPTURES = {"started": "status-started.json", "done": "status-done.json",
                    "escalated": "status-escalated.json"}
 NEWER_AM = "the plugin needs the newer am"
 ALL = ["runs", "--all-projects", "--limit", "200"]
+USAGE = "usage: runs-snapshot.py [<project_root> | --run RUN]"
 
 
 def FILTER(root):
@@ -230,19 +231,31 @@ def test_no_runs_is_empty_state(world):
 
 
 @pytest.mark.parametrize("args", [
-    ["a", "b"], [""], ["-x"], ["--all-projects"], ["--limit", "5"], ["-h"],
+    ["a", "b"], [""], ["--run"], ["--run", ""], ["--run", "-x"], ["--run=R"],
+    ["--run", "R", "x"], ["/root", "--run", "R"], ["--run", "R", "/root"],
+    ["--run", "A", "--run", "B"], ["--all-projects"], ["--limit", "5"], ["-h"], ["-x"],
 ])
 def test_usage(world, args):
     code, out = run(world, args)
     assert code == 2
-    assert out == {"ok": False, "error": {"type": "Usage", "message": load_helper().USAGE}}
+    assert out == {"ok": False, "error": {"type": "Usage", "message": USAGE}}
     assert calls(world) == []
 
 
-def test_am_missing(world):
+def test_usage_before_am_lookup(world):
+    # Bad argv is Usage even when am is not installed: argv is checked first.
     empty = world["tmp"] / "empty-bin"
     empty.mkdir()
-    code, out = run(world, PATH=str(empty))
+    code, out = run(world, ["--run"], PATH=str(empty))
+    assert code == 2
+    assert out == {"ok": False, "error": {"type": "Usage", "message": USAGE}}
+
+
+@pytest.mark.parametrize("args", [[], ["--run", "R"]], ids=["list", "run"])
+def test_am_missing(world, args):
+    empty = world["tmp"] / "empty-bin"
+    empty.mkdir()
+    code, out = run(world, args, PATH=str(empty))
     assert code == 1
     assert out == {"ok": False, "error": {"type": "AmMissing", "message": "am is not installed."}}
 
@@ -569,3 +582,83 @@ def test_am_bad_output(world, target, text, exit_code):
     assert out["ok"] is False
     assert out["error"]["type"] == "AmBadOutput"
     assert out["error"]["message"].startswith("am " + target)
+
+
+# --- single run (--run RUN) ----------------------------------------------------
+
+@pytest.mark.parametrize("name", ["status-started.json", "status-done.json",
+                                  "status-escalated.json"])
+def test_single_run_read(world, name):
+    data = status_envelope(name)["data"]
+    run_id = data["run"]["id"]
+    set_status(world, run_id, data)
+    code, out = run(world, ["--run", run_id])
+    assert code == 0
+    assert out == {"ok": True, "run": run_id, "as_of_seq": data["as_of_seq"],
+                   "store_id": data["store_id"], "status": data,
+                   "data_dir": str(world["data"])}
+    assert calls(world) == [STATUS(run_id)]
+
+
+def test_single_run_id_is_one_argv_element(world):
+    # synthetic: a run id with a space and shell metacharacters.
+    run_id = "my run; echo x"
+    data = status_for(run_id, "started")
+    set_status(world, run_id, data)
+    code, out = run(world, ["--run", run_id])
+    assert code == 0
+    assert out["run"] == run_id
+    assert out["status"] == data
+    assert calls(world) == [STATUS(run_id)]
+
+
+def test_single_run_unknown_is_passthrough(world):
+    # No status fixture for "nope": the fake am answers UnknownRunError, exit 3.
+    code, out = run(world, ["--run", "nope"])
+    assert code == 1
+    assert out == UNKNOWN_RUN
+    assert calls(world) == [STATUS("nope")]
+
+
+# synthetic: store_id missing, an integer or null on a captured status data.
+@pytest.mark.parametrize("edit", [DROP, 5, None], ids=["missing", "int", "null"])
+def test_store_id_coercion_single_run(world, edit):
+    data = status_envelope("status-done.json")["data"]
+    run_id = data["run"]["id"]
+    if edit is DROP:
+        data.pop("store_id")
+    else:
+        data["store_id"] = edit
+    set_status(world, run_id, data)
+    code, out = run(world, ["--run", run_id])
+    assert code == 0
+    assert out["store_id"] == ""
+    assert out["status"] == data
+
+
+@BAD_SEQS
+def test_single_run_without_as_of_seq_is_schema_mismatch(world, seq):
+    data = set_seq(status_envelope("status-done.json")["data"], seq)
+    run_id = data["run"]["id"]
+    set_status(world, run_id, data)
+    code, out = run(world, ["--run", run_id])
+    assert code == 1
+    assert set(out) == {"ok", "error"}
+    assert out["error"]["type"] == "SchemaMismatch"
+    assert NEWER_AM in out["error"]["message"]
+    assert calls(world) == [STATUS(run_id)]
+
+
+# synthetic: malformed `am status` output.
+@pytest.mark.parametrize("text,exit_code", [
+    ('{"ok": true, "data": [1]}\n', 0),
+    ("Traceback (most recent call last):\n  boom\n", 1),
+], ids=["status-data-not-object", "status-traceback"])
+def test_am_bad_output_single_run(world, text, exit_code):
+    set_raw(world, "status-R1", text, exit_code)
+    code, out = run(world, ["--run", "R1"])
+    assert code == 1
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert out["error"]["message"].startswith("am status")
+    assert calls(world) == [STATUS("R1")]
