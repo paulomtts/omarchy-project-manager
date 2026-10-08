@@ -3,13 +3,18 @@ import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
 
-// The am run monitor's data: one snapshot of the selected project's runs
-// (runs-snapshot.py), normalized by the run domain model, plus the selected run,
-// the attempt the Run detail pane shows and that attempt's `am logs` snapshot
-// (runs-logs.py), and whether `am` could be asked at all. Two HelperRunners
-// (snapshot, attempt logs) plus, while `active` (the panel is open), a
-// long-lived runs-watch.py that says which runs changed; each burst of changes
-// costs one debounced snapshot. Logs are fetched on a selection, on Refresh and
+// The am run monitor's data: a list snapshot of every project's runs
+// (runs-snapshot.py) kept to the selected project and normalized by the run
+// domain model, plus the selected run, the attempt the Run detail pane shows
+// and that attempt's `am logs` snapshot (runs-logs.py), and whether `am` could
+// be asked at all. While `active` (the panel is open) a long-lived
+// runs-watch.py nudges it, "run X changed at seq N", and is never folded into
+// state: once per debounce window, a nudge newer than the snapshot that last
+// covered its run (appliedSeq) costs one run read (runs-snapshot.py --run RUN,
+// one HelperRunner per run) for a run it holds, or one list snapshot for a run
+// it does not know. A cursorReset hello starts over from a list snapshot.
+// asOfSeq is the last list's as_of_seq and watchCursor the watch's last
+// cursor, held in memory only. Logs are fetched on a selection, on Refresh and
 // when a snapshot changes the selected attempt's status -- never on a timer.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
@@ -256,8 +261,9 @@ Scope {
   // One stdout line of the watch, a nudge source never folded into state.
   // {"changed": [{run, seq}, ...]} records each nudge (recordNudges).
   // {"ok": false, ...} is kept as the envelope its exit explains. The hello,
-  // {"hello": {"schema": N, "am": V}}, sets amSchema to N (an integer of 1 or
-  // more, else 0) and amVersion to V (a string, else "") and starts nothing.
+  // {"hello": {"schema": N, "am": V, "cursorReset": B}}, sets amSchema to N
+  // (an integer of 1 or more, else 0) and amVersion to V (a string, else "");
+  // B === true starts over (resetCursor), anything else starts nothing.
   // {"cursor": C} sets watchCursor when C is an integer of 0 or more.
   // Anything else -- blank, not JSON, not an object, a hello that is not an
   // object -- is ignored. Never throws.
@@ -274,6 +280,7 @@ Scope {
       var schema = value.hello.schema
       store.amSchema = typeof schema === "number" && Number.isInteger(schema) && schema >= 1 ? schema : 0
       store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
+      if (value.hello.cursorReset === true) store.resetCursor()
     } else if (store.hasKey(value, "cursor")) {
       if (store.isSeq(value.cursor)) store.watchCursor = value.cursor
     }
@@ -315,6 +322,22 @@ Scope {
       if (taken[id] > store.appliedSeq[id] && store.runById(id) !== null) reads.push(id)
     }
     for (var j = 0; j < reads.length; j++) store.readRun(reads[j], taken[reads[j]])
+  }
+
+  // The watch's hello says its cursor no longer holds: the coverage, the
+  // cursor and the nudges are forgotten, the runs emptied, the alerts disarmed
+  // (the next list snapshot only arms), every run read in flight dropped, and
+  // one list snapshot launched. Selection, logs, controls and dispatch stay.
+  function resetCursor() {
+    store.appliedSeq = {}
+    store.asOfSeq = 0
+    store.watchCursor = 0
+    store.nudges = {}
+    debounceTimer.stop()
+    store.runs = []
+    store.alertsArmed = false
+    store.dropReads()
+    store.refresh()
   }
 
   // amSchema and amVersion back to unknown: no current watch has said hello.

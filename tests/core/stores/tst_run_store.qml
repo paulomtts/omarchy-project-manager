@@ -4371,4 +4371,61 @@ TestCase {
     compare(store.nudges[tc.doneRun], 1010, "the higher seq wins")
     compare(store.debounceTimer.running, true, "the newer line's debounce still runs")
   }
+
+  // ---- cursor reset (4.1.3)
+
+  // synthetic: runs-watch.py's forwarded hello for watch-hello.json's schema_2
+  // (schema, am, head, storeId) with cursorReset set to `value`.
+  function resetHello(value) {
+    var h = F.load("watch-hello.json").schema_2
+    return { hello: { schema: h.schema, am: h.am, head: h.head, cursorReset: value, storeId: h.store_id } }
+  }
+
+  function test_a_cursor_reset_starts_over_from_a_list_snapshot() {
+    var store = capturedStore(); if (!store) return
+    sendLine(store.watchProc, { cursor: 1005 })
+    var proc = readOf(store, tc.doneRun, 1005)
+    nudge(store, [tc.startedRun, 1006])
+    store.selectedRunId = tc.doneRun
+    var seq = store.snapshotRunner.seq
+    sendLine(store.watchProc, resetHello(true))
+    compare(store.amSchema, 2, "still a hello")
+    compare(Object.keys(store.appliedSeq).length, 0)
+    compare(store.asOfSeq, 0)
+    compare(store.watchCursor, 0)
+    compare(Object.keys(store.nudges).length, 0)
+    compare(store.debounceTimer.running, false)
+    compare(store.runs.length, 0)
+    compare(store.alertsArmed, false)
+    compare(store.selectedRunId, tc.doneRun, "the selection is untouched")
+    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot")
+    var list = store.snapshotRunner.current
+    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
+    compare(store.runs.length, 0, "the dropped read changes nothing")
+    compare(Object.keys(store.appliedSeq).length, 0)
+    // synthetic: runs.json's list with the started run's status replaced by
+    // status-escalated.json's data.
+    var data = F.load("runs.json").data
+    data.runs[0].status = F.load("status-escalated.json").data
+    data.runs[1].status = F.load("status-done.json").data
+    reply(list, JSON.stringify({ ok: true, as_of_seq: 1010, store_id: data.store_id, runs: data.runs, data_dir: "/d" }) + "\n", 0)
+    compare(store.runs[0].status, "escalated")
+    compare(store.toasts.length, 0, "the first list after a reset only arms")
+    compare(store.alertsArmed, true)
+    compare(store.asOfSeq, 1010)
+  }
+
+  function test_only_a_true_cursor_reset_starts_over() {
+    var store = capturedStore(); if (!store) return
+    var values = [false, "true", 1, null, undefined]
+    for (var i = 0; i < values.length; i++) {
+      var label = "cursorReset " + JSON.stringify(values[i])
+      var seq = store.snapshotRunner.seq
+      sendLine(store.watchProc, resetHello(values[i]))
+      compare(store.snapshotRunner.seq, seq, label)
+      compare(store.runs.length, 2, label)
+      compare(store.asOfSeq, 989, label)
+      compare(store.alertsArmed, true, label)
+    }
+  }
 }
