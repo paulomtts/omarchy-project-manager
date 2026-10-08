@@ -15,8 +15,11 @@ only --repo-dir is passed and the user's real runs are read, never written.
 Skipped when am or git is absent or the checkout has no runs.
 """
 import json
+import os
+import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -278,43 +281,63 @@ def test_note_is_on_exactly_the_annotated_captures():
     assert with_row == sorted(E2E_FIXTURES), with_row
 
 
-def git_main_checkout():
-    """The main checkout's root, or None when git is absent or fails here."""
-    try:
-        proc = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                              cwd=HERE, capture_output=True, text=True, timeout=AM_TIMEOUT)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0 or not proc.stdout.strip():
-        return None
-    return Path(proc.stdout.strip()).parent
-
-
-def am_json(*args):
+def am_json(env, *args):
     # A hung am fails the test (TimeoutExpired) instead of hanging the suite.
-    proc = subprocess.run(["am", *args], capture_output=True, text=True, timeout=AM_TIMEOUT)
+    proc = subprocess.run(["am", *args], env=env, capture_output=True, text=True, timeout=AM_TIMEOUT)
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def test_installed_am_prints_the_fixture_key_sets():
-    if shutil.which("am") is None:
-        pytest.skip("am is not installed here")
-    main = git_main_checkout()
-    if main is None:
-        pytest.skip("git could not name the main checkout")
-    code, out, err = am_json("runs", "--repo-dir", str(main))
+def scratch_env(tmp_path, path=None):
+    """(env, repo_dir): os.environ with HOME, XDG_DATA_HOME and XDG_STATE_HOME under tmp_path
+    and PATH replaced by `path` when given; tmp_path/home and repo_dir exist."""
+    env = dict(os.environ)
+    env.update({"HOME": str(tmp_path / "home"), "XDG_DATA_HOME": str(tmp_path / "data"),
+                "XDG_STATE_HOME": str(tmp_path / "state")})
+    if path is not None:
+        env["PATH"] = path
+    (tmp_path / "home").mkdir(exist_ok=True)
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir(exist_ok=True)
+    return env, repo_dir
+
+
+def require_count(where, obj, key):
+    """obj[key] is a non-negative int (a bool is not); a missing key means the plugin needs the newer am."""
+    if key not in obj:
+        pytest.fail(f"{where}: no {key}: the plugin needs the newer am")
+    value = obj[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        pytest.fail(f"{where}.{key}: {value!r}")
+
+
+def live_check(env, repo_dir):
+    """am run with `env` prints am runs data carrying as_of_seq; rows present match the capture
+    key sets with the LIVE_EXTRA allowances, and so does am status of the newest row."""
+    code, out, err = am_json(env, "runs", "--repo-dir", str(repo_dir))
     if code != 0:
-        pytest.skip(f"am runs --repo-dir {main} exited {code}: {err.strip()}")
-    rows = json.loads(out).get("data", {}).get("runs") or []
-    if not rows:
-        pytest.skip(f"am has no runs for {main}")
+        pytest.fail(f"live am runs exited {code}: {out}{err}")
+    try:
+        data = json.loads(out).get("data")
+    except (json.JSONDecodeError, AttributeError):
+        data = None
+    if not isinstance(data, dict):
+        pytest.fail(f"live am runs: no data object in {out!r}")
+    require_count("live am runs data", data, "as_of_seq")
+    rows = data.get("runs") or []
     check_runs_rows("live am runs", rows, LIVE_EXTRA)
     for i, row in enumerate(rows):
         assert_keys("live am runs", f"runs[{i}].project", row["project"], PROJECT_KEYS)
-    newest = max(rows, key=lambda row: row["started_at"])
-    code, out, err = am_json("status", newest["id"], "--repo-dir", str(main))
-    assert code == 0, f"am status {newest['id']} exited {code}: {out}{err}"
-    check_status_data(f"live am status {newest['id']}", json.loads(out)["data"], LIVE_EXTRA)
+    if rows:
+        newest = max(rows, key=lambda row: row["started_at"])
+        code, out, err = am_json(env, "status", newest["id"], "--repo-dir", str(repo_dir))
+        assert code == 0, f"am status {newest['id']} exited {code}: {out}{err}"
+        check_status_data(f"live am status {newest['id']}", json.loads(out)["data"], LIVE_EXTRA)
+
+
+def test_installed_am_prints_the_fixture_key_sets(tmp_path):
+    if shutil.which("am") is None:
+        pytest.skip("am is not installed here")
+    live_check(*scratch_env(tmp_path))
 
 
 def test_live_allowance_is_on_the_runs_row_status_run_and_status_data_only():
@@ -346,12 +369,88 @@ def test_live_status_check_rejects_a_status_outside_the_vocabularies():
 def test_live_check_skips_when_am_is_not_on_path(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(pytest.skip.Exception, match="am is not installed here"):
-        test_installed_am_prints_the_fixture_key_sets()
+        test_installed_am_prints_the_fixture_key_sets(tmp_path)
 
 
-def test_live_check_reads_the_main_checkout_not_a_worktree():
-    main = git_main_checkout()
-    if main is None:
-        pytest.skip("git could not name the main checkout")
-    assert (main / ".git").is_dir(), f"{main}: not a main checkout (no .git directory)"
+def stub_runs_data(**extra):
+    """runs.json's data with no rows and no as_of_seq, updated with `extra`."""
+    data = load("runs.json")["data"]
+    data.pop("as_of_seq", None)
+    data["runs"] = []
+    data.update(extra)
+    return data
 
+
+def stub_hello(**extra):
+    """watch-hello.json's schema_2 hello without "_" keys and without head, updated with `extra`."""
+    hello = {key: value for key, value in load("watch-hello.json")["schema_2"].items()
+             if not key.startswith("_")}
+    hello.pop("head", None)
+    hello.update(extra)
+    return hello
+
+
+def stub_am(tmp_path, runs_data, hello_line, runs_exit=0):
+    """(env, repo_dir) of scratch_env with an executable am first on PATH.
+
+    The stub am: `am runs` prints {"ok": true, "data": runs_data} and exits runs_exit;
+    `am watch` prints hello_line and then execs `sleep 30`. Every call writes
+    $XDG_DATA_HOME to tmp_path/seen-xdg and appends its first argument to tmp_path/calls.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    runs_out = tmp_path / "runs-out.json"
+    with open(runs_out, "w", encoding="utf-8") as fh:
+        json.dump({"ok": True, "data": runs_data}, fh)
+    hello_out = tmp_path / "hello-out.json"
+    hello_out.write_text(hello_line + "\n", encoding="utf-8")
+    seen, calls = shlex.quote(str(tmp_path / "seen-xdg")), shlex.quote(str(tmp_path / "calls"))
+    script = (
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$XDG_DATA_HOME" > {seen}\n'
+        f'printf "%s\\n" "$1" >> {calls}\n'
+        'case "$1" in\n'
+        f"  runs) cat {shlex.quote(str(runs_out))}; exit {runs_exit} ;;\n"
+        f"  watch) cat {shlex.quote(str(hello_out))}; exec sleep 30 ;;\n"
+        "esac\n"
+        "exit 2\n"
+    )
+    am = bin_dir / "am"
+    am.write_text(script, encoding="utf-8")
+    am.chmod(0o755)
+    return scratch_env(tmp_path, path=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+def test_live_check_fails_naming_as_of_seq_when_am_runs_lacks_it(tmp_path):
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(), json.dumps(stub_hello(head=0)))
+    with pytest.raises(pytest.fail.Exception) as failure:
+        live_check(env, repo_dir)
+    assert str(failure.value) == "live am runs data: no as_of_seq: the plugin needs the newer am"
+    assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == ["runs"]
+
+
+def test_live_check_fails_on_a_null_as_of_seq(tmp_path):
+    # synthetic: as_of_seq added as null
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(as_of_seq=None), json.dumps(stub_hello(head=0)))
+    with pytest.raises(pytest.fail.Exception) as failure:
+        live_check(env, repo_dir)
+    assert str(failure.value) == "live am runs data.as_of_seq: None"
+
+
+def test_live_check_runs_am_under_the_scratch_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "caller-data"))
+    real_data_home = os.path.expanduser("~/.local/share")
+    # synthetic: as_of_seq added; synthetic: head added
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(as_of_seq=0), json.dumps(stub_hello(head=0)))
+    live_check(env, repo_dir)
+    seen = (tmp_path / "seen-xdg").read_text(encoding="utf-8").strip()
+    assert seen == str(tmp_path / "data"), seen
+    assert seen not in (str(tmp_path / "caller-data"), real_data_home), seen
+
+
+def test_live_check_fails_when_am_runs_exits_non_zero(tmp_path):
+    # synthetic: as_of_seq added; synthetic: head added
+    env, repo_dir = stub_am(tmp_path, stub_runs_data(as_of_seq=0), json.dumps(stub_hello(head=0)),
+                            runs_exit=3)
+    with pytest.raises(pytest.fail.Exception, match=r"^live am runs exited 3: "):
+        live_check(env, repo_dir)
