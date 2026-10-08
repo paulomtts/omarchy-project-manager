@@ -20,7 +20,8 @@ started. Prints one JSON object per line, flushed at once:
   {"ok": false, "error": {"type", "message"}}
       then exit 1, with type SchemaMismatch, CorruptJournal (am exited 3),
       HelperError or AmMissing (Usage exits 2). An am refusal envelope is
-      re-emitted unchanged when am exits other than 3.
+      re-emitted unchanged when am exits other than 3, or when its type is
+      StoreBusyError.
 A nudge is a JSON object whose event is one of EVENTS, whose run_id is a
 non-empty string and whose gseq is an integer of 1 or more. Every other line is
 ignored; event contents are never forwarded. am exiting 0, SIGINT, SIGTERM or a
@@ -200,9 +201,9 @@ def stream(lines):
 def finish(code, refusal, stderr):
     """Print the last line, if any, for how am ended; return the helper's exit code."""
     if refusal is not None:
-        if code != 3:
-            return say(refusal, 1)
         error = refusal.get("error")
+        if code != 3 or (isinstance(error, dict) and error.get("type") == "StoreBusyError"):
+            return say(refusal, 1)
         message = error.get("message") if isinstance(error, dict) else None
         if not (isinstance(message, str) and message):
             message = stderr or "am watch refused with exit 3."

@@ -649,6 +649,29 @@ def test_refusal_after_hello_is_reemitted(world):
     assert lines == [HELLO, envelope]
 
 
+# synthetic: am's StoreBusyError envelope (the shape of am's error_envelope);
+# no capture holds one.
+STORE_BUSY = {"error": {"message": "the am store is busy; try again",
+                        "type": "StoreBusyError"}, "ok": False}
+
+
+def test_refusal_store_busy_is_reemitted(world):
+    set_script(world, [{"line": STORE_BUSY}], exit=3)
+    code, lines, _ = run_helper(world)
+    assert code == 1
+    assert lines == [STORE_BUSY]
+
+
+def test_refusal_store_busy_after_batch_is_reemitted(world):
+    set_script(world, [hello(), ev(), {"line": STORE_BUSY}], exit=3)
+    code, lines, _ = run_helper(world)
+    assert code == 1
+    assert len(lines) == 4, lines
+    assert lines[0] == HELLO
+    assert changed(lines[1:3]) == [([(RUN, gseq(ev()))], gseq(ev()))]  # flushed first
+    assert lines[3] == STORE_BUSY
+
+
 # --- stopping: signals and a closed stdout ---------------------------------------
 
 def start_helper(world, args=()):
