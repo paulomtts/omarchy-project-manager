@@ -18,9 +18,9 @@ one JSON object per line, flushed at once:
       true only for a JSON true. No other hello key is forwarded.
   {"changed": [{"run": "<run id>", "seq": G}, ...]}
       at most once per 250 ms, never empty, one entry per run holding the
-      highest gseq of that run's nudges in the window; directly followed by
+      highest gseq of that run's kept nudges in the window; directly followed by
   {"cursor": C}
-      the highest gseq of every nudge since the helper started.
+      the highest gseq of every kept nudge since the helper started.
   {"ok": false, "error": {"type", "message"}}
       then exit 1, with type SchemaMismatch, CorruptJournal (am exited 3),
       HelperError or AmMissing (Usage exits 2). An am refusal envelope is
@@ -28,7 +28,11 @@ one JSON object per line, flushed at once:
       StoreBusyError.
 A nudge is a JSON object whose event is one of EVENTS, whose run_id is a
 non-empty string and whose gseq is an integer of 1 or more. Every other line is
-ignored; event contents are never forwarded. am exiting 0, SIGINT, SIGTERM or a
+ignored; event contents are never forwarded. A nudge is kept when its run is
+watched: the argv run ids, plus every run whose run_upsert nudge has a
+payload.repo_dir naming the same directory (realpath) as any root, from that
+run_upsert on, for good. Every other nudge is dropped: it prints nothing and
+moves neither the batch nor the cursor. am exiting 0, SIGINT, SIGTERM or a
 closed stdout end the helper with exit 0. Only the `am` command is used; am's
 database and on-disk layout are never read.
 """
@@ -138,6 +142,32 @@ def nudge(line):
     return run_id, gseq
 
 
+def same_dir(path, roots):
+    """True when `path` names the same directory as one of `roots` (realpaths).
+    A path realpath cannot take (an embedded NUL) names none."""
+    try:
+        return os.path.realpath(path) in roots
+    except (ValueError, OSError):
+        return False
+
+
+def watch(line, run_id, watched, roots):
+    """True when the nudge `line` of `run_id` is kept: the run is in `watched`,
+    or the line is a run_upsert whose payload.repo_dir is a string naming the
+    same directory as one of `roots` (realpaths), which adds the run to
+    `watched` for good."""
+    if run_id in watched:
+        return True
+    payload = line.get("payload")
+    if not (line.get("event") == "run_upsert" and isinstance(payload, dict)):
+        return False
+    repo_dir = payload.get("repo_dir")
+    if not (isinstance(repo_dir, str) and same_dir(repo_dir, roots)):
+        return False
+    watched.add(run_id)
+    return True
+
+
 def spawn(am, extra):
     return subprocess.Popen([am, "watch", "--all-projects", "--follow", *extra],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -174,10 +204,12 @@ def flush(batch, cursor):
     say({"cursor": cursor})
 
 
-def stream(lines):
+def stream(lines, roots, watched):
     """Turn am's stream into the hello line and debounced changed + cursor lines
     until it ends. Every hello line (event "watch") is checked; the first is
-    printed at once without touching the batch; later ones print nothing.
+    printed at once without touching the batch; later ones print nothing. Only
+    nudges `watch` keeps (`roots`: realpaths; `watched`: run ids, grown in
+    place) reach the batch and the cursor.
     Trailing edge: the first nudge into an empty batch opens a WINDOW; when it
     closes the batch is printed once and cleared. A pending batch is printed
     when the stream ends. Returns am's refusal envelope (the last line with an
@@ -213,6 +245,8 @@ def stream(lines):
         if hit is None:
             continue
         run_id, gseq = hit
+        if not watch(line, run_id, watched, roots):
+            continue
         batch[run_id] = max(gseq, batch.get(run_id, 0))
         cursor = max(cursor, gseq)
         if deadline is None:
@@ -251,7 +285,7 @@ def main(argv):
     err_reader.start()
     try:
         try:
-            refusal = stream(lines)
+            refusal = stream(lines, {os.path.realpath(root) for root in roots}, set(run_ids))
         except SchemaMismatch as e:
             return failure("SchemaMismatch", str(e))
         code = proc.wait()
