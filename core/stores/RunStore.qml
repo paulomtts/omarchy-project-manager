@@ -621,11 +621,11 @@ Scope {
   // one naming another store than the one last seen first forgets the old
   // store's live state (forgetLive), so the reply is applied as the new
   // store's full snapshot, raises no toast and launches no other snapshot.
-  // StoreBusyError keeps everything and
-  // only marks the runs stale. AmMissing empties them and the coverage: no
-  // badges while am is not there. Any other failure -- an ok:false envelope or
-  // output that is not one -- keeps what the last good snapshot said and only
-  // reports why this one failed. Never throws.
+  // StoreBusyError keeps everything and only marks the runs stale. AmMissing
+  // empties them and the coverage: no badges while am is not there. Any other
+  // failure -- an ok:false envelope or output that is not one -- keeps what
+  // the last good snapshot said and only reports why this one failed. Never
+  // throws.
   // A reply for a project the user has left never gets here: the runner only
   // emits `finished` when the launch guard still equals its (project) guard.
   function applySnapshot(stdout, exitCode) {
@@ -723,11 +723,11 @@ Scope {
   // left, changes nothing. ok:true records its store_id (seeStore): one
   // naming another store than the one last seen is not applied and starts
   // over (resetCursor), raising no toast and leaving amStatus and lastError;
-  // else it goes to applyRunRead. UnknownRunError
-  // launches one list snapshot: the run stays until am no longer lists it.
-  // StoreBusyError marks the runs stale and puts the nudge back for the next
-  // trigger. Neither raises a toast or touches amStatus or lastError. Any other
-  // failure changes nothing: the list snapshot reports such conditions.
+  // else it goes to applyRunRead. UnknownRunError launches one list snapshot:
+  // the run stays until am no longer lists it. StoreBusyError marks the runs
+  // stale and puts the nudge back for the next trigger. Neither raises a toast
+  // or touches amStatus or lastError. Any other failure changes nothing: the
+  // list snapshot reports such conditions.
   function readReplied(runner, stdout) {
     var runId = runner.runId
     var seq = runner.nudgeSeq
