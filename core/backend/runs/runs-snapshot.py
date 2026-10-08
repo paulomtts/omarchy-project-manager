@@ -26,8 +26,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = "usage: runs-snapshot.py <project_root>"
+USAGE = "usage: runs-snapshot.py [<project_root>]"
 AM_TIMEOUT = 60
+LIST_LIMIT = 200
 # The finished statuses, matched exactly. A cancelled run is terminal under either
 # spelling, `cancelled` or `canceled`. `stopped` is "parked" (resumable) in the
 # domain table, but for the snapshot it is terminal and counts toward the cap.
@@ -45,6 +46,28 @@ class AmFailure(Exception):
 
 def bad_output(message):
     return AmFailure({"ok": False, "error": {"type": "AmBadOutput", "message": message}})
+
+
+def schema_mismatch(what):
+    return AmFailure({"ok": False, "error": {
+        "type": "SchemaMismatch",
+        "message": what + " sent no non-negative integer as_of_seq; "
+                          "the plugin needs the newer am."}})
+
+
+def as_of_seq(data, what):
+    """`data`'s as_of_seq, a non-negative JSON integer (not a bool, float or
+    string); else SchemaMismatch, naming the am command `what`."""
+    seq = data.get("as_of_seq")
+    if not (type(seq) is int and seq >= 0):
+        raise schema_mismatch(what)
+    return seq
+
+
+def store_id(data):
+    """`data`'s store_id when a string, else ""."""
+    store = data.get("store_id")
+    return store if isinstance(store, str) else ""
 
 
 def failure(kind, message, code=1):
@@ -106,32 +129,54 @@ def select_runs(runs):
     return picked
 
 
-def snapshot(am, root, runs):
-    """Each selected run's summary with `status` replaced by its `am status` data."""
+def run_status(am, run_id):
+    """`am status RUN` data (never with --repo-dir), checked: an object
+    (else AmBadOutput) with an as_of_seq (else SchemaMismatch)."""
+    status = call_am(am, ["status", run_id])
+    if not isinstance(status, dict):
+        raise bad_output("am status " + run_id + " data is not an object.")
+    as_of_seq(status, "am status " + run_id)
+    return status
+
+
+def list_snapshot(am, scope):
+    """`am runs <scope> --limit LIST_LIMIT`, checked before any status call, then
+    each selected run's row with `status` replaced by its `am status` data."""
+    data = call_am(am, ["runs", *scope, "--limit", str(LIST_LIMIT)])
+    runs = run_list(data)
+    seq = as_of_seq(data, "am runs")
     out = []
     for run in select_runs(runs):
-        status = call_am(am, ["status", run["id"], "--repo-dir", root])
-        if not isinstance(status, dict):
-            raise bad_output("am status " + run["id"] + " data is not an object.")
         entry = dict(run)
-        entry["status"] = status
+        entry["status"] = run_status(am, run["id"])
         out.append(entry)
-    return out
+    return {"ok": True, "as_of_seq": seq, "store_id": store_id(data), "runs": out,
+            "data_dir": data_dir()}
+
+
+def parse_args(argv):
+    """The `am runs` scope arguments for the helper's argv: --all-projects for
+    none, --repo-dir R for one <project_root> (non-empty, not starting with -);
+    None for anything else."""
+    if not argv:
+        return ["--all-projects"]
+    if len(argv) == 1 and argv[0] and not argv[0].startswith("-"):
+        return ["--repo-dir", argv[0]]
+    return None
 
 
 def main(argv):
-    if len(argv) != 1:
+    scope = parse_args(argv)
+    if scope is None:
         return failure("Usage", USAGE, 2)
-    root = argv[0]
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
     try:
-        runs = run_list(call_am(am, ["runs", "--repo-dir", root]))
-        result = snapshot(am, root, runs)
+        result = list_snapshot(am, scope)
     except AmFailure as e:
         return emit(e.payload, 1)
-    return emit({"ok": True, "runs": result, "data_dir": data_dir()})
+    return emit(result)
 
 
 def guarded(argv):
