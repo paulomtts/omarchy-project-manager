@@ -192,7 +192,7 @@ process group on cancel or timeout, and logs to
 (dir `0700`, file `0600`). Only `claude` runs restricted (read plus
 `Bash(brd *)`); every other agent runs with full auto-approval, which the
 dialog states before the run starts.
-`core/backend/runs/` is the run-monitor backend, scoped to the open project. `runs-snapshot.py <project_root>` runs `am runs --repo-dir R`, then `am status <id> --repo-dir R` for every non-terminal run and the latest 10 terminal ones (terminal: `done`, `escalated`, `stopped`, `cancelled` or `canceled`), and prints one JSON line (`{ok, runs, data_dir}` or an error; nothing in the UI shows `data_dir`). `runs-watch.py <project_root> [run_id ...]` is long-lived: it runs `am watch --all --follow`, accepts a hello line of journal schema 1 or 2 (anything else is `SchemaMismatch`) and prints the first one as `{"hello": {"schema": N, "am": "<version>"}}` (`""` when am's version is not a string), drops journal lines written before it started (an S4 workaround until `am watch --from-now` exists), keeps the watched runs plus any run whose `run_upsert` names this project root, prints at most one debounced `{"changed": [...]}` line per 250 ms, and ends with an `AmMissing`, `SchemaMismatch`, `CorruptJournal` or `HelperError` envelope (exit 0 when it was stopped). `RunStore` runs it as a plain `Process`, not through `HelperRunner`. `runs-logs.py <project_root> RUN CARD PHASE ATTEMPT` is a one-shot `am logs RUN CARD --phase P --attempt N --repo-dir R` passthrough: a 60 s timeout, exactly one JSON line. All three use only documented `am` commands, as argv lists, and never read am's SQLite database or its on-disk layout; am finds its journals under its own data dir, so the `XDG_DATA_HOME` it inherits matters.
+`core/backend/runs/` is the run-monitor backend. `runs-snapshot.py` has three modes: no argument runs `am runs --all-projects --limit 200` (every project's runs; the mode `RunStore` uses), `<project_root>` runs `am runs --repo-dir R --limit 200` (one project; `RunStore` does not use it), and `--run RUN` runs `am status RUN` alone, never with `--repo-dir`; any other argv is a `Usage` error (exit 2) and am is not run. The list modes then run `am status <id>` for every non-terminal run and the first 10 terminal ones (terminal: `done`, `escalated`, `stopped`, `cancelled` or `canceled`) in am's newest-first order. It prints exactly one JSON line on every path: `{ok, as_of_seq, store_id, runs: [{...am runs row, status: <am status data>}], data_dir}`, or for `--run` `{ok, run, as_of_seq, store_id, status, data_dir}` (`store_id` is `""` when am's is not a string; nothing in the UI shows `data_dir`), or an error: `Usage`, `AmMissing`, `AmBadOutput`, `SchemaMismatch` (am data without a non-negative integer `as_of_seq`: "the plugin needs the newer am") or `HelperError`; am's own `ok: false` envelope (`StoreBusyError`, `UnknownRunError`, `RepoDirError`, ...) is re-emitted unchanged. A failure stops at the failing am call, so a list is never partial; each am call gets 60 s. `runs-watch.py [--since-seq N]` (N one or more ASCII digits; any other argv is `Usage`, exit 2) is long-lived: it runs `am watch --all-projects --follow` (plus `--since-seq N` when given) and prints the first hello as `{"hello": {"schema", "am", "head", "cursorReset", "storeId"}}` (`am` and `storeId` are `""` when not strings, `cursorReset` is true only for a JSON true); every hello must carry an integer `schema` of 1 or more and a non-negative integer `head`, else `SchemaMismatch` (`am watch sent no head; the plugin needs the newer am.` for a missing `head`). A nudge is a line whose `event` is one of its `EVENTS` (`run_upsert`, `story_upsert`, `subtask_upsert`, `phase_upsert`, `attempt_upsert`, `lease_acquired`, `lease_taken_over`, `control_requested`, `control_handled`, `claim_conflict`), with a non-empty `run_id` and an integer `gseq` of 1 or more; every other line is ignored, and event contents are never forwarded. It prints at most one `{"changed": [{"run", "seq"}, ...]}` per 250 ms window, never empty, one entry per run carrying its highest `gseq` in the window, followed directly by `{"cursor": C}` (the highest `gseq` since the helper started). It ends with an `{ok: false, error}` line and exit 1 -- `SchemaMismatch`, `CorruptJournal` (am exited 3, unless its refusal is a `StoreBusyError`), `HelperError`, `AmMissing`, or am's own refusal envelope re-emitted unchanged -- and with exit 0 when am exits 0, on SIGINT or SIGTERM, or when its stdout closes. `RunStore` runs it as a plain `Process`, not through `HelperRunner`. `runs-logs.py <project_root> RUN CARD PHASE ATTEMPT` is a one-shot `am logs RUN CARD --phase P --attempt N --repo-dir R` passthrough: a 60 s timeout, exactly one JSON line. All three use only documented `am` commands, as argv lists, and never read am's SQLite database or its on-disk layout; am finds its journals under its own data dir, so the `XDG_DATA_HOME` it inherits matters.
 
 When a thing is needed a second time it becomes shared **before** the second
 use is written. The architecture test fails on a second copy of: the modal
@@ -222,11 +222,15 @@ would load its own type instead of ours.
   project (its own `HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` under a tmp dir, so no
   real board is read or written) and fails when brd's JSON shape drifts from what
   `core/domain/brd-extras.js` parses; skipped when `brd` is absent.
-  `test_am_shapes.py` does the same for the installed `am`: hand-written schema 1
-  journals under a throwaway `XDG_DATA_HOME`, pinning the `am runs`, `am status`
-  and `am watch` (one-shot and `--follow`) shapes `core/backend/runs/*` parses,
-  with the `--follow` hello's schema accepted as 1 or 2; skipped when `am` is
-  absent. Its story tests (S7) build a real git repo and brd board under tmp
+  `test_am_shapes.py` does the same for the installed `am`: am runs
+  hermetically (its own `HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` under tmp),
+  events are seeded only through am commands (a real story run on a scratch
+  board, which escalates at its first agent phase because no agent CLI is
+  reachable), and it pins the `am runs`, `am status` and `am watch` (one-shot
+  and `--follow`) shapes `core/backend/runs/*` parses: the schema 2 journal
+  line and hello key sets, `gseq`, `head`, `cursor_reset` and `store_id`, with
+  the `--follow` hello's schema accepted as 1 or 2; skipped when `am` is absent.
+  Its story tests (S7) build a real git repo and brd board under tmp
   and run am with a `PATH` holding only am, brd and git, so no agent CLI is
   reachable; they pin `am run --help` listing `--story`, the
   `am run --story --dry-run` payload (one level, no integrate), the
@@ -235,20 +239,26 @@ would load its own type instead of ours.
   they fail, never skip, if `am run` lacks `--story` or if brd or git is
   absent: the panel's story dispatch needs an am with `--story`.
   `test_am_fixtures.py` pins the committed captures in
-  `tests/fixtures/am/`: each level's exact key set, the run and attempt status
-  vocabularies, and no top-level `subtasks` in `am status` data. Its live check
-  runs `am runs` and `am status <newest>` in the main checkout (the parent of
-  git's common dir), read-only with only `--repo-dir`, and expects the same key
-  sets, with `story_id` allowed as the one extra key on a runs row and on the
-  status run; it is skipped when `am` or `git` is absent, `am runs` fails or
-  the checkout has no runs.
-- `tests/fixtures/am/` holds real captured am payloads: `runs.json`, five
-  `status-*.json`, `watch-events.json`, `watch-hello.json`,
+  `tests/fixtures/am/`: each level's exact key set (keys starting with `_`
+  ignored), the run and attempt status vocabularies, no top-level `subtasks` in
+  `am status` data, a `_note` on every capture naming agent-manager 0.2.0, one
+  `store_id` shared by the captures, strictly increasing `gseq`, and an events
+  page's `head` at least its last `gseq`. Its live check runs the `am` first on
+  `PATH` with `HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` under a scratch dir,
+  never the user's data dir: it requires `as_of_seq` in `am runs` data and
+  `head` in the first line of `am watch --all --follow`, failing with "the
+  plugin needs the newer am" when either is missing, and checks any rows and
+  the newest row's `am status` against the capture key sets exactly; it is
+  skipped only when `am` is absent.
+- `tests/fixtures/am/` holds real captured am payloads, captured 2026-10-08
+  from agent-manager 0.2.0 on a scratch store, as each `_note` says:
+  `runs.json`, five `status-*.json`, `watch-events.json`, `watch-hello.json`
+  (`schema_1` the historical capture, `schema_2` the current one),
   `logs-attempt.json` and `events.json` (an `am events RUN` page with `head`);
   keys starting with `_` are annotations readers ignore.
   Tests of code that reads am output (`normalizeRun`, `logTail`, the `runs-*`
-  helpers, `run-control.py`, `RunStore`'s snapshot, logs and watch handling)
-  build their input from these fixtures; a hand-written am payload is used only
+  helpers, `run-control.py`, `RunStore`'s list snapshot, run read, logs and
+  watch handling) build their input from these fixtures; a hand-written am payload is used only
   for a synthetic edge case and is marked with a `synthetic:` comment. Tests of
   code that takes a normalized run may build it by hand. A test that edits a
   fixture edits a fresh copy. Python reads them with `json.load`, QML with
