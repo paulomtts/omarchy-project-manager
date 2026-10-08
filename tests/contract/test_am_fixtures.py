@@ -7,8 +7,10 @@ ignored); status values come from am's run and attempt vocabularies. am status
 data has no top-level "subtasks".
 
 Live check: in the main checkout (the parent of git's common dir), am runs and
-am status of the newest run must print the same key sets, with "story_id"
-allowed as the one extra key on a runs row and on the status run. Read-only:
+am status of the newest run must print the same key sets, with the keys the
+captures predate allowed as extras: "story_id" and "project" (exactly "id" and
+"repo_dir") on a runs row, "story_id" on the status run, and "as_of_seq",
+"store_id" and "warnings" on the status data. Read-only:
 only --repo-dir is passed and the user's real runs are read, never written.
 Skipped when am or git is absent or the checkout has no runs.
 """
@@ -66,8 +68,12 @@ RUN_STATUSES = frozenset({"pending", "started", "done", "failed", "escalated", "
                           "cancelled", "canceled"})
 ATTEMPT_STATUSES = frozenset({"started", "ok", "schema_invalid", "gate_failed", "harness_error"})
 
-# The installed am prints story_id on these two levels only; the captures predate it.
-LIVE_EXTRA = {RUN_ROW_KEYS: frozenset({"story_id"}), STATUS_RUN_KEYS: frozenset({"story_id"})}
+PROJECT_KEYS = frozenset({"id", "repo_dir"})
+
+# The installed am prints these extra keys on these three levels only; the captures predate them.
+LIVE_EXTRA = {RUN_ROW_KEYS: frozenset({"story_id", "project"}),
+              STATUS_RUN_KEYS: frozenset({"story_id"}),
+              STATUS_DATA_KEYS: frozenset({"as_of_seq", "store_id", "warnings"})}
 
 
 def load(name):
@@ -303,16 +309,22 @@ def test_installed_am_prints_the_fixture_key_sets():
     if not rows:
         pytest.skip(f"am has no runs for {main}")
     check_runs_rows("live am runs", rows, LIVE_EXTRA)
+    for i, row in enumerate(rows):
+        assert_keys("live am runs", f"runs[{i}].project", row["project"], PROJECT_KEYS)
     newest = max(rows, key=lambda row: row["started_at"])
     code, out, err = am_json("status", newest["id"], "--repo-dir", str(main))
     assert code == 0, f"am status {newest['id']} exited {code}: {out}{err}"
     check_status_data(f"live am status {newest['id']}", json.loads(out)["data"], LIVE_EXTRA)
 
 
-def test_live_allowance_is_story_id_on_the_runs_row_and_status_run_only():
-    assert set(LIVE_EXTRA) == {RUN_ROW_KEYS, STATUS_RUN_KEYS}
+def test_live_allowance_is_on_the_runs_row_status_run_and_status_data_only():
+    assert set(LIVE_EXTRA) == {RUN_ROW_KEYS, STATUS_RUN_KEYS, STATUS_DATA_KEYS}
     run = dict.fromkeys(STATUS_RUN_KEYS | {"story_id"})
     assert_keys("live", "data.run", run, STATUS_RUN_KEYS, LIVE_EXTRA[STATUS_RUN_KEYS])
+    # The extras come as a set: a runs row with story_id but no project fails.
+    row = dict.fromkeys(RUN_ROW_KEYS | {"story_id"})
+    with pytest.raises(pytest.fail.Exception, match=r"missing \[\], extra \['story_id'\]"):
+        assert_keys("live", "runs[0]", row, RUN_ROW_KEYS, LIVE_EXTRA[RUN_ROW_KEYS])
     story = dict.fromkeys(STORY_KEYS | {"story_id"})
     with pytest.raises(pytest.fail.Exception, match=r"extra \['story_id'\]"):
         assert_keys("live", "stories[0]", story, STORY_KEYS, LIVE_EXTRA.get(STORY_KEYS, frozenset()))
