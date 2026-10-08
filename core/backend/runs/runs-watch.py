@@ -46,12 +46,11 @@ EOF = object()
 # The journal events. Any other `event` value is ignored.
 EVENTS = frozenset({"run_upsert", "story_upsert", "subtask_upsert", "phase_upsert",
                     "attempt_upsert"})
-# The journal schemas a hello line may announce, as JSON integers.
-SCHEMAS = (1, 2)
 
 
 class SchemaMismatch(Exception):
-    """The hello line announced a journal schema other than 1 or 2."""
+    """A hello line without an integer schema of 1 or higher, or without a
+    non-negative integer head."""
 
 
 class Stop(Exception):
@@ -125,13 +124,21 @@ def keep(line, watched, root, started):
     return None
 
 
-def check_schema(hello):
-    """The hello line's journal schema, an integer in SCHEMAS. Raises SchemaMismatch."""
+def check_hello(hello):
+    """The printed fields of a hello line: schema, am ("" when not a string),
+    head, cursorReset (true only for a JSON true) and storeId ("" when not a
+    string). Raises SchemaMismatch."""
     schema = hello.get("schema")
-    if not (type(schema) is int and schema in SCHEMAS):
-        raise SchemaMismatch("am watch speaks journal schema " + json.dumps(schema)
-                             + "; this helper reads schema 1 or 2.")
-    return schema
+    if not (type(schema) is int and schema >= 1):
+        raise SchemaMismatch("am watch speaks schema " + json.dumps(schema)
+                             + "; this helper reads schema 1 or higher.")
+    head = hello.get("head")
+    if not (type(head) is int and head >= 0):
+        raise SchemaMismatch("am watch sent no head; the plugin needs the newer am.")
+    version, store = hello.get("am"), hello.get("store_id")
+    return {"schema": schema, "am": version if isinstance(version, str) else "",
+            "head": head, "cursorReset": hello.get("cursor_reset") is True,
+            "storeId": store if isinstance(store, str) else ""}
 
 
 def spawn(am):
@@ -194,11 +201,9 @@ def stream(lines, watched, root, started):
             refusal = line
             continue
         if isinstance(line, dict) and line.get("event") == "watch":
-            schema = check_schema(line)
+            fields = check_hello(line)
             if not greeted:
-                version = line.get("am")
-                say({"hello": {"schema": schema,
-                               "am": version if isinstance(version, str) else ""}})
+                say({"hello": fields})
                 greeted = True
             continue
         run_id = keep(line, watched, root, started)
