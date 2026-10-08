@@ -389,6 +389,77 @@ function filterByProject(runs, root) {
   return out
 }
 
+// Order of two project groups: a group with attention > 0 first, then one with
+// live > 0, then the rest; then project.name lower-cased, then project.root,
+// both by plain string comparison. Roots are distinct, so no two groups tie.
+function _compareGroups(a, b) {
+  function rank(g) { return g.counts.attention > 0 ? 0 : (g.counts.live > 0 ? 1 : 2) }
+  var ra = rank(a), rb = rank(b)
+  if (ra !== rb) return ra - rb
+  var na = a.project.name.toLowerCase(), nb = b.project.name.toLowerCase()
+  if (na !== nb) return na < nb ? -1 : 1
+  if (a.project.root !== b.project.root) return a.project.root < b.project.root ? -1 : 1
+  return 0
+}
+
+// The runs grouped by registered project, in display order. Entries that are
+// not plain objects are dropped. Each group is
+//   { project: { root, name }, runs, counts: { live, parked, attention } }
+// root: the entry's `project.root` with every trailing "/" removed, else ""
+// when `project` is not a plain object or its root is not a string; otherwise
+// compared exactly. name: the `project.name` of the group's first entry when a
+// string, else ""; always "" for root "". runs: the same objects, input order.
+// counts, by runState: live = running; parked = parked; attention = escalated
+// or dead (the runs `attention` returns). A group exists only for a root some
+// entry has. Order: groups with attention > 0, then live > 0, then the rest;
+// ties by name lower-cased, then root, by plain string comparison. The root ""
+// group is last, whatever its counts. A `runs` that is not an array gives [].
+// Never mutates, never throws.
+function groupByProject(runs) {
+  var list = _arrayOr(runs)
+  var groups = []
+  var loose = null
+  for (var i = 0; i < list.length; i++) {
+    var run = list[i]
+    if (!_isObject(run)) continue
+    var project = _isObject(run.project) ? run.project : {}
+    var root = typeof project.root === "string" ? _trimSlashes(project.root) : ""
+    var group = root === "" ? loose : null
+    for (var g = 0; root !== "" && group === null && g < groups.length; g++) {
+      if (groups[g].project.root === root) group = groups[g]
+    }
+    if (group === null) {
+      group = { project: { root: root, name: root === "" ? "" : _stringOr(project.name) },
+                runs: [], counts: { live: 0, parked: 0, attention: 0 } }
+      if (root === "") loose = group
+      else groups.push(group)
+    }
+    group.runs.push(run)
+    var s = runState(run)
+    if (s === "running") group.counts.live += 1
+    else if (s === "parked") group.counts.parked += 1
+    else if (s === "escalated" || s === "dead") group.counts.attention += 1
+  }
+  groups.sort(_compareGroups)
+  if (loose !== null) groups.push(loose)
+  return groups
+}
+
+// The runs of `groups` (groupByProject output) as one list: each group's `runs`
+// in turn, the same values in order. A group that is not a plain object, or
+// whose `runs` is not an array, is skipped; a `groups` that is not an array
+// gives []. Returns a new array. Never mutates, never throws.
+function displayOrder(groups) {
+  var list = _arrayOr(groups)
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var group = list[i]
+    if (!_isObject(group) || !Array.isArray(group.runs)) continue
+    for (var j = 0; j < group.runs.length; j++) out.push(group.runs[j])
+  }
+  return out
+}
+
 // String(v), trimmed. null/undefined, and values String() cannot convert (e.g. a
 // prototype-less object), become "".
 function _textOf(v) {

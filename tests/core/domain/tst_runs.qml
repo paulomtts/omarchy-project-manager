@@ -4082,4 +4082,266 @@ TestCase {
     compare(onlyB.length, 1, "attention of one project")
     verify(onlyB[0] === dead, "the dead run of /p/b")
   }
+
+  // ---- S6 1.2: grouping -------------------------------------------------------------------
+
+  // The `project.root` of every group, comma-joined.
+  function groupRoots(groups) {
+    var roots = []
+    for (var i = 0; i < groups.length; i++) roots.push(groups[i].project.root)
+    return roots.join(",")
+  }
+
+  function test_group_by_project_order_by_rank() {
+    var runs = fixtureRuns()
+    compare(Runs.runState(runs[0]), "running", "fixture 0 is running")
+    compare(Runs.runState(runs[1]), "done", "fixture 1 is done")
+    compare(Runs.runState(runs[2]), "escalated", "fixture 2 is escalated")
+    compare(Runs.runState(runs[3]), "done", "fixture 3 is done")
+    var c1 = Runs.withProject(runs[1], "/p/c", "C")
+    var b1 = Runs.withProject(runs[0], "/p/b", "B")
+    var a1 = Runs.withProject(runs[3], "/p/a", "A")
+    var z1 = Runs.withProject(runs[2], "/p/z", "Z")
+    var b2 = Runs.withProject(runs[1], "/p/b", "B")
+    var groups = Runs.groupByProject([c1, b1, a1, z1, b2])
+    compare(groups.length, 4, "one group per project, none empty")
+    compare(groupRoots(groups), "/p/z,/p/b,/p/a,/p/c", "attention, then live, then by name")
+
+    // synthetic: the started capture's lease marked dead
+    var dead = Runs.withProject(runs[0], "/p/y", "Y")
+    dead.lease.live = false
+    compare(Runs.runState(dead), "dead", "the dead copy")
+    compare(groupRoots(Runs.groupByProject([b1, dead, a1])), "/p/y,/p/b,/p/a", "a dead run ranks as attention")
+
+    var mixedLive = Runs.withProject(runs[0], "/p/x", "X")
+    var mixedEscalated = Runs.withProject(runs[2], "/p/x", "X")
+    compare(groupRoots(Runs.groupByProject([b1, mixedLive, a1, mixedEscalated])), "/p/x,/p/b,/p/a",
+            "attention and live together rank as attention")
+  }
+
+  function test_group_by_project_name_ties() {
+    var runs = fixtureRuns()
+    var beta = Runs.withProject(runs[1], "/r/2", "beta")
+    var upperAlpha = Runs.withProject(runs[3], "/r/3", "Alpha")
+    var alpha = Runs.withProject(runs[1], "/r/1", "alpha")
+    var groups = Runs.groupByProject([beta, upperAlpha, alpha])
+    compare(groupRoots(groups), "/r/1,/r/3,/r/2", "case-blind name, then root")
+    compare(groups[0].project.name, "alpha", "first name")
+    compare(groups[1].project.name, "Alpha", "second name")
+    compare(groups[2].project.name, "beta", "third name")
+
+    // synthetic: a name set by hand to "" sorts before the named groups of its rank
+    var blank = Runs.withProject(runs[3], "/r/9", "x")
+    blank.project.name = ""
+    compare(groupRoots(Runs.groupByProject([beta, alpha, blank])), "/r/9,/r/1,/r/2", "an empty name first")
+
+    // synthetic: non-ASCII names order by code unit after toLowerCase, whatever the input order
+    var accented = Runs.withProject(runs[1], "/u/1", "\u00c9clair")
+    var zeta = Runs.withProject(runs[1], "/u/2", "zeta")
+    var plain = Runs.withProject(runs[1], "/u/3", "eclair")
+    compare(groupRoots(Runs.groupByProject([accented, zeta, plain])), "/u/3,/u/2,/u/1", "code-unit order")
+    compare(groupRoots(Runs.groupByProject([plain, zeta, accented])), "/u/3,/u/2,/u/1", "same order reversed")
+  }
+
+  function test_group_by_project_counts() {
+    var runs = fixtureRuns()
+    var running = Runs.withProject(runs[0], "/p/m", "M")
+    // synthetic: the started capture's lease marked dead
+    var dead = Runs.withProject(runs[0], "/p/m", "M")
+    dead.lease.live = false
+    // synthetic: a done capture marked stopped (parked) and cancelled
+    var parked = Runs.withProject(runs[1], "/p/m", "M")
+    parked.status = "stopped"
+    var cancelled = Runs.withProject(runs[1], "/p/m", "M")
+    cancelled.status = "cancelled"
+    var escalated = Runs.withProject(runs[2], "/p/m", "M")
+    var done = Runs.withProject(runs[3], "/p/m", "M")
+    var otherDone = Runs.withProject(runs[1], "/p/n", "N")
+    var otherIntegrate = Runs.withProject(runs[3], "/p/n", "N")
+    // synthetic: a run whose status am never writes
+    var unknown = { id: "u", status: "weird", project: { root: "/p/n", name: "N" } }
+    compare(Runs.runState(unknown), "unknown", "the unknown run")
+
+    var groups = Runs.groupByProject([running, dead, otherDone, parked, escalated, unknown, done, cancelled, otherIntegrate])
+    compare(groupRoots(groups), "/p/m,/p/n", "two groups")
+    var m = groups[0]
+    compare(Object.keys(m.counts).sort().join(","), "attention,live,parked", "count keys")
+    compare(m.counts.live, 1, "one running")
+    compare(m.counts.parked, 1, "one parked")
+    compare(m.counts.attention, 2, "dead and escalated")
+    compare(m.counts.attention, Runs.attention(m.runs).length, "attention counts what Runs.attention returns")
+    compare(m.runs.length, 6, "every run of /p/m")
+    var n = groups[1]
+    compare(n.runs.length, 3, "every run of /p/n")
+    compare(n.counts.live, 0, "no live run")
+    compare(n.counts.parked, 0, "no parked run")
+    compare(n.counts.attention, 0, "no attention run")
+  }
+
+  function test_group_by_project_shape() {
+    var runs = fixtureRuns()
+    var first = Runs.withProject(runs[1], "/p/s", "First")
+    var live = Runs.withProject(runs[0], "/p/t", "T")
+    var second = Runs.withProject(runs[3], "/p/s/", "Second")
+    var list = [first, live, second]
+    var groups = Runs.groupByProject(list)
+    compare(groupRoots(groups), "/p/t,/p/s", "the live group first")
+    var s = groups[1]
+    compare(Object.keys(s).sort().join(","), "counts,project,runs", "group keys")
+    compare(Object.keys(s.project).sort().join(","), "name,root", "project keys")
+    compare(s.project.root, "/p/s", "root")
+    compare(s.project.name, "First", "the name of the first run")
+    compare(s.runs.length, 2, "both runs of /p/s")
+    verify(s.runs[0] === first, "same object, input order")
+    verify(s.runs[1] === second, "same object, input order")
+    verify(s.runs !== list, "a new runs array")
+    verify(s.project !== first.project, "a new project object")
+
+    var again = Runs.groupByProject(list)
+    verify(again !== groups, "a new array per call")
+    verify(again[1] !== s, "a new group per call")
+    verify(again[1].project !== s.project, "a new project per call")
+    verify(again[1].counts !== s.counts, "new counts per call")
+    verify(again[1].runs !== s.runs, "new runs per call")
+
+    // synthetic: the first run of a root names it with a non-string name
+    var unnamed = { id: "q1", status: "done", project: { root: "/p/q", name: 5 } }
+    var named = { id: "q2", status: "done", project: { root: "/p/q", name: "Q" } }
+    var q = Runs.groupByProject([unnamed, named])
+    compare(q.length, 1, "one group")
+    compare(q[0].project.name, "", "a non-string first name is empty")
+  }
+
+  function test_group_by_project_trailing_slash() {
+    var runs = fixtureRuns()
+    var plain = Runs.withProject(runs[1], "/p/one", "One")
+    // synthetic: a project root set by hand with its trailing slash
+    var slashed = Runs.normalizeRun(amRun("status-done.json"))
+    slashed.project = { root: "/p/one/", name: "One" }
+    var upper = Runs.withProject(runs[3], "/P/one", "One")
+    var groups = Runs.groupByProject([slashed, plain, upper])
+    compare(groupRoots(groups), "/P/one,/p/one", "two groups, case-sensitive, ordered by root")
+    compare(groups[1].runs.length, 2, "trailing slash shares the group")
+    verify(groups[1].runs[0] === slashed, "same object, input order")
+    verify(groups[1].runs[1] === plain, "same object, input order")
+
+    // the filesystem root is a project of its own, not the no-project group
+    var top = Runs.withProject(runs[1], "/", null)
+    var rooted = Runs.groupByProject([top, { id: "loose", status: "done" }])
+    compare(rooted.length, 2, "/ and the no-project group")
+    compare(rooted[0].project.root, "/", "/ is a project group")
+    compare(rooted[0].project.name, "/", "named /")
+    compare(rooted[1].project.root, "", "the no-project group last")
+  }
+
+  function test_group_by_project_empty() {
+    var run = Runs.withProject(Runs.normalizeRun(amRun("status-done.json")), "/p/one", "One")
+    var empty = []
+    // synthetic: runs that are not an array
+    var bad = [empty, undefined, null, "x", 5, {}, { length: 1, 0: run }]
+    for (var i = 0; i < bad.length; i++) {
+      var out = Runs.groupByProject(bad[i])
+      compare(Array.isArray(out), true, "runs " + i)
+      compare(out.length, 0, "runs " + i)
+    }
+    verify(Runs.groupByProject(empty) !== empty, "a new array for []")
+    verify(Runs.groupByProject(null) !== Runs.groupByProject(null), "a new array per call")
+    // synthetic: entries that are not plain objects
+    compare(Runs.groupByProject([null, undefined, "x", 5, true, []]).length, 0, "non-object entries dropped")
+  }
+
+  function test_group_by_project_without_project() {
+    var runs = fixtureRuns()
+    var plain = runs[1]
+    var escalated = runs[2]
+    compare(Object.keys(plain.project).sort().join(","), "id,repo_dir", "normalizeRun gives no root")
+    // synthetic: projects without a string root, and a prototype-less entry
+    var nullProject = { id: "n", status: "done", project: null }
+    var noProject = { id: "m", status: "done" }
+    var numRoot = { id: "num", status: "done", project: { root: 5 } }
+    var blankRoot = Runs.withProject(runs[3], 5, "x")
+    compare(blankRoot.project.root, "", "withProject with a non-string root gives root \"\"")
+    var bare = Object.create(null)
+    bare.id = "b"
+    var a = Runs.withProject(runs[1], "/p/a", "A")
+    var b = Runs.withProject(runs[0], "/p/b", "B")
+    var list = [plain, a, nullProject, noProject, escalated, numRoot, b, blankRoot, bare]
+    var groups = Runs.groupByProject(list)
+    compare(groupRoots(groups), "/p/b,/p/a,", "the no-project group last, even with an attention run")
+    var last = groups[2]
+    compare(last.project.root, "", "no-project root")
+    compare(last.project.name, "", "no-project name, never the name of a run")
+    compare(last.counts.attention, 1, "it holds the escalated run")
+    var expected = [plain, nullProject, noProject, escalated, numRoot, blankRoot, bare]
+    compare(last.runs.length, expected.length, "every run without a project")
+    for (var i = 0; i < expected.length; i++) verify(last.runs[i] === expected[i], "same object, input order " + i)
+
+    // its position in the input does not move the project groups
+    var reordered = Runs.groupByProject([escalated, b, plain, a])
+    compare(groupRoots(reordered), "/p/b,/p/a,", "no-project first in the input, last in the groups")
+  }
+
+  function test_group_by_project_pure() {
+    var runs = fixtureRuns()
+    var a = Runs.withProject(runs[0], "/p/a", "A")
+    var b = Runs.withProject(runs[2], "/p/b", "B")
+    var c = Runs.withProject(runs[1], "/p/a/", "A")
+    var bare = Object.create(null)
+    bare.id = "bare"
+    // synthetic: garbage entries and garbage projects
+    var list = [a, null, b, "x", 5, [], { id: "s", project: "junk" }, { id: "arr", project: [1] },
+                { id: "obj", project: { root: {}, name: {} } }, bare, undefined, c]
+    var entries = list.slice()
+    var before = []
+    for (var i = 0; i < list.length; i++) before.push(JSON.stringify(list[i]))
+    var groups = Runs.groupByProject(list)
+    compare(groupRoots(groups), "/p/b,/p/a,", "attention, live, no-project")
+    compare(list.length, entries.length, "input length unchanged")
+    for (var j = 0; j < list.length; j++) {
+      verify(list[j] === entries[j], "entry " + j + " is the same object")
+      compare(JSON.stringify(list[j]), before[j], "entry " + j + " unchanged")
+    }
+  }
+
+  function test_display_order() {
+    var runs = fixtureRuns()
+    var c1 = Runs.withProject(runs[1], "/p/c", "C")
+    var b1 = Runs.withProject(runs[0], "/p/b", "B")
+    var a1 = Runs.withProject(runs[3], "/p/a", "A")
+    var z1 = Runs.withProject(runs[2], "/p/z", "Z")
+    var b2 = Runs.withProject(runs[1], "/p/b", "B")
+    var loose = runs[1]
+    // synthetic: entries that are not runs
+    var list = [c1, b1, null, a1, loose, z1, "x", b2]
+    var flat = Runs.displayOrder(Runs.groupByProject(list))
+    var expected = [z1, b1, b2, a1, c1, loose]
+    compare(flat.length, expected.length, "every object entry once")
+    for (var i = 0; i < expected.length; i++) verify(flat[i] === expected[i], "same object, display order " + i)
+  }
+
+  function test_display_order_garbage() {
+    // synthetic: groups that are not an array
+    var bad = [[], undefined, null, "x", 5, {}]
+    for (var i = 0; i < bad.length; i++) {
+      var out = Runs.displayOrder(bad[i])
+      compare(Array.isArray(out), true, "groups " + i)
+      compare(out.length, 0, "groups " + i)
+    }
+    // synthetic: malformed groups among good ones
+    var r1 = { id: "r1" }, r2 = { id: "r2" }, r3 = { id: "r3" }
+    var g1 = { runs: [r1, r2] }
+    var g2 = { runs: [r3, null] }
+    var groups = [null, g1, 5, {}, { runs: "x" }, [r1], g2]
+    var before = JSON.stringify(groups)
+    var flat = Runs.displayOrder(groups)
+    compare(flat.length, 4, "the runs of the two good groups")
+    verify(flat[0] === r1 && flat[1] === r2 && flat[2] === r3, "same objects, in order")
+    compare(flat[3], null, "elements of runs copied as they are")
+    verify(flat !== g1.runs && flat !== g2.runs, "a new array")
+    compare(JSON.stringify(groups), before, "groups unchanged")
+    compare(g1.runs.length, 2, "first group's runs unchanged")
+    var single = Runs.displayOrder([g1])
+    verify(single !== g1.runs, "a new array for a single group")
+    compare(single.length, 2, "its runs")
+  }
 }
