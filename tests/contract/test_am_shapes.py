@@ -380,3 +380,20 @@ def test_watch_run_returns_the_events_envelope_with_journal_line_keys(am, seeded
 def test_watch_run_is_the_run_filtered_watch_all(am, seeded_run):
     expected = [event for event in watch_all_once(am) if event["run_id"] == seeded_run.id]
     assert watch_run_once(am, seeded_run.id) == expected
+
+
+def test_watch_run_since_keeps_only_events_with_a_greater_seq(am, seeded_run):
+    events = watch_run_once(am, seeded_run.id)
+    assert len(events) >= 2, events
+    last = events[-1]["seq"]
+    assert watch_run_once(am, seeded_run.id, "--since", "0") == events
+    assert watch_run_once(am, seeded_run.id, "--since", "1") == events[1:]
+    assert watch_run_once(am, seeded_run.id, "--since", str(last - 1)) == [events[-1]]
+
+
+def test_watch_run_since_at_or_beyond_the_last_seq_is_an_empty_events_list(am, seeded_run):
+    """The "nothing new" reply runs-events.py turns into last_seq = SEQ."""
+    events = watch_run_once(am, seeded_run.id)
+    last = events[-1]["seq"]
+    assert watch_run_once(am, seeded_run.id, "--since", str(last)) == []
+    assert watch_run_once(am, seeded_run.id, "--since", str(last + 1000)) == []
