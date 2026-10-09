@@ -68,23 +68,70 @@ Column {
     return parts.join(" · ")
   }
 
+  // A root as the store compares roots: every trailing "/" removed, "/" for a
+  // root of only slashes, "" for a non-string.
+  function rootKey(path) {
+    if (typeof path !== "string") return ""
+    var end = path.length
+    while (end > 0 && path.charAt(end - 1) === "/") end--
+    if (end === 0) return path === "" ? "" : "/"
+    return path.substring(0, end)
+  }
+
+  // The snapshot error `errors` ({root: sentence}) holds for `root`, keys and
+  // root compared by rootKey; "" when there is none, when `root` is "", or
+  // when the sentence is not a string.
+  function projectError(errors, root) {
+    var want = screen.rootKey(root)
+    if (want === "" || errors === null || typeof errors !== "object") return ""
+    var keys = Object.keys(errors)
+    for (var k = 0; k < keys.length; k++) {
+      if (screen.rootKey(keys[k]) === want && typeof errors[keys[k]] === "string") return errors[keys[k]]
+    }
+    return ""
+  }
+
   // The list's entries, scalar values only (a Repeater converts nested ones):
-  // { kind: "header", g, name, counts, error } and { kind: "run", i }, i the
-  // run's index in `runs` (filteredRuns, which is displayOrder of `groups`).
-  // Each group of `groups` in turn: a header unless its root is "", then its
-  // runs. g counts the headers from 0; name is the project's name, else its
-  // root.
+  // { kind: "header", g, name, counts, error }, { kind: "run", i } with i the
+  // run's index in `runs` (filteredRuns, which is displayOrder of `groups`),
+  // and { kind: "projectError", text }.
+  // Under a project filter: the filtered project's error when it has one,
+  // then every run, flat. Otherwise each group of `groups` in turn: a header
+  // unless its root is "", then its runs; then, for each root of the registry
+  // `roots` (in order, once) with an error and no group, a header with no
+  // counts and no runs. g counts the headers from 0; name is the project's
+  // name, else its root; error is projectError's.
   function entriesOf(groups, runs, roots, errors, filter) {
     var out = []
+    if (typeof filter === "string" && filter !== "") {
+      var flatError = screen.projectError(errors, filter)
+      if (flatError !== "") out.push({ kind: "projectError", text: flatError })
+      for (var r = 0; r < screen.sizeOf(runs); r++) out.push({ kind: "run", i: r })
+      return out
+    }
+    var listed = Object.create(null)
     var g = 0
     var i = 0
     for (var n = 0; n < screen.sizeOf(groups); n++) {
       var group = groups[n]
       var root = group.project.root
-      if (root !== "")
+      if (root !== "") {
+        listed[root] = true
         out.push({ kind: "header", g: g++, name: group.project.name !== "" ? group.project.name : root,
-                   counts: screen.countsText(group.counts), error: "" })
+                   counts: screen.countsText(group.counts), error: screen.projectError(errors, root) })
+      }
       for (var j = 0; j < screen.sizeOf(group.runs); j++) out.push({ kind: "run", i: i++ })
+    }
+    for (var e = 0; e < screen.sizeOf(roots); e++) {
+      var project = roots[e]
+      if (project === null || typeof project !== "object") continue
+      var key = screen.rootKey(project.root)
+      if (key === "" || listed[key]) continue
+      var error = screen.projectError(errors, key)
+      if (error === "") continue
+      listed[key] = true
+      out.push({ kind: "header", g: g++, name: typeof project.name === "string" && project.name !== "" ? project.name : key,
+                 counts: "", error: error })
     }
     return out
   }
@@ -205,14 +252,18 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // One entry of `entries`: a project's header or a run's row.
+  // One entry of `entries`: a project's header, a run's row or the filtered
+  // project's error line.
   component RunEntry: Loader {
     id: entry
     required property var modelData
     readonly property var fact: entry.modelData !== null && typeof entry.modelData === "object" ? entry.modelData : ({})
 
     width: screen.width
-    sourceComponent: entry.fact.kind === "header" ? headerC : entry.fact.kind === "run" ? rowC : null
+    sourceComponent: entry.fact.kind === "header" ? headerC
+      : entry.fact.kind === "run" ? rowC
+      : entry.fact.kind === "projectError" ? projectErrorC
+      : null
 
     Component {
       id: headerC
@@ -227,6 +278,20 @@ Column {
     Component {
       id: rowC
       RunRow { index: typeof entry.fact.i === "number" ? entry.fact.i : -1 }
+    }
+
+    // The filtered project's snapshot error, above its runs.
+    Component {
+      id: projectErrorC
+      UI.ThemedText {
+        objectName: "runsProjectError"
+        variant: "caption"
+        theme: screen.theme
+        width: screen.width
+        text: typeof entry.fact.text === "string" ? entry.fact.text : ""
+        color: screen.theme.urgent
+        wrapMode: Text.WordWrap
+      }
     }
   }
 

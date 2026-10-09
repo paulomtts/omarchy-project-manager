@@ -459,6 +459,98 @@ TestCase {
     compare(H.find(s.screen, "runGroup0").opacity, 1)
   }
 
+  // ---- snapshot errors
+
+  function test_a_failed_group_shows_its_error_under_its_header() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.projectErrors = { "/home/u/b/": "AmTimeout: am status timed out." }
+    wait(20)
+    var line = H.find(s.screen, "runGroupError1")
+    compare(line.visible, true)
+    compare(line.text, "AmTimeout: am status timed out.")
+    verify(Qt.colorEqual(line.color, s.screen.theme.urgent), "drawn urgent")
+    compare(line.wrapMode, Text.WordWrap)
+    compare(H.find(s.screen, "runGroupError0").visible, false, "alpha did not fail")
+    verify(topOf(s, "runGroupName1") < topOf(s, "runGroupError1"), "under the name")
+    verify(topOf(s, "runGroupError1") < topOf(s, "runRow2"), "above the group's first run")
+  }
+
+  function test_a_failed_project_with_nothing_listed_still_shows_its_error() {
+    var s = make([tagged(run("run-a-live0001", "started", true, {}), "/home/u/a", "alpha")]); if (!s) return
+    s.runs.projectRoots = [{ root: "/home/u/a", name: "alpha" }, { root: "/home/u/b", name: "beta" }]
+    s.runs.projectErrors = { "/home/u/b": "AmFailed: boom", "/home/u/zzz": "AmFailed: not registered" }
+    compare(H.find(s.screen, "runGroupName0").text, "alpha")
+    compare(H.find(s.screen, "runGroupName1").text, "beta")
+    compare(H.find(s.screen, "runGroupCounts1").visible, false, "no counts")
+    compare(H.find(s.screen, "runGroupError1").text, "AmFailed: boom")
+    compare(H.find(s.screen, "runGroupError1").visible, true)
+    compare(H.find(s.screen, "runGroup2"), null, "an error for an unregistered root shows nothing")
+    compare(s.runs.filteredRuns.length, 1, "the extra header adds no run")
+    compare(H.find(s.screen, "runRow1"), null)
+    s.runs.runs = [tagged(run("run-a-live0001", "started", true, {}), "/home/u/a", "alpha"),
+                   tagged(run("run-b-live0002", "started", true, {}), "/home/u/b", "beta")]
+    s.runs.toggleRunFilter("parked")
+    compare(s.runs.filteredRuns.length, 0)
+    compare(H.find(s.screen, "runsMessage").text, "No Parked runs.")
+    compare(H.find(s.screen, "runGroupName0").text, "beta", "beta's runs are all filtered out; its error still shows")
+    compare(H.find(s.screen, "runGroupError0").text, "AmFailed: boom")
+    compare(H.find(s.screen, "runGroup1"), null, "alpha did not fail")
+  }
+
+  function test_a_project_filter_shows_a_flat_list_without_headers() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.projectFilter = "/home/u/b"
+    compare(H.find(s.screen, "runGroup0"), null)
+    compare(H.find(s.screen, "runRowId0").text, "…live0003")
+    compare(H.find(s.screen, "runRow1"), null)
+    compare(shown(s, "runsProjectError"), false)
+    s.runs.projectErrors = { "/home/u/b/": "AmTimeout: am status timed out." }
+    wait(20)
+    var line = H.find(s.screen, "runsProjectError")
+    compare(line.visible, true)
+    compare(line.text, "AmTimeout: am status timed out.")
+    verify(Qt.colorEqual(line.color, s.screen.theme.urgent))
+    compare(line.wrapMode, Text.WordWrap)
+    verify(topOf(s, "runsProjectError") < topOf(s, "runRow0"), "above the first row")
+    compare(H.find(s.screen, "runGroup0"), null, "still no header")
+    s.runs.projectFilter = ""
+    compare(shown(s, "runsProjectError"), false, "only under a project filter")
+    compare(H.find(s.screen, "runGroupError1").text, "AmTimeout: am status timed out.")
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(shown(s, "runGroup0"), false)
+    compare(shown(s, "runGroup1"), false)
+    s.runs.projectFilter = "/home/u/b"
+    compare(shown(s, "runsProjectError"), false, "am missing hides it too")
+  }
+
+  // Review Focus 4.
+  function test_malformed_errors_and_registry_entries_show_nothing_and_do_not_throw() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.projectRoots = [null, "x", { root: 7 }, { root: "/home/u/c", name: 3 }, { root: "/home/u/a", name: "alpha" }]
+    s.runs.projectErrors = { "/home/u/b": null, "/home/u/a": 42, "/home/u/c": "AmFailed: c" }
+    compare(H.find(s.screen, "runGroupError0").visible, false, "a non-string error is no error")
+    compare(H.find(s.screen, "runGroupError1").visible, false)
+    compare(H.find(s.screen, "runGroupName2").text, "/home/u/c", "a non-string name falls back to the root")
+    compare(H.find(s.screen, "runGroupError2").text, "AmFailed: c")
+    compare(H.find(s.screen, "runGroup3"), null)
+    s.runs.projectErrors = null
+    compare(H.find(s.screen, "runGroupError0").visible, false)
+    compare(H.find(s.screen, "runGroup2"), null)
+    s.runs.projectFilter = "/home/u/b"
+    compare(shown(s, "runsProjectError"), false)
+  }
+
+  // Review Focus 5.
+  function test_a_root_registered_twice_gets_one_failed_header() {
+    var s = make([]); if (!s) return
+    s.runs.projectRoots = [{ root: "/home/u/b", name: "beta" }, { root: "/home/u/b/", name: "beta again" }]
+    s.runs.projectErrors = { "/home/u/b": "AmFailed: boom" }
+    compare(H.find(s.screen, "runGroupName0").text, "beta", "the first registration's name")
+    compare(H.find(s.screen, "runGroup1"), null)
+    compare(H.find(s.screen, "runsMessage").text, "No runs yet.", "the status line still speaks about runs")
+  }
+
   // ---- empty and missing
 
   function test_no_runs_says_so() {
