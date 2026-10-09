@@ -6156,6 +6156,17 @@ TestCase {
     compare(store.eventsStatus, "ok")
   }
 
+  // Applying a reply: eventsDropped is never below 0
+  function test_held_rows_below_a_refresh_never_make_dropped_negative() {
+    var store = heldStore(); if (!store) return
+    store.refreshEvents()
+    // synthetic: no total, so it counts the 4 received; held 8 lies below them.
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: true, events: attemptEvents(9, 4), last_seq: 12 }) + "\n", 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsDropped, 0, "4 - 4 - 1 is floored at 0")
+  }
+
   // Review Focus 2
   function test_an_ok_reply_without_an_events_list_is_unusable() {
     var store = heldStore(); if (!store) return
