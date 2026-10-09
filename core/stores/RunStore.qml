@@ -760,9 +760,7 @@ Scope {
 
   // The run's project root when it is a non-empty string, else "".
   function runRoot(run) {
-    var p = run !== null && typeof run === "object" ? run.project : null
-    if (p === null || typeof p !== "object" || typeof p.root !== "string") return ""
-    return p.root
+    return Runs.runRoot(run)
   }
 
   // Shows (and fetches) one attempt of the selected run. Another attempt than

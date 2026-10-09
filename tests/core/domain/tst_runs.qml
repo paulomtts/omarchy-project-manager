@@ -4459,4 +4459,16 @@ TestCase {
     compare(Object.keys(b).length, 0)
     verify(a !== b, "a new object on each call")
   }
+
+  // D1
+  function test_run_root_is_the_projects_root_string() {
+    compare(Runs.runRoot({ project: { root: "/a" } }), "/a")
+    compare(Runs.runRoot({ project: { root: "" } }), "", "an empty root stays empty")
+  }
+
+  // D2
+  function test_run_root_of_anything_else_is_empty() {
+    var others = [null, undefined, 5, "x", {}, { project: null }, { project: "x" }, { project: {} }, { project: { root: 7 } }]
+    for (var i = 0; i < others.length; i++) compare(Runs.runRoot(others[i]), "", JSON.stringify(others[i]))
+  }
 }
