@@ -1172,6 +1172,79 @@ function stopReport(run) {
     relaunch: _relaunchOf(run)
   }
 }
+var _NOTE_AUTHOR = "am"
+var _NOTE_KEY_PREFIX = "am-key: "
+var _NOTE_KIND_PREFIX = "am \u00b7 "
+var _NOTE_SEPARATOR = " \u00b7 "
+var _NOTE_FIELD_KEYS = ["reason", "detail", "next", "why"]
+
+// A note body's lines: split on "\n", each trimmed (a trailing "\r" with it),
+// blank lines dropped.
+function _noteLinesOf(body) {
+  var parts = body.split("\n")
+  var out = []
+  for (var i = 0; i < parts.length; i++) {
+    var line = parts[i].trim()
+    if (line !== "") out.push(line)
+  }
+  return out
+}
+
+// The body lines of entry when it is am's note for run id: an object whose
+// trimmed author is "am" and whose string body's last line is
+// "am-key: <id>/..."; else null.
+function _noteLinesFor(entry, id) {
+  if (!_isObject(entry) || typeof entry.author !== "string" || entry.author.trim() !== _NOTE_AUTHOR) return null
+  if (typeof entry.body !== "string") return null
+  var lines = _noteLinesOf(entry.body)
+  if (lines.length === 0) return null
+  var last = lines[lines.length - 1]
+  if (last.indexOf(_NOTE_KEY_PREFIX) !== 0) return null
+  return last.substring(_NOTE_KEY_PREFIX.length).indexOf(id + "/") === 0 ? lines : null
+}
+
+// The kind a note's first line names: after "am \u00b7 ", up to the next " \u00b7 " or
+// the line's end, trimmed; "" when the line does not start with "am \u00b7 ".
+function _noteKindOf(first) {
+  if (first.indexOf(_NOTE_KIND_PREFIX) !== 0) return ""
+  var rest = first.substring(_NOTE_KIND_PREFIX.length)
+  var end = rest.indexOf(_NOTE_SEPARATOR)
+  return (end >= 0 ? rest.substring(0, end) : rest).trim()
+}
+
+// A fresh [{key, value}] in _NOTE_FIELD_KEYS order: for each key, the first
+// line other than the first and the last that starts with "<key>:", its rest
+// with every backtick removed, trimmed. Keys with no line or an empty value
+// are left out.
+function _noteFieldsOf(lines) {
+  var out = []
+  for (var k = 0; k < _NOTE_FIELD_KEYS.length; k++) {
+    var key = _NOTE_FIELD_KEYS[k]
+    for (var i = 1; i < lines.length - 1; i++) {
+      if (lines[i].indexOf(key + ":") !== 0) continue
+      var value = lines[i].substring(key.length + 1).split("`").join("").trim()
+      if (value !== "") out.push({ key: key, value: value })
+      break
+    }
+  }
+  return out
+}
+
+// am's note for run runId among one card's comments (oldest first, as
+// ExtrasStore.commentsFor gives them): a fresh {createdAt, kind, fields} from
+// the newest entry by author "am" whose last body line is
+// "am-key: <runId>/...", else null. null when comments is not an array or
+// runId, trimmed, is not a non-empty string. Never mutates its inputs.
+function stopComment(comments, runId) {
+  var id = typeof runId === "string" ? _textOf(runId) : ""
+  if (id === "" || !Array.isArray(comments)) return null
+  for (var i = comments.length - 1; i >= 0; i--) {
+    var lines = _noteLinesFor(comments[i], id)
+    if (lines === null) continue
+    return { createdAt: _stringOr(comments[i].createdAt), kind: _noteKindOf(lines[0]), fields: _noteFieldsOf(lines) }
+  }
+  return null
+}
 
 
 // ---- Run alerts (S2 1.2) -----------------------------------------------------------------

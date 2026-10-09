@@ -4978,4 +4978,222 @@ TestCase {
       checkReport(Runs.stopReport(run), stopEscWant({ storyId: ids[i], storyTitle: "" }), "story id " + ids[i])
     }
   }
+
+  // ---- RR 1.3: am's note -------------------------------------------------------------------
+
+  readonly property string noteRun: "20261004T165007Z-4a51d663"
+  readonly property string noteOtherRun: "20261004T170000Z-ffffffff"
+  readonly property string noteAt: "2026-10-04T17:45:00Z"
+  readonly property string noteLaterAt: "2026-10-04T18:00:00Z"
+
+  // One card comment as ExtrasStore.commentsFor gives it.
+  function comment(author, body, createdAt) {
+    return { id: "c-" + createdAt, entityId: "5bfe746d-8ac3-41c4-8e3e-abb939e0b45a", author: author, body: body,
+             createdAt: createdAt }
+  }
+
+  // SUBTASK_BODY's lines (RR 62-68, the ellipses kept as in RR).
+  function noteSubtaskLines() {
+    return ["am \u00b7 escalated \u00b7 run 20261004T165007Z-4a51d663",
+            "phase: verify",
+            "detail: VerifyError: could not run none (CLAUDE.md: …)",
+            "next: `am resume 20261004T165007Z-4a51d663`",
+            "why: `am logs 20261004T165007Z-4a51d663 5bfe746d-… --phase verify`",
+            "am-key: 20261004T165007Z-4a51d663/5bfe746d-…/escalated:cef56efb…"]
+  }
+
+  function noteSubtaskBody() { return noteSubtaskLines().join("\n") }
+
+  // RUN_END_BODY. synthetic: assembled from RR 71-72
+  function noteRunEndBody() {
+    return ["am \u00b7 escalated \u00b7 run 20261004T165007Z-4a51d663",
+            "escalated: [[5bfe746d-8ac3-41c4-8e3e-abb939e0b45a]] at verify",
+            "next: `am resume 20261004T165007Z-4a51d663`",
+            "am-key: 20261004T165007Z-4a51d663/76043cd6-2077-47d4-afbb-c0ab60e62416/run-end:0a1b2c3d"].join("\n")
+  }
+
+  // DONE_BODY. synthetic: a later note of the same run
+  function noteDoneBody() {
+    return ["am \u00b7 done \u00b7 run 20261004T165007Z-4a51d663",
+            "am-key: 20261004T165007Z-4a51d663/5bfe746d-8ac3-41c4-8e3e-abb939e0b45a/done:9f9f9f9f"].join("\n")
+  }
+
+  // The note stopComment reads from SUBTASK_BODY, posted at createdAt.
+  function noteSubtaskWant(createdAt) {
+    return { createdAt: createdAt, kind: "escalated", fields: [
+      { key: "detail", value: "VerifyError: could not run none (CLAUDE.md: …)" },
+      { key: "next", value: "am resume 20261004T165007Z-4a51d663" },
+      { key: "why", value: "am logs 20261004T165007Z-4a51d663 5bfe746d-… --phase verify" }] }
+  }
+
+  // got is the note want describes: exactly the keys createdAt, fields and kind,
+  // with want's values (fields compared in order); or both are null.
+  function checkNote(got, want, label) {
+    if (want === null) { compare(got, null, label); return }
+    verify(got !== null && typeof got === "object", label + ": an object")
+    compare(Object.keys(got).sort().join(","), "createdAt,fields,kind", label + ": keys")
+    compare(got.createdAt, want.createdAt, label + ": createdAt")
+    compare(got.kind, want.kind, label + ": kind")
+    verify(Array.isArray(got.fields), label + ": fields is an array")
+    compare(JSON.stringify(got.fields), JSON.stringify(want.fields), label + ": fields")
+  }
+
+  function test_stopComment_subtask_escalation() {
+    checkNote(Runs.stopComment([comment("am", noteSubtaskBody(), noteAt)], noteRun), noteSubtaskWant(noteAt), "subtask note")
+  }
+
+  function test_stopComment_milestone_run_end() {
+    checkNote(Runs.stopComment([comment("am", noteRunEndBody(), noteAt)], noteRun),
+              { createdAt: noteAt, kind: "escalated", fields: [{ key: "next", value: "am resume 20261004T165007Z-4a51d663" }] },
+              "run-end note, its escalated: line is not a field")
+  }
+
+  function test_stopComment_newest_wins() {
+    var sub = comment("am", noteSubtaskBody(), noteAt)
+    var done = comment("am", noteDoneBody(), noteLaterAt)
+    checkNote(Runs.stopComment([sub, done], noteRun), { createdAt: noteLaterAt, kind: "done", fields: [] }, "the done note is newer")
+    checkNote(Runs.stopComment([done, sub], noteRun), noteSubtaskWant(noteAt), "array order, not createdAt, says newest")
+  }
+
+  function test_stopComment_other_run() {
+    var sub = comment("am", noteSubtaskBody(), noteAt)
+    // synthetic: a newer note of another run on the same card
+    var other = comment("am", ["am \u00b7 escalated \u00b7 run " + noteOtherRun,
+                               "next: `am resume " + noteOtherRun + "`",
+                               "am-key: " + noteOtherRun + "/5bfe746d-8ac3-41c4-8e3e-abb939e0b45a/escalated:11111111"].join("\n"),
+                        noteLaterAt)
+    var list = [sub, other]
+    checkNote(Runs.stopComment(list, noteRun), noteSubtaskWant(noteAt), "the other run's newer note is skipped")
+    checkNote(Runs.stopComment(list, noteOtherRun),
+              { createdAt: noteLaterAt, kind: "escalated", fields: [{ key: "next", value: "am resume " + noteOtherRun }] },
+              "asked for the other run")
+    compare(Runs.stopComment(list, "20261004T999999Z-00000000"), null, "an unknown run")
+  }
+
+  function test_stopComment_run_id_prefix() {
+    compare(Runs.stopComment([comment("am", noteSubtaskBody(), noteAt)], "20261004T165007Z-4a51d6"), null,
+            "a prefix of the note's run id")
+    // synthetic: the am-key is the run id with no "/"
+    var bare = comment("am", "am \u00b7 done \u00b7 run " + noteRun + "\nam-key: " + noteRun, noteAt)
+    compare(Runs.stopComment([bare], noteRun), null, "no slash after the run id")
+  }
+
+  function test_stopComment_author() {
+    var am = comment("am", noteSubtaskBody(), noteAt)
+    var others = ["paulo", "AM", "am-bot"]
+    for (var i = 0; i < others.length; i++) {
+      checkNote(Runs.stopComment([am, comment(others[i], noteSubtaskBody(), noteLaterAt)], noteRun), noteSubtaskWant(noteAt),
+                "a newer comment by " + others[i])
+    }
+    compare(Runs.stopComment([comment("paulo", noteSubtaskBody(), noteAt), comment("AM", noteDoneBody(), noteLaterAt)], noteRun),
+            null, "only non-am comments")
+    checkNote(Runs.stopComment([comment(" am ", noteSubtaskBody(), noteAt)], noteRun), noteSubtaskWant(noteAt), "a padded author")
+  }
+
+  function test_stopComment_no_am_key() {
+    var am = comment("am", noteSubtaskBody(), noteAt)
+    var keyless = noteSubtaskLines()
+    keyless.pop()
+    checkNote(Runs.stopComment([am, comment("am", keyless.join("\n"), noteLaterAt)], noteRun), noteSubtaskWant(noteAt),
+              "a newer am comment with no am-key line")
+    // synthetic: a line after the am-key
+    var middle = noteSubtaskLines()
+    middle.push("note: written after the key")
+    checkNote(Runs.stopComment([am, comment("am", middle.join("\n"), noteLaterAt)], noteRun), noteSubtaskWant(noteAt),
+              "am-key on a middle line")
+    compare(Runs.stopComment([comment("am", middle.join("\n"), noteLaterAt)], noteRun), null, "am-key not last, alone")
+  }
+
+  function test_stopComment_fields() {
+    // synthetic: fields out of order, a duplicate next, look-alike keys
+    var key = "am-key: " + noteRun + "/5bfe746d-8ac3-41c4-8e3e-abb939e0b45a/escalated:22222222"
+    var lines = ["am \u00b7 escalated \u00b7 run " + noteRun,
+                 "why: `am logs " + noteRun + "`",
+                 "next: `am resume " + noteRun + "`",
+                 "reason: `tests` do not cover the empty list",
+                 "detail: VerifyError: boom",
+                 "next: something else",
+                 "Reason: capitalised",
+                 "nextstep: not a field",
+                 "phase: verify",
+                 key]
+    var want = [{ key: "reason", value: "tests do not cover the empty list" }, { key: "detail", value: "VerifyError: boom" },
+                { key: "next", value: "am resume " + noteRun }, { key: "why", value: "am logs " + noteRun }]
+    checkNote(Runs.stopComment([comment("am", lines.join("\n"), noteAt)], noteRun),
+              { createdAt: noteAt, kind: "escalated", fields: want }, "fixed order, first of each key, backticks removed")
+
+    // synthetic: an empty reason and one made only of backticks
+    var empty = lines.slice()
+    empty[3] = "reason:"
+    checkNote(Runs.stopComment([comment("am", empty.join("\n"), noteAt)], noteRun),
+              { createdAt: noteAt, kind: "escalated", fields: want.slice(1) }, "an empty reason is omitted")
+    empty[3] = "reason:  `` "
+    checkNote(Runs.stopComment([comment("am", empty.join("\n"), noteAt)], noteRun),
+              { createdAt: noteAt, kind: "escalated", fields: want.slice(1) }, "a reason of backticks only is omitted")
+
+    // synthetic: a key on the first line is not a field
+    checkNote(Runs.stopComment([comment("am", "next: `am resume " + noteRun + "`\n" + key, noteAt)], noteRun),
+              { createdAt: noteAt, kind: "", fields: [] }, "a key on the first line")
+  }
+
+  function test_stopComment_kind() {
+    var key = "am-key: " + noteRun + "/5bfe746d-8ac3-41c4-8e3e-abb939e0b45a/escalated:33333333"
+    var cases = [["am \u00b7 base failed \u00b7 run " + noteRun, "base failed"],
+                 ["am \u00b7 cancelled \u00b7 run " + noteRun, "cancelled"],
+                 ["am \u00b7 done", "done"],
+                 ["am \u00b7   done   \u00b7 run " + noteRun, "done"],
+                 ["note \u00b7 escalated \u00b7 run " + noteRun, ""]]
+    for (var i = 0; i < cases.length; i++) {
+      checkNote(Runs.stopComment([comment("am", cases[i][0] + "\n" + key, noteAt)], noteRun),
+                { createdAt: noteAt, kind: cases[i][1], fields: [] }, "first line " + i)
+    }
+    checkNote(Runs.stopComment([comment("am", key, noteAt)], noteRun), { createdAt: noteAt, kind: "", fields: [] },
+              "only the am-key line")
+  }
+
+  function test_stopComment_line_endings() {
+    var body = noteSubtaskLines().join("\r\n") + " \r\n\n  "
+    checkNote(Runs.stopComment([comment("am", body, noteAt)], noteRun), noteSubtaskWant(noteAt), "CRLF and trailing blanks")
+  }
+
+  function test_stopComment_garbage() {
+    var valid = comment("am", noteSubtaskBody(), noteAt)
+    var badComments = [undefined, null, 0, "x", {}, true]
+    for (var i = 0; i < badComments.length; i++) compare(Runs.stopComment(badComments[i], noteRun), null, "comments " + i)
+    var badIds = [undefined, null, 42, {}, "", "  "]
+    for (var j = 0; j < badIds.length; j++) compare(Runs.stopComment([valid], badIds[j]), null, "runId " + j)
+    checkNote(Runs.stopComment([valid], "  " + noteRun + " "), noteSubtaskWant(noteAt), "a padded run id is trimmed")
+
+    var junk = [undefined, null, 3, "x", [], {}, { author: "am" }, { author: "am", body: 7 },
+                { author: 5, body: noteSubtaskBody() }, { author: "am", body: "" }, { author: "am", body: "\n \n" }]
+    compare(Runs.stopComment(junk, noteRun), null, "only junk")
+    checkNote(Runs.stopComment(junk.concat([valid]), noteRun), noteSubtaskWant(noteAt), "junk, then a note")
+    checkNote(Runs.stopComment([valid].concat(junk), noteRun), noteSubtaskWant(noteAt), "a note, then newer junk")
+
+    var noTime = comment("am", noteSubtaskBody(), noteAt)
+    noTime.createdAt = 5
+    checkNote(Runs.stopComment([noTime], noteRun), noteSubtaskWant(""), "a non-string createdAt")
+  }
+
+  function test_stopComment_fresh_and_untouched() {
+    var list = [comment("am", noteSubtaskBody(), noteAt)]
+    var before = JSON.stringify(list)
+    var a = Runs.stopComment(list, noteRun)
+    var b = Runs.stopComment(list, noteRun)
+    verify(a !== b, "two calls, two objects")
+    verify(a.fields !== b.fields, "two calls, two fields arrays")
+    verify(a.fields[0] !== b.fields[0], "two calls, two field objects")
+    a.kind = "changed"
+    a.fields[0].value = "changed"
+    a.fields.push({ key: "reason", value: "added" })
+    checkNote(Runs.stopComment(list, noteRun), noteSubtaskWant(noteAt), "mutating a result leaves the next call alone")
+    compare(JSON.stringify(list), before, "the comments are untouched")
+  }
+
+  function test_stopComment_regex_id() {
+    // synthetic: a run id holding regex metacharacters
+    var c = comment("am", "am \u00b7 done \u00b7 run a.b*c\nam-key: a.b*c/x", noteAt)
+    checkNote(Runs.stopComment([c], "a.b*c"), { createdAt: noteAt, kind: "done", fields: [] }, "metacharacters match themselves")
+    compare(Runs.stopComment([c], "aXbbc"), null, "the id is not a pattern")
+  }
 }
