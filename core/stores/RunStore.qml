@@ -10,8 +10,9 @@ import "../domain/runs.js" as Runs
 // whose latest entry failed; `runs` every root's runs merged in registry
 // order, a run id listed once, under the first root that lists it. A project
 // switch leaves the run list alone: `project`, the open project, decides only
-// the run settings and the dispatch; the run controls and the attempt logs
-// act on each run's own repo_dir and project root. Plus the selected run, the
+// the run settings; the dispatch is for `dispatchRoot`, which a card entry
+// sets to `project`; the run controls and the attempt logs act on each run's
+// own repo_dir and project root. Plus the selected run, the
 // attempt the Run detail pane shows and that
 // attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
 // asked at all. One list snapshot is in flight at a time, plus at most one
@@ -29,9 +30,9 @@ import "../domain/runs.js" as Runs
 // selection, on Refresh and when a snapshot changes the selected attempt's
 // status -- never on a timer.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
-// Dispatch (openDispatch .. dispatchStart) previews a run with
-// dispatch-preview.py and starts it with start-run.py, one HelperRunner per
-// Start.
+// Dispatch (openDispatch, dispatchOpenFor .. dispatchStart) previews a run
+// for dispatchRoot with dispatch-preview.py and starts it with start-run.py,
+// one HelperRunner per Start.
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
 // as `app.runs` and binds `active` to the panel being open.
@@ -193,8 +194,8 @@ Scope {
   property string dispatchLog: ""       // a failed start's log path
   property string dispatchLogTail: ""   // the end of that log
   property var dispatchExitCode: null   // a failed start's exit code, when a number
-  // A start for the current project went: the run id, or null while am does
-  // not list it yet.
+  // A start for `dispatchRoot` went: the run id, or null while am does not
+  // list it yet.
   signal dispatchStarted(var runId)
   // A debounce window's nudged run ids, each once, in first-nudge order,
   // known to the store or not. Never for a snapshot the store started itself.
@@ -1731,19 +1732,21 @@ Scope {
     return merged
   }
 
-  // Start: only from ready. start-run.py runs on a HelperRunner of its own
-  // (guard "", madeFor this project), which no preview, project switch or
-  // other Start stops. The settings a successful start saves are fixed now,
-  // from this project's runSettings: the non-blank verify commands sent, the
-  // opt-out, the prefix sent followed by the stored history without it (at
-  // most 20), the parallelism and, for a story or milestone whose milestone
-  // card is known, prefixByMilestone {<milestone id>: prefix sent}.
+  // Start: only from ready. start-run.py <dispatchRoot> runs on a
+  // HelperRunner of its own (guard "", madeFor dispatchRoot), which no
+  // preview, project switch or other Start stops. The settings a successful
+  // start saves are fixed now, from dispatchSettingsSource(): the non-blank
+  // verify commands sent, the opt-out, the prefix sent followed by the
+  // stored history without it (at most 20), the parallelism and, for a story
+  // or milestone whose milestone card is known, prefixByMilestone
+  // {<milestone id>: prefix sent}.
   function dispatchStart() {
     if (store.dispatchState !== "ready") return false
     var form = store.dispatchForm
     var prefix = form.prefix.trim()
     var history = [prefix]
-    var stored = Array.isArray(store.runSettings.prefixHistory) ? store.runSettings.prefixHistory : []
+    var source = store.dispatchSettingsSource()
+    var stored = Array.isArray(source.prefixHistory) ? source.prefixHistory : []
     for (var i = 0; i < stored.length && history.length < 20; i++) {
       var p = stored[i]
       if (typeof p === "string" && p.trim() !== "" && p !== prefix) history.push(p)
@@ -1756,28 +1759,31 @@ Scope {
       keyed[dispatchBook.milestone.id] = prefix
       saved.prefixByMilestone = keyed
     }
-    var runner = dispatchStartC.createObject(store, { madeFor: store.project, savedJson: JSON.stringify(saved) })
+    var runner = dispatchStartC.createObject(store, { madeFor: store.dispatchRoot, savedJson: JSON.stringify(saved) })
     dispatchBook.runners = dispatchBook.runners.concat([runner])
     dispatchBook.startRunner = runner
     store.dispatchState = "starting"
-    runner.run([store.project].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
+    runner.run([store.dispatchRoot].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
     return true
   }
 
-  // A start runner's reply is this dispatch's: it was made in the current
-  // project and is the runner that put the store into `starting` (an idle
-  // reset, and so a project switch, forgets it).
+  // A start runner's reply is this dispatch's: it was made for the current
+  // dispatchRoot and is the runner that put the store into `starting` (an
+  // idle reset, and so a project switch, forgets it).
   function isHereStart(runner) {
-    return runner.madeFor === store.project && dispatchBook.startRunner === runner
+    return runner.madeFor === store.dispatchRoot && dispatchBook.startRunner === runner
   }
 
   // start-run.py's reply. When it is this dispatch's: ok gives `started`,
-  // the run id and message, the saved values in runSettings (prefixByMilestone
-  // merged per milestone id), a re-snapshot and dispatchStarted(id or null);
-  // a StoryBlockedError gives `refused` with am's message, no log fields and
-  // the blockedSuggest() milestone; anything else gives `failed` with what
-  // the helper said. After any successful start, wherever it was made, the
-  // same runner writes the saved values for the project it was made in.
+  // the run id and message, the saved values merged into
+  // dispatchSettingsSource()'s object (runSettings only when dispatchRoot is
+  // `project`; prefixByMilestone merged per milestone id), a snapshot of
+  // [dispatchRoot] only -- requestSnapshot([dispatchRoot]), never refresh()
+  // -- and dispatchStarted(id or null); a StoryBlockedError gives `refused`
+  // with am's message, no log fields and the blockedSuggest() milestone;
+  // anything else gives `failed` with what the helper said. After any
+  // successful start, wherever it was made, the same runner writes the saved
+  // values for the root it was made for (madeFor).
   function dispatchStartReplied(runner, stdout) {
     if (runner.saving) {
       store.dispatchSaveReplied(runner, stdout)
@@ -1789,16 +1795,17 @@ Scope {
       if (here) {
         store.dispatchRunId = typeof envelope.run_id === "string" ? envelope.run_id : ""
         store.dispatchMessage = typeof envelope.message === "string" ? envelope.message : ""
-        var settings = store.copyMap(store.runSettings)
+        var settings = store.copyMap(store.dispatchSettingsSource())
         // Parsed from the JSON that is written: a var property hands back a
         // list Runs.dispatchDefaults does not take for an array.
         var saved = JSON.parse(runner.savedJson)
         for (var key in saved) {
           settings[key] = key === "prefixByMilestone" ? store.mergedPrefixes(settings.prefixByMilestone, saved[key]) : saved[key]
         }
-        store.runSettings = settings
+        if (store.dispatchRoot === store.project) store.runSettings = settings
+        else store.dispatchRunSettings = settings
         store.dispatchState = "started"
-        store.refresh()
+        store.requestSnapshot([store.dispatchRoot])
         store.dispatchStarted(store.dispatchRunId !== "" ? store.dispatchRunId : null)
       }
       runner.saving = true
@@ -2087,7 +2094,7 @@ Scope {
   }
 
   // One HelperRunner per Start. Guard "": start-run.py may take ~20 s, and
-  // neither a preview, a project switch nor a Start in another project may
+  // neither a preview, a project switch nor a Start for another root may
   // stop it. After a successful start the same runner writes the settings
   // for `madeFor`; it goes when that write replies, or at once after a
   // failed start.
@@ -2096,7 +2103,7 @@ Scope {
 
     HelperRunner {
       id: sr
-      property string madeFor: ""     // the project the start was made in
+      property string madeFor: ""     // the dispatchRoot the start was made for
       property string savedJson: ""   // `saved` as set-run-settings takes it
       property bool saving: false     // the settings write is in flight
       script: store.backendDir + "runs/start-run.py"

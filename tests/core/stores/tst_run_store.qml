@@ -5512,6 +5512,121 @@ TestCase {
     compare(argv(same.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs)
   }
 
+  // otherRootStore() with A's and B's first snapshot landed (none in
+  // flight) and milestone m1 ready for B (readyForB).
+  function otherReadyStore() {
+    var store = otherRootStore(); if (!store) return null
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    readyForB(store)
+    return store
+  }
+
+  property string bSavedJson: '{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["bpre","bold"],"parallelism":2,"prefixByMilestone":{"m1":"bpre"}}'
+
+  // 2.1 RunStore dispatch test 6 + Review Focus 5
+  function test_dispatch_start_for_other_root_argv_save_and_refresh() {
+    var store = otherReadyStore(); if (!store) return
+    compare(store.dispatchState, "ready")
+    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
+    var aBefore = JSON.stringify(store.runSettings)
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    compare(runner.madeFor, "/home/u/b")
+    compare(argv(runner.current), tc.startCmd + tc.bPreviewArgs)
+    compare(runner.savedJson, tc.bSavedJson, "B's history follows the prefix sent")
+    var seq = store.snapshotRunner.seq
+    reply(runner.current, startOk("r-b", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(store.dispatchRunId, "r-b")
+    compare(spy.count, 1)
+    compare(spy.signalArguments[0][0], "r-b")
+    compare(store.snapshotRunner.seq, seq + 1, "one snapshot is asked for")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB, "of B only")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" + tc.bSavedJson)
+    compare(store.dispatchRunSettings.prefixHistory.join(","), "bpre,bold")
+    compare(store.dispatchRunSettings.prefixByMilestone.m1, "bpre")
+    compare(store.dispatchRunSettings.confirmDispatch, false, "B's other keys are kept")
+    compare(JSON.stringify(store.runSettings), aBefore, "A's settings are untouched")
+    reply(runner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.dispatchStartRunners.length, 0)
+    compare(store.flashText, "")
+
+    compare(store.closeDispatch(), true)
+    compare(Object.keys(store.dispatchRunSettings).length, 0, "the merge does not outlive the close")
+    store.dispatchRoot = tc.rootB
+    var cards = dispatchCards()
+    compare(store.dispatchOpenFor(cards.m1, cards), true)
+    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b", "B is read afresh")
+
+    var busy = otherReadyStore(); if (!busy) return
+    busy.refresh()
+    verify(busy.snapshotRunner.busy, "a snapshot of every root is in flight")
+    busy.dispatchStart()
+    reply(busy.dispatchStartRunners[0].current, startOk("r-b", ""), 0)
+    compare(busy.dispatchState, "started")
+    compare(busy.pendingSnapshot.join("|"), tc.rootB, "B joins the pending request")
+
+    var lone = dispatchStore(); if (!lone) return
+    reply(lone.snapshotRunner.current, okReply([]), 0)
+    lone.dispatchRoot = tc.rootB
+    readyForB(lone)
+    compare(lone.dispatchState, "ready")
+    lone.dispatchStart()
+    var loneSeq = lone.snapshotRunner.seq
+    reply(lone.dispatchStartRunners[0].current, startOk("r-b", ""), 0)
+    compare(lone.dispatchState, "started")
+    compare(lone.snapshotRunner.seq, loneSeq, "B is not registered: no snapshot")
+  }
+
+  // 2.1 RunStore dispatch test 7
+  function test_dispatch_story_start_for_other_root_saves_prefix_by_milestone_for_it() {
+    var store = otherRootStore(); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    var cards = dispatchCards()
+    store.dispatchOpenFor(cards.s1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, JSON.stringify({ verify: ["make test"], parallelism: 2, prefixHistory: ["bpre"],
+                                                                 prefixByMilestone: { m9: "b9" } }) + "\n", 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    compare(argv(runner.current), tc.startCmd + "/home/u/b|story|s1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
+    reply(runner.current, startOk("r-s", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" +
+            '{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["bpre"],"parallelism":2,"prefixByMilestone":{"m1":"bpre"}}')
+    var map = store.dispatchRunSettings.prefixByMilestone
+    compare(Object.keys(map).sort().join(","), "m1,m9", "merged into B's settings")
+    compare(map.m9, "b9", "B's stored entry is kept")
+    compare(map.m1, "bpre")
+    compare(store.runSettings.prefixByMilestone, undefined, "nothing keyed into A's settings")
+  }
+
+  // 2.1 RunStore dispatch test 8
+  function test_dispatch_start_in_flight_completes_for_its_root_after_a_switch() {
+    var store = otherReadyStore(); if (!store) return
+    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    var proc = runner.current
+    store.project = tc.rootB
+    compare(store.dispatchRoot, "", "the switch forgets the root")
+    checkDispatchIdle(store, "after the switch")
+    compare(proc.running, true, "the start is not stopped")
+    var seq = store.snapshotRunner.seq
+    reply(proc, startOk("r-b", ""), 0)
+    checkDispatchIdle(store, "after B's start landed")
+    compare(spy.count, 0, "no signal")
+    compare(store.snapshotRunner.seq, seq, "no snapshot")
+    compare(Object.keys(store.dispatchRunSettings).length, 0, "nothing merged into dispatchRunSettings")
+    compare(Object.keys(store.runSettings).length, 0, "nothing merged into runSettings")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" + tc.bSavedJson, "still written for B")
+    reply(runner.current, "garbage\n", 1)
+    compare(store.flashText, "", "a save failure that is not here does not flash")
+    compare(store.dispatchStartRunners.length, 0)
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).
