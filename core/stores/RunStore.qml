@@ -127,6 +127,7 @@ Scope {
   readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
   property string lastControlError: ""      // Runs.controlError sentence of the last failed request
   property string lastControlErrorRunId: "" // the run that sentence is about
+  property string lastControlErrorType: ""  // am's error type of that failure; "" when it carried none
 
   // The cancel confirmation (S2 4.3). Panel renders it; the store keeps the
   // run it asks about ("" = closed), the typed word and why the last confirm
@@ -1175,16 +1176,19 @@ Scope {
   }
 
   // A request ended without am taking it: the buttons come back and the
-  // sentence shows under that run.
-  function failControl(runId, sentence) {
+  // sentence shows under that run. `type` is am's error type when a string,
+  // else "".
+  function failControl(runId, sentence, type) {
     store.settle(runId)
     store.lastControlError = sentence
     store.lastControlErrorRunId = runId
+    store.lastControlErrorType = typeof type === "string" ? type : ""
   }
 
   function dismissControlError() {
     store.lastControlError = ""
     store.lastControlErrorRunId = ""
+    store.lastControlErrorType = ""
   }
 
   // A runner's request is over: it leaves controlRunners and is destroyed.
@@ -1218,9 +1222,11 @@ Scope {
                                  launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
       controlState.requests = requests
     } else if (envelope !== null && envelope.ok === false) {
-      store.failControl(runner.runId, Runs.controlError(envelope))
+      var err = envelope.error
+      var type = err !== null && typeof err === "object" && typeof err.type === "string" ? err.type : ""
+      store.failControl(runner.runId, Runs.controlError(envelope), type)
     } else {
-      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").")
+      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").", "")
     }
     store.dropRunner(runner)
     store.refresh()
@@ -1234,7 +1240,7 @@ Scope {
   function resumeWithSettings(runner, stdout, exitCode) {
     var settings = store.parseEnvelope(stdout)
     if (settings === null) {
-      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").")
+      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").", "")
       store.dropRunner(runner)
       return
     }

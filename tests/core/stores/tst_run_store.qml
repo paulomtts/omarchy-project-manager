@@ -2928,6 +2928,7 @@ TestCase {
     compare(store.stillWaitingText, "still waiting — the run may be between phases or dead")
     compare(store.lastControlError, "")
     compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "")
     compare(store.controlRunners.length, 0)
   }
 
@@ -3089,14 +3090,34 @@ TestCase {
     store.control("pause", "r1")
     reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
     compare(store.lastControlError, "am is busy; try again in a moment")
+    compare(store.lastControlErrorType, "LockTimeoutError", "am's error type is kept")
     compare(store.control("pause", "r1"), true, "the failed request no longer blocks the run")
     compare(store.lastControlError, "")
     compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "", "a new request clears the type")
     reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
     compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlErrorType, "LockTimeoutError")
     store.dismissControlError()
     compare(store.lastControlError, "")
     compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "")
+  }
+
+  // Review Focus 1.
+  function test_the_control_error_type_is_empty_without_a_string_type() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    var replies = [JSON.stringify({ ok: false, error: "boom" }) + "\n",
+                   JSON.stringify({ ok: false, error: { type: 5, message: "x" } }) + "\n",
+                   JSON.stringify({ ok: false }) + "\n",
+                   "garbage\n"]
+    for (var i = 0; i < replies.length; i++) {
+      compare(store.control("pause", "r1"), true)
+      reply(store.controlRunners[0].current, replies[i], 1)
+      compare(store.lastControlErrorRunId, "r1", "reply " + i + " failed the request")
+      verify(store.lastControlError !== "", "reply " + i + " says something")
+      compare(store.lastControlErrorType, "", "reply " + i + " carries no string type")
+    }
   }
 
   property string settingsCmd: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/my proj"
@@ -3158,6 +3179,7 @@ TestCase {
     compare(Object.keys(store.pending).length, 0)
     compare(store.lastControlError, "The run settings gave no usable result (exit 2).")
     compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlErrorType, "")
   }
 
   function test_a_card_run_resume_skips_the_settings() {
