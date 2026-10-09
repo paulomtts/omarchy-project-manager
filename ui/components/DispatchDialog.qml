@@ -65,7 +65,10 @@ Item {
   readonly property bool atProject: dialog.step === "project"
   readonly property bool hasEnabledProject: dialog.nextEnabledProject(0, 1) >= 0
 
-  readonly property Item focusItem: dialog.form ? baseField : cancelButton
+  readonly property Item focusItem: dialog.atProject ? projectKeys : dialog.form ? baseField : cancelButton
+  // The project step's cursor: a row index in projectRows, never a disabled
+  // row; -1 with no enabled row and at every other step.
+  readonly property int projectCursor: projectCursorState.index
   readonly property bool canStart: dialog.dispatchState === "ready"
   readonly property bool busy: dialog.dispatchState === "starting"
   // The store takes edits in these states (setDispatchField); never while a
@@ -133,16 +136,25 @@ Item {
 
   visible: shown
   // Any change to what Start would start drops the first click.
-  onShownChanged: { arming.armed = false; dialog.syncFields() }
+  onShownChanged: { arming.armed = false; dialog.syncFields(); dialog.resetProjectCursor() }
   onFormChanged: { arming.armed = false; dialog.syncFields() }
   onDispatchStateChanged: arming.armed = false
   onTargetChanged: arming.armed = false
   onConfirmFirstChanged: arming.armed = false
-  Component.onCompleted: dialog.syncFields()
+  onStepChanged: dialog.resetProjectCursor()
+  onProjectRowsChanged: dialog.followProjectCursor()
+  Component.onCompleted: { dialog.syncFields(); dialog.resetProjectCursor() }
 
   QtObject {
     id: arming
     property bool armed: false
+  }
+
+  // The cursor's row and its root, so new rows keep it on the same project.
+  QtObject {
+    id: projectCursorState
+    property int index: -1
+    property string root: ""
   }
 
   // A click on Start: from ready only; with confirmFirst the first click arms
@@ -264,6 +276,68 @@ Item {
     return -1
   }
 
+  // The cursor onto an enabled row, or off with -1; any other index is ignored.
+  function setProjectCursor(index) {
+    if (index !== -1 && !dialog.rowEnabled(dialog.projectList()[index])) return
+    projectCursorState.index = index
+    projectCursorState.root = index === -1 ? "" : dialog.projectText(dialog.projectList()[index], "root")
+  }
+
+  // The project step starts on the first enabled row; any other step has no cursor.
+  function resetProjectCursor() {
+    dialog.setProjectCursor(dialog.step === "project" ? dialog.nextEnabledProject(0, 1) : -1)
+  }
+
+  // New rows keep the cursor on its root while that root has an enabled row.
+  function followProjectCursor() {
+    var rows = dialog.projectList()
+    if (dialog.step === "project" && projectCursorState.index !== -1) {
+      for (var i = 0; i < rows.length; i++) {
+        if (dialog.rowEnabled(rows[i]) && dialog.projectText(rows[i], "root") === projectCursorState.root) {
+          dialog.setProjectCursor(i)
+          return
+        }
+      }
+    }
+    dialog.resetProjectCursor()
+  }
+
+  // Down (1) / Up (-1): the next enabled row that way, scrolled into view; the
+  // cursor stays at either end.
+  function moveProjectCursor(by) {
+    if (projectCursorState.index === -1) return
+    var next = dialog.nextEnabledProject(projectCursorState.index + by, by)
+    if (next === -1) return
+    dialog.setProjectCursor(next)
+    projectFlick.reveal(projectRepeater.itemAt(next))
+  }
+
+  // A pick: at the project step and on an enabled row only.
+  function pickProject(index) {
+    if (!dialog.atProject || !dialog.rowEnabled(dialog.projectList()[index])) return
+    dialog.setProjectCursor(index)
+    dialog.projectChosen(dialog.projectText(dialog.projectList()[index], "root"))
+  }
+
+  // Down / Up move the cursor, Return / Enter pick its row, Escape cancels;
+  // any other key is left to the owner.
+  function projectKey(event) {
+    if (event.key === Qt.Key_Escape) dialog.cancel()
+    else if (!dialog.atProject) return
+    else if (event.key === Qt.Key_Down) dialog.moveProjectCursor(1)
+    else if (event.key === Qt.Key_Up) dialog.moveProjectCursor(-1)
+    else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) dialog.pickProject(projectCursorState.index)
+    else return
+    event.accepted = true
+  }
+
+  // The project step's keys: focusItem at that step.
+  Item {
+    id: projectKeys
+    objectName: "dispatchProjectKeys"
+    Keys.onPressed: function(event) { dialog.projectKey(event) }
+  }
+
   UI.ModalCard {
     id: modal
     anchors.fill: parent
@@ -294,6 +368,14 @@ Item {
       clip: true
       boundsBehavior: Flickable.StopAtBounds
 
+      // Scrolls the least that shows the whole of `item`.
+      function reveal(item) {
+        if (!item) return
+        if (item.y < projectFlick.contentY) projectFlick.contentY = item.y
+        else if (item.y + item.height > projectFlick.contentY + projectFlick.height)
+          projectFlick.contentY = item.y + item.height - projectFlick.height
+      }
+
       Column {
         id: projectColumn
         width: projectFlick.width
@@ -311,6 +393,7 @@ Item {
             objectName: "dispatchProjectRow" + projectRow.index
             width: projectColumn.width
             theme: dialog.theme
+            cursorIndex: dialog.projectCursor
 
             Row {
               width: parent.width

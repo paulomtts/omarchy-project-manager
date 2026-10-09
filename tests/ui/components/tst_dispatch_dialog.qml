@@ -1172,4 +1172,205 @@ TestCase {
     d.destroy()
     wait(0)
   }
+
+  // A dialog inside an owner that counts the keys the dialog leaves to it.
+  Component {
+    id: hostC
+    Item {
+      id: host
+      property alias dialog: hosted
+      property int passed: 0
+      width: 640; height: 700
+      Keys.onPressed: function(event) { host.passed++ }
+      UI.DispatchDialog { id: hosted; width: 640; height: 700 }
+    }
+  }
+
+  // 4
+  function test_the_cursor_starts_on_the_first_enabled_row() {
+    var d = projectStep({ projectRows: tc.disabledFirstRows() })
+    compare(d.projectCursor, 1)
+    verify(H.find(d, "dispatchProjectRow1").hasCursor, "row 1 is highlighted")
+    verify(!H.find(d, "dispatchProjectRow0").hasCursor, "the disabled row never is")
+    compare(projectStep().projectCursor, 0)
+    compare(make().projectCursor, -1, "no cursor outside the project step")
+  }
+
+  // 5
+  function test_down_and_up_skip_disabled_rows_and_stop_at_the_ends() {
+    var d = projectStep({ projectRows: tc.disabledFirstRows() })
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Up)
+    compare(d.projectCursor, 1, "Up on the first enabled row stays")
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 3, "Down jumps over the disabled row")
+    verify(H.find(d, "dispatchProjectRow3").hasCursor)
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 3, "Down on the last enabled row stays")
+    keyClick(Qt.Key_Up)
+    compare(d.projectCursor, 1)
+    compare(picks.count, 0)
+  }
+
+  // 6
+  function test_enter_picks_the_cursor_row_data() {
+    return [{ tag: "return", key: Qt.Key_Return }, { tag: "enter", key: Qt.Key_Enter }]
+  }
+
+  function test_enter_picks_the_cursor_row(data) {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(data.key)
+    compare(picks.count, 1)
+    compare(picks.signalArguments[0][0], "/home/u/Code/agent-manager")
+    compare(cancels.count, 0)
+    compare(starts.count, 0)
+  }
+
+  // 10, 11
+  function test_without_an_enabled_row_there_is_no_cursor_and_enter_picks_nothing_data() {
+    var off = tc.fixtureRows()
+    for (var i = 0; i < off.length; i++) off[i].enabled = false
+    return [
+      { tag: "empty", rows: [] },
+      { tag: "null", rows: null },
+      { tag: "undefined", rows: undefined },
+      { tag: "object", rows: {} },
+      { tag: "string", rows: "x" },
+      { tag: "all-disabled", rows: off }
+    ]
+  }
+
+  function test_without_an_enabled_row_there_is_no_cursor_and_enter_picks_nothing(data) {
+    var d = projectStep({ projectRows: data.rows })
+    compare(d.projectCursor, -1)
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(d.projectCursor, -1)
+    compare(picks.count, 0)
+  }
+
+  // 12
+  function test_escape_cancel_and_the_backdrop_cancel_the_project_step() {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 1)
+    click(H.find(d, "dispatchCancel"))
+    compare(cancels.count, 2)
+    mouseClick(H.find(d, "dispatchBackdrop"), 2, 2)
+    compare(cancels.count, 3)
+    mouseClick(H.find(d, "dispatchCard"), 3, 3)
+    compare(cancels.count, 3, "the card itself does nothing")
+    compare(picks.count, 0)
+  }
+
+  // Review Focus 5
+  function test_escape_at_the_project_step_does_nothing_while_starting() {
+    var d = projectStep({ dispatchState: "starting" })
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 0)
+    compare(picks.count, 0)
+  }
+
+  // 13
+  function test_the_project_step_focuses_its_key_item() {
+    var d = projectStep()
+    compare(d.focusItem, H.find(d, "dispatchProjectKeys"))
+    d.step = ""
+    compare(d.focusItem, H.find(d, "dispatchBase"))
+    d.form = null
+    compare(d.focusItem, H.find(d, "dispatchCancel"))
+  }
+
+  // 14
+  function test_the_cursor_follows_its_root_when_the_rows_change() {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 2, "on ori")
+    var rows = tc.fixtureRows()
+    d.projectRows = [rows[3], rows[2], rows[0], rows[1]]
+    compare(d.projectCursor, 1, "still on ori")
+    verify(H.find(d, "dispatchProjectRow1").hasCursor)
+    var off = tc.fixtureRows()
+    off[2].enabled = false
+    off[2].reason = "board unreachable: tree read failed"
+    d.projectRows = off
+    compare(d.projectCursor, 0, "ori disabled: the first enabled row")
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 1)
+    d.step = ""
+    compare(d.projectCursor, -1)
+    d.step = "project"
+    compare(d.projectCursor, 0, "a new project step starts over")
+    compare(picks.count, 0)
+  }
+
+  // Review Focus 2
+  function test_rows_shrinking_past_the_cursor_put_it_on_the_first_enabled_row() {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 2)
+    d.projectRows = [tc.fixtureRows()[1]]
+    compare(d.projectCursor, 0)
+    d.projectRows = [tc.fixtureRows()[3]]
+    compare(d.projectCursor, -1, "the only row left is disabled")
+    compare(H.find(d, "dispatchProjectEmpty").text, "No project's board can be read")
+  }
+
+  // 15
+  function test_a_long_list_keeps_the_cursor_in_view() {
+    var rows = []
+    for (var i = 0; i < 30; i++)
+      rows.push({ root: "/r/p" + i, name: "project " + i, open: false, enabled: true, reason: "" })
+    var d = projectStep({ projectRows: rows })
+    var list = H.find(d, "dispatchProjectList")
+    verify(list.contentHeight > list.height, "the list scrolls")
+    compare(list.contentY, 0)
+    d.focusItem.forceActiveFocus()
+    for (var k = 0; k < 29; k++) keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 29)
+    var last = H.find(d, "dispatchProjectRow29")
+    verify(list.contentY > 0, "the list scrolled")
+    verify(last.y >= list.contentY, "the last row's top is in view")
+    verify(last.y + last.height <= list.contentY + list.height + 0.5, "the last row's bottom is in view")
+  }
+
+  // 16
+  function test_other_keys_pass_through_to_the_owner() {
+    var host = createTemporaryObject(hostC, tc)
+    var d = host.dialog
+    picks.target = d; cancels.target = d
+    picks.clear(); cancels.clear()
+    d.step = "project"
+    d.projectRows = tc.fixtureRows()
+    d.shown = true
+    wait(30)
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_A)
+    compare(host.passed, 1, "a letter is not accepted")
+    keyClick(Qt.Key_Down)
+    compare(host.passed, 1, "Down is accepted")
+    compare(d.projectCursor, 1)
+    compare(picks.count, 0)
+    compare(cancels.count, 0)
+  }
+
+  // Review Focus 1
+  function test_enter_after_leaving_the_project_step_picks_nothing() {
+    var d = projectStep()
+    H.find(d, "dispatchProjectKeys").forceActiveFocus()
+    d.step = "target"
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(picks.count, 0)
+  }
 }
