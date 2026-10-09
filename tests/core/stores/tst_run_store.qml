@@ -2486,7 +2486,7 @@ TestCase {
     compare(store.selectedAttempt, null)
     store.refreshLogs()
     verify(!store.logsRunner.current, "no selection")
-    store.selectAttempt(tc.doneCard, "spec", 0)
+    store.selectAttempt(tc.doneCard, "spec", -1)
     store.selectAttempt(tc.doneCard, "", 1)
     store.selectAttempt("", "spec", 1)
     store.selectAttempt(tc.doneCard, "spec", "1")
@@ -2707,6 +2707,188 @@ TestCase {
     compare(proc.command.length, 7)
     compare(proc.command[2], odd, "not split, quoted, trimmed or normalised")
     compare(proc.command[3], "r1")
+  }
+
+  // ---- stopped run opens its failed attempt (2.2)
+
+  // status-escalated.json's escalated subtask: its review attempt 1 failed its gate.
+  readonly property string escCard: "10e26d57-374c-48d3-bc45-09389b42cfac"
+
+  // status-escalated.json's snapshot entry under run id `id` and rootA. Its
+  // stop report names escCard review 1.
+  function escEntry(id) {
+    var e = rec("escalated")
+    // synthetic: the run id and project root are the test's.
+    e.id = id
+    e.repo_dir = tc.rootA
+    e.project.repo_dir = tc.rootA
+    e.status.run.id = id
+    return e
+  }
+
+  // treeEntry(id, "ok") escalated at a failed step: openCard's explore is done
+  // and its verify failed with no attempt. Its stop report names openCard
+  // verify 0; Runs.defaultAttempt names openCard explore 1 (the last row).
+  function stepEntry(id) {
+    var e = treeEntry(id, "ok")
+    // synthetic: the run escalated at openCard's verify, a step that records no attempt.
+    e.status.run.status = "escalated"
+    var open = e.status.stories[1].subtasks[1]
+    open.phases[1].status = "done"
+    open.phases.push({ name: "verify", kind: "deterministic", status: "failed",
+                       detail: "VerifyError: 2 tests failed", attempts: [] })
+    return e
+  }
+
+  // A store on rootA whose first snapshot lists `e`, with e.id selected.
+  function openOn(e) {
+    var store = makeWithProject(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply([e]), 0)
+    store.selectedRunId = e.id
+    return store
+  }
+
+  function test_an_escalated_run_opens_its_failed_attempt() {
+    var e = escEntry("r1")
+    // synthetic: a later ok row of escCard, so the default attempt is not the failed one.
+    e.status.rows.push({ attempt: 1, phase: "implement", state: "ok",
+                         story: "bf8154fc-e65c-46f5-b6e8-92b616a6e62b", subtask: tc.escCard })
+    var store = openOn(e); if (!store) return
+    compare(Runs.defaultAttempt(store.runById("r1")).phase, "implement", "the default is another attempt")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.escCard + "|review|1")
+    compare(store.selectedAttempt.card_id, tc.escCard)
+    compare(store.selectedAttempt.phase, "review")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(store.logsRunState, "escalated")
+  }
+
+  // Review Focus 1.
+  function test_a_failed_step_opens_attempt_0() {
+    var store = openOn(stepEntry("r1")); if (!store) return
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
+    compare(store.selectedAttempt.card_id, tc.openCard)
+    compare(store.selectedAttempt.phase, "verify")
+    compare(store.selectedAttempt.attempt, 0)
+    compare(store.logsStatus, "", "attempt 0 has no status")
+    compare(store.logsLoading, true)
+    reply(store.logsRunner.current, logsReply("2 tests failed\n"), 0)
+    compare(store.logsText, "2 tests failed")
+    compare(store.logsLoading, false)
+  }
+
+  function test_a_running_run_still_opens_its_default_attempt() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    compare(Runs.stopReport(store.runById("r1")), null)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+    compare(store.logsRunState, "running")
+  }
+
+  function test_a_parked_run_opens_its_default_attempt() {
+    var e = treeEntry("r1", "started")
+    // synthetic: the run parked with its explore attempt still started.
+    e.status.run.status = "stopped"
+    var store = openOn(e); if (!store) return
+    compare(Runs.stopReport(store.runById("r1")).attempt, null)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+    compare(store.logsRunState, "parked")
+  }
+
+  function test_select_attempt_accepts_0_and_refuses_the_rest() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    store.selectAttempt(tc.doneCard, "spec", 0)
+    compare(store.logsRunner.seq, seq + 1, "attempt 0 launches")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|0")
+    compare(store.logsText, "", "another attempt starts empty")
+    compare(store.selectedAttempt.attempt, 0)
+    var refused = [-1, NaN, Infinity, "1", null]
+    for (var i = 0; i < refused.length; i++) {
+      var label = JSON.stringify(refused[i]) + " (" + typeof refused[i] + ")"
+      store.selectAttempt(tc.doneCard, "spec", refused[i])
+      compare(store.logsRunner.seq, seq + 1, label + " is refused")
+      compare(store.selectedAttempt.card_id, tc.doneCard, label)
+      compare(store.selectedAttempt.phase, "spec", label)
+      compare(store.selectedAttempt.attempt, 0, label)
+    }
+  }
+
+  // Review Focus 2.
+  function test_a_state_move_to_escalated_retargets_once() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    snapshot(store, [stepEntry("r1")])
+    compare(store.logsRunner.seq, seq + 1, "running -> escalated re-targets")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
+    compare(store.logsText, "", "a new attempt starts empty")
+    compare(store.logsRunState, "escalated")
+    snapshot(store, [stepEntry("r1")])
+    compare(store.logsRunner.seq, seq + 1, "only once")
+    snapshot(store, [treeEntry("r1", "started")])
+    compare(store.logsRunner.seq, seq + 2, "escalated -> running re-targets")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+    compare(store.logsRunState, "running")
+  }
+
+  // Review Focus 3.
+  function test_a_picked_attempt_survives_snapshots_that_keep_the_state() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    reply(store.logsRunner.current, logsReply("spec text\n"), 0)
+    var seq = store.logsRunner.seq
+    snapshot(store, [treeEntry("r1", "started")])
+    compare(store.logsRunner.seq, seq, "the same state keeps the picked attempt")
+    compare(store.selectedAttempt.card_id, tc.doneCard)
+    compare(store.selectedAttempt.phase, "spec")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(store.logsText, "spec text")
+    snapshot(store, [stepEntry("r1")])
+    compare(store.logsRunner.seq, seq + 1, "a state move re-targets")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
+  }
+
+  // Review Focus 4.
+  function test_a_missing_run_is_not_a_state_move() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    reply(store.logsRunner.current, logsReply("spec text\n"), 0)
+    snapshot(store, [])
+    compare(store.runById("r1"), null)
+    compare(store.selectedAttempt.card_id, tc.doneCard)
+    compare(store.selectedAttempt.phase, "spec")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(store.logsRunState, "running", "a missing run records nothing")
+    snapshot(store, [treeEntry("r1", "started")])
+    compare(store.selectedAttempt.card_id, tc.doneCard, "back in the same state: no re-target")
+    compare(store.selectedAttempt.phase, "spec")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|1")
+  }
+
+  // Review Focus 5.
+  function test_a_failed_snapshot_does_not_retarget() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    store.refresh()
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}', 1)
+    compare(store.logsRunner.seq, seq, "a failed snapshot fetches nothing")
+    compare(store.logsRunState, "running")
+    compare(store.logsText, "a")
+  }
+
+  function test_selecting_a_run_absent_from_the_snapshot_targets_when_it_appears() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([]), 0)
+    store.selectedRunId = "r1"
+    compare(store.logsRunState, "", "the run is not in the snapshot")
+    compare(store.selectedAttempt, null)
+    verify(!store.logsRunner.current, "no logs launch")
+    snapshot(store, [stepEntry("r1")])
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
+    compare(store.logsRunState, "escalated")
   }
 
   // ---- run controls (S2 4.1)

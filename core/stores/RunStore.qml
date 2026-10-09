@@ -115,6 +115,7 @@ Scope {
   property bool logsLoading: false    // a fetch is in flight
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
+  property string logsRunState: ""    // the run's Runs.runState when its opening attempt was chosen; "" when not in the snapshot
 
   // Run controls (S2 4.1). `pending` holds the requests not yet settled,
   // {runId: action}; `stillWaiting` the pending ones 30 s or more old,
@@ -767,12 +768,13 @@ Scope {
 
   // Shows (and fetches) one attempt of the selected run. Another attempt than
   // the one shown starts from an empty pane -- its predecessor's text is never
-  // shown under its heading. Nothing happens without a selected run or a real
-  // attempt (a non-empty card and phase, a number above 0).
+  // shown under its heading. Nothing happens without a selected run, a
+  // non-empty card and phase, and an attempt that is a number 0 or above; 0 is
+  // the phase's newest output, am's choice.
   function selectAttempt(cardId, phase, attempt) {
     if (store.selectedRunId === "") return
     if (typeof cardId !== "string" || cardId === "" || typeof phase !== "string" || phase === "") return
-    if (typeof attempt !== "number" || !isFinite(attempt) || attempt <= 0) return
+    if (typeof attempt !== "number" || !isFinite(attempt) || attempt < 0) return
     var old = store.selectedAttempt
     if (!old || old.card_id !== cardId || old.phase !== phase || old.attempt !== attempt) {
       store.logsText = ""
@@ -804,7 +806,8 @@ Scope {
     logsRunner.run([root, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
   }
 
-  // No selection and no logs; a fetch in flight is stopped and its reply dropped.
+  // No selection, no logs and no recorded run state; a fetch in flight is
+  // stopped and its reply dropped.
   function clearLogs() {
     logsRunner.cancel()
     store.selectedAttempt = null
@@ -814,30 +817,45 @@ Scope {
     store.logsLoading = false
     store.logsError = ""
     store.logsStatus = ""
+    store.logsRunState = ""
   }
 
-  // The selected run's default attempt, when it has one.
+  // The selected run's opening attempt: the attempt its stop report names,
+  // else its default attempt. It is selected when there is one; with none the
+  // selection is left alone. Either way logsRunState becomes the run's
+  // Runs.runState, or "" when the run is not in the snapshot.
   function openDefaultAttempt() {
-    var d = Runs.defaultAttempt(store.runById(store.selectedRunId))
-    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt)
+    var run = store.runById(store.selectedRunId)
+    var report = Runs.stopReport(run)
+    var target = report !== null && report.attempt !== null ? report.attempt : Runs.defaultAttempt(run)
+    store.logsRunState = run !== null ? Runs.runState(run) : ""
+    if (target) store.selectAttempt(target.card_id, target.phase, target.attempt)
   }
 
-  // After every applied snapshot: a selected run with no attempt yet gets its
-  // default once one exists; otherwise the selected attempt is fetched again
-  // only when its status moved since its fetch was launched. Nothing else
-  // fetches logs on its own.
+  // After every applied snapshot, for a selected run: when the run is in the
+  // snapshot and its Runs.runState is not logsRunState, it opens on its
+  // opening attempt again, over any attempt picked since; otherwise a run with
+  // no attempt yet gets its opening attempt once one exists, and the selected
+  // attempt is fetched again only when its status moved since its fetch was
+  // launched. Nothing else fetches logs on its own.
   function logsAfterSnapshot() {
     if (store.selectedRunId === "") return
+    var run = store.runById(store.selectedRunId)
+    if (run !== null && Runs.runState(run) !== store.logsRunState) {
+      store.openDefaultAttempt()
+      return
+    }
     var sel = store.selectedAttempt
     if (!sel) {
       store.openDefaultAttempt()
       return
     }
-    var status = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    var status = Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
     if (status !== store.logsStatus) store.fetchLogs()
   }
 
-  // Another run (or none): the pane starts over on that run's default attempt.
+  // Another run (or none): the pane starts over, and a selected run opens on
+  // its opening attempt.
   onSelectedRunIdChanged: {
     store.clearLogs()
     if (store.selectedRunId !== "") store.openDefaultAttempt()
