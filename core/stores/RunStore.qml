@@ -2,6 +2,7 @@ import QtQml
 import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
+import "../domain/board.js" as Board
 
 // The am run monitor's data. One list snapshot covers every registered
 // project: runs-snapshot-all.py with each usable root of `projectRoots`, in
@@ -10,8 +11,9 @@ import "../domain/runs.js" as Runs
 // whose latest entry failed; `runs` every root's runs merged in registry
 // order, a run id listed once, under the first root that lists it. A project
 // switch leaves the run list alone: `project`, the open project, decides only
-// the run settings and the dispatch; the run controls and the attempt logs
-// act on each run's own repo_dir and project root. Plus the selected run, the
+// the run settings; the dispatch is for `dispatchRoot`, which a card entry
+// sets to `project`; the run controls and the attempt logs act on each run's
+// own repo_dir and project root. Plus the selected run, the
 // attempt the Run detail pane shows and that
 // attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
 // asked at all. One list snapshot is in flight at a time, plus at most one
@@ -29,9 +31,15 @@ import "../domain/runs.js" as Runs
 // selection, on Refresh and when a snapshot changes the selected attempt's
 // status -- never on a timer.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
-// Dispatch (openDispatch .. dispatchStart) previews a run with
-// dispatch-preview.py and starts it with start-run.py, one HelperRunner per
-// Start.
+// Dispatch (openDispatch, dispatchOpenFor .. dispatchStart) previews a run
+// for dispatchRoot with dispatch-preview.py and starts it with start-run.py,
+// one HelperRunner per Start. It also opens from Runs with no root
+// (dispatchOpenFromRuns): a probe of every usable root (board-tree.py
+// --probe) gives the project step's rows; dispatchProjectPick sets
+// dispatchRoot and reads its tree (board-tree.py ROOT, guarded by
+// dispatchRoot), whose target rows dispatchTargetPick opens S3's form on;
+// a failed tree read disables that project's row. A dispatch opened from
+// Runs survives a project switch.
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
 // as `app.runs` and binds `active` to the panel being open.
@@ -164,13 +172,23 @@ Scope {
   // notifyOnEscalation is never read.
   property var runSettings: ({})
 
-  // Dispatch (S3 3.1): starting an am run. The UI opens it for a target
-  // (openDispatch), edits the form (setDispatchField) and presses Start
-  // (dispatchStart); the store checks the form, previews it with
-  // dispatch-preview.py and starts it with start-run.py. `dispatchState` is
-  // idle | previewing | ready | refused | starting | started | failed. Every
-  // object here is replaced, never changed in place.
+  // Dispatch (S3 3.1): starting an am run for dispatchRoot. The UI opens it
+  // for a target (openDispatch for a card of the open project,
+  // dispatchOpenFor for the current dispatchRoot), edits the form
+  // (setDispatchField) and presses Start (dispatchStart); the store checks
+  // the form, previews it with dispatch-preview.py and starts it with
+  // start-run.py. `dispatchState` is idle | previewing | ready | refused |
+  // starting | started | failed. Every object here is replaced, never
+  // changed in place.
   property string dispatchState: "idle"
+  // The project root the dispatch is for; every dispatch launch carries it;
+  // "" while no dispatch has been opened since the last close or project
+  // switch, and at the Runs dialog's project step.
+  property string dispatchRoot: ""
+  // dispatchRoot's get-run-settings object as the dispatch read it, while
+  // dispatchRoot is not `project`: {} until its reply, when the reply is
+  // unreadable, and after every reset.
+  property var dispatchRunSettings: ({})
   property var dispatchTarget: null     // Runs.dispatchPlan of the opened target; null while idle
   property string dispatchTargetLabel: "" // Runs.dispatchLabel of the opened target; "" while idle
   property var dispatchForm: null       // {base, prefix, verify, parallelism, allowNoVerification}; null while idle
@@ -184,8 +202,8 @@ Scope {
   property string dispatchLog: ""       // a failed start's log path
   property string dispatchLogTail: ""   // the end of that log
   property var dispatchExitCode: null   // a failed start's exit code, when a number
-  // A start for the current project went: the run id, or null while am does
-  // not list it yet.
+  // A start for `dispatchRoot` went: the run id, or null while am does not
+  // list it yet.
   signal dispatchStarted(var runId)
   // A debounce window's nudged run ids, each once, in first-nudge order,
   // known to the store or not. Never for a snapshot the store started itself.
@@ -214,6 +232,7 @@ Scope {
   readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
   readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
   readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
+  readonly property alias dispatchSettingsRunner: dispatchSettingsRunner
   readonly property alias dispatchDebounceTimer: dispatchDebounceTimer
   readonly property alias dispatchStartRunners: dispatchBook.runners // in-flight start runners, oldest first
 
@@ -651,12 +670,17 @@ Scope {
   // controlRunners), the control error, the cancel dialog, the footer flash,
   // the alerts, the toasts and the notify switch belong to every registered
   // project and stay, and no snapshot is launched. Reset: the run settings
-  // (loaded for the new project on runSettingsRunner) and the dispatch.
+  // (loaded for the new project on runSettingsRunner) and, when dispatchStep
+  // is "", the dispatch and dispatchRoot (""). A dispatch opened from Runs
+  // keeps its step, root, probe and state.
   function projectSwitched() {
     store.runSettings = {}
-    // The dispatch is the old project's, even mid-start: a start already
+    // A card dispatch is the old project's, even mid-start: a start already
     // launched still runs, and its reply is no longer this dispatch's.
-    store.resetDispatch()
+    if (store.dispatchStep === "") {
+      store.resetDispatch()
+      store.dispatchRoot = ""
+    }
     runSettingsRunner.guard = store.project
     if (store.project !== "") runSettingsRunner.run(["get-run-settings", store.project])
   }
@@ -727,7 +751,8 @@ Scope {
   // The registry changed. First the roots no longer usable lose their runs,
   // their errors and their arming (armedRoots is replaced only when a root
   // went), and `runs` is merged again in the new order with the new names;
-  // no alert is raised. Then every usable root is snapshotted.
+  // no alert is raised. Then every usable root is snapshotted, and the
+  // dispatch's target step follows the registry (dispatchRegistryChanged).
   function registryChanged() {
     var usable = store.usableRoots()
     var errors = {}
@@ -743,6 +768,7 @@ Scope {
     if (Object.keys(armed).length !== Object.keys(store.armedRoots).length) store.armedRoots = armed
     store.runs = store.mergedRuns(byProject, usable).runs
     store.refresh()
+    store.dispatchRegistryChanged()
   }
 
   onProjectRootsChanged: store.registryChanged()
@@ -1444,18 +1470,23 @@ Scope {
     store.dispatchSuggest = null
   }
 
-  // Every dispatch field back to its "none" value; runSettings stays. The
-  // pending check, the preview and the defaults lookup are dropped; a start
-  // already launched runs on, but its reply is no longer this dispatch's.
+  // Every dispatch field back to its "none" value and dispatchRunSettings
+  // {}; runSettings and dispatchRoot stay. The pending check, the preview,
+  // the defaults lookup and the settings read are dropped; a start already
+  // launched runs on, but its reply is no longer this dispatch's.
   function resetDispatch() {
     dispatchDebounceTimer.stop()
     dispatchPreviewRunner.cancel()
     dispatchDefaultsRunner.cancel()
+    dispatchSettingsRunner.cancel()
     dispatchBook.startRunner = null
-    dispatchBook.baseTouched = false
+    dispatchBook.touched = {}
     dispatchBook.defaultsPending = false
+    dispatchBook.settingsPending = false
+    dispatchBook.card = null
     dispatchBook.cardMap = null
     dispatchBook.milestone = null
+    store.dispatchRunSettings = {}
     store.dispatchState = "idle"
     store.dispatchTarget = null
     store.dispatchTargetLabel = ""
@@ -1466,21 +1497,49 @@ Scope {
     store.dispatchMessage = ""
   }
 
-  // Opens the dispatch for a brd card (as Board.indexTree() leaves it) or
-  // "board", with its {id: card} map, and returns whether it may be started.
-  // Refused (false, nothing changes) without a project or while a start is in
-  // flight. Every opening sets dispatchTargetLabel and records cardMap and
-  // cardMap's entry for the target's milestone (Runs.dispatchMilestone), or
-  // null. A target dispatchPlan does not offer is `refused` at once; any
-  // other starts from dispatchDefaults with this project's runSettings and
-  // the Runs snapshot, and looks up the default branch before anything is
-  // checked.
+  // The card entry: clears the steps (a card entry has no step), opens the
+  // dispatch for the open project (dispatchRoot = project) and returns
+  // dispatchOpenFor's result. Refused (false, nothing changes) without a
+  // project or while a start is in flight.
   function openDispatch(card, cardMap) {
     if (store.project === "" || store.dispatchState === "starting") return false
+    store.dispatchClearSteps()
+    store.dispatchRoot = store.project
+    return store.dispatchOpenFor(card, cardMap)
+  }
+
+  // The run settings the dispatch reads and, after a start, merges into:
+  // runSettings when dispatchRoot is the open project, else
+  // dispatchRunSettings.
+  function dispatchSettingsSource() {
+    return store.dispatchRoot === store.project ? store.runSettings : store.dispatchRunSettings
+  }
+
+  // Runs.dispatchDefaults for the opened card with `settings` (a
+  // get-run-settings object), read against dispatchRoot's runs only.
+  function dispatchDefaultsFor(settings) {
+    return Runs.dispatchDefaults({ defaultBranch: "", settings: settings }, dispatchBook.card, dispatchBook.cardMap,
+                                 Runs.filterByProject(store.runs, store.dispatchRoot))
+  }
+
+  // Opens the dispatch for dispatchRoot on a brd card (as Board.indexTree()
+  // leaves it) or "board", with its {id: card} map, and returns whether it
+  // may be started. Refused (false, nothing changes) without a dispatchRoot
+  // or while a start is in flight. Every opening sets dispatchTargetLabel
+  // and records the card, cardMap and cardMap's entry for the target's
+  // milestone (Runs.dispatchMilestone), or null. A target dispatchPlan does
+  // not offer is `refused` at once and launches nothing; any other starts
+  // from dispatchDefaultsFor(dispatchSettingsSource()) and looks up
+  // dispatchRoot's default branch. When dispatchRoot is not `project`,
+  // dispatchRoot's run settings are read too (dispatchSettingsRunner).
+  // Nothing is checked before every launched lookup has replied.
+  function dispatchOpenFor(card, cardMap) {
+    if (store.dispatchRoot === "" || store.dispatchState === "starting") return false
     store.resetDispatch()
     var plan = Runs.dispatchPlan(card, cardMap)
     var milestone = Runs.dispatchMilestone(card, cardMap)
     var isMap = cardMap !== null && typeof cardMap === "object"
+    dispatchBook.card = card
     dispatchBook.cardMap = cardMap
     dispatchBook.milestone = milestone !== null && isMap && store.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
     store.dispatchTarget = plan
@@ -1491,20 +1550,26 @@ Scope {
       store.dispatchErrorType = "Target"
       return false
     }
-    var d = Runs.dispatchDefaults({ defaultBranch: "", settings: store.runSettings }, card, cardMap, store.runs)
+    var d = store.dispatchDefaultsFor(store.dispatchSettingsSource())
     store.dispatchForm = { base: d.base, prefix: d.prefix, verify: d.verify, parallelism: d.parallelism,
                            allowNoVerification: d.allowNoVerification }
     store.dispatchState = "previewing"
     dispatchBook.defaultsPending = true
-    dispatchDefaultsRunner.run(["--defaults", store.project])
+    dispatchBook.settingsPending = store.dispatchRoot !== store.project
+    dispatchDefaultsRunner.run(["--defaults", store.dispatchRoot])
+    if (dispatchBook.settingsPending) dispatchSettingsRunner.run(["get-run-settings", store.dispatchRoot])
     return true
   }
 
-  // Back to idle. Refused while a start is in flight: its outcome must land in
-  // a dialog that still shows what was started.
+  // Back to idle, dispatchRoot back to "" and the steps cleared
+  // (dispatchClearSteps). Refused (false, nothing changes) while a start is
+  // in flight: its outcome must land in a dialog that still shows what was
+  // started.
   function closeDispatch() {
     if (store.dispatchState === "starting") return false
     store.resetDispatch()
+    store.dispatchRoot = ""
+    store.dispatchClearSteps()
     return true
   }
 
@@ -1517,12 +1582,12 @@ Scope {
   }
 
   // From a blocked story's refusal (`refused` with a dispatchSuggest), opens
-  // the dispatch afresh on the milestone card and cardMap recorded at the
-  // story's opening and returns openDispatch's result. Refused (false,
-  // nothing changes) in any other state or refusal.
+  // the dispatch afresh for the same dispatchRoot on the milestone card and
+  // cardMap recorded at the story's opening and returns dispatchOpenFor's
+  // result. Refused (false, nothing changes) in any other state or refusal.
   function retargetToMilestone() {
     if (store.dispatchState !== "refused" || store.dispatchSuggest === null) return false
-    return store.openDispatch(dispatchBook.milestone, dispatchBook.cardMap)
+    return store.dispatchOpenFor(dispatchBook.milestone, dispatchBook.cardMap)
   }
 
   // A copy of the form with one field set as given; verify is copied as a
@@ -1569,15 +1634,38 @@ Scope {
     var data = envelope !== null && envelope.ok === true ? envelope.data : null
     var branch = data !== null && typeof data === "object" && typeof data.default_branch === "string"
         ? data.default_branch.trim() : ""
-    if (branch !== "" && !dispatchBook.baseTouched) store.dispatchForm = store.withField(store.dispatchForm, "base", branch)
+    if (branch !== "" && !store.hasKey(dispatchBook.touched, "base")) store.dispatchForm = store.withField(store.dispatchForm, "base", branch)
+    store.checkDispatch()
+  }
+
+  // dispatchRoot's get-run-settings reply, while dispatchRoot is not
+  // `project`: the bare object becomes dispatchRunSettings ({} when
+  // unreadable); prefix, verify and parallelism are taken from
+  // dispatchDefaultsFor with it, except a field the user set since the
+  // opening; base and allowNoVerification stay. Then the form is checked.
+  // Dropped unless previewing with the read still pending.
+  function dispatchSettingsReplied(stdout) {
+    if (!dispatchBook.settingsPending || store.dispatchState !== "previewing") return
+    dispatchBook.settingsPending = false
+    var parsed = store.parseEnvelope(stdout)
+    var settings = parsed !== null ? parsed : {}
+    store.dispatchRunSettings = settings
+    var d = store.dispatchDefaultsFor(settings)
+    var form = store.dispatchForm
+    var fields = ["prefix", "verify", "parallelism"]
+    for (var i = 0; i < fields.length; i++) {
+      if (!store.hasKey(dispatchBook.touched, fields[i])) form = store.withField(form, fields[i], d[fields[i]])
+    }
+    store.dispatchForm = form
     store.checkDispatch()
   }
 
   // The form is checked: an invalid one is refused and launches nothing, a
   // subtask is ready (am has no dry run for one card), a milestone, a story
-  // or the board is previewed. Waits for the defaults lookup, whose reply checks.
+  // or the board is previewed. Waits for the defaults lookup and the
+  // settings read; whichever replies last checks.
   function checkDispatch() {
-    if (dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
+    if (dispatchBook.defaultsPending || dispatchBook.settingsPending || store.dispatchState !== "previewing") return
     dispatchDebounceTimer.stop()
     var result = Runs.validateDispatch(store.dispatchForm)
     if (!result.ok) {
@@ -1591,10 +1679,10 @@ Scope {
       store.dispatchState = "ready"
       return
     }
-    dispatchPreviewRunner.run([store.project].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
+    dispatchPreviewRunner.run([store.dispatchRoot].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
   }
 
-  // The newest preview's reply for this project and these values (a form
+  // The newest preview's reply for this dispatchRoot and these values (a form
   // change cancels the runner). ok: ready with Runs.previewSummary for the
   // target's level, except a story with nothing left, refused as `Nothing
   // left to run` (Empty); am's refusal: its message verbatim, and for a
@@ -1641,7 +1729,9 @@ Scope {
     if (state !== "previewing" && state !== "ready" && state !== "refused" && state !== "failed") return false
     if (store.dispatchForm === null) return false
     store.dispatchForm = store.withField(store.dispatchForm, name, value)
-    if (name === "base") dispatchBook.baseTouched = true
+    var touched = store.copyMap(dispatchBook.touched)
+    touched[name] = true
+    dispatchBook.touched = touched
     store.dispatchState = "previewing"
     store.dispatchPreview = null
     store.clearDispatchError()
@@ -1659,19 +1749,21 @@ Scope {
     return merged
   }
 
-  // Start: only from ready. start-run.py runs on a HelperRunner of its own
-  // (guard "", madeFor this project), which no preview, project switch or
-  // other Start stops. The settings a successful start saves are fixed now,
-  // from this project's runSettings: the non-blank verify commands sent, the
-  // opt-out, the prefix sent followed by the stored history without it (at
-  // most 20), the parallelism and, for a story or milestone whose milestone
-  // card is known, prefixByMilestone {<milestone id>: prefix sent}.
+  // Start: only from ready. start-run.py <dispatchRoot> runs on a
+  // HelperRunner of its own (guard "", madeFor dispatchRoot), which no
+  // preview, project switch or other Start stops. The settings a successful
+  // start saves are fixed now, from dispatchSettingsSource(): the non-blank
+  // verify commands sent, the opt-out, the prefix sent followed by the
+  // stored history without it (at most 20), the parallelism and, for a story
+  // or milestone whose milestone card is known, prefixByMilestone
+  // {<milestone id>: prefix sent}.
   function dispatchStart() {
     if (store.dispatchState !== "ready") return false
     var form = store.dispatchForm
     var prefix = form.prefix.trim()
     var history = [prefix]
-    var stored = Array.isArray(store.runSettings.prefixHistory) ? store.runSettings.prefixHistory : []
+    var source = store.dispatchSettingsSource()
+    var stored = Array.isArray(source.prefixHistory) ? source.prefixHistory : []
     for (var i = 0; i < stored.length && history.length < 20; i++) {
       var p = stored[i]
       if (typeof p === "string" && p.trim() !== "" && p !== prefix) history.push(p)
@@ -1684,28 +1776,31 @@ Scope {
       keyed[dispatchBook.milestone.id] = prefix
       saved.prefixByMilestone = keyed
     }
-    var runner = dispatchStartC.createObject(store, { madeFor: store.project, savedJson: JSON.stringify(saved) })
+    var runner = dispatchStartC.createObject(store, { madeFor: store.dispatchRoot, savedJson: JSON.stringify(saved) })
     dispatchBook.runners = dispatchBook.runners.concat([runner])
     dispatchBook.startRunner = runner
     store.dispatchState = "starting"
-    runner.run([store.project].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
+    runner.run([store.dispatchRoot].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
     return true
   }
 
-  // A start runner's reply is this dispatch's: it was made in the current
-  // project and is the runner that put the store into `starting` (an idle
-  // reset, and so a project switch, forgets it).
+  // A start runner's reply is this dispatch's: it was made for the current
+  // dispatchRoot and is the runner that put the store into `starting` (an
+  // idle reset, and so a project switch, forgets it).
   function isHereStart(runner) {
-    return runner.madeFor === store.project && dispatchBook.startRunner === runner
+    return runner.madeFor === store.dispatchRoot && dispatchBook.startRunner === runner
   }
 
   // start-run.py's reply. When it is this dispatch's: ok gives `started`,
-  // the run id and message, the saved values in runSettings (prefixByMilestone
-  // merged per milestone id), a re-snapshot and dispatchStarted(id or null);
-  // a StoryBlockedError gives `refused` with am's message, no log fields and
-  // the blockedSuggest() milestone; anything else gives `failed` with what
-  // the helper said. After any successful start, wherever it was made, the
-  // same runner writes the saved values for the project it was made in.
+  // the run id and message, the saved values merged into
+  // dispatchSettingsSource()'s object (runSettings only when dispatchRoot is
+  // `project`; prefixByMilestone merged per milestone id), a snapshot of
+  // [dispatchRoot] only -- requestSnapshot([dispatchRoot]), never refresh()
+  // -- and dispatchStarted(id or null); a StoryBlockedError gives `refused`
+  // with am's message, no log fields and the blockedSuggest() milestone;
+  // anything else gives `failed` with what the helper said. After any
+  // successful start, wherever it was made, the same runner writes the saved
+  // values for the root it was made for (madeFor).
   function dispatchStartReplied(runner, stdout) {
     if (runner.saving) {
       store.dispatchSaveReplied(runner, stdout)
@@ -1717,16 +1812,17 @@ Scope {
       if (here) {
         store.dispatchRunId = typeof envelope.run_id === "string" ? envelope.run_id : ""
         store.dispatchMessage = typeof envelope.message === "string" ? envelope.message : ""
-        var settings = store.copyMap(store.runSettings)
+        var settings = store.copyMap(store.dispatchSettingsSource())
         // Parsed from the JSON that is written: a var property hands back a
         // list Runs.dispatchDefaults does not take for an array.
         var saved = JSON.parse(runner.savedJson)
         for (var key in saved) {
           settings[key] = key === "prefixByMilestone" ? store.mergedPrefixes(settings.prefixByMilestone, saved[key]) : saved[key]
         }
-        store.runSettings = settings
+        if (store.dispatchRoot === store.project) store.runSettings = settings
+        else store.dispatchRunSettings = settings
         store.dispatchState = "started"
-        store.refresh()
+        store.requestSnapshot([store.dispatchRoot])
         store.dispatchStarted(store.dispatchRunId !== "" ? store.dispatchRunId : null)
       }
       runner.saving = true
@@ -1765,6 +1861,223 @@ Scope {
     dispatchBook.runners = dispatchBook.runners.filter(function(r) { return r !== runner })
     if (dispatchBook.startRunner === runner) dispatchBook.startRunner = null
     runner.destroy()
+  }
+
+  // ---- dispatch: project and target steps
+
+  // The Runs dialog's step: project | target | form; "" when the dispatch
+  // was not opened from Runs (idle or a card entry).
+  property string dispatchStep: ""
+  // The latest board-tree.py --probe envelope ({ok: true, projects}) while a
+  // step is open; null before its reply, when the reply is unreadable and
+  // whenever the steps are cleared.
+  property var dispatchProjectProbe: null
+  // The project step's rows: Runs.dispatchProjects over the usable roots,
+  // the probe entries (dispatchProbeEntries) and the open project while a
+  // step is open, else [].
+  readonly property var dispatchProjectRows: store.dispatchStep !== ""
+    ? Runs.dispatchProjects(store.usableRoots(), store.dispatchProbeEntries(), store.project) : []
+  readonly property alias dispatchProjectRunner: dispatchProjectRunner
+  // The picked root's brd tree as Board.indexTree's {id: card} map: set by a
+  // good tree read for dispatchRoot and kept at the target and form steps;
+  // else null.
+  property var dispatchTargetCardMap: null
+  // The target step's rows, Runs.dispatchTargets over that tree: set and
+  // kept with dispatchTargetCardMap; else [].
+  property var dispatchTargetRows: []
+  // A tree read is in flight: from its launch until its reply or a cancel.
+  readonly property bool dispatchTargetLoading: dispatchTargetRunner.busy
+  // The key of the row dispatchTargetPick took; kept by Back from the form,
+  // "" whenever the target data is cleared.
+  property string dispatchTargetKey: ""
+  readonly property alias dispatchTargetRunner: dispatchTargetRunner
+  // {root: message} for each root whose tree read failed since the dialog
+  // was opened from Runs, the root as dispatchRoot held it. Its row is
+  // disabled with the message as its reason, whatever the probe says.
+  property var dispatchProjectFailures: ({})
+
+  // The probe entries the project rows read: {root, ok: false, reason} for
+  // each dispatchProjectFailures root, then the probe's own entries; the
+  // first entry for a root wins.
+  function dispatchProbeEntries() {
+    var failures = store.dispatchProjectFailures
+    var entries = Object.keys(failures).map(function(root) { return { root: root, ok: false, reason: failures[root] } })
+    var probe = store.dispatchProjectProbe
+    return probe !== null ? entries.concat(probe.projects) : entries
+  }
+
+  // Opens the dispatch from Runs at the project step with no root, no
+  // failures and the target data cleared, and probes every usable root, in
+  // registry order. Refused (false, nothing changes) while a start is in
+  // flight; else true, from any state or step: a second call starts the
+  // step over. With no usable root nothing is launched and the rows are [].
+  function dispatchOpenFromRuns() {
+    if (store.dispatchState === "starting") return false
+    store.resetDispatch()
+    store.dispatchRoot = ""
+    store.dispatchStep = "project"
+    store.dispatchProjectProbe = null
+    store.dispatchProjectFailures = {}
+    store.dispatchClearTarget()
+    var roots = store.usableRoots().map(function(p) { return p.root })
+    if (roots.length > 0) dispatchProjectRunner.run(["--probe"].concat(roots))
+    else dispatchProjectRunner.cancel()
+    return true
+  }
+
+  // The probe's reply: dispatchProjectProbe is its envelope when that is
+  // {ok: true, projects: [...]}, else null (every row enabled). The exit code
+  // is not read. Applied only while a step is open.
+  function dispatchProjectReplied(stdout) {
+    if (store.dispatchStep === "") return
+    var reply = store.parseEnvelope(stdout)
+    store.dispatchProjectProbe = reply !== null && reply.ok === true && Array.isArray(reply.projects) ? reply : null
+  }
+
+  // Takes the project step's enabled row for `root`: dispatchRoot is the
+  // row's root, the step is target, the target data is cleared and the
+  // root's tree is read (board-tree.py ROOT); no defaults, settings or
+  // preview is launched. Refused (false, nothing changes) at any other step
+  // and for a root with no enabled row.
+  function dispatchProjectPick(root) {
+    if (store.dispatchStep !== "project") return false
+    var rows = store.dispatchProjectRows
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].root !== root || rows[i].enabled !== true) continue
+      store.dispatchRoot = rows[i].root
+      store.dispatchStep = "target"
+      store.dispatchClearTarget()
+      dispatchTargetRunner.run([store.dispatchRoot])
+      return true
+    }
+    return false
+  }
+
+  // The tree read's reply, applied only at the target step. {ok: true,
+  // data: [...]} that Board.indexTree walks gives dispatchTargetCardMap and
+  // dispatchTargetRows. Anything else records dispatchRoot in
+  // dispatchProjectFailures with error.message trimmed (else "The board
+  // could not be read"), clears the target data and goes back to the
+  // project step with dispatchRoot "". The exit code is not read.
+  function dispatchTargetReplied(stdout) {
+    if (store.dispatchStep !== "target") return
+    var envelope = store.parseEnvelope(stdout)
+    var data = envelope !== null && envelope.ok === true && Array.isArray(envelope.data) ? envelope.data : null
+    var cardMap = null
+    if (data !== null) {
+      try { cardMap = Board.indexTree(data).cardMap } catch (e) { cardMap = null }
+    }
+    if (cardMap !== null) {
+      store.dispatchTargetCardMap = cardMap
+      store.dispatchTargetRows = Runs.dispatchTargets(data, cardMap)
+      return
+    }
+    var err = envelope !== null && envelope.ok !== true ? envelope.error : null
+    var message = err !== null && typeof err === "object" && typeof err.message === "string" ? err.message.trim() : ""
+    var failures = store.copyMap(store.dispatchProjectFailures)
+    failures[store.dispatchRoot] = message !== "" ? message : "The board could not be read"
+    store.dispatchProjectFailures = failures
+    store.dispatchClearTarget()
+    store.dispatchStep = "project"
+    store.dispatchRoot = ""
+  }
+
+  // Takes the target step's row with this key: dispatchOpenFor(row.card,
+  // dispatchTargetCardMap) opens S3's form for dispatchRoot, the step is
+  // form and dispatchTargetKey the key; the rows and the card map stay.
+  // Refused (false, nothing changes) at any other step and for a key no row
+  // has. When dispatchOpenFor refuses, the dispatch is reset, the step stays
+  // target and it returns false.
+  function dispatchTargetPick(key) {
+    if (store.dispatchStep !== "target") return false
+    var rows = store.dispatchTargetRows
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].key !== key) continue
+      if (!store.dispatchOpenFor(rows[i].card, store.dispatchTargetCardMap)) {
+        store.resetDispatch()
+        return false
+      }
+      store.dispatchTargetKey = key
+      store.dispatchStep = "form"
+      return true
+    }
+    return false
+  }
+
+  // From the target step back to the project step: dispatchRoot "" and the
+  // target data cleared; the probe, its rows and the failures stay and
+  // nothing is relaunched. From the form back to the target step: the
+  // dispatch reset (resetDispatch), dispatchRoot, the rows, the card map and
+  // dispatchTargetKey kept, nothing relaunched; refused while starting.
+  // Refused (false, nothing changes) at any other step.
+  function dispatchBack() {
+    if (store.dispatchStep === "form") {
+      if (store.dispatchState === "starting") return false
+      store.resetDispatch()
+      store.dispatchStep = "target"
+      return true
+    }
+    if (store.dispatchStep !== "target") return false
+    store.dispatchClearTarget()
+    store.dispatchStep = "project"
+    store.dispatchRoot = ""
+    return true
+  }
+
+  // The target data cleared: the tree read cancelled, dispatchTargetCardMap
+  // null, dispatchTargetRows [] and dispatchTargetKey "".
+  function dispatchClearTarget() {
+    dispatchTargetRunner.cancel()
+    store.dispatchTargetCardMap = null
+    store.dispatchTargetRows = []
+    store.dispatchTargetKey = ""
+  }
+
+  // The steps cleared: the probe cancelled, the target data cleared,
+  // dispatchStep "", dispatchProjectProbe null and dispatchProjectFailures {}.
+  function dispatchClearSteps() {
+    dispatchProjectRunner.cancel()
+    store.dispatchClearTarget()
+    store.dispatchStep = ""
+    store.dispatchProjectProbe = null
+    store.dispatchProjectFailures = {}
+  }
+
+  // The registry changed: at the target step, and at the form unless a
+  // start is in flight, a dispatchRoot that is no longer a usable root
+  // (trailing "/" removed) goes back to the project step with dispatchRoot
+  // "" and the target data cleared; at the form the dispatch is reset too.
+  // Any other step, and the form while starting, is left alone.
+  function dispatchRegistryChanged() {
+    var step = store.dispatchStep
+    if (step !== "target" && step !== "form") return
+    if (step === "form" && store.dispatchState === "starting") return
+    var rows = Runs.dispatchProjects(store.usableRoots(), null, "")
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].root === store.dispatchRoot) return
+    }
+    if (step === "form") store.resetDispatch()
+    store.dispatchClearTarget()
+    store.dispatchStep = "project"
+    store.dispatchRoot = ""
+  }
+
+  // board-tree.py --probe ROOT... for the project step; latest wins. No
+  // guard: the probe depends on no root. dispatchClearSteps() cancels it.
+  HelperRunner {
+    id: dispatchProjectRunner
+    script: store.backendDir + "boards/board-tree.py"
+    onFinished: function(stdout, exitCode) { store.dispatchProjectReplied(stdout) }
+  }
+
+  // board-tree.py ROOT for the target step; latest wins. Guarded by
+  // dispatchRoot: a reply whose launch root is no longer dispatchRoot is
+  // dropped. Back, any step clear and the registry fallback cancel it.
+  HelperRunner {
+    id: dispatchTargetRunner
+    script: store.backendDir + "boards/board-tree.py"
+    guard: store.dispatchRoot
+    onFinished: function(stdout, exitCode) { store.dispatchTargetReplied(stdout) }
   }
 
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is
@@ -1816,21 +2129,32 @@ Scope {
     onFinished: function(stdout, exitCode) { store.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
   }
 
-  // dispatch-preview.py --defaults, once per opening. Guarded by the project:
-  // a reply for a project the user has left is dropped.
+  // dispatch-preview.py --defaults, once per opening. Guarded by
+  // dispatchRoot: a reply for a root the dispatch has left is dropped.
   HelperRunner {
     id: dispatchDefaultsRunner
     script: store.backendDir + "runs/dispatch-preview.py"
-    guard: store.project
+    guard: store.dispatchRoot
     onFinished: function(stdout, exitCode) { store.dispatchDefaultsReplied(stdout) }
   }
 
   // The dispatch preview; latest wins, and every form change cancels it.
+  // Guarded by dispatchRoot.
   HelperRunner {
     id: dispatchPreviewRunner
     script: store.backendDir + "runs/dispatch-preview.py"
-    guard: store.project
+    guard: store.dispatchRoot
     onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
+  }
+
+  // viewer-state.py get-run-settings for dispatchRoot, once per opening, only
+  // while dispatchRoot is not `project`; latest wins. Guarded by
+  // dispatchRoot: a reply for a root the dispatch has left is dropped.
+  HelperRunner {
+    id: dispatchSettingsRunner
+    script: store.backendDir + "projects/viewer-state.py"
+    guard: store.dispatchRoot
+    onFinished: function(stdout, exitCode) { store.dispatchSettingsReplied(stdout) }
   }
 
   // A burst of changed lines is taken in one go (triggerNudges).
@@ -1953,16 +2277,20 @@ Scope {
 
   // The dispatch's own bookkeeping; kept apart so consumers cannot write it.
   // `startRunner` is the runner that put the store into `starting`, forgotten
-  // by an idle reset (and so by a project switch); `baseTouched` says the user
-  // set base since the opening; `defaultsPending` that the --defaults lookup
-  // has not replied yet; `cardMap` and `milestone` are the opening's card map
-  // and its entry for the target's milestone card (null when unknown).
+  // by an idle reset (and so by a project switch); `touched` is {field: true}
+  // for each form field the user set since the opening; `defaultsPending`
+  // says the --defaults lookup has not replied yet, `settingsPending` that
+  // dispatchRoot's get-run-settings read has not; `card`, `cardMap` and
+  // `milestone` are the opening's card, card map and its entry for the
+  // target's milestone card (null when unknown).
   QtObject {
     id: dispatchBook
     property var runners: []
     property var startRunner: null
-    property bool baseTouched: false
+    property var touched: ({})
     property bool defaultsPending: false
+    property bool settingsPending: false
+    property var card: null
     property var cardMap: null
     property var milestone: null
   }
@@ -2000,7 +2328,7 @@ Scope {
   }
 
   // One HelperRunner per Start. Guard "": start-run.py may take ~20 s, and
-  // neither a preview, a project switch nor a Start in another project may
+  // neither a preview, a project switch nor a Start for another root may
   // stop it. After a successful start the same runner writes the settings
   // for `madeFor`; it goes when that write replies, or at once after a
   // failed start.
@@ -2009,7 +2337,7 @@ Scope {
 
     HelperRunner {
       id: sr
-      property string madeFor: ""     // the project the start was made in
+      property string madeFor: ""     // the dispatchRoot the start was made for
       property string savedJson: ""   // `saved` as set-run-settings takes it
       property bool saving: false     // the settings write is in flight
       script: store.backendDir + "runs/start-run.py"
