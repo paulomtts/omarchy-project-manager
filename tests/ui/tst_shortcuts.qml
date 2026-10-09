@@ -314,7 +314,8 @@ TestCase {
     // The snapshot the project selection launched cannot run here.
     s.app.runs.snapshotRunner.cancel()
     s.app.runs.runs = [{ id: "run-0000000000a1", repo_dir: "/home/u/a", milestone_id: "alpha", status: "escalated",
-                         started_at: "", lease: null, rows: [], tree: { stories: [], subtasks: [] } }]
+                         started_at: "", lease: null, rows: [], tree: { stories: [], subtasks: [] },
+                         project: { root: "/home/u/a", name: "alpha" } }]
     s.navigator.showSection("runs")
     return s
   }
@@ -435,7 +436,7 @@ TestCase {
   function normRun(id, status, live) {
     return { id: id, repo_dir: "/home/u/a", milestone_id: "m", status: status, started_at: "",
              lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
-             rows: [], tree: { stories: [], subtasks: [] } }
+             rows: [], tree: { stories: [], subtasks: [] }, project: { root: "/home/u/a", name: "alpha" } }
   }
 
   // The Runs list of project A: row 0 running, row 1 parked; cursor on row 0.

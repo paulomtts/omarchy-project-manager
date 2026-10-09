@@ -2760,7 +2760,7 @@ TestCase {
     compare(argv(pause), tc.ctlCmd + "pause|r1|/home/u/my proj")
     compare(pause.command[4], "/home/u/my proj", "the root with a space is one argument")
     compare(pause.running, true)
-    compare(pause.launchGuard, "/home/u/my proj")
+    compare(pause.launchGuard, "", "no guard")
     var cancel = store.controlRunners[1].current
     compare(cancel.command.length, 5)
     compare(argv(cancel), tc.ctlCmd + "cancel|r2|/home/u/my proj")
@@ -2840,7 +2840,7 @@ TestCase {
 
   function test_control_refusals_launch_nothing() {
     var bare = make(); if (!bare) return
-    compare(bare.control("pause", "r1"), false, "no project")
+    compare(bare.control("pause", "r1"), false, "a run not in the snapshot")
     compare(bare.controlRunners.length, 0)
 
     var store = ctlStore([running("r1"), ctlEntry("r2", "stopped", false),
@@ -2897,8 +2897,8 @@ TestCase {
     compare(other.controlRunners.length, 1, "a launched request still completes in am")
     var seq = other.snapshotRunner.seq
     reply(proc, ctlOk({ requested_at: "t1" }), 0)
-    compare(other.controlRunners.length, 0, "a reply dropped by the guard still removes its runner")
-    compare(other.snapshotRunner.seq, seq, "a dropped reply does not re-snapshot")
+    compare(other.controlRunners.length, 0, "a reply after a switch is applied and removes its runner")
+    compare(other.snapshotRunner.seq, seq + 1, "and re-snapshots")
   }
 
   function test_a_new_request_and_dismiss_clear_the_control_error() {
@@ -3155,7 +3155,7 @@ TestCase {
   // 1 (and Review Focus 4)
   function test_refusal_of_says_why_a_control_would_not_start() {
     var bare = make(); if (!bare) return
-    compare(bare.refusalOf("pause", "r1"), "This run is no longer in the snapshot", "no project")
+    compare(bare.refusalOf("pause", "r1"), "This run is no longer in the snapshot", "not in the snapshot")
     var store = ctlStore([running("r1"), ctlEntry("r2", "stopped", false), integrate("r3"),
                           ctlEntry("r4", "done", false), running("r5"), running("constructor")]); if (!store) return
     compare(store.refusalOf("pause", "r1"), "")
@@ -5422,28 +5422,170 @@ TestCase {
     compare(store.watchCursor, 1005)
   }
 
-  // ---- requests and logs across a project switch (3.1)
+  // ---- control and logs for a run of any project (3.5)
 
-  // 12 (the control half)
-  function test_a_control_request_in_flight_at_a_switch_is_settled_without_an_error() {
-    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
-    store.control("pause", "r1")
-    store.control("cancel", "r2")
-    var inFlight = store.controlRunners[0].current
-    reply(store.controlRunners[1].current, ctlOk({ requested_at: "t2" }), 0)
-    compare(store.pending.r2, "cancel", "acknowledged")
-    store.stillWaiting = { r1: true, r2: true }
-    store.project = rootB
-    compare(store.pending.r1, "pause", "in flight until its runner goes idle")
-    reply(inFlight, ctlFail("NotAcceptingError", "x"), 0)
-    compare(store.pending.r1, undefined, "its dropped reply settles it: the buttons come back")
-    compare(store.stillWaiting.r1, undefined)
-    compare(store.lastControlError, "", "with no control error")
-    compare(store.controlRunners.length, 0)
-    compare(store.pending.r2, "cancel", "an acknowledged request stays pending until a snapshot settles it")
-    compare(store.stillWaiting.r2, true)
+  property string bRepo: "/home/u/b-work"
+  property string settingsCmdB: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/b"
+
+  // `e` with its repo_dir moved to bRepo: a run of rootB whose repository is
+  // not the registry root (the store tags it by the entry's root).
+  function bWork(e) {
+    e.repo_dir = tc.bRepo
+    return e
   }
 
+  // rootA and rootB registered, `open` the open project ("" for none), and
+  // the first snapshot listed aRuns under A and bRuns under B.
+  function crossStore(open, aRuns, bRuns) {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return null
+    store.project = open
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, aRuns), okEntry(tc.rootB, bRuns)]), 0)
+    return store
+  }
+
+  // A run as the store holds it, built from snapshot entry `e`: normalized,
+  // with no project root unless `root` is given.
+  function held(e, root) {
+    var row = {}
+    for (var k in e) if (k !== "status") row[k] = e[k]
+    var run = Runs.normalizeRun({ row: row, status: e.status })
+    return root === undefined ? run : Runs.withProject(run, root, "")
+  }
+
+  // 1
+  function test_pause_and_cancel_pass_the_runs_repo_dir_with_or_without_a_project() {
+    var store = crossStore("", [running("a1")], [bWork(running("b1")), bWork(running("b2"))]); if (!store) return
+    compare(store.project, "")
+    compare(store.control("pause", "b1"), true, "no project open is not a refusal")
+    var pause = store.controlRunners[0].current
+    compare(argv(pause), tc.ctlCmd + "pause|b1|/home/u/b-work")
+    compare(pause.command.length, 5)
+    compare(pause.launchGuard, "", "no guard")
+    compare(store.control("cancel", "a1"), true)
+    compare(argv(store.controlRunners[1].current), tc.ctlCmd + "cancel|a1|/home/u/my proj")
+    store.project = rootA
+    compare(store.control("pause", "b2"), true)
+    compare(argv(store.controlRunners[2].current), tc.ctlCmd + "pause|b2|/home/u/b-work", "never the open project's root")
+  }
+
+  // 2
+  function test_a_task_runs_resume_passes_its_repo_dir_with_no_settings_step() {
+    var store = crossStore(rootA, [running("a1")], [bWork(ctlEntry("b1", "started", false, "task"))]); if (!store) return
+    compare(store.control("resume", "b1"), true)
+    var runner = store.controlRunners[0]
+    compare(runner.seq, 1, "one launch only")
+    compare(argv(runner.current), tc.ctlCmd + "resume|b1|/home/u/b-work")
+    compare(runner.current.command.length, 5)
+  }
+
+  // 3
+  function test_a_milestone_resume_reads_its_own_projects_settings() {
+    var store = crossStore(rootA, [running("a1")], [bWork(dead("b1"))]); if (!store) return
+    compare(store.control("resume", "b1"), true)
+    var runner = store.controlRunners[0]
+    compare(argv(runner.current), tc.settingsCmdB, "B's run settings, not A's")
+    compare(runner.current.command.length, 4)
+    compare(runner.current.launchGuard, "")
+    reply(runner.current, settingsReply(["a"], false), 0)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|b1|/home/u/b-work|--verify|a")
+  }
+
+  // 4
+  function test_the_resume_keeps_the_repository_it_was_asked_for() {
+    var store = crossStore(rootA, [running("a1")], [bWork(dead("b1"))]); if (!store) return
+    store.control("resume", "b1")
+    var runner = store.controlRunners[0]
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [])]), 0)
+    compare(store.runById("b1"), null, "the run left the snapshot")
+    compare(store.pending.b1, "resume", "a request in flight is never settled by a snapshot")
+    reply(runner.current, settingsReply(["a"], false), 0)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|b1|/home/u/b-work|--verify|a")
+    compare(store.pending.b1, "resume")
+  }
+
+  // 5
+  function test_a_run_with_no_repository_or_no_project_root_is_refused() {
+    var store = make(); if (!store) return
+    var noRepo = held(running("r1"), rootA)
+    noRepo.repo_dir = ""
+    store.runs = [noRepo, held(dead("r2")), held(ctlEntry("r3", "started", false, "task"))]
+    var actions = ["pause", "resume", "cancel"]
+    for (var i = 0; i < actions.length; i++) {
+      compare(store.refusalOf(actions[i], "r1"), "This run has no repository", actions[i])
+      compare(store.control(actions[i], "r1"), false, actions[i])
+    }
+    compare(store.refusalOf("resume", "r2"), "This run's project is not known")
+    compare(store.control("resume", "r2"), false)
+    compare(store.controlRunners.length, 0, "nothing launched")
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.refusalOf("cancel", "r2"), "", "a cancel needs no project root")
+    compare(store.control("cancel", "r2"), true)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "cancel|r2|/home/u/my proj")
+    compare(store.refusalOf("resume", "r3"), "", "a task run's resume needs no project root")
+    compare(store.control("resume", "r3"), true)
+    compare(argv(store.controlRunners[1].current), tc.ctlCmd + "resume|r3|/home/u/my proj")
+    compare(store.controlRunners[1].seq, 1)
+    compare(store.controlRunners.length, 2)
+  }
+
+  // 6
+  function test_a_request_for_another_projects_run_survives_a_switch_and_its_reply_shows_on_that_run() {
+    var store = crossStore(rootA, [running("a1")],
+                           [bWork(running("b1")), bWork(running("b2")), bWork(dead("b3"))]); if (!store) return
+    compare(store.control("pause", "b1"), true)
+    var proc = store.controlRunners[0].current
+    store.project = rootB
+    store.project = ""
+    compare(store.pending.b1, "pause", "a switch settles nothing")
+    compare(store.controlRunners.length, 1)
+    var seq = store.snapshotRunner.seq
+    reply(proc, ctlOk({ requested_at: "t1" }), 0)
+    compare(store.pending.b1, "pause", "acknowledged: pending until a snapshot settles it")
+    compare(store.snapshotRunner.seq, seq + 1, "and re-snapshots")
+    compare(store.controlRunners.length, 0)
+
+    compare(store.control("pause", "b2"), true)
+    var proc2 = store.controlRunners[0].current
+    store.project = rootA
+    reply(proc2, ctlFail("NotRunningError", "not running"), 0)
+    compare(store.pending.b2, undefined)
+    compare(store.lastControlError, "The run is not running")
+    compare(store.lastControlErrorRunId, "b2", "the error shows on that run")
+
+    compare(store.control("resume", "b3"), true)
+    var runner = store.controlRunners[0]
+    store.project = rootB
+    reply(runner.current, settingsReply(["a"], false), 0)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|b3|/home/u/b-work|--verify|a",
+            "the settings reply after a switch launches run-control")
+  }
+
+  // Review Focus 5.
+  function test_a_request_made_with_no_project_open_is_answered_after_one_opens() {
+    var store = crossStore("", [running("a1")], [bWork(running("b1"))]); if (!store) return
+    compare(store.control("pause", "b1"), true)
+    var proc = store.controlRunners[0].current
+    store.project = rootA
+    var seq = store.snapshotRunner.seq
+    reply(proc, ctlFail("NotRunningError", "not running"), 0)
+    compare(store.pending.b1, undefined)
+    compare(store.lastControlError, "The run is not running")
+    compare(store.lastControlErrorRunId, "b1")
+    compare(store.snapshotRunner.seq, seq + 1)
+  }
+
+  // Review Focus 2.
+  function test_open_cancel_on_a_run_with_no_repository_flashes_why() {
+    var store = make(); if (!store) return
+    var run = held(running("r1"), rootA)
+    run.repo_dir = ""
+    store.runs = [run]
+    compare(store.openCancel("r1"), false)
+    compare(store.cancelOpen, false)
+    compare(store.flashText, "This run has no repository")
+    compare(store.controlRunners.length, 0)
+  }
   // 12 (the logs half)
   function test_a_logs_fetch_in_flight_at_a_switch_ends_and_keeps_the_text() {
     var store = opened(); if (!store) return

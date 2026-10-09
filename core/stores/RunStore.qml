@@ -760,6 +760,13 @@ Scope {
     return null
   }
 
+  // The run's project root when it is a non-empty string, else "".
+  function runRoot(run) {
+    var p = run !== null && typeof run === "object" ? run.project : null
+    if (p === null || typeof p !== "object" || typeof p.root !== "string") return ""
+    return p.root
+  }
+
   // Shows (and fetches) one attempt of the selected run. Another attempt than
   // the one shown starts from an empty pane -- its predecessor's text is never
   // shown under its heading. Nothing happens without a project, a selected run
@@ -1080,18 +1087,13 @@ Scope {
     return Object.prototype.hasOwnProperty.call(map, key)
   }
 
-  // Starts a pause, resume or cancel of one run of this project and returns
-  // whether it started. Refused: no project, an unknown action, a run that is
-  // not in the snapshot, an action Runs.controls says is disabled, or a run
-  // that already has a request pending. Confirming a cancel is the caller's job.
+  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
+  // returns whether it started: only when refusalOf(action, runId) is "".
+  // The request acts on the run's repo_dir; a milestone resume reads the run
+  // settings of the run's project.root. Confirming a cancel is the caller's job.
   function control(action, runId) {
-    if (store.project === "") return false
-    if (action !== "pause" && action !== "resume" && action !== "cancel") return false
-    if (typeof runId !== "string" || runId === "") return false
+    if (store.refusalOf(action, runId) !== "") return false
     var run = store.runById(runId)
-    if (run === null) return false
-    if (!Runs.controls(run)[action].enabled) return false
-    if (store.hasKey(store.pending, runId)) return false
     store.dismissControlError()
     controlState.nextToken += 1
     var requests = store.copyMap(controlState.requests)
@@ -1101,14 +1103,14 @@ Scope {
     var p = store.copyMap(store.pending)
     p[runId] = action
     store.pending = p
-    var runner = controlC.createObject(store, { runId: runId, action: action,
-                                                token: controlState.nextToken, madeFor: store.project })
+    var runner = controlC.createObject(store, { runId: runId, action: action, token: controlState.nextToken,
+                                                repoDir: run.repo_dir, projectRoot: store.runRoot(run) })
     controlState.runners = controlState.runners.concat([runner])
     if (action === "resume" && run.workflow !== "task") {
-      // A milestone resume reuses the project's stored verify set: read it first.
+      // A milestone resume reuses its project's stored verify set: read it first.
       runner.settingsStep = true
       runner.script = store.backendDir + "projects/viewer-state.py"
-      runner.run(["get-run-settings", store.project])
+      runner.run(["get-run-settings", runner.projectRoot])
     } else {
       store.launchControl(runner, [])
     }
@@ -1116,10 +1118,11 @@ Scope {
   }
 
   // The request's run-control.py launch on its own runner: ACTION RUN REPO,
-  // then `extra` (a resume's verify arguments).
+  // REPO the repo_dir the request was made with, then `extra` (a resume's
+  // verify arguments).
   function launchControl(runner, extra) {
     runner.script = store.backendDir + "runs/run-control.py"
-    runner.run([runner.action, runner.runId, store.project].concat(extra))
+    runner.run([runner.action, runner.runId, runner.repoDir].concat(extra))
   }
 
   // The request this runner was launched for, while it is still the one
@@ -1170,17 +1173,7 @@ Scope {
     runner.destroy()
   }
 
-  // A runner whose reply its guard dropped (the open project changed while it
-  // was in flight): a request still pending for its run is settled -- its
-  // buttons come back, with no control error -- and the runner goes. A
-  // request am already acknowledged has no runner left and stays pending
-  // until a snapshot settles it.
-  function controlDropped(runner) {
-    if (store.requestOf(runner) !== null) store.settle(runner.runId)
-    store.dropRunner(runner)
-  }
-
-  // One run-control.py reply, for the project the request was made in. ok:true
+  // One run-control.py reply, whatever project is open. ok:true
   // means am has the request: pending stays until a snapshot settles it, and
   // the requested_at am gave it is remembered. Anything else ends it with a
   // sentence. Either way the runs are fetched again. A reply for a request that
@@ -1286,12 +1279,15 @@ Scope {
   // ---- cancel confirmation and the footer flash (S2 4.3)
 
   // "" when control(action, runId) would start a request; otherwise why not:
-  // a run that is not in the snapshot (or no project), then a request already
-  // pending for it, then the reason Runs.controls gives. Changes nothing.
+  // a run that is not in the snapshot, then a run with no repo_dir, then a
+  // resume (not of a task run) of a run with no project root, then a request
+  // already pending for it, then the reason Runs.controls gives. Changes nothing.
   function refusalOf(action, runId) {
     if (action !== "pause" && action !== "resume" && action !== "cancel") return "Unknown control"
-    var run = store.project === "" || typeof runId !== "string" || runId === "" ? null : store.runById(runId)
+    var run = typeof runId !== "string" || runId === "" ? null : store.runById(runId)
     if (run === null) return "This run is no longer in the snapshot"
+    if (typeof run.repo_dir !== "string" || run.repo_dir === "") return "This run has no repository"
+    if (action === "resume" && run.workflow !== "task" && store.runRoot(run) === "") return "This run's project is not known"
     if (store.hasKey(store.pending, runId)) return "A request for this run is pending"
     return Runs.controls(run)[action].reason
   }
@@ -1972,11 +1968,9 @@ Scope {
   }
 
   // One HelperRunner per control request, so requests for different runs never
-  // stop each other. Guarded by the project: a reply for a project the user
-  // has left is dropped, and when its process exits (the runner clears `busy`
-  // but emits no `finished`) controlDropped settles its request and the
-  // runner goes. A milestone resume uses its runner twice: viewer-state.py,
-  // then run-control.py.
+  // stop each other. No guard: a reply is applied whatever project is open.
+  // A milestone resume uses its runner twice: viewer-state.py, then
+  // run-control.py.
   Component {
     id: controlC
 
@@ -1985,11 +1979,10 @@ Scope {
       property string runId: ""
       property string action: ""
       property int token: 0
-      property string madeFor: ""         // the project the request was made in
+      property string repoDir: ""         // the run's repo_dir when the request was made
+      property string projectRoot: ""     // the run's project.root then; "" when it had none
       property bool settingsStep: false   // reading the run settings; run-control comes next
-      guard: store.project
       onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
-      onBusyChanged: if (!cr.busy && cr.guard !== cr.madeFor) store.controlDropped(cr)
     }
   }
 
