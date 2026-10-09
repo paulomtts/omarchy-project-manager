@@ -1120,4 +1120,110 @@ TestCase {
       verify(chip.mapToItem(s.screen, 0, 0).x + chip.width <= s.screen.width, "chip " + p + " stays inside the screen")
     }
   }
+
+  // 3
+  function test_all_projects_is_the_default() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    compare(s.runs.projectFilter, "")
+    compare(H.find(s.screen, "runProjectChipall").active, true)
+    compare(H.find(s.screen, "runProjectChipthis").active, false)
+    compare(H.find(s.screen, "runProjectChip/home/u/b").active, false)
+  }
+
+  // 5
+  function test_a_project_chip_filters_and_clicking_it_again_returns_to_all() {
+    var s = make(twoProjects()); if (!s) return
+    tap(H.find(s.screen, "runProjectChip/home/u/b"))
+    compare(JSON.stringify(s.runs.projectToggles), "[\"/home/u/b\"]", "one call, with beta's root")
+    compare(s.runs.projectFilter, "/home/u/b")
+    compare(H.find(s.screen, "runProjectChip/home/u/b").active, true)
+    compare(H.find(s.screen, "runProjectChipall").active, false)
+    compare(H.find(s.screen, "runGroup0"), null, "flat")
+    compare(H.find(s.screen, "runRowId0").text, "…live0003")
+    compare(H.find(s.screen, "runRow1"), null)
+    tap(H.find(s.screen, "runProjectChip/home/u/b"))
+    compare(s.runs.projectToggles.length, 2)
+    compare(s.runs.projectFilter, "")
+    compare(H.find(s.screen, "runProjectChipall").active, true)
+    compare(H.find(s.screen, "runProjectChip/home/u/b").active, false)
+    compare(H.find(s.screen, "runGroupName0").text, "alpha", "grouped again")
+  }
+
+  // 6
+  function test_all_projects_and_this_project_ask_the_store() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.toggleProjectFilter("/home/u/b")
+    s.runs.projectToggles = []
+    tap(H.find(s.screen, "runProjectChipall"))
+    compare(JSON.stringify(s.runs.projectToggles), "[\"\"]")
+    compare(s.runs.projectFilter, "")
+    s.runs.project = "/home/u/a"
+    s.runs.projectToggles = []
+    tap(H.find(s.screen, "runProjectChipthis"))
+    compare(JSON.stringify(s.runs.projectToggles), "[\"/home/u/a\"]")
+    compare(s.runs.projectFilter, "/home/u/a")
+    compare(H.find(s.screen, "runProjectChipthis").active, true)
+    compare(H.find(s.screen, "runProjectChipall").active, false)
+    compare(H.find(s.screen, "runRowId0").text, "…escl0001")
+    compare(H.find(s.screen, "runRowId1").text, "…dead0002")
+    compare(H.find(s.screen, "runRow2"), null, "alpha's runs only")
+    s.runs.project = "/home/u/a/"
+    compare(H.find(s.screen, "runProjectChipthis").active, true, "a trailing / on the open project still matches")
+  }
+
+  // 7
+  function test_this_project_with_no_runs_stays_on_all() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/c"
+    compare(projectChipText(s, "this"), "This project 0")
+    tap(H.find(s.screen, "runProjectChipthis"))
+    compare(JSON.stringify(s.runs.projectToggles), "[\"/home/u/c\"]")
+    compare(s.runs.projectFilter, "")
+    compare(H.find(s.screen, "runProjectChipall").active, true)
+    compare(H.find(s.screen, "runProjectChipthis").active, false)
+    compare(H.find(s.screen, "runGroupName0").text, "alpha", "still grouped")
+  }
+
+  // 10
+  function test_a_vanished_filtered_project_falls_back_to_all_projects() {
+    var s = make(twoProjects()); if (!s) return
+    tap(H.find(s.screen, "runProjectChip/home/u/b"))
+    compare(s.runs.projectFilter, "/home/u/b")
+    var all = twoProjects()
+    s.runs.runs = [all[0], all[2]]
+    compare(s.runs.projectFilter, "", "the store fell back")
+    compare(H.find(s.screen, "runProjectChipall").active, true)
+    compare(H.find(s.screen, "runProjectChip/home/u/b"), null, "beta's chip is gone")
+    compare(H.find(s.screen, "runGroupName0").text, "alpha", "headers are back")
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
+    compare(H.find(s.screen, "runChiplive").text, "Live 0")
+  }
+
+  // Review Focus 2.
+  function test_a_new_snapshot_reorders_the_chips_and_the_active_one_stays_active() {
+    var s = make(twoProjects()); if (!s) return
+    tap(H.find(s.screen, "runProjectChip/home/u/b"))
+    s.runs.runs = [tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha"),
+                   tagged(run("run-b-escl0003", "escalated", null, {}), "/home/u/b", "beta")]
+    compare(projectChipIds(s), "all,/home/u/b,/home/u/a", "beta needs attention now")
+    compare(s.runs.projectFilter, "/home/u/b")
+    compare(H.find(s.screen, "runProjectChip/home/u/b").active, true)
+    compare(H.find(s.screen, "runProjectChip/home/u/a").active, false)
+    compare(H.find(s.screen, "runRowId0").text, "…escl0003")
+  }
+
+  // Review Focus 4.
+  function test_opening_the_filtered_project_moves_the_active_chip_to_this_project() {
+    var s = make(twoProjects()); if (!s) return
+    tap(H.find(s.screen, "runProjectChip/home/u/b"))
+    s.runs.project = "/home/u/b"
+    compare(s.runs.projectFilter, "/home/u/b", "a project switch does not touch the filter")
+    compare(H.find(s.screen, "runProjectChip/home/u/b"), null, "beta is listed once, as This project")
+    compare(H.find(s.screen, "runProjectChipthis").active, true)
+    compare(projectChipText(s, "this"), "This project 1")
+    compare(projectChipText(s, "/home/u/a"), "alpha 2")
+    s.runs.project = ""
+    compare(H.find(s.screen, "runProjectChip/home/u/b").active, true)
+  }
 }

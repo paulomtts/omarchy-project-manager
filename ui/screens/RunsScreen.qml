@@ -15,11 +15,12 @@ import "../theme" as T
 // the cursor walks; headers are not cursor targets. A project chip row (All
 // projects, This project when one is open, one chip per project with runs,
 // with run counts) sits above the status chips, hidden when only one project
-// has runs and none is open. Needs attention / Live / Parked / All chips
-// apply across groups -- clicking the active chip means All again -- and a
-// footer says whether the runs are watched. It reads the run store and asks
-// the navigator to open a run or move the cursor; it owns no state of its
-// own. Ages are read against the clock once per snapshot: there is no timer.
+// has runs and none is open; clicking one asks the store to toggle its
+// project filter. Needs attention / Live / Parked / All chips apply across
+// groups -- clicking the active chip means All again -- and a footer says
+// whether the runs are watched. It reads the run store and asks the navigator
+// to open a run or move the cursor; it owns no state of its own. Ages are
+// read against the clock once per snapshot: there is no timer.
 Column {
   id: screen
   objectName: "runsView"
@@ -137,6 +138,20 @@ Column {
     return out.concat(named)
   }
 
+  // The project chip `filter` (the store's projectFilter) makes active: "all"
+  // for "", "this" when it is `open`, else its root, which no chip has when
+  // that project has no chip.
+  function activeProjectChipOf(filter, open) {
+    var key = screen.rootKey(filter)
+    return key === "" ? "all" : key === open ? "this" : key
+  }
+
+  // A project chip was clicked: the store toggles its project filter with ""
+  // for All projects, the open project for This project, else the chip's root.
+  function chooseProject(id) {
+    screen.app.runs.toggleProjectFilter(id === "all" ? "" : id === "this" ? screen.app.runs.project : id)
+  }
+
   // The list's entries, scalar values only (a Repeater converts nested ones):
   // { kind: "header", g, name, counts, error }, { kind: "run", i } with i the
   // run's index in `runs` (filteredRuns, which is displayOrder of `groups`),
@@ -237,6 +252,8 @@ Column {
     chipPrefix: "runProjectChip"
     visible: !screen.amMissing && (screen.openRoot !== "" || screen.projectsWithRuns > 1)
     model: screen.projectChips
+    active: screen.activeProjectChipOf(screen.app.runs.projectFilter, screen.openRoot)
+    onChosen: function(id) { screen.chooseProject(id) }
   }
 
   UI.FilterableList {
