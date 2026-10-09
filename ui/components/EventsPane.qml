@@ -28,6 +28,7 @@ Item {
   property string status: "idle"
   property string errorText: "Events unreadable."
   property string errorMessage: ""
+  property real maxListHeight: Style.space(320)
 
   readonly property var palette: pane.theme || paneTheme
   readonly property var shownRows: RunEvents.filterRows(pane.rows, pane.filter)
@@ -142,8 +143,11 @@ Item {
       objectName: "eventsList"
       visible: pane.shownRows.length > 0
       width: parent.width
-      height: list.contentHeight
-      interactive: false
+      height: Math.min(list.contentHeight, pane.maxListHeight)
+      clip: true
+      orientation: ListView.Vertical
+      flickableDirection: Flickable.VerticalFlick
+      boundsBehavior: Flickable.StopAtBounds
       model: pane.shownRows
 
       delegate: ListRow {

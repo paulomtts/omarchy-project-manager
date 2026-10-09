@@ -23,6 +23,33 @@ TestCase {
 
   Component { id: paneC; UI.EventsPane { width: 600 } }
 
+  // The panel's own page around the pane: a vertical Flickable over a Column,
+  // taller than the Flickable, as tst_graph_wheel.qml builds it.
+  Component {
+    id: stackC
+
+    Flickable {
+      width: 600; height: 400
+      contentWidth: width
+      contentHeight: column.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+      flickableDirection: Flickable.VerticalFlick
+      interactive: contentHeight > height
+
+      property alias pane: eventsPane
+
+      Column {
+        id: column
+        width: parent.width
+
+        Item { width: parent.width; height: 100 }
+        UI.EventsPane { id: eventsPane; width: parent.width; theme: testTheme; maxListHeight: 200 }
+        Item { width: parent.width; height: 800 }
+      }
+    }
+  }
+
   SignalSpy { id: filterSpy; signalName: "filterRequested" }
   SignalSpy { id: attemptSpy; signalName: "attemptRequested" }
 
@@ -51,10 +78,22 @@ TestCase {
     return row
   }
 
+  function manyRows(n) {
+    var rows = []
+    for (var i = 1; i <= n; i++) rows.push(eventRow(i, {}))
+    return rows
+  }
+
   function rowOf(pane, seq) { return H.find(pane, "eventsRow" + seq) }
   function part(pane, seq, name) { return H.find(rowOf(pane, seq), name) }
   function listOf(pane) { return H.find(pane, "eventsList") }
   function statusOf(pane) { return H.find(pane, "eventsStatus") }
+
+  function wheelOverList(stack, yDelta) {
+    var list = listOf(stack.pane)
+    var p = list.mapToItem(stack, list.width / 2, list.height / 2)
+    mouseWheel(stack, p.x, p.y, 0, yDelta, Qt.NoButton, Qt.NoModifier)
+  }
 
   // ---- rows ----------------------------------------------------------------
 
@@ -357,5 +396,73 @@ TestCase {
     var quiet = make({ rows: [], status: "error", errorMessage: "" })
     compare(H.find(quiet, "eventsErrorToggle").visible, false, "no message, no toggle")
     compare(H.find(quiet, "eventsErrorMessage").visible, false)
+  }
+
+  // ---- the list: bounded height, own scrolling, wheel hand-off -------------
+
+  function test_the_list_height_is_bounded() {
+    var short = make({ rows: manyRows(3), maxListHeight: 300 })
+    var list = listOf(short)
+    verify(list.contentHeight > 0)
+    compare(list.height, list.contentHeight, "a short list is exactly as tall as its rows")
+    verify(list.height < short.maxListHeight)
+    compare(list.clip, true)
+
+    var long = make({ rows: manyRows(100), maxListHeight: 300 })
+    var longList = listOf(long)
+    compare(longList.height, 300, "a long list is capped")
+    verify(longList.contentHeight > longList.height, "and scrolls inside itself")
+    verify(long.implicitHeight >= longList.height, "the pane holds the capped list")
+  }
+
+  function test_a_wheel_in_the_middle_of_the_list_scrolls_only_the_list() {
+    var stack = createTemporaryObject(stackC, tc)
+    stack.pane.rows = manyRows(50)
+    wait(50)
+    var list = listOf(stack.pane)
+    list.contentY = list.originY + 100
+    wait(30)
+    verify(!list.atYBeginning && !list.atYEnd, "the list starts in its middle")
+    var before = list.contentY
+    wheelOverList(stack, -120)
+    tryVerify(function () { return list.contentY > before }, 1000, "the list scrolls down")
+    compare(stack.contentY, 0, "the page does not move")
+  }
+
+  function test_a_wheel_down_at_the_list_bottom_scrolls_the_page() {
+    var stack = createTemporaryObject(stackC, tc)
+    stack.pane.rows = manyRows(50)
+    wait(50)
+    var list = listOf(stack.pane)
+    list.positionViewAtEnd()
+    wait(30)
+    verify(list.atYEnd, "the list starts at its bottom")
+    var before = list.contentY
+    wheelOverList(stack, -120)
+    tryVerify(function () { return stack.contentY > 0 }, 1000, "the page scrolls down")
+    compare(list.contentY, before, "the list stays at its bottom")
+  }
+
+  function test_a_wheel_up_at_the_list_top_scrolls_the_page() {
+    var stack = createTemporaryObject(stackC, tc)
+    stack.pane.rows = manyRows(50)
+    wait(50)
+    stack.contentY = 50
+    wait(30)
+    var list = listOf(stack.pane)
+    verify(list.atYBeginning, "the list starts at its top")
+    wheelOverList(stack, 120)
+    tryVerify(function () { return stack.contentY < 50 }, 1000, "the page scrolls up")
+    verify(list.atYBeginning, "the list stays at its top")
+  }
+
+  function test_a_wheel_over_a_list_that_fits_scrolls_the_page() {
+    var stack = createTemporaryObject(stackC, tc)
+    stack.pane.rows = manyRows(3)
+    wait(50)
+    var list = listOf(stack.pane)
+    verify(list.contentHeight <= list.height, "the rows fit")
+    wheelOverList(stack, -120)
+    tryVerify(function () { return stack.contentY > 0 }, 1000, "the page scrolls down")
   }
 }
