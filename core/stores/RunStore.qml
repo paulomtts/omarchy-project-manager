@@ -66,9 +66,12 @@ Scope {
   property string searchQuery: ""
   // The chip changed: a different list, so the cursor goes home (App's job).
   signal runFilterToggled()
-  // The Runs screen's project filter: "" is All projects, else a project root
-  // as Runs.withProject tags it.
+  // The Runs screen's project filter: "" is All projects, else a filterable
+  // root (isFilterable). Set by toggleProjectFilter; never persisted.
   property string projectFilter: ""
+  // The project filter's list changed under the cursor: emitted once per
+  // toggleProjectFilter call.
+  signal projectFilterToggled()
   // The runs past the chip, the search and the project filter, grouped by
   // project in display order (Runs.groupByProject).
   readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery), store.projectFilter))
@@ -286,6 +289,42 @@ Scope {
   function toggleRunFilter(id) {
     store.runFilter = id === "all" || id === store.runFilter ? "" : String(id || "")
     store.runFilterToggled()
+  }
+
+  // A project chip was chosen (projectRootOf(root)): "", or the active
+  // project again, means All; a root that is not filterable means All.
+  // Emits projectFilterToggled once, whether or not the filter changed.
+  function toggleProjectFilter(root) {
+    var want = store.projectRootOf(root)
+    var next = want === "" || want === store.projectFilter ? "" : want
+    store.projectFilter = store.isFilterable(next) ? next : ""
+    store.projectFilterToggled()
+  }
+
+  // `root` as Runs.withProject tags it: every trailing "/" removed, "/" for a
+  // root of only slashes; "" for "" and for anything that is not a string.
+  function projectRootOf(root) {
+    return Runs.withProject({}, root, "").project.root
+  }
+
+  // Whether the project filter may hold `root`: it is not "", it is
+  // projectRootOf a usable root, and some run in `runs` has it as
+  // project.root.
+  function isFilterable(root) {
+    if (typeof root !== "string" || root === "") return false
+    var usable = store.usableRoots()
+    var registered = false
+    for (var i = 0; i < usable.length && !registered; i++) {
+      if (store.projectRootOf(usable[i].root) === root) registered = true
+    }
+    if (!registered) return false
+    var list = store.runs
+    for (var j = 0; j < list.length; j++) {
+      var run = list[j]
+      var p = run !== null && typeof run === "object" ? run.project : null
+      if (p !== null && typeof p === "object" && p.root === root) return true
+    }
+    return false
   }
 
   onActiveChanged: {

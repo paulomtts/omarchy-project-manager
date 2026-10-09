@@ -2159,6 +2159,107 @@ TestCase {
     compare(store.filteredRuns.length, 0)
   }
 
+  // 3
+  function test_chip_search_and_project_compose() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([
+      okEntry(tc.rootA, [entry("a-live1", "started", true, tc.rootA), entry("a-esc2", "escalated", false, tc.rootA)]),
+      okEntry(tc.rootB, [entry("b-live1", "started", true, tc.rootB), entry("b-esc1", "escalated", false, tc.rootB),
+                         entry("b-esc2", "escalated", false, tc.rootB)])]), 0)
+    store.toggleProjectFilter(tc.rootB)
+    compare(store.projectFilter, tc.rootB)
+    compare(ids(store.filteredRuns), "b-live1,b-esc1,b-esc2")
+    compare(store.groups.length, 1)
+    compare(store.groups[0].project.root, tc.rootB)
+    store.runFilter = "attention"
+    compare(ids(store.filteredRuns), "b-esc1,b-esc2")
+    compare(store.groups.length, 1)
+    store.searchQuery = "esc2"
+    compare(ids(store.filteredRuns), "b-esc2", "A's esc2 is not listed")
+    compare(store.groups.length, 1)
+    compare(store.groups[0].project.root, tc.rootB)
+    store.runFilter = ""
+    store.searchQuery = ""
+    compare(ids(store.filteredRuns), "b-live1,b-esc1,b-esc2")
+    compare(store.projectFilter, tc.rootB)
+  }
+
+  // 4
+  function test_a_chip_that_empties_the_filtered_project_keeps_the_filter() {
+    var store = projectsStore(false); if (!store) return
+    store.toggleProjectFilter(tc.rootB)
+    store.runFilter = "live"
+    compare(store.filteredRuns.length, 0, "B has no live run")
+    compare(store.groups.length, 0)
+    compare(store.projectFilter, tc.rootB, "judged against runs, not the chip's list")
+    store.runFilter = ""
+    store.searchQuery = "zzz"
+    compare(store.filteredRuns.length, 0)
+    compare(store.projectFilter, tc.rootB, "nor the search's")
+    store.searchQuery = ""
+    compare(ids(store.filteredRuns), "b-esc1,b-park1")
+  }
+
+  // 5
+  function test_toggle_project_filter_and_its_signal() {
+    var store = projectsStore(false); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "projectFilterToggled" })
+    var request = store.snapshotRunner.current
+    store.toggleProjectFilter(tc.rootB)
+    compare(store.projectFilter, tc.rootB)
+    compare(spy.count, 1)
+    store.toggleProjectFilter(tc.rootC)
+    compare(store.projectFilter, tc.rootC, "another project replaces the filter")
+    compare(spy.count, 2)
+    store.toggleProjectFilter(tc.rootC)
+    compare(store.projectFilter, "", "the active project again is All")
+    compare(spy.count, 3)
+    store.toggleProjectFilter("")
+    compare(store.projectFilter, "", "the All chip is All")
+    compare(spy.count, 4, "emitted even when nothing changed")
+    store.toggleProjectFilter(tc.rootB + "/")
+    compare(store.projectFilter, tc.rootB, "a trailing / selects the project")
+    compare(ids(store.filteredRuns), "b-esc1,b-park1")
+    compare(spy.count, 5)
+    store.toggleProjectFilter("")
+    compare(spy.count, 6)
+    var junk = [undefined, null, 42, {}, [tc.rootB]]
+    for (var i = 0; i < junk.length; i++) {
+      store.toggleProjectFilter(tc.rootB)
+      compare(store.projectFilter, tc.rootB)
+      store.toggleProjectFilter(junk[i])
+      compare(store.projectFilter, "", "a non-string is All: " + i)
+    }
+    compare(spy.count, 6 + 2 * junk.length)
+    store.toggleProjectFilter("/home/u/zz")
+    compare(store.projectFilter, "", "an unregistered root is All")
+    store.toggleProjectFilter(tc.rootD)
+    compare(store.projectFilter, "", "a registered root with no runs is All")
+    store.toggleProjectFilter("///")
+    compare(store.projectFilter, "", "\"/\" is not registered")
+    compare(spy.count, 6 + 2 * junk.length + 3, "one emission per call")
+    compare(store.runFilter, "")
+    compare(store.searchQuery, "")
+    compare(store.project, "")
+    compare(store.snapshotRunner.current, request, "no process is launched")
+  }
+
+  // Error paths: a registry entry with a trailing "/"
+  function test_a_root_registered_with_a_trailing_slash_is_filtered_by_either_spelling() {
+    var store = make(); if (!store) return
+    store.projectRoots = [{ root: tc.rootB + "/", name: "beta" }, rootEntry(tc.rootA)]
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB + "/", [entry("b-esc1", "escalated", false, tc.rootB)]),
+                                                  okEntry(tc.rootA, [entry("a-park1", "stopped", false, tc.rootA)])]), 0)
+    compare(store.runs[0].project.root, tc.rootB, "Runs.withProject removes the trailing /")
+    store.toggleProjectFilter(tc.rootB)
+    compare(store.projectFilter, tc.rootB)
+    compare(ids(store.filteredRuns), "b-esc1")
+    store.toggleProjectFilter("")
+    store.toggleProjectFilter(tc.rootB + "/")
+    compare(store.projectFilter, tc.rootB)
+    compare(ids(store.filteredRuns), "b-esc1")
+  }
+
   // ---- attempt logs (5.2)
 
   // A snapshot entry of the started capture: runs.json's first `am runs` row
