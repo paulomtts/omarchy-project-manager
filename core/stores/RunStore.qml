@@ -1887,6 +1887,31 @@ Scope {
     store.dispatchProjectProbe = reply !== null && reply.ok === true && Array.isArray(reply.projects) ? reply : null
   }
 
+  // Takes the project step's enabled row for `root`: dispatchRoot is the
+  // row's root and the step is target; nothing is launched. Refused (false,
+  // nothing changes) at any other step and for a root with no enabled row.
+  function dispatchProjectPick(root) {
+    if (store.dispatchStep !== "project") return false
+    var rows = store.dispatchProjectRows
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].root !== root || rows[i].enabled !== true) continue
+      store.dispatchRoot = rows[i].root
+      store.dispatchStep = "target"
+      return true
+    }
+    return false
+  }
+
+  // From the target step back to the project step, dispatchRoot "". The
+  // probe and its rows stay and nothing is relaunched. Refused (false,
+  // nothing changes) at any other step.
+  function dispatchBack() {
+    if (store.dispatchStep !== "target") return false
+    store.dispatchStep = "project"
+    store.dispatchRoot = ""
+    return true
+  }
+
   // board-tree.py --probe ROOT... for the project step; latest wins. No
   // guard: the probe depends on no root.
   HelperRunner {

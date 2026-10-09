@@ -5752,6 +5752,97 @@ TestCase {
             "the newer reply applies")
   }
 
+  // 2.2 test 5
+  function test_dispatch_project_pick() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current,
+          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    compare(store.dispatchProjectPick(tc.rootB), false, "a disabled row")
+    compare(store.dispatchProjectPick("/nope"), false, "an unknown root")
+    compare(store.dispatchProjectPick(""), false, "no root")
+    compare(store.dispatchStep, "project", "a refused pick keeps the step")
+    compare(store.dispatchRoot, "", "a refused pick sets no root")
+    compare(store.dispatchProjectPick(tc.rootA), true)
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchState, "idle")
+    verify(!store.dispatchDefaultsRunner.current, "a pick looks up no defaults")
+    verify(!store.dispatchSettingsRunner.current, "a pick reads no settings")
+    verify(!store.dispatchPreviewRunner.current, "a pick previews nothing")
+    compare(store.dispatchProjectPick(tc.rootA), false, "no pick at the target step")
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchRoot, tc.rootA)
+
+    var idle = runsStore(); if (!idle) return
+    compare(idle.dispatchProjectPick(tc.rootA), false, "no pick without a step")
+    compare(idle.dispatchStep, "")
+    compare(idle.dispatchRoot, "")
+
+    var early = runsStore(); if (!early) return
+    early.dispatchOpenFromRuns()
+    compare(early.dispatchProjectPick(tc.rootB), true, "a row with no probe entry is enabled")
+    compare(early.dispatchRoot, tc.rootB)
+  }
+  // 2.2 test 6
+  function test_dispatch_back_from_target() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
+    var probe = store.dispatchProjectProbe
+    var seq = store.dispatchProjectRunner.seq
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    compare(store.dispatchBack(), true)
+    compare(store.dispatchStep, "project")
+    compare(store.dispatchRoot, "")
+    verify(store.dispatchProjectProbe === probe, "the probe is kept")
+    compare(store.dispatchProjectRunner.seq, seq, "nothing relaunched")
+    compare(store.dispatchProjectRows.length, 2)
+    compare(store.dispatchBack(), false, "step 1 has no Back")
+    compare(store.dispatchStep, "project")
+
+    var idle = runsStore(); if (!idle) return
+    compare(idle.dispatchBack(), false, "no Back without a step")
+    compare(idle.dispatchStep, "")
+
+    var form = runsStore(); if (!form) return
+    form.dispatchOpenFromRuns()
+    form.dispatchProjectPick(tc.rootB)
+    form.dispatchStep = "form"
+    compare(form.dispatchBack(), false, "Back from the form is 2.3's")
+    compare(form.dispatchStep, "form")
+    compare(form.dispatchRoot, tc.rootB)
+  }
+  // 2.2 test 10
+  function test_dispatch_rows_follow_project_roots() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    var seq = store.dispatchProjectRunner.seq
+    reply(store.dispatchProjectRunner.current,
+          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "not a directory" }]), 0)
+    store.projectRoots = [tc.rootEntry(tc.rootA), { root: tc.rootB, name: "zeta" }]
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:zeta::off:not a directory", "renamed")
+    store.projectRoots = [tc.rootEntry(tc.rootA), { root: tc.rootB, name: "zeta" }, tc.rootEntry(tc.rootC)]
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha:open:on: / /home/u/c:proj::on: / /home/u/b:zeta::off:not a directory",
+            "C added, enabled with no probe entry")
+    store.projectRoots = [tc.rootEntry(tc.rootC), { root: tc.rootB, name: "zeta" }, tc.rootEntry(tc.rootA)]
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha:open:on: / /home/u/c:proj::on: / /home/u/b:zeta::off:not a directory",
+            "reordered: still the open row first, then by name")
+    compare(store.dispatchProjectRunner.seq, seq, "no new probe")
+
+    store.projectRoots = [{ root: "-x", name: "x" }, tc.rootEntry(tc.rootA), { root: "/home/u/b/", name: "beta" }]
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:not a directory",
+            "no row for -x; the trailing / is trimmed")
+    store.dispatchOpenFromRuns()
+    compare(argv(store.dispatchProjectRunner.current), tc.probeCmd + "|/home/u/my proj|/home/u/b/",
+            "-x is not probed; the root is probed as registered")
+    compare(store.dispatchProjectPick("/home/u/b/"), false, "a pick names the row's root")
+    compare(store.dispatchProjectPick("/home/u/b"), true)
+    compare(store.dispatchRoot, "/home/u/b")
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).
