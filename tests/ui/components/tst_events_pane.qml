@@ -54,6 +54,7 @@ TestCase {
   function rowOf(pane, seq) { return H.find(pane, "eventsRow" + seq) }
   function part(pane, seq, name) { return H.find(rowOf(pane, seq), name) }
   function listOf(pane) { return H.find(pane, "eventsList") }
+  function statusOf(pane) { return H.find(pane, "eventsStatus") }
 
   // ---- rows ----------------------------------------------------------------
 
@@ -243,5 +244,60 @@ TestCase {
     wait(30)
     compare(seqsOf(pane), [2, 5], "a failure at any level")
     compare(listOf(pane).count, 2)
+  }
+
+  // ---- earlier events and the status line ----------------------------------
+
+  function test_earlier_line_shows_the_dropped_count() {
+    compare(H.find(make({ rows: mixedRows(), dropped: 0 }), "eventsEarlier").visible, false)
+    compare(H.find(make({ rows: mixedRows(), dropped: -1 }), "eventsEarlier").visible, false)
+    var one = H.find(make({ rows: mixedRows(), dropped: 1 }), "eventsEarlier")
+    compare(one.visible, true)
+    compare(one.text, "… 1 earlier event")
+    var many = make({ rows: mixedRows(), dropped: 37 })
+    compare(H.find(many, "eventsEarlier").text, "… 37 earlier events")
+    verify(Qt.colorEqual(H.find(many, "eventsEarlier").color, testTheme.dim))
+    verify(H.find(many, "eventsEarlier").y < listOf(many).y, "above the list")
+    many.filter = "Failures"
+    wait(30)
+    compare(H.find(many, "eventsEarlier").visible, true, "independent of the filter")
+    compare(H.find(many, "eventsEarlier").text, "… 37 earlier events")
+  }
+
+  function test_empty_state_says_no_events_yet() {
+    var pane = make({ rows: [], status: "ok" })
+    compare(statusOf(pane).visible, true)
+    compare(statusOf(pane).text, "No events yet.")
+    compare(listOf(pane).visible, false)
+    compare(statusOf(make({ rows: [] })).text, "No events yet.", "idle too")
+
+    var bad = [null, undefined, "x", 5, {}]
+    var labels = ["null", "undefined", "\"x\"", "5", "{}"]
+    for (var i = 0; i < bad.length; i++) {
+      var shown = make({ rows: mixedRows(), status: "ok" })
+      compare(listOf(shown).visible, true, labels[i] + " starts with rows")
+      compare(statusOf(shown).visible, false, labels[i] + " starts with no status line")
+      shown.rows = bad[i]
+      wait(30)
+      compare(shown.shownRows.length, 0, labels[i])
+      compare(statusOf(shown).text, "No events yet.", labels[i] + " reads as empty")
+      compare(listOf(shown).visible, false, labels[i] + " hides the list")
+    }
+  }
+
+  function test_a_filter_that_empties_the_list_says_so() {
+    var pane = make({ rows: [eventRow(1, { status: "done" })], filter: "Failures", status: "ok" })
+    compare(statusOf(pane).text, "No events match the filter.")
+    compare(listOf(pane).visible, false)
+  }
+
+  function test_loading_without_rows_shows_loading_and_with_rows_keeps_them() {
+    var empty = make({ rows: [], status: "loading" })
+    compare(statusOf(empty).text, "Loading events…")
+    compare(statusOf(empty).visible, true)
+    var held = make({ rows: mixedRows(), status: "loading" })
+    compare(statusOf(held).visible, false, "no loading line over held rows")
+    compare(listOf(held).visible, true)
+    compare(listOf(held).count, 5)
   }
 }

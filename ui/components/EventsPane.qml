@@ -24,9 +24,12 @@ Item {
   property var theme: null
   property var rows: []
   property string filter: "All"
+  property int dropped: 0
+  property string status: "idle"
 
   readonly property var palette: pane.theme || paneTheme
   readonly property var shownRows: RunEvents.filterRows(pane.rows, pane.filter)
+  readonly property int _heldCount: RunEvents.filterRows(pane.rows, "All").length
 
   signal filterRequested(string filter)
   signal attemptRequested(string card, string phase, int attempt)
@@ -69,6 +72,27 @@ Item {
       model: [{ id: "All", label: "All" }, { id: "Phases", label: "Phases" },
               { id: "Failures", label: "Failures" }]
       onChosen: function(id) { pane.filterRequested(id) }
+    }
+
+    ThemedText {
+      objectName: "eventsEarlier"
+      theme: pane.palette
+      variant: "dim"
+      visible: pane.dropped > 0
+      text: "… " + pane.dropped + " earlier event" + (pane.dropped === 1 ? "" : "s")
+    }
+
+    ListStatus {
+      objectName: "eventsStatus"
+      width: parent.width
+      theme: pane.palette
+      loading: pane.status === "loading" && pane.shownRows.length === 0
+      loadingText: "Loading events…"
+      error: ""
+      empty: pane.shownRows.length === 0
+      filtered: pane._heldCount > 0
+      emptyText: "No events yet."
+      filteredText: "No events match the filter."
     }
 
     ListView {
