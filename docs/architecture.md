@@ -244,6 +244,13 @@ would load its own type instead of ours.
   no run), and `story_id` on a story run's `am runs` row. When am is present
   they fail, never skip, if `am run` lacks `--story` or if brd or git is
   absent: the panel's story dispatch needs an am with `--story`.
+  Its finished-run tests add to that `PATH` a stub `claude`
+  (`tests/contract/stub_claude.py`, stdlib only) and a `verify-ok` command, so
+  story S1 runs to `done`; they pin `am logs --help` listing `--follow` and
+  `--since-offset`, the `am logs --follow` stream (hello, contiguous byte-offset
+  chunks, end) of an agent attempt and of the `verify` step, and the one-line
+  `UnknownAttemptError` refusal for a step without a log, each equal to its
+  recording in `tests/fixtures/am/` (re-recorded with `AM_RECORD_FIXTURES=1`).
   `test_am_fixtures.py` pins the committed captures in
   `tests/fixtures/am/`: each level's exact key set (keys starting with `_`
   ignored), the run and attempt status vocabularies, no top-level `subtasks` in
@@ -262,6 +269,10 @@ would load its own type instead of ours.
   (`schema_1` the historical capture, `schema_2` the current one),
   `logs-attempt.json` and `events.json` (an `am events RUN` page with `head`);
   keys starting with `_` are annotations readers ignore.
+  `logs-follow-agent.jsonl`, `logs-follow-step.jsonl` and
+  `logs-follow-refusal.json` are am's `am logs --follow` output verbatim (the
+  scratch root rewritten to `/home/user`), with no `_note`: their provenance is
+  the `test_am_shapes.py` test that records them.
   Tests of code that reads am output (`normalizeRun`, `logTail`, the `runs-*`
   helpers, `run-control.py`, `RunStore`'s list snapshot, logs and
   watch handling) build their input from these fixtures; a hand-written am
