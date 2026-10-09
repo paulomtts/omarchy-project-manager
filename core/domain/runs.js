@@ -869,6 +869,7 @@ var _REASON_UNKNOWN = "The run's state is unknown"
 var _REASON_PAUSE_NOT_RUNNING = "Only a running run can be paused"
 var _REASON_RESUME_RUNNING = "The run is still running"
 var _REASON_RESUME_CANCELLED = "A cancelled run cannot be resumed"
+var _REASON_RESUME_ESCALATED_CARD = "An escalated card run cannot be resumed; relaunch it"
 var _REASON_CANCEL_CANCELLED = "The run is already cancelled"
 
 // A fresh {enabled, reason}: enabled exactly when there is no reason.
@@ -882,8 +883,9 @@ function _inIntegrate(run) {
 
 // {pause, resume, cancel}, each a fresh {enabled, reason}; reason is "" when
 // enabled. Pause needs a running run outside Integrate; resume needs dead,
-// parked or escalated and never looks at accepting; cancel needs a run that has
-// not finished and is not in Integrate. The state's reason wins over Integrate's.
+// parked or escalated, except an escalated card run (workflow "task", trimmed),
+// and never looks at accepting; cancel needs a run that has not finished and is
+// not in Integrate. The state's reason wins over Integrate's.
 function controls(run) {
   var state = runState(run)
   var integrate = _inIntegrate(run)
@@ -894,7 +896,7 @@ function controls(run) {
     cancel = integrate ? _REASON_INTEGRATE : ""
   } else if (state === "dead" || state === "parked" || state === "escalated") {
     pause = _REASON_PAUSE_NOT_RUNNING
-    resume = ""
+    resume = state === "escalated" && _textOf(run.workflow) === "task" ? _REASON_RESUME_ESCALATED_CARD : ""
     cancel = integrate ? _REASON_INTEGRATE : ""
   } else if (state === "cancelled") {
     pause = _REASON_FINISHED

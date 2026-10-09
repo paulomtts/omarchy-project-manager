@@ -2149,11 +2149,19 @@ TestCase {
   readonly property string ctlResumeRunning: "The run is still running"
   readonly property string ctlResumeCancelled: "A cancelled run cannot be resumed"
   readonly property string ctlCancelCancelled: "The run is already cancelled"
+  readonly property string ctlResumeEscalatedCard: "An escalated card run cannot be resumed; relaunch it"
 
   // mkRun with the lease's accepting flag set; live === null still means no lease.
   function ctlRun(status, live, accepting) {
     var r = mkRun("rc", status, live)
     if (r.lease !== null) r.lease.accepting = accepting
+    return r
+  }
+
+  // ctlRun with a `workflow` (mkRun sets none); an escalated "task" run is an escalated card run.
+  function ctlRunOf(status, live, accepting, workflow) {
+    var r = ctlRun(status, live, accepting)
+    r.workflow = workflow
     return r
   }
 
@@ -2277,6 +2285,89 @@ TestCase {
     checkControls(Runs.controls(Runs.normalizeRun(raw({ pid: 1, live: true, accepting: true }))),
                   "", ctlResumeRunning, "", "accepting true")
     checkControls(Runs.controls(Runs.normalizeRun(raw(null))), ctlPauseNotRunning, "", "", "no lease: dead")
+  }
+
+  function test_controls_escalated_card_run() {
+    var run = ctlRunOf("escalated", false, true, "task")
+    compare(Runs.runState(run), "escalated", "fixture")
+    checkControls(Runs.controls(run), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, accepting")
+    checkControls(Runs.controls(ctlRunOf("escalated", false, false, "task")),
+                  ctlPauseNotRunning, ctlResumeEscalatedCard, ctlIntegrate, "task, Integrate")
+    checkControls(Runs.controls(ctlRunOf("escalated", null, false, "task")),
+                  ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, no lease is not Integrate")
+    checkControls(Runs.controls(ctlRunOf("escalated", false, true, "  task  ")),
+                  ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, padded")
+    checkControls(Runs.controls(ctlRunOf("escalated", false, true, "\ttask\n")),
+                  ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, tab and newline")
+    var liveRun = ctlRunOf("escalated", true, true, "task")
+    compare(Runs.runState(liveRun), "escalated", "a live lease does not change an escalated state")
+    checkControls(Runs.controls(liveRun), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, live lease")
+  }
+
+  function test_controls_escalated_card_run_from_fixture() {
+    var r = Runs.normalizeRun(amRun("status-escalated.json"))
+    compare(r.workflow, "milestone", "recorded workflow")
+    r.workflow = "task"
+    compare(r.lease, null, "the capture has no lease")
+    checkControls(Runs.controls(r), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "escalated capture as a task run")
+  }
+
+  function test_controls_escalated_milestone_run_unchanged() {
+    var r = Runs.normalizeRun(amRun("status-escalated.json"))
+    compare(r.workflow, "milestone", "recorded workflow")
+    compare(Runs.runState(r), "escalated", "recorded state")
+    checkControls(Runs.controls(r), ctlPauseNotRunning, "", "", "escalated milestone capture")
+  }
+
+  function test_controls_escalated_card_run_normalized() {
+    // synthetic: the workflow from only the `am runs` row, or only `am status`
+    var fromRow = Runs.normalizeRun({ row: { id: "r", status: "escalated", workflow: " task " } })
+    checkControls(Runs.controls(fromRow), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "workflow on the row")
+    var fromStatus = Runs.normalizeRun({ status: { run: { id: "r", status: "escalated", workflow: "task" } } })
+    checkControls(Runs.controls(fromStatus), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "workflow in am status")
+    var rowWins = Runs.normalizeRun({ row: { id: "r", workflow: "milestone" },
+                                      status: { run: { id: "r", status: "escalated", workflow: "task" } } })
+    checkControls(Runs.controls(rowWins), ctlPauseNotRunning, "", "", "the row's milestone workflow wins")
+  }
+
+  function test_controls_escalated_other_workflows_resumable() {
+    var noProto = Object.create(null)
+    var workflows = ["", "Task", "TASK", "tasks", "task run", "milestone", 5, {}, null, undefined, noProto]
+    for (var i = 0; i < workflows.length; i++)
+      checkControls(Runs.controls(ctlRunOf("escalated", false, true, workflows[i])), ctlPauseNotRunning, "", "",
+                    "escalated, workflow " + i)
+    checkControls(Runs.controls(ctlRun("escalated", false, true)), ctlPauseNotRunning, "", "",
+                  "escalated, workflow missing")
+  }
+
+  function test_controls_task_run_other_states() {
+    checkControls(Runs.controls(ctlRunOf("started", false, true, "task")), ctlPauseNotRunning, "", "", "dead task run")
+    checkControls(Runs.controls(ctlRunOf("started", null, true, "task")), ctlPauseNotRunning, "", "",
+                  "dead task run, no lease")
+    checkControls(Runs.controls(ctlRunOf("stopped", false, true, "task")), ctlPauseNotRunning, "", "", "parked task run")
+    checkControls(Runs.controls(ctlRunOf("started", true, true, "task")), "", ctlResumeRunning, "", "running task run")
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++)
+      checkControls(Runs.controls(ctlRunOf(spellings[i], false, true, "task")),
+                    ctlFinished, ctlResumeCancelled, ctlCancelCancelled, spellings[i] + " task run")
+    checkControls(Runs.controls(ctlRunOf("done", false, true, "task")), ctlFinished, ctlFinished, ctlFinished,
+                  "done task run")
+    checkControls(Runs.controls(ctlRunOf("weird", true, true, "task")), ctlUnknown, ctlUnknown, ctlUnknown,
+                  "unknown task run")
+  }
+
+  function test_controls_escalated_card_run_fresh() {
+    var run = ctlRunOf("escalated", false, true, "task")
+    var a = Runs.controls(run)
+    var b = Runs.controls(run)
+    verify(a !== b, "a fresh result per call")
+    verify(a.pause !== b.pause && a.resume !== b.resume && a.cancel !== b.cancel, "fresh actions per call")
+    verify(a.pause !== a.resume && a.resume !== a.cancel && a.pause !== a.cancel, "no action shared within a result")
+    a.resume.enabled = true
+    a.resume.reason = ""
+    delete a.pause
+    checkControls(b, ctlPauseNotRunning, ctlResumeEscalatedCard, "", "the second result after mutating the first")
+    checkControls(Runs.controls(run), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "a third call")
   }
 
   // [type, sentence] for every am control error controlError knows.
