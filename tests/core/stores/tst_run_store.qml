@@ -6769,4 +6769,19 @@ TestCase {
     compare(seqs(store.events), "8,9,10,11", "its reply is applied")
     compare(store.eventsRunner.seq, seq + 1, "a change queued before a closing does not outlive it")
   }
+
+  // 8: the queue is cleared on closing, not merely skipped while closed.
+  function test_a_change_queued_before_a_closing_is_gone_after_reopening() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    store.active = true
+    var seq = store.eventsRunner.seq
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply is applied")
+    compare(store.eventsRunner.seq, seq, "the follow-up queued before the closing is not launched")
+    compare(store.eventsRunner.busy, false)
+  }
 }
