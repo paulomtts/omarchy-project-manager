@@ -554,6 +554,51 @@ TestCase {
     return p
   }
 
+  // runs-snapshot-all.py's reply: pA's entry lists `aEntries`, pB's `bEntries`.
+  function snapOkTwo(aEntries, bEntries) {
+    return JSON.stringify({ ok: true, projects: [{ root: tc.pA.root_path, ok: true, runs: aEntries },
+                                                 { root: tc.pB.root_path, ok: true, runs: bEntries }],
+                            data_dir: "/d" }) + "\n"
+  }
+
+  // snapEntry(), in project B.
+  function snapEntryB(id, runStatus, live, milestone) {
+    var e = snapEntry(id, runStatus, live, milestone)
+    e.repo_dir = tc.pB.root_path
+    return e
+  }
+
+  // The next snapshot of projects A and B.
+  function feedTwo(p, aEntries, bEntries) {
+    p.app.runs.refresh()
+    reply(p.app.runs.snapshotRunner.current, snapOkTwo(aEntries, bEntries), 0)
+  }
+
+  // Registers pB beside pA (pA stays open). The registry change launches a
+  // snapshot that cannot run here: it is cancelled.
+  function registerB(p) {
+    p.app.projects.applyProjectsList([pA, pB])
+    p.app.runs.snapshotRunner.cancel()
+  }
+
+  // 4.5 (11)
+  function test_each_toast_names_its_project() {
+    var p = withToast("board"); if (!p) return
+    compare(H.find(p, "runToastProject0").text, "alpha")
+    compare(H.find(p, "runToastProject0").visible, true)
+    registerB(p)
+    var aEntries = [snapEntry("run-0000000000a1", "started", true, "alpha"),
+                    snapEntry("run-0000000000b2", "escalated", null, "beta")]
+    feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "started", true, "zeta")])
+    compare(p.app.runs.toasts.length, 1, "beta's first entry only arms it")
+    feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
+    compare(p.app.runs.toasts.length, 2)
+    wait(50)
+    compare(H.find(p, "runToastLine1").text, "zeta escalated")
+    compare(H.find(p, "runToastProject1").text, "beta")
+    compare(H.find(p, "runToastProject0").text, "alpha", "the older toast keeps its project")
+  }
+
   // 26 (parent line 160: toast Open navigates)
   function test_toast_open_navigates_to_the_run_and_back_goes_to_the_runs_list() {
     var p = withToast("board"); if (!p) return
@@ -702,10 +747,12 @@ TestCase {
     var p = withToast("board", true); if (!p) return
     compare(p.app.projects.selectedProject, null)
     compare(p.app.nav.viewMode, "board")
+    compare(H.find(p, "runToastProject0").text, "alpha")
     mouseClick(H.find(p, "runToastOpen0"))
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-0000000000b2")
     compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    compare(p.app.projects.selectedProject, null, "Open opens no project")
     wait(50)
     compare(H.find(p, "runDetailView").visible, true)
     p.shortcuts.closeRequested()

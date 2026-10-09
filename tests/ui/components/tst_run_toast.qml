@@ -22,9 +22,10 @@ TestCase {
   SignalSpy { id: openSpy; signalName: "openRequested" }
   SignalSpy { id: dismissSpy; signalName: "dismissRequested" }
 
-  // One RunStore toast.
-  function toast(key, id, title, state, reason) {
-    return { key: key, id: id, title: title, state: state, reason: reason, expiresMs: Date.now() + 8000 }
+  // One RunStore toast; `project` is optional (undefined when left out).
+  function toast(key, id, title, state, reason, project) {
+    return { key: key, id: id, title: title, state: state, reason: reason, project: project,
+             expiresMs: Date.now() + 8000 }
   }
 
   function make(list) {
@@ -111,6 +112,9 @@ TestCase {
     compare(part(c, "runToastHeading", 0).text, " Run needs you", "no glyph for a non-object")
     compare(part(c, "runToastLine", 0).text, " escalated")
     compare(part(c, "runToastReason", 0).visible, false)
+    verify(part(c, "runToastProject", 0), "a non-object entry still has its project line")
+    compare(part(c, "runToastProject", 0).visible, false)
+    compare(part(c, "runToastProject", 1).visible, false, "an entry with no project")
     compare(part(c, "runToastDismiss", 0).visible, true)
     compare(part(c, "runToastHeading", 1).text, " Run needs you", "a state with no glyph")
     compare(part(c, "runToastLine", 1).text, "X escalated")
@@ -120,5 +124,46 @@ TestCase {
     var d = make(null)
     compare(d.visible, false)
     compare(part(d, "runToast", 0), null)
+  }
+
+  // 4.5: the project line
+  function test_each_toast_shows_its_project_under_the_heading() {
+    var c = make([toast(1, "run-a", "M3", "escalated", "r", "alpha"),
+                  toast(2, "run-b", "M4", "dead", "process died", "beta")])
+    compare(part(c, "runToastProject", 0).text, "alpha")
+    compare(part(c, "runToastProject", 1).text, "beta")
+    for (var i = 0; i < 2; i++) {
+      var project = part(c, "runToastProject", i)
+      compare(project.visible, true)
+      verify(project.y > part(c, "runToastHeading", i).y, "under the heading")
+      verify(project.y < part(c, "runToastLine", i).y, "above the title line")
+    }
+    compare(part(c, "runToastLine", 0).text, "M3 escalated")
+    compare(part(c, "runToastLine", 1).text, "M4 died")
+  }
+
+  function test_a_toast_without_a_project_hides_the_project_line() {
+    var c = make([toast(1, "run-a", "A", "escalated", "r", ""),
+                  toast(2, "run-b", "B", "escalated", "r", 7)])
+    compare(part(c, "runToastProject", 0).visible, false)
+    compare(part(c, "runToastProject", 0).text, "")
+    compare(part(c, "runToastProject", 1).visible, false, "a project that is not a string")
+    compare(part(c, "runToastProject", 1).text, "")
+    compare(part(c, "runToastLine", 0).text, "A escalated")
+    compare(part(c, "runToastLine", 1).text, "B escalated")
+  }
+
+  // Review Focus 4
+  function test_a_long_project_name_elides_on_one_line() {
+    var name = ""
+    for (var i = 0; i < 20; i++) name += "a-very-long-project-name-"
+    var c = make([toast(1, "run-a", "A", "escalated", "r", name)])
+    var project = part(c, "runToastProject", 0)
+    compare(project.text, name)
+    compare(project.visible, true)
+    compare(project.elide, Text.ElideRight)
+    compare(project.truncated, true)
+    verify(project.width <= c.width, "inside the card")
+    verify(project.height < 2 * part(c, "runToastLine", 0).height, "one line, not wrapped")
   }
 }
