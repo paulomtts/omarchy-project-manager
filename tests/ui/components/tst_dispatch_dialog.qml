@@ -1373,4 +1373,41 @@ TestCase {
     keyClick(Qt.Key_Enter)
     compare(picks.count, 0)
   }
+
+  // 7
+  function test_a_click_on_an_enabled_row_picks_it() {
+    var d = projectStep()
+    click(H.find(d, "dispatchProjectRow2"))
+    compare(d.projectCursor, 2)
+    compare(picks.count, 1)
+    compare(picks.signalArguments[0][0], "/home/u/Code/ori")
+    compare(cancels.count, 0)
+  }
+
+  // 8
+  function test_a_disabled_row_ignores_hover_and_click() {
+    var d = projectStep()
+    var row = H.find(d, "dispatchProjectRow3")
+    wait(30)
+    mouseMove(row, row.width / 2, row.height / 2)
+    wait(30)
+    compare(d.projectCursor, 0)
+    click(row)
+    compare(d.projectCursor, 0)
+    compare(picks.count, 0)
+    compare(cancels.count, 0)
+    compare(row.hoverCursorShape, Qt.ArrowCursor)
+  }
+
+  // 9
+  function test_hovering_an_enabled_row_moves_the_cursor() {
+    var d = projectStep()
+    var row = H.find(d, "dispatchProjectRow2")
+    wait(30)
+    mouseMove(row, row.width / 2, row.height / 2)
+    tryCompare(d, "projectCursor", 2)
+    verify(row.hasCursor)
+    compare(picks.count, 0)
+    compare(row.hoverCursorShape, Qt.PointingHandCursor)
+  }
 }

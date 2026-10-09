@@ -319,6 +319,11 @@ Item {
     dialog.projectChosen(dialog.projectText(dialog.projectList()[index], "root"))
   }
 
+  // A hover moves the cursor onto an enabled row; a disabled row is ignored.
+  function hoverProject(index) {
+    if (dialog.atProject) dialog.setProjectCursor(index)
+  }
+
   // Down / Up move the cursor, Return / Enter pick its row, Escape cancels;
   // any other key is left to the owner.
   function projectKey(event) {
@@ -394,6 +399,9 @@ Item {
             width: projectColumn.width
             theme: dialog.theme
             cursorIndex: dialog.projectCursor
+            hoverCursorShape: projectRow.usable ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onHovered: function(index) { dialog.hoverProject(index) }
+            onActivated: dialog.pickProject(projectRow.index)
 
             Row {
               width: parent.width
