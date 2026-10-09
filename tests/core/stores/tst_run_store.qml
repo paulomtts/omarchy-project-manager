@@ -3581,6 +3581,17 @@ TestCase {
     compare(store.notifyRunners.length, 1)
   }
 
+  // 5: the owner decides, even when only the other root answers
+  function test_a_run_listed_under_two_roots_alerts_only_from_its_owners_entry() {
+    var store = armedTwo([running("x")], [running("x")]); if (!store) return
+    answer(store, [failEntry(tc.rootA, "AmTimeout", "am did not answer within 60 s."), okEntry(tc.rootB, [escalated("x")])])
+    compare(store.runs[0].project.root, tc.rootA, "A still owns x")
+    compare(store.toasts.length, 0, "B's entry never alerts a run A owns")
+    answer(store, [okEntry(tc.rootA, [escalated("x")]), okEntry(tc.rootB, [escalated("x")])])
+    compare(toastIds(store), "x", "A's own entry does")
+    compare(store.toasts[0].project, "alpha")
+  }
+
   // Review Focus 1, 2 and 3
   function test_a_partial_or_failed_reply_leaves_the_other_roots_arming_alone() {
     // synthetic: a run without an id under B.
