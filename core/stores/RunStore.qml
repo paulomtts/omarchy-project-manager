@@ -66,8 +66,15 @@ Scope {
   property string searchQuery: ""
   // The chip changed: a different list, so the cursor goes home (App's job).
   signal runFilterToggled()
-  // The one filtered list: the screen's rows and the navigator's cursor list.
-  readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery)
+  // The Runs screen's project filter: "" is All projects, else a project root
+  // as Runs.withProject tags it.
+  property string projectFilter: ""
+  // The runs past the chip, the search and the project filter, grouped by
+  // project in display order (Runs.groupByProject).
+  readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery), store.projectFilter))
+  // The one filtered list: the screen's rows and the navigator's cursor list,
+  // group by group (Runs.displayOrder of groups).
+  readonly property var filteredRuns: Runs.displayOrder(store.groups)
 
   // Snapshot coverage. `asOfSeq` is 0: the list snapshot names no as_of_seq.
   // `appliedSeq` is {runId: 0} for every run in `runs`: the run ids the store

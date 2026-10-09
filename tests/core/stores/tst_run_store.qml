@@ -2094,6 +2094,71 @@ TestCase {
     compare(ids(store.filteredRuns), "esc1,dead1")
   }
 
+  // ---- the project filter and the display order (3.3)
+
+  readonly property string rootD: "/home/u/d"
+
+  // The reply for rootA..rootD: A has only parked runs, B an escalated and a
+  // parked one, C a live and a parked one, D none.
+  function projectEntries() {
+    return [okEntry(tc.rootA, [entry("a-park1", "stopped", false, tc.rootA), entry("a-park2", "stopped", false, tc.rootA)]),
+            okEntry(tc.rootB, [entry("b-esc1", "escalated", false, tc.rootB), entry("b-park1", "stopped", false, tc.rootB)]),
+            okEntry(tc.rootC, [entry("c-live1", "started", true, tc.rootC), entry("c-park1", "stopped", false, tc.rootC)]),
+            okEntry(tc.rootD, [])]
+  }
+
+  // A store with rootA ("alpha"), rootB ("beta"), rootC ("proj") and rootD
+  // ("proj") registered, the panel open when `open`, and projectEntries()
+  // applied.
+  function projectsStore(open) {
+    var roots = [tc.rootA, tc.rootB, tc.rootC, tc.rootD]
+    var store = open ? activeRoots(roots) : makeWithRoots(roots); if (!store) return null
+    reply(store.snapshotRunner.current, allReply(projectEntries()), 0)
+    return store
+  }
+
+  // Each group as "name:attention/live/parked", in order.
+  function groupText(store) {
+    return store.groups.map(function(g) {
+      return g.project.name + ":" + g.counts.attention + "/" + g.counts.live + "/" + g.counts.parked
+    }).join(",")
+  }
+
+  // 1
+  function test_the_list_reads_project_by_project_in_display_order() {
+    var store = projectsStore(false); if (!store) return
+    compare(store.projectFilter, "")
+    compare(ids(store.runs), "a-park1,a-park2,b-esc1,b-park1,c-live1,c-park1", "runs stay in registry order")
+    compare(groupText(store), "beta:1/0/1,proj:0/1/1,alpha:0/0/2",
+            "attention first, then live, then the rest; D has no runs and no group")
+    compare(store.groups[0].project.root, tc.rootB)
+    compare(store.groups[1].project.root, tc.rootC)
+    compare(store.groups[2].project.root, tc.rootA)
+    compare(ids(store.filteredRuns), "b-esc1,b-park1,c-live1,c-park1,a-park1,a-park2",
+            "group by group, each group in am's order")
+    verify(store.filteredRuns[0] === store.groups[0].runs[0], "the same objects")
+  }
+
+  // 2
+  function test_display_order_of_groups_is_filtered_runs() {
+    var store = projectsStore(false); if (!store) return
+    store.runFilter = "parked"
+    store.searchQuery = "park1"
+    compare(ids(Runs.displayOrder(store.groups)), ids(store.filteredRuns))
+    compare(groupText(store), "alpha:0/0/1,beta:0/0/1,proj:0/0/1", "groups count only the runs the chip and the search keep")
+    compare(ids(store.filteredRuns), "a-park1,b-park1,c-park1")
+    store.runFilter = "attention"
+    store.searchQuery = ""
+    compare(ids(Runs.displayOrder(store.groups)), ids(store.filteredRuns))
+    compare(ids(store.filteredRuns), "b-esc1")
+  }
+
+  function test_no_runs_give_no_groups_and_an_empty_list() {
+    var store = make(); if (!store) return
+    compare(store.groups.length, 0)
+    compare(store.filteredRuns.length, 0)
+  }
+
   // ---- attempt logs (5.2)
 
   // A snapshot entry of the started capture: runs.json's first `am runs` row
