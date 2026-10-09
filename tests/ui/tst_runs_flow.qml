@@ -796,4 +796,96 @@ TestCase {
     compare(button.enabled, false)
     compare(String(button.tooltipText), "Open a project to dispatch", "no project wins over am missing")
   }
+
+  // ---- Open project (4.4)
+
+  // make() with pA and pB registered and pA open; filteredRuns is alpha's
+  // run-0000000000b2 and run-0000000000c3, then beta's run-0000000000f6.
+  function makeTwo() {
+    var p = make(); if (!p) return null
+    p.app.projects.applyProjectsList([pA, pB])
+    p.app.runs.snapshotRunner.cancel()
+    p.app.runs.runs = [runIn("run-0000000000f6", "started", true, "zeta", "/home/u/b", "beta"),
+                       runIn("run-0000000000b2", "escalated", null, "beta-ms", "/home/u/a", "alpha"),
+                       runIn("run-0000000000c3", "started", false, "gamma", "/home/u/a", "alpha")]
+    return p
+  }
+
+  // A project switch starts a `brd export` and two run-settings reads that
+  // cannot run here: all are disarmed so their late replies change nothing.
+  function disarmSwitch(p) {
+    if (p.app.extras.exportProc) {
+      p.app.extras.exportProc.running = false
+      p.app.extras.exportProc.launchGuard = "stale"
+    }
+    p.app.runs.settingsLoadRunner.cancel()
+    p.app.runs.runSettingsRunner.cancel()
+  }
+
+  function ctrl6(p) {
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+  }
+
+  // Ctrl+6, then the cursor down to beta's run (index 2).
+  function runsOnBeta(p) {
+    ctrl6(p)
+    compare(ids(p.app.runs.filteredRuns), "run-0000000000b2,run-0000000000c3,run-0000000000f6")
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    compare(p.app.nav.cursorIndex, 2)
+  }
+
+  // 10
+  function test_open_project_on_another_projects_run_opens_its_board_and_ctrl_6_returns() {
+    var p = makeTwo(); if (!p) return
+    runsOnBeta(p)
+    var button = H.find(p, "runRowOpenProject2")
+    verify(button, "beta's row has Open project")
+    compare(button.visible, true)
+    wait(450)
+    mouseClick(button)
+    disarmSwitch(p)
+    compare(p.app.projects.selectedProject.root_path, "/home/u/b")
+    compare(p.app.nav.viewMode, "board")
+    compare(labels(p.navigator.crumbs), "Board")
+    ctrl6(p)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.project, "/home/u/b")
+    compare(p.app.nav.cursorIndex, 0)
+    compare(H.find(p, "runRowOpenProject0").visible, true, "alpha is no longer the open project")
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    compare(p.app.nav.cursorIndex, 2)
+    compare(H.find(p, "runRowOpenProject2").visible, false, "beta is the open project now")
+  }
+
+  // 11: a pin — Run detail never switched the project, so this passes before
+  // the button has a click handler.
+  function test_run_detail_of_another_projects_run_keeps_the_open_project() {
+    var p = makeTwo(); if (!p) return
+    var open = p.app.projects.selectedProject
+    runsOnBeta(p)
+    p.shortcuts.handleSearchKey(key(Qt.Key_Return))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000f6")
+    compare(p.app.projects.selectedProject.root_path, "/home/u/a")
+    verify(p.app.projects.selectedProject === open, "the same project object")
+  }
+
+  // Review Focus 1.
+  function test_open_project_with_a_dirty_memory_draft_stays_on_runs() {
+    var p = makeTwo(); if (!p) return
+    runsOnBeta(p)
+    p.app.memories.memoryEditing = true
+    p.app.memories.memoryText = "saved"
+    p.app.memories.memoryDraft = "edited"
+    var button = H.find(p, "runRowOpenProject2")
+    verify(button, "beta's row has Open project")
+    wait(450)
+    mouseClick(button)
+    compare(p.app.projects.selectedProject.root_path, "/home/u/a")
+    compare(p.app.nav.viewMode, "runs")
+    verify(p.app.memories.memoryOpError.indexOf("unsaved changes") >= 0, p.app.memories.memoryOpError)
+  }
 }

@@ -580,6 +580,7 @@ Column {
         theme: screen.theme
         text: "Open project"
         visible: row.hasCursor && row.openTarget !== null
+        onClicked: screen.navigator.chooseProject(row.openTarget)
       }
     ]
   }

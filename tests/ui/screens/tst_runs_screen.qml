@@ -113,8 +113,11 @@ TestCase {
     QtObject {
       property string opened: ""
       property int hovered: -1
+      // Every project chooseProject was given, in order.
+      property var chosen: []
       function openRun(id) { opened = String(id) }
       function hoverCursor(index) { hovered = index }
+      function chooseProject(p) { chosen = chosen.concat([p]) }
     }
   }
 
@@ -1429,5 +1432,64 @@ TestCase {
     compare(openButton(s, 2).visible, false, "beta left the registry")
     s.app.projects = registry([{ root_path: "/home/u/a", name: "alpha" }, { root_path: "/home/u/b", name: "beta" }])
     compare(openButton(s, 2).visible, true, "beta is back")
+  }
+
+  // 7
+  function test_open_project_click_chooses_the_registry_entry_and_does_not_open_the_run() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.nav.cursorIndex = 2
+    wait(20)
+    tap(openButton(s, 2))
+    compare(s.navi.chosen.length, 1)
+    compare(s.navi.chosen[0].name, "beta")
+    verify(s.navi.chosen[0] === s.app.projects.projects[1], "the registry's own beta entry")
+    compare(s.navi.opened, "", "the button is not the row")
+    compare(s.runs.projectToggles.length, 0, "the project filter is not touched")
+    compare(s.runs.projectFilter, "")
+  }
+
+  // 8
+  function test_open_project_picks_the_first_of_two_entries_with_one_root() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.app.projects = registry([{ root_path: "/home/u/a", name: "alpha" },
+                               { root_path: "/home/u/b/", name: "beta-1" },
+                               { root_path: "/home/u/b", name: "beta-2" }])
+    s.nav.cursorIndex = 2
+    wait(20)
+    tap(openButton(s, 2))
+    compare(s.navi.chosen.length, 1)
+    compare(s.navi.chosen[0].name, "beta-1")
+    verify(s.navi.chosen[0] === s.app.projects.projects[1], "the entry object itself")
+  }
+
+  // 9: a pin — the row's own click is unchanged, so this passes before the
+  // button has a click handler.
+  function test_a_row_click_still_opens_any_projects_run() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.nav.cursorIndex = 2
+    wait(20)
+    compare(openButton(s, 2).visible, true)
+    tap(H.find(s.screen, "runRowTitle2"))
+    compare(s.navi.opened, "run-b-live0003")
+    compare(s.navi.chosen.length, 0)
+  }
+
+  // Review Focus 5.
+  function test_open_project_under_a_project_filter_leaves_the_filter_alone() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.runs.toggleProjectFilter("/home/u/b")
+    s.runs.projectToggles = []
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(H.find(s.screen, "runRowId0").text, "…live0003", "beta's run, flat")
+    tap(openButton(s, 0))
+    compare(s.navi.chosen.length, 1)
+    compare(s.navi.chosen[0].root_path, "/home/u/b")
+    compare(s.runs.projectToggles.length, 0)
+    compare(s.runs.projectFilter, "/home/u/b")
   }
 }
