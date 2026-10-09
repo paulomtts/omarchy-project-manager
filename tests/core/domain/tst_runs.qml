@@ -4351,4 +4351,211 @@ TestCase {
     verify(single !== g1.runs, "a new array for a single group")
     compare(single.length, 2, "its runs")
   }
+
+  function dispatchRoots(rows) {
+    var out = []
+    for (var i = 0; i < rows.length; i++) out.push(rows[i].root)
+    return out.join(",")
+  }
+
+  function test_dispatch_projects_order() {
+    // synthetic: three registered projects, no open project, an empty probe
+    var roots = [{ root: "/p/b", name: "b" }, { root: "/p/a", name: "A" }, { root: "/p/c", name: "c" }]
+    var rows = Runs.dispatchProjects(roots, { ok: true, projects: [] }, "")
+    compare(dispatchRoots(rows), "/p/a,/p/b,/p/c", "by name, case-blind")
+    compare(rows[0].name, "A", "name as given")
+    for (var i = 0; i < rows.length; i++) {
+      compare(Object.keys(rows[i]).sort().join(","), "enabled,name,open,reason,root", "row " + i + " keys")
+      compare(rows[i].open, false, "row " + i + " not open")
+      compare(rows[i].enabled, true, "row " + i + " enabled")
+      compare(rows[i].reason, "", "row " + i + " no reason")
+    }
+    verify(rows[0] !== roots[1], "a new row object")
+    verify(rows !== roots, "a new array")
+  }
+
+  function test_dispatch_projects_open_first() {
+    // synthetic: the open project's name sorts last
+    var roots = [{ root: "/p/a", name: "alpha" }, { root: "/p/z", name: "zulu" }, { root: "/p/m", name: "mike" }]
+    var rows = Runs.dispatchProjects(roots, [], "/p/z")
+    compare(dispatchRoots(rows), "/p/z,/p/a,/p/m", "open first, then by name")
+    compare(rows[0].open, true, "the open row")
+    compare(rows[1].open, false, "alpha not open")
+    compare(rows[2].open, false, "mike not open")
+    var slashed = Runs.dispatchProjects(roots, [], "/p/z/")
+    compare(dispatchRoots(slashed), "/p/z,/p/a,/p/m", "openRoot with a trailing /")
+    compare(slashed[0].open, true, "openRoot with a trailing / is open")
+    compare(Runs.dispatchProjects(roots, [], "/p/z//")[0].open, true, "openRoot with trailing slashes")
+    var none = Runs.dispatchProjects(roots, [], "/p/q")
+    compare(dispatchRoots(none), "/p/a,/p/m,/p/z", "an unregistered openRoot")
+    for (var i = 0; i < none.length; i++) compare(none[i].open, false, "nothing open " + i)
+  }
+
+  function test_dispatch_projects_ties() {
+    // synthetic: names that differ only by case
+    var roots = [{ root: "/p/y", name: "foo" }, { root: "/p/x", name: "Foo" }, { root: "/p/a", name: "zed" }]
+    var rows = Runs.dispatchProjects(roots, [], null)
+    compare(dispatchRoots(rows), "/p/x,/p/y,/p/a", "a case-only name tie by root")
+    compare(rows[0].name, "Foo", "case kept")
+    compare(rows[1].name, "foo", "case kept")
+    // synthetic: the upper-case name on the later root
+    var flipped = Runs.dispatchProjects([{ root: "/p/y", name: "Foo" }, { root: "/p/x", name: "foo" }], [], null)
+    compare(dispatchRoots(flipped), "/p/x,/p/y", "root decides, not case or input order")
+    compare(flipped[1].name, "Foo", "case kept on the later row")
+  }
+
+  function test_dispatch_projects_unreachable() {
+    // synthetic: board-tree.py --probe output for three of four registered roots
+    var roots = [{ root: "/p/a", name: "a" }, { root: "/p/b", name: "b" }, { root: "/p/c", name: "c" },
+                 { root: "/p/d", name: "d" }]
+    var probe = { ok: true, projects: [{ root: "/p/a", ok: false, reason: "no .brd marker" },
+                                       { root: "/p/b", ok: false },
+                                       { root: "/p/c", ok: true }] }
+    var shapes = [["payload", probe], ["projects array", probe.projects]]
+    for (var s = 0; s < shapes.length; s++) {
+      var label = shapes[s][0]
+      var rows = Runs.dispatchProjects(roots, shapes[s][1], "")
+      compare(dispatchRoots(rows), "/p/a,/p/b,/p/c,/p/d", label + ": order unchanged by reachability")
+      compare(rows[0].enabled, false, label + ": no marker disabled")
+      compare(rows[0].reason, "no .brd marker", label + ": the probe's reason")
+      compare(rows[1].enabled, false, label + ": ok false disabled")
+      compare(rows[1].reason, "unreachable", label + ": no reason given")
+      compare(rows[2].enabled, true, label + ": ok true enabled")
+      compare(rows[2].reason, "", label + ": ok true no reason")
+      compare(rows[3].enabled, true, label + ": absent from the probe enabled")
+      compare(rows[3].reason, "", label + ": absent no reason")
+    }
+    var openDisabled = Runs.dispatchProjects(roots, probe, "/p/b")
+    compare(dispatchRoots(openDisabled), "/p/b,/p/a,/p/c,/p/d", "a disabled open project still first")
+    compare(openDisabled[0].open, true, "open")
+    compare(openDisabled[0].enabled, false, "and disabled")
+    compare(openDisabled[0].reason, "unreachable", "with its reason")
+    // synthetic: a probe root with a trailing /, padded, blank and numeric reasons, two entries for one root
+    var odd = [{ root: "/p/a/", ok: false, reason: "not a directory" },
+               { root: "/p/b", ok: false, reason: "  no .brd marker  " },
+               { root: "/p/c", ok: false, reason: "   " },
+               { root: "/p/d", ok: true }, { root: "/p/d", ok: false, reason: "late" },
+               { root: "/p/a", ok: true }]
+    var r = Runs.dispatchProjects(roots, odd, "")
+    compare(r[0].enabled, false, "a probe root with a trailing / matches")
+    compare(r[0].reason, "not a directory", "its reason")
+    compare(r[1].reason, "no .brd marker", "the reason trimmed")
+    compare(r[2].enabled, false, "a blank reason is still disabled")
+    compare(r[2].reason, "unreachable", "a blank reason")
+    compare(r[3].enabled, true, "the first entry for a root wins over a later ok false")
+    compare(r[3].reason, "", "the later reason is not used")
+    var numeric = Runs.dispatchProjects([{ root: "/p/a" }], [{ root: "/p/a", ok: false, reason: 5 }], "")
+    compare(numeric[0].reason, "unreachable", "a non-string reason")
+  }
+
+  function test_dispatch_projects_names() {
+    // synthetic: names that are missing, blank, padded or not a string, and roots with trailing slashes
+    var roots = [{ root: "/p/one/", name: "" }, { root: "/p/two", name: "   " }, { root: "/p/three" },
+                 { root: "/p/four", name: 4 }, { root: "/p/five", name: null }, { root: "/", name: "" },
+                 { root: "/p/six", name: "  Six  " }, { root: "/p/seven", name: "team/app" }]
+    var rows = Runs.dispatchProjects(roots, [], "")
+    var pairs = []
+    for (var i = 0; i < rows.length; i++) pairs.push(rows[i].root + "=" + rows[i].name)
+    compare(pairs.join(","),
+            "/=/,/p/five=five,/p/four=four,/p/one=one,/p/six=Six,/p/seven=team/app,/p/three=three,/p/two=two",
+            "names fall back to the root's last segment, trimmed otherwise")
+    var slashes = Runs.dispatchProjects([{ root: "//", name: "" }], [], "")
+    compare(slashes[0].root, "/", "a root of only slashes is /")
+    compare(slashes[0].name, "/", "and is named /")
+    compare(Runs.dispatchProjects([{ root: "/p/one///", name: "One" }], [], "")[0].root, "/p/one",
+            "every trailing / removed")
+  }
+
+  function test_dispatch_projects_empty() {
+    // synthetic: an empty registry with every probe shape and openRoot
+    var probes = [undefined, null, [], { ok: true, projects: [] },
+                  { ok: true, projects: [{ root: "/p/a", ok: false, reason: "no .brd marker" }] }]
+    var opens = [undefined, null, "", "/p/a"]
+    for (var p = 0; p < probes.length; p++) {
+      for (var o = 0; o < opens.length; o++) {
+        var out = Runs.dispatchProjects([], probes[p], opens[o])
+        verify(Array.isArray(out), "probe " + p + " open " + o + " is an array")
+        compare(out.length, 0, "probe " + p + " open " + o + " is empty")
+      }
+    }
+    var empty = []
+    verify(Runs.dispatchProjects(empty, [], "") !== empty, "a new array for []")
+  }
+
+  function test_dispatch_projects_garbage() {
+    // synthetic: a registry that is not an array
+    var notLists = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < notLists.length; i++) {
+      var out = Runs.dispatchProjects(notLists[i], [], "/p/a")
+      verify(Array.isArray(out), "registry " + i + " is an array")
+      compare(out.length, 0, "registry " + i + " is empty")
+    }
+    // synthetic: junk entries among good ones, and a duplicate root
+    var roots = [null, { root: "/p/b", name: "b" }, "x", [], {}, { root: 5, name: "five" },
+                 { root: "", name: "blank" }, { root: "/p/a", name: "a" }, { root: "/p/b/", name: "dup" },
+                 undefined, ["/p/c"]]
+    var rows = Runs.dispatchProjects(roots, [], "")
+    compare(dispatchRoots(rows), "/p/a,/p/b", "only valid, first-seen rows")
+    compare(rows[1].name, "b", "the first entry for a root wins")
+    // synthetic: probes that are not the helper's output, and junk probe entries
+    var probes = [undefined, null, "x", 5, {}, { projects: "x" },
+                  { ok: false, error: { type: "BrdMissing", message: "brd not found" } },
+                  [null, { root: 5, ok: false }, { root: "/p/a", ok: "no" }, "x", 5, []]]
+    for (var p = 0; p < probes.length; p++) {
+      var probed = Runs.dispatchProjects(roots, probes[p], "")
+      compare(dispatchRoots(probed), "/p/a,/p/b", "probe " + p + " rows")
+      for (var j = 0; j < probed.length; j++) {
+        compare(probed[j].enabled, true, "probe " + p + " row " + j + " enabled")
+        compare(probed[j].reason, "", "probe " + p + " row " + j + " no reason")
+      }
+    }
+    // synthetic: openRoots that are not a registered root string
+    var opens = [5, {}, null, "", undefined, ["/p/a"]]
+    for (var o = 0; o < opens.length; o++) {
+      var opened = Runs.dispatchProjects(roots, [], opens[o])
+      compare(dispatchRoots(opened), "/p/a,/p/b", "openRoot " + o + " rows")
+      for (var k = 0; k < opened.length; k++) compare(opened[k].open, false, "openRoot " + o + " row " + k)
+    }
+    // the inputs are left as they were
+    var probe = { ok: true, projects: [{ root: "/p/a/", ok: false, reason: " x " }] }
+    var beforeRoots = JSON.stringify(roots), beforeProbe = JSON.stringify(probe)
+    var result = Runs.dispatchProjects(roots, probe, "/p/b/")
+    compare(dispatchRoots(result), "/p/b,/p/a", "open first")
+    compare(result[1].reason, "x", "the reason trimmed in the row")
+    compare(JSON.stringify(roots), beforeRoots, "projectRoots unchanged")
+    compare(JSON.stringify(probe), beforeProbe, "probe unchanged")
+    compare(roots[8].root, "/p/b/", "an entry's root not trimmed in place")
+    compare(probe.projects[0].reason, " x ", "a probe reason not trimmed in place")
+  }
+
+  function test_dispatch_projects_edges() {
+    // synthetic: a padded root, roots spelled like Object.prototype keys, a non-ASCII name,
+    // a duplicate whose first entry has no name, and a prototype-less entry
+    var bare = Object.create(null)
+    bare.root = "/p/bare"
+    bare.name = "bare"
+    var roots = [{ root: " /p/pad", name: "pad" }, { root: "__proto__", name: "proto" },
+                 { root: "constructor", name: "ctor" }, { root: "/p/e", name: "éclair" },
+                 { root: "/p/z", name: "zed" }, { root: "/p/dup" }, { root: "/p/dup", name: "Named" }, bare]
+    var probe = [{ root: " /p/pad", ok: false, reason: "not a directory" }, { root: "/p/pad", ok: true },
+                 { root: "__proto__", ok: false, reason: "no .brd marker" }]
+    var rows = Runs.dispatchProjects(roots, probe, " /p/pad")
+    compare(dispatchRoots(rows), " /p/pad,/p/bare,constructor,/p/dup,__proto__,/p/z,/p/e",
+            "padded open root first, then plain comparison of lower-cased names")
+    compare(rows[0].open, true, "a padded openRoot matches the padded root exactly")
+    compare(rows[0].enabled, false, "the padded root's own probe entry")
+    compare(rows[0].reason, "not a directory", "not the unpadded entry")
+    var unpadded = Runs.dispatchProjects(roots, probe, "/p/pad")
+    compare(dispatchRoots(unpadded), "/p/bare,constructor,/p/dup, /p/pad,__proto__,/p/z,/p/e",
+            "an unpadded openRoot puts nothing first")
+    for (var i = 0; i < unpadded.length; i++) compare(unpadded[i].open, false, "nothing open " + i)
+    compare(rows[1].name, "bare", "a prototype-less entry gives a row")
+    compare(rows[2].name, "ctor", "a constructor root keeps its row")
+    compare(rows[2].enabled, true, "and is enabled")
+    compare(rows[3].name, "dup", "the first duplicate wins, its name from the root")
+    compare(rows[4].name, "proto", "a __proto__ root keeps its row")
+    compare(rows[4].enabled, false, "and its probe entry")
+    compare(rows[4].reason, "no .brd marker", "with its reason")
+    compare(rows[6].name, "éclair", "a non-ASCII name sorts after z")
+  }
 }

@@ -353,6 +353,15 @@ function _trimSlashes(path) {
   return path.substring(0, end)
 }
 
+// A project's name: `name` trimmed when that is a non-empty string, else
+// root's last "/"-separated segment ("/" for "/", "" for ""). `root` is a
+// _trimSlashes result.
+function _projectName(root, name) {
+  var n = typeof name === "string" ? name.trim() : ""
+  if (n !== "") return n
+  return root === "/" ? "/" : root.substring(root.lastIndexOf("/") + 1)
+}
+
 // A copy of `run` whose `project` is { root, name }, the registered project it
 // belongs to; whatever `project` it held before is dropped. root: `root` with
 // every trailing "/" removed ("/" for a root of only slashes), else "" when not
@@ -364,9 +373,7 @@ function withProject(run, root, name) {
   if (!_isObject(run)) return run
   var out = _copyOf(run)
   var r = _trimSlashes(root)
-  var n = typeof name === "string" ? name.trim() : ""
-  if (n === "") n = r === "/" ? "/" : r.substring(r.lastIndexOf("/") + 1)
-  out.project = { root: r, name: n }
+  out.project = { root: r, name: _projectName(r, name) }
   return out
 }
 
@@ -459,6 +466,78 @@ function displayOrder(groups) {
     for (var j = 0; j < group.runs.length; j++) out.push(group.runs[j])
   }
   return out
+}
+
+// The entries of a board-tree.py --probe result: `probe` itself when an array,
+// else its `projects` when `probe` is a plain object whose `projects` is an
+// array, else [].
+function _probeEntries(probe) {
+  if (Array.isArray(probe)) return probe
+  return _isObject(probe) ? _arrayOr(probe.projects) : []
+}
+
+// The first probe entry for `root`: a plain object whose `root` is a string
+// equal to `root` with trailing "/" removed. null when there is none.
+function _probeEntryFor(entries, root) {
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    if (_isObject(e) && typeof e.root === "string" && _trimSlashes(e.root) === root) return e
+  }
+  return null
+}
+
+// Order of two dispatch rows: the open row first, then name lower-cased, then
+// root, both by plain string comparison. Roots are distinct, so no two rows tie.
+function _compareDispatchRows(a, b) {
+  if (a.open !== b.open) return a.open ? -1 : 1
+  var na = a.name.toLowerCase(), nb = b.name.toLowerCase()
+  if (na !== nb) return na < nb ? -1 : 1
+  if (a.root !== b.root) return a.root < b.root ? -1 : 1
+  return 0
+}
+
+// The projects step 1 of the dispatch dialog offers, one row per registered
+// project: { root, name, open, enabled, reason }.
+// projectRoots: [{ root, name }]. An entry that is not a plain object with a
+// string root is skipped. root: with every trailing "/" removed ("/" for a root
+// of only slashes); an entry whose root is then "" is skipped, and only the
+// first entry for a root gives a row. name: `name` trimmed when that is
+// non-empty, else root's last "/"-separated segment ("/" for "/").
+// open: root equals `openRoot` with trailing "/" removed. A non-string or ""
+// openRoot marks no row open.
+// probe: board-tree.py --probe output { ok, projects: [{ root, ok, reason }] }
+// or its projects array; anything else has no entries. An entry counts when it
+// is a plain object with a string root; it matches the row whose root equals
+// its root with trailing "/" removed, the first match winning. A row whose
+// entry has ok === false is enabled false, reason the entry's reason trimmed
+// when that is a non-empty string, else "unreachable". Every other row is
+// enabled true, reason "".
+// Order: the open row first, then name lower-cased, then root, by plain string
+// comparison. Returns new rows in a new array. Never mutates, never throws.
+function dispatchProjects(projectRoots, probe, openRoot) {
+  var list = _arrayOr(projectRoots)
+  var entries = _probeEntries(probe)
+  var open = typeof openRoot === "string" && openRoot !== "" ? _trimSlashes(openRoot) : null
+  var rows = []
+  for (var i = 0; i < list.length; i++) {
+    var p = list[i]
+    if (!_isObject(p) || typeof p.root !== "string") continue
+    var root = _trimSlashes(p.root)
+    if (root === "") continue
+    var seen = false
+    for (var j = 0; j < rows.length && !seen; j++) seen = rows[j].root === root
+    if (seen) continue
+    var row = { root: root, name: _projectName(root, p.name), open: root === open, enabled: true, reason: "" }
+    var entry = _probeEntryFor(entries, root)
+    if (entry !== null && entry.ok === false) {
+      var reason = typeof entry.reason === "string" ? entry.reason.trim() : ""
+      row.enabled = false
+      row.reason = reason !== "" ? reason : "unreachable"
+    }
+    rows.push(row)
+  }
+  rows.sort(_compareDispatchRows)
+  return rows
 }
 
 // String(v), trimmed. null/undefined, and values String() cannot convert (e.g. a
