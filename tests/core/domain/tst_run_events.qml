@@ -25,6 +25,34 @@ TestCase {
     return t
   }
 
+  // Every non-null eventRow of events(): 59 rows, seq 2..60 in order.
+  function fixtureRows() {
+    var all = events()
+    var out = []
+    for (var i = 0; i < all.length; i++) {
+      var r = RE.eventRow(all[i], titles(), 0)
+      if (r !== null) out.push(r)
+    }
+    return out
+  }
+
+  // A deep copy of a row.
+  function copyRow(row) { return JSON.parse(JSON.stringify(row)) }
+
+  // The rows' seqs joined with ",".
+  function seqList(rows) {
+    var s = []
+    for (var i = 0; i < rows.length; i++) s.push(rows[i].seq)
+    return s.join(",")
+  }
+
+  // The integers a..b joined with ",".
+  function seqRange(a, b) {
+    var s = []
+    for (var i = a; i <= b; i++) s.push(i)
+    return s.join(",")
+  }
+
   function test_duration_text() {
     var blanks = [null, undefined, "4.2", NaN, Infinity, -Infinity, -1]
     for (var i = 0; i < blanks.length; i++) compare(RE.durationText(blanks[i]), "", String(blanks[i]))
@@ -366,5 +394,189 @@ TestCase {
       compare(glyph, Runs.glyphStateOf(statuses[i]), statuses[i])
       verify(allowed.indexOf(glyph) !== -1, statuses[i])
     }
+  }
+
+  function test_fold_append() {
+    var all = fixtureRows()
+    compare(all.length, 59)
+    var r = RE.foldEvents(all.slice(0, 30), all.slice(30), 500)
+    compare(r.rows.length, 59)
+    compare(seqList(r.rows), seqRange(2, 60))
+    compare(r.dropped, 0)
+    verify(r.rows[0] === all[0])
+    verify(r.rows[58] === all[58])
+    compare(seqList(RE.foldEvents([], fixtureRows(), 500).rows), seqRange(2, 60))
+  }
+
+  function test_fold_prepend() {
+    var all = fixtureRows()
+    var r = RE.foldEvents(all.slice(30), all.slice(0, 30), 500)
+    compare(seqList(r.rows), seqRange(2, 60))
+    compare(r.dropped, 0)
+  }
+
+  function test_fold_out_of_order() {
+    var reversed = fixtureRows().reverse()
+    compare(seqList(RE.foldEvents([], reversed, 500).rows), seqRange(2, 60))
+    var all = fixtureRows()
+    var shuffled = []
+    for (var i = 0; i < all.length; i++) shuffled.push(all[(i * 7) % all.length])
+    compare(seqList(RE.foldEvents([], shuffled, 500).rows), seqRange(2, 60))
+    compare(seqList(RE.foldEvents(fixtureRows().reverse(), [], 500).rows), seqRange(2, 60))
+    compare(seqList(RE.foldEvents(shuffled.slice(0, 30), shuffled.slice(30), 500).rows), seqRange(2, 60))
+  }
+
+  function test_fold_dedupe() {
+    var all = fixtureRows()
+    var r = RE.foldEvents(all.slice(0, 39), all.slice(28), 500)
+    compare(all[38].seq, 40)
+    compare(all[28].seq, 30)
+    compare(r.rows.length, 59)
+    compare(seqList(r.rows), seqRange(2, 60))
+    compare(r.dropped, 0)
+    var twice = RE.foldEvents(fixtureRows(), fixtureRows(), 500)
+    compare(twice.rows.length, 59)
+    compare(seqList(twice.rows), seqRange(2, 60))
+    compare(twice.dropped, 0)
+  }
+
+  function test_fold_incoming_wins() {
+    var base = fixtureRows()[8]
+    compare(base.seq, 10)
+    // synthetic: a held row and an incoming row with the same seq
+    var held = copyRow(base)
+    held.label = "old"
+    var incoming = copyRow(base)
+    incoming.label = "new"
+    var r = RE.foldEvents([held], [incoming], 500)
+    compare(r.rows.length, 1)
+    verify(r.rows[0] === incoming)
+    compare(r.rows[0].label, "new")
+    compare(r.dropped, 0)
+    // synthetic: two incoming rows with the same seq
+    var first = copyRow(base)
+    first.label = "first"
+    var second = copyRow(base)
+    second.label = "second"
+    var e = RE.foldEvents([], [first, second], 500)
+    compare(e.rows.length, 1)
+    verify(e.rows[0] === second)
+    // synthetic: two held rows with the same seq and no incoming row
+    var h = RE.foldEvents([first, second], [], 500)
+    compare(h.rows.length, 1)
+    verify(h.rows[0] === second)
+    // synthetic: two rows with seq 0 (eventRow's seq for an event without one)
+    var zeroA = copyRow(base)
+    zeroA.seq = 0
+    var zeroB = copyRow(base)
+    zeroB.seq = 0
+    var z = RE.foldEvents(fixtureRows(), [zeroA, zeroB], 500)
+    compare(z.rows.length, 60)
+    verify(z.rows[0] === zeroB)
+    compare(seqList(z.rows), "0," + seqRange(2, 60))
+  }
+
+  function test_fold_cap() {
+    var all = fixtureRows()
+    var ten = RE.foldEvents([], all, 10)
+    compare(seqList(ten.rows), seqRange(51, 60))
+    compare(ten.dropped, 49)
+    var exact = RE.foldEvents(all.slice(0, 30), all.slice(30), 59)
+    compare(exact.rows.length, 59)
+    compare(exact.dropped, 0)
+    var one = RE.foldEvents(all.slice(0, 30), all.slice(30), 58)
+    compare(seqList(one.rows), seqRange(3, 60))
+    compare(one.dropped, 1)
+    var dup = RE.foldEvents(fixtureRows(), fixtureRows(), 50)
+    compare(dup.rows.length, 50)
+    compare(seqList(dup.rows), seqRange(11, 60))
+    compare(dup.dropped, 9)
+    var heldOnly = RE.foldEvents(fixtureRows(), [], 10)
+    compare(seqList(heldOnly.rows), seqRange(51, 60))
+    compare(heldOnly.dropped, 49)
+  }
+
+  function test_fold_cap_default_and_bad() {
+    // synthetic: 501 copies of one fixture row with seq 1..501
+    var proto = fixtureRows()[0]
+    var big = []
+    for (var i = 1; i <= 501; i++) {
+      var row = copyRow(proto)
+      row.seq = i
+      big.push(row)
+    }
+    var caps = [undefined, null, "10", NaN, Infinity, -1]
+    for (var c = 0; c < caps.length; c++) {
+      var r = RE.foldEvents([], big, caps[c])
+      compare(r.rows.length, 500, String(caps[c]))
+      compare(r.dropped, 1, String(caps[c]))
+      compare(seqList(r.rows), seqRange(2, 501), String(caps[c]))
+    }
+    var omitted = RE.foldEvents([], big)
+    compare(omitted.rows.length, 500)
+    compare(omitted.dropped, 1)
+    compare(omitted.rows[0].seq, 2)
+    compare(omitted.rows[499].seq, 501)
+    var frac = RE.foldEvents([], fixtureRows(), 2.9)
+    compare(seqList(frac.rows), "59,60")
+    compare(frac.dropped, 57)
+    var zero = RE.foldEvents([], fixtureRows(), 0)
+    verify(Array.isArray(zero.rows))
+    compare(zero.rows.length, 0)
+    compare(zero.dropped, 59)
+  }
+
+  function test_fold_bad_inputs() {
+    var empties = [RE.foldEvents(), RE.foldEvents(null, null), RE.foldEvents("x", 5), RE.foldEvents({}, {})]
+    for (var i = 0; i < empties.length; i++) {
+      compare(Object.keys(empties[i]).sort().join(","), "dropped,rows", "case " + i)
+      verify(Array.isArray(empties[i].rows), "case " + i)
+      compare(empties[i].rows.length, 0, "case " + i)
+      compare(empties[i].dropped, 0, "case " + i)
+    }
+    var row = fixtureRows()[0]
+    // synthetic: entries that are not rows
+    var junk = [null, undefined, 5, "x", [], {}, { seq: "3" }, { seq: NaN }, { seq: Infinity }]
+    var inEvents = RE.foldEvents([], junk.concat([row]), 500)
+    compare(inEvents.rows.length, 1)
+    verify(inEvents.rows[0] === row)
+    compare(inEvents.dropped, 0)
+    var inRows = RE.foldEvents(junk.concat([row]), [], 500)
+    compare(inRows.rows.length, 1)
+    verify(inRows.rows[0] === row)
+    compare(inRows.dropped, 0)
+    var capped = RE.foldEvents(junk, junk.concat([row]), 1)
+    compare(capped.rows.length, 1)
+    verify(capped.rows[0] === row)
+    compare(capped.dropped, 0)
+    var all = events()
+    var mapped = []
+    for (var j = 0; j < all.length; j++) mapped.push(RE.eventRow(all[j], titles(), 0))
+    compare(mapped[0], null)
+    var folded = RE.foldEvents([], mapped, 500)
+    compare(folded.rows.length, 59)
+    compare(seqList(folded.rows), seqRange(2, 60))
+    compare(folded.dropped, 0)
+  }
+
+  function test_fold_does_not_mutate() {
+    var all = fixtureRows()
+    var rows = all.slice(20).reverse()
+    var evs = all.slice(0, 40)
+    var rowsBefore = JSON.stringify(rows)
+    var evsBefore = JSON.stringify(evs)
+    var r = RE.foldEvents(rows, evs, 10)
+    compare(JSON.stringify(rows), rowsBefore)
+    compare(JSON.stringify(evs), evsBefore)
+    verify(r.rows !== rows)
+    verify(r.rows !== evs)
+    var rowsLength = rows.length
+    var evsLength = evs.length
+    r.rows.push({ seq: 999 })
+    r.rows.sort(function (a, b) { return b.seq - a.seq })
+    compare(rows.length, rowsLength)
+    compare(evs.length, evsLength)
+    compare(JSON.stringify(rows), rowsBefore)
+    compare(JSON.stringify(evs), evsBefore)
   }
 }

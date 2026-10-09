@@ -105,3 +105,35 @@ function durationText(seconds) {
   var whole = Math.round(seconds)
   return Math.floor(whole / 60) + "m " + _pad2(whole % 60) + "s"
 }
+
+var _DEFAULT_CAP = 500
+
+function _isRow(v) { return _isObject(v) && _isFiniteNumber(v.seq) }
+
+// Folds a page of rows (events) into the held rows: one row per seq, the last
+// taken winning (rows first, then events, each in array order), ascending by
+// seq, then the lowest seqs removed until at most cap remain. An entry counts
+// only when it is a non-array object with a finite number seq; rows or events
+// not an array read as []. cap: floored; 500 when missing, not a finite number
+// or negative. Returns { rows, dropped }, dropped the count removed by the cap.
+// Rows is a new array of the same entry objects; no input is modified.
+function foldEvents(rows, events, cap) {
+  var bySeq = {}
+  var seqs = []
+  var sources = [Array.isArray(rows) ? rows : [], Array.isArray(events) ? events : []]
+  for (var s = 0; s < sources.length; s++) {
+    for (var i = 0; i < sources[s].length; i++) {
+      var row = sources[s][i]
+      if (!_isRow(row)) continue
+      var key = String(row.seq)
+      if (!_has(bySeq, key)) seqs.push(row.seq)
+      bySeq[key] = row
+    }
+  }
+  seqs.sort(function (a, b) { return a - b })
+  var limit = _isFiniteNumber(cap) && cap >= 0 ? Math.floor(cap) : _DEFAULT_CAP
+  var dropped = Math.max(0, seqs.length - limit)
+  var out = []
+  for (var j = dropped; j < seqs.length; j++) out.push(bySeq[String(seqs[j])])
+  return { rows: out, dropped: dropped }
+}
