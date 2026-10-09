@@ -2375,10 +2375,11 @@ TestCase {
     return [
       ["UnknownRunError", "The run no longer exists"],
       ["NotRunningError", "The run is not running"],
-      ["DeadRunError", "The run's process has died; resume it instead"],
+      ["DeadRunError", "The run's process has died, so nobody can act on this request. Resume picks the run up."],
       ["NotAcceptingError", ctlIntegrate],
-      ["RunIsLiveError", "The run is still live; only a dead run can be resumed"],
-      ["NotResumableError", "The run cannot be resumed"],
+      ["RunIsLiveError", "Another am process is still driving this run. Wait for it to stop, or pause it; resume only takes over a run whose process died."],
+      ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
+      ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
       ["ClaimedError", "Another run has already claimed this work"],
       ["LockTimeoutError", "am is busy; try again in a moment"]
     ]
@@ -2386,7 +2387,7 @@ TestCase {
 
   function test_control_error_table() {
     var table = controlErrorTable()
-    compare(table.length, 8)
+    compare(table.length, 9)
     for (var i = 0; i < table.length; i++)
       compare(Runs.controlError({ ok: false, error: { type: table[i][0], message: "am said so" } }), table[i][1],
               table[i][0])
@@ -2404,7 +2405,8 @@ TestCase {
             "Another run has already claimed this work", "type is trimmed")
     compare(Runs.controlError({ type: "\tLockTimeoutError\n" }), "am is busy; try again in a moment", "trimmed, bare")
     compare(Runs.controlError({ ok: false, error: { type: "DeadRunError", message: "pid 42 is gone" } }),
-            "The run's process has died; resume it instead", "the message is not shown for a known type")
+            "The run's process has died, so nobody can act on this request. Resume picks the run up.",
+            "the message is not shown for a known type")
     compare(Runs.controlError({ ok: false, error: { type: "claimederror", message: "m" } }), "claimederror: m",
             "case-sensitive")
     compare(Runs.controlError({ type: "CLAIMEDERROR" }), "CLAIMEDERROR", "case-sensitive, bare")
@@ -2439,6 +2441,17 @@ TestCase {
     compare(Runs.controlError({ ok: false, error: { type: noProto, message: "m" } }), "m",
             "a prototype-less type object reads as no type")
     compare(Runs.controlError({ type: noProto }), "unknown error", "a prototype-less type object alone")
+  }
+
+  function test_control_sentences_are_ascii() {
+    var texts = [Runs.controls(ctlRunOf("escalated", false, true, "task")).resume.reason]
+    var table = controlErrorTable()
+    for (var i = 0; i < table.length; i++)
+      texts.push(Runs.controlError({ ok: false, error: { type: table[i][0], message: "m" } }))
+    for (var j = 0; j < texts.length; j++) {
+      for (var k = 0; k < texts[j].length; k++)
+        verify(texts[j].charCodeAt(k) < 128, "plain ASCII: text " + j + " at " + k)
+    }
   }
 
   // ---- S2 1.2: run alerts ------------------------------------------------------------------

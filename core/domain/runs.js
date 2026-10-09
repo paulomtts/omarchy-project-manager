@@ -919,10 +919,11 @@ function controls(run) {
 var _CONTROL_ERRORS = [
   ["UnknownRunError", "The run no longer exists"],
   ["NotRunningError", "The run is not running"],
-  ["DeadRunError", "The run's process has died; resume it instead"],
+  ["DeadRunError", "The run's process has died, so nobody can act on this request. Resume picks the run up."],
   ["NotAcceptingError", _REASON_INTEGRATE],
-  ["RunIsLiveError", "The run is still live; only a dead run can be resumed"],
-  ["NotResumableError", "The run cannot be resumed"],
+  ["RunIsLiveError", "Another am process is still driving this run. Wait for it to stop, or pause it; resume only takes over a run whose process died."],
+  ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
+  ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
   ["ClaimedError", "Another run has already claimed this work"],
   ["LockTimeoutError", "am is busy; try again in a moment"]
 ]
