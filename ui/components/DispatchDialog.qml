@@ -1052,6 +1052,9 @@ Item {
     cursorIndex: dialog.targetCursor
     onHovered: function(index) { dialog.hoverTarget(index) }
     onActivated: dialog.pickTarget(targetRow.index)
+    // The cursor's row stays in view while the rows around it are laid out.
+    onYChanged: if (targetRow.hasCursor) dialog.reveal(targetFlick, targetRow)
+    onHeightChanged: if (targetRow.hasCursor) dialog.reveal(targetFlick, targetRow)
 
     Row {
       id: targetLine
