@@ -473,3 +473,24 @@ def test_attempt_payloads_carry_no_cost_or_token_keys(am, seeded_run):
     assert attempts, "the seeded run recorded no attempt_upsert"
     for event in attempts:
         assert cost_or_token_keys(event["payload"]) == [], event
+
+
+def missing_logs_follow_options(help_text):
+    """The options `am logs --follow` readers need that `help_text` does not name, in the
+    order --follow, --since-offset."""
+    return [option for option in ("--follow", "--since-offset") if option not in help_text]
+
+
+def test_missing_logs_follow_options_names_each_missing_option():
+    assert missing_logs_follow_options("--follow ... --since-offset BYTES") == []
+    assert missing_logs_follow_options("--phase --attempt") == ["--follow", "--since-offset"]
+    assert missing_logs_follow_options("--follow") == ["--since-offset"]
+
+
+def test_logs_help_lists_the_follow_options(am):
+    proc = am.run("logs", "--help")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    missing = missing_logs_follow_options(proc.stdout)
+    if missing:
+        pytest.fail(f"the installed am logs has no {', '.join(missing)} option "
+                    "(reinstall agent-manager: uv tool install --reinstall)")
