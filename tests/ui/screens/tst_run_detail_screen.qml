@@ -3,7 +3,9 @@
 // attempt tree with its bookkeeping rows, the output pane and the missing-run
 // line. A stub app: a REAL NavigationStore, a plain object carrying the
 // RunStore properties the screen reads (with recorders for selectAttempt and
-// refreshLogs), and a board whose cardMap lends titles and brd statuses.
+// refreshLogs) and, apart, one carrying the RunControlStore properties it
+// reads (with a recorder for control), and a board whose cardMap lends titles
+// and brd statuses.
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
@@ -33,7 +35,6 @@ TestCase {
       property bool logsLoading: false
       property string logsError: ""
       property string amStatus: "ok"
-      property string flashText: ""
       property var selected: null
       property int refreshed: 0
       function selectAttempt(cardId, phase, attempt) {
@@ -41,6 +42,14 @@ TestCase {
         rs.selectedAttempt = { card_id: cardId, phase: phase, attempt: attempt }
       }
       function refreshLogs() { rs.refreshed += 1 }
+    }
+  }
+
+  Component {
+    id: controlC
+    QtObject {
+      id: rc
+      property string flashText: ""
       // The control surface the header reads (S2 4.2). `control` only records.
       property var pending: ({})
       property var stillWaiting: ({})
@@ -49,7 +58,7 @@ TestCase {
       property string lastControlErrorRunId: ""
       property var controlCalls: []
       function control(action, id) {
-        rs.controlCalls = rs.controlCalls.concat([action + "|" + id])
+        rc.controlCalls = rc.controlCalls.concat([action + "|" + id])
         return true
       }
     }
@@ -60,6 +69,7 @@ TestCase {
     QtObject {
       property var nav: null
       property var runs: null
+      property var runControl: null
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" } })
       property var board: ({ cardMap: {
         s1: { id: "s1", title: "Runs screens", status: "in_progress" },
@@ -77,7 +87,8 @@ TestCase {
     if (navComp.status !== Component.Ready) { fail(navComp.errorString()); return null }
     var nav = navComp.createObject(host)
     var runs = runsC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs })
+    var control = controlC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control })
     var sC = Qt.createComponent("../../../ui/screens/RunDetailScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
     var screen = sC.createObject(host, { width: 500, app: app, navigator: null })
@@ -86,7 +97,7 @@ TestCase {
     runs.selectedRunId = selectedId === undefined ? "run-20261004-19efcddc" : selectedId
     runs.selectedAttempt = attempt === undefined ? null : attempt
     wait(20)
-    return { app: app, runs: runs, nav: nav, screen: screen }
+    return { app: app, runs: runs, control: control, nav: nav, screen: screen }
   }
 
   // Two clicks inside the double-click interval make the second a double-click.
@@ -398,23 +409,23 @@ TestCase {
     cancelSpy.target = s.screen
     cancelSpy.clear()
     tap(ctl(s, "Pause"))
-    compare(s.runs.controlCalls.join(","), "pause|run-20261004-19efcddc")
+    compare(s.control.controlCalls.join(","), "pause|run-20261004-19efcddc")
     tap(ctl(s, "Cancel"))
     compare(cancelSpy.count, 1)
     compare(cancelSpy.signalArguments[0][0], "run-20261004-19efcddc")
-    compare(s.runs.controlCalls.length, 1, "cancel never reaches the store")
+    compare(s.control.controlCalls.length, 1, "cancel never reaches the store")
   }
 
   function test_the_runs_own_error_and_waiting_lines() {
     var s = make(detail()); if (!s) return
-    s.runs.lastControlError = "The run no longer exists"
-    s.runs.lastControlErrorRunId = "run-other"
+    s.control.lastControlError = "The run no longer exists"
+    s.control.lastControlErrorRunId = "run-other"
     compare(ctl(s, "Error").visible, false, "another run's error")
-    s.runs.lastControlErrorRunId = "run-20261004-19efcddc"
+    s.control.lastControlErrorRunId = "run-20261004-19efcddc"
     compare(ctl(s, "Error").visible, true)
     compare(ctl(s, "Error").text, "The run no longer exists")
-    s.runs.pending = { "run-20261004-19efcddc": "pause" }
-    s.runs.stillWaiting = { "run-20261004-19efcddc": true }
+    s.control.pending = { "run-20261004-19efcddc": "pause" }
+    s.control.stillWaiting = { "run-20261004-19efcddc": true }
     compare(ctl(s, "Pause").text, "Pause requested…")
     compare(ctl(s, "Waiting").visible, true)
   }
@@ -434,10 +445,10 @@ TestCase {
     var line = H.find(s.screen, "runDetailFlash")
     verify(line, "the flash line")
     compare(line.visible, false)
-    s.runs.flashText = "Integrate is running; it cannot be paused or cancelled"
+    s.control.flashText = "Integrate is running; it cannot be paused or cancelled"
     compare(line.visible, true)
     compare(line.text, "Integrate is running; it cannot be paused or cancelled")
-    s.runs.flashText = ""
+    s.control.flashText = ""
     compare(line.visible, false)
   }
 }
