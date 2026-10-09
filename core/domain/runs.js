@@ -871,6 +871,14 @@ function attemptStatus(run, cardId, phase, attempt) {
   return ""
 }
 
+// The status of the card's first phase named `phase`, step or agent; "" when
+// there is none or its status is not a string.
+function phaseStatus(run, cardId, phase) {
+  if (!_isCardId(cardId)) return ""
+  var p = _findPhase(_findByCardId(_subtasksOf(run), cardId), phase)
+  return _isObject(p) ? _stringOr(p.status) : ""
+}
+
 // Whether a selection is in flight: the run is running and the selection names
 // a real card and a phase, and, with `step: true`, the card's first phase of
 // that name is started (`attempt` is not read), else the attempt

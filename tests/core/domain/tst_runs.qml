@@ -2348,6 +2348,40 @@ TestCase {
     compare(Runs.attemptStatus(run, "t1", "spec", "1"), "", "a string attempt is not a number")
   }
 
+  function test_phase_status() {
+    var card = "2280a6ab-9c40-434b-9729-63fd1f373754"
+    var started = Runs.normalizeRun(amRun("status-started.json"))
+    var before = JSON.stringify(started)
+    compare(Runs.phaseStatus(started, card, "worktree"), "done", "the capture's worktree step")
+    compare(Runs.phaseStatus(started, card, "explore"), "started", "an agent phase's own status")
+    compare(Runs.phaseStatus(started, "00000000-0000-0000-0000-000000000000", "worktree"), "", "an unknown card")
+    compare(Runs.phaseStatus(started, card, "verify"), "", "an unknown phase")
+    var phases = ["", null, undefined, 3, {}, []]
+    for (var i = 0; i < phases.length; i++)
+      compare(Runs.phaseStatus(started, card, phases[i]), "", "phase " + JSON.stringify(phases[i]))
+    var cards = ["", null, undefined, 7, {}]
+    for (var c = 0; c < cards.length; c++)
+      compare(Runs.phaseStatus(started, cards[c], "worktree"), "", "card " + JSON.stringify(cards[c]))
+    var runs = [null, undefined, {}, "x", 5, []]
+    for (var r = 0; r < runs.length; r++)
+      compare(Runs.phaseStatus(runs[r], card, "worktree"), "", "run " + JSON.stringify(runs[r]))
+    compare(JSON.stringify(started), before, "the run is not changed")
+
+    // synthetic: a non-string status, a repeated phase name and bookkeeping ids with started phases
+    var odd = { tree: { subtasks: [
+      { card_id: "t9", phases: [{ name: "verify", status: 5 }, { name: "verify", status: "done" }] },
+      { card_id: "t8", phases: [{ name: "verify", kind: "deterministic", status: "started" }, { name: "verify", status: "done" }] },
+      { card_id: "integrate", phases: [{ name: "integrate", status: "started" }] },
+      { card_id: "bases", phases: [{ name: "bases", status: "started" }] },
+      { card_id: "base-s1", phases: [{ name: "worktree", status: "started" }] }
+    ] } }
+    compare(Runs.phaseStatus(odd, "t9", "verify"), "", "the first phase of the name has no string status")
+    compare(Runs.phaseStatus(odd, "t8", "verify"), "started", "the first phase of that name decides")
+    compare(Runs.phaseStatus(odd, "integrate", "integrate"), "", "integrate is not a card")
+    compare(Runs.phaseStatus(odd, "bases", "bases"), "", "bases is not a card")
+    compare(Runs.phaseStatus(odd, "base-s1", "worktree"), "", "base-* is not a card")
+  }
+
   function test_is_live_selection_garbage() {
     var results = []
     function live(run, sel, label) {
