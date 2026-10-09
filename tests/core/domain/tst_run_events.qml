@@ -623,6 +623,8 @@ TestCase {
                 withStatus(21, "ok"), gate, withStatus(0, "done"), schema,
                 withStatus(17, "started"), harness]
     var expected = [failed, runEsc, storyEsc, subtaskEsc, gate, schema, harness]
+    var levels = ["phase", "run", "story", "subtask", "attempt", "attempt", "attempt"]
+    for (var k = 0; k < expected.length; k++) compare(expected[k].level, levels[k], "level " + k)
     var out = RE.filterRows(rows, "Failures")
     compare(out.length, 7)
     for (var i = 0; i < expected.length; i++) verify(out[i] === expected[i], "row " + i)
