@@ -871,6 +871,20 @@ function attemptStatus(run, cardId, phase, attempt) {
   return ""
 }
 
+// Whether a selection is in flight: the run is running and the selection names
+// a real card and a phase, and, with `step: true`, the card's first phase of
+// that name is started (`attempt` is not read), else the attempt
+// {card_id, phase, attempt} is started. Always a boolean.
+function isLiveSelection(run, sel) {
+  if (runState(run) !== "running" || !_isObject(sel)) return false
+  if (!_isCardId(sel.card_id) || typeof sel.phase !== "string" || sel.phase === "") return false
+  if (sel.step === true) {
+    var p = _findPhase(_findByCardId(_subtasksOf(run), sel.card_id), sel.phase)
+    return p !== null && p.status === "started"
+  }
+  return attemptStatus(run, sel.card_id, sel.phase, sel.attempt) === "started"
+}
+
 // ---- Run controls (S2 1.1) ---------------------------------------------------------------
 //
 // Which of pause / resume / cancel a run allows, and the sentence for an am
