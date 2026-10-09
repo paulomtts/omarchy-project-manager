@@ -544,3 +544,81 @@ def test_unexpected_failure_is_helper_error(world):
     assert lines[0]["error"]["type"] == "HelperError"
     assert lines[0]["error"]["message"].startswith("The log follow failed: ")
     assert "Traceback" not in err
+
+
+# --- stopping: signals and a closed stdout ---------------------------------------------
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT], ids=["SIGTERM", "SIGINT"])
+def test_signal_stops_am_and_exits_zero(world, sig):
+    hello = agent()[0]
+    set_script(world, [step(hello), pause(30)])
+    p = start_helper(world)
+    try:
+        assert read_lines(p, 1) == [hello]  # sync point: am is running, the helper is streaming
+        p.send_signal(sig)
+        code = p.wait(timeout=10)
+        rest, err = p.communicate(timeout=10)
+        assert code == 0, err
+        assert rest == ""  # nothing more printed
+        assert "Traceback" not in err
+        assert_gone(am_pid(world))
+    finally:
+        reap(p)
+        kill_am(world)
+
+
+def test_sigterm_kills_an_am_that_ignores_it(world):
+    hello = agent()[0]
+    set_script(world, [IGNORE_TERM, step(hello), pause(30)])
+    p = start_helper(world)
+    try:
+        assert read_lines(p, 1) == [hello]
+        began = time.monotonic()
+        p.send_signal(signal.SIGTERM)
+        code = p.wait(timeout=10)
+        assert time.monotonic() - began < 5
+        _, err = p.communicate(timeout=10)
+        assert code == 0, err
+        assert "Traceback" not in err
+        assert_gone(am_pid(world))
+    finally:
+        reap(p)
+        kill_am(world)
+
+
+def test_second_sigterm_while_stopping_still_stops_am(world):
+    hello = agent()[0]
+    set_script(world, [IGNORE_TERM, step(hello), pause(30)])
+    p = start_helper(world)
+    try:
+        assert read_lines(p, 1) == [hello]
+        p.send_signal(signal.SIGTERM)
+        time.sleep(0.5)  # the helper is now inside its 2 s wait for am
+        if p.poll() is None:
+            p.send_signal(signal.SIGTERM)
+        code = p.wait(timeout=10)
+        _, err = p.communicate(timeout=10)
+        assert code == 0, err
+        assert "Traceback" not in err
+        assert_gone(am_pid(world), within=0.5)  # killed and reaped before the helper exited
+    finally:
+        reap(p)
+        kill_am(world)
+
+
+def test_closed_stdout_exits_zero(world):
+    hello, chunk, _ = agent()
+    set_script(world, [step(hello)] + [pause(0.2), step(chunk)] * 20 + [pause(30)])
+    p = start_helper(world)
+    try:
+        assert read_lines(p, 1) == [hello]
+        p.stdout.close()  # the reader goes away while am keeps printing chunks
+        code = p.wait(timeout=10)
+        err = p.stderr.read()
+        assert code == 0, err
+        assert "Traceback" not in err
+        assert "BrokenPipeError" not in err
+        assert_gone(am_pid(world))
+    finally:
+        reap(p)
+        kill_am(world)

@@ -30,7 +30,9 @@ printed. am is never left running. Only the `am logs` command is used; am's
 data dir is never read and the hello's path is never opened.
 """
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -40,6 +42,14 @@ USAGE = "usage: runs-logs-follow.py REPO RUN CARD PHASE ATTEMPT [OFFSET]"
 
 class SchemaMismatch(Exception):
     """A hello whose schema is not the integer 1 or 2."""
+
+
+class Stop(Exception):
+    """SIGINT or SIGTERM: the store (or a user) is done with this stream."""
+
+
+def on_signal(signum, frame):
+    raise Stop()
 
 
 def say(payload, code=0):
@@ -102,7 +112,11 @@ def collect(stream, parts):
 
 
 def stop(proc):
-    """Terminate am if it is still running (kill it after 2 s), and reap it."""
+    """Terminate am if it is still running (kill it after 2 s), and reap it.
+    SIGINT and SIGTERM are ignored from here on, so a second one cannot leave am
+    running."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     if proc.poll() is None:
         proc.terminate()
         try:
@@ -120,13 +134,12 @@ def check_hello(hello):
                              + "; this helper reads schema 1 or 2.")
 
 
-
-
 def stream(lines, seen):
     """Print each of am's stdout `lines` that is a JSON object, recording in
     `seen`. An object with an `ok` key read before any printed line is the
     refusal: printed, and every later line ignored. Every other line that is not
-    a JSON object without an `ok` key is skipped and counted. A hello is checked before it is printed. Raises SchemaMismatch."""
+    a JSON object without an `ok` key is skipped and counted. A hello is checked
+    before it is printed. Raises SchemaMismatch."""
     for raw in lines:
         seen.lines += 1
         if seen.refusal:
@@ -189,16 +202,34 @@ def main(argv):
     return finish(code, seen, "".join(err))
 
 
+def quiet_exit():
+    """Ended by a signal or a closed stdout: exit 0 without a traceback. stdout
+    is pointed at /dev/null so the interpreter's final flush cannot raise."""
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except OSError:
+        pass
+    return 0
+
+
 def guarded(argv):
-    """Any unexpected exception ends with one HelperError line, exit 0 (main's
-    finally has already stopped am)."""
+    """SIGINT, SIGTERM and a closed stdout end the helper quietly with exit 0
+    (main's finally has already stopped am). Any other unexpected exception ends
+    with one HelperError line, exit 0."""
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)  # explicit: SIGINT may be inherited as ignored
     try:
         return main(argv)
+    except (Stop, KeyboardInterrupt, BrokenPipeError):
+        return quiet_exit()
     except SystemExit:
         raise
     except BaseException as e:  # noqa: BLE001 - deliberate catch-all
         reason = str(e) or e.__class__.__name__
-        return failure("HelperError", "The log follow failed: " + reason)
+        try:
+            return failure("HelperError", "The log follow failed: " + reason)
+        except BrokenPipeError:
+            return quiet_exit()
 
 
 if __name__ == "__main__":
