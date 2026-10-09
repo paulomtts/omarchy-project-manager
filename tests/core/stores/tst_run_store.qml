@@ -4311,7 +4311,8 @@ TestCase {
     verify(store.runs[1] !== before[1], "the read run was rebuilt in its place")
     compare(store.runs[1].id, tc.doneRun)
     compare(store.runs[1].status, "done")
-    compare(store.runs[1].project.repo_dir, tc.capRoot, "from its remembered am runs row")
+    compare(JSON.stringify(store.runs[1].project), JSON.stringify({ root: tc.capRoot, name: "proj" }), "the read run keeps its project")
+    compare(store.runs[1].milestone_id, "63060df3-f582-4eb9-a56e-44cadb15b693", "rebuilt from its remembered am runs row")
     compare(store.appliedSeq[tc.doneRun], 1005)
     compare(store.appliedSeq[tc.startedRun], 0)
     compare(store.asOfSeq, 0, "a run read leaves asOfSeq")
@@ -4492,6 +4493,93 @@ TestCase {
     compare(store.runs[0].status, "escalated", "applied, as a list snapshot is")
     compare(store.toasts.length, 0, "no toast while closed")
     compare(store.staleTimer.running, false, "no stale clock while closed")
+  }
+
+  // ---- reads, requests and logs across a project switch (3.1)
+
+  // 11 (the run read) and Review Focus 4
+  function test_a_read_with_no_project_open_launches_applies_and_keeps_its_project() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    compare(store.project, "")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("done")])]), 0)
+    var proc = readOf(store, tc.doneRun, 1005)
+    verify(proc, "a run read launches with no project open")
+    compare(argv(proc), tc.readCmd + tc.doneRun)
+    // synthetic: status-escalated.json's data under the done run's id.
+    reply(proc, runReply(tc.doneRun, "status-escalated.json"), 0)
+    var run = store.runById(tc.doneRun)
+    compare(run.status, "escalated", "its reply applies")
+    compare(store.appliedSeq[tc.doneRun], 1005)
+    compare(JSON.stringify(run.project), JSON.stringify({ root: tc.rootB, name: "beta" }), "the read run keeps its project")
+    verify(store.runsByProject[tc.rootB][0] === run, "B's list holds the read run")
+    store.projectRoots = [rootEntry(tc.rootA), { root: tc.rootB, name: "bee" }]
+    compare(store.runById(tc.doneRun).status, "escalated", "a registry change merges the read value")
+    compare(store.runById(tc.doneRun).project.name, "bee")
+  }
+
+  function test_a_read_in_flight_at_a_project_switch_still_applies() {
+    var store = capturedStore(); if (!store) return
+    var proc = readOf(store, tc.doneRun, 1005)
+    store.project = rootB
+    store.project = ""
+    // synthetic: status-escalated.json's data under the done run's id.
+    reply(proc, runReply(tc.doneRun, "status-escalated.json"), 0)
+    compare(store.runs[1].status, "escalated", "applied whatever project is open")
+    compare(store.appliedSeq[tc.doneRun], 1005)
+    compare(store.readRunners.length, 0)
+  }
+
+  // 5 of the coverage rule: a kept run must not lose its row
+  function test_a_run_kept_by_a_failed_root_reads_back_from_its_row() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("done")])]), 0)
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]),
+                                                  failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
+    reply(readOf(store, tc.doneRun, 1005), runReply(tc.doneRun, "status-done.json"), 0)
+    var run = store.runById(tc.doneRun)
+    compare(store.appliedSeq[tc.doneRun], 1005)
+    compare(run.milestone_id, "63060df3-f582-4eb9-a56e-44cadb15b693", "rebuilt from the row B's failed entry kept")
+    compare(run.project.root, tc.rootB)
+  }
+
+  // 12 (the control half)
+  function test_a_control_request_in_flight_at_a_switch_is_settled_without_an_error() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    store.control("pause", "r1")
+    store.control("cancel", "r2")
+    var inFlight = store.controlRunners[0].current
+    reply(store.controlRunners[1].current, ctlOk({ requested_at: "t2" }), 0)
+    compare(store.pending.r2, "cancel", "acknowledged")
+    store.stillWaiting = { r1: true, r2: true }
+    store.project = rootB
+    compare(store.pending.r1, "pause", "in flight until its runner goes idle")
+    reply(inFlight, ctlFail("NotAcceptingError", "x"), 0)
+    compare(store.pending.r1, undefined, "its dropped reply settles it: the buttons come back")
+    compare(store.stillWaiting.r1, undefined)
+    compare(store.lastControlError, "", "with no control error")
+    compare(store.controlRunners.length, 0)
+    compare(store.pending.r2, "cancel", "an acknowledged request stays pending until a snapshot settles it")
+    compare(store.stillWaiting.r2, true)
+  }
+
+  // 12 (the logs half)
+  function test_a_logs_fetch_in_flight_at_a_switch_ends_and_keeps_the_text() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("kept\n"), 0)
+    var fetched = store.logsFetchedMs
+    store.refreshLogs()
+    var pending = store.logsRunner.current
+    compare(store.logsLoading, true)
+    store.project = rootB
+    compare(store.logsLoading, true, "still in flight")
+    reply(pending, logsReply("late\n"), 0)
+    compare(store.logsLoading, false, "the dropped reply ends the fetch")
+    compare(store.logsText, "kept", "the shown text stays")
+    compare(store.logsError, "")
+    compare(store.logsFetchedMs, fetched)
+    compare(store.selectedRunId, "r1")
+    verify(store.selectedAttempt !== null)
   }
 
   // ---- run read refusals (4.1.3)

@@ -826,11 +826,11 @@ Scope {
 
   // ---- run reads
 
-  // One runs-snapshot.py --run RUN on its own runner, for a nudge at seq. It
-  // supersedes an older read of the same run still in flight.
+  // One runs-snapshot.py --run RUN on its own runner, for a nudge at seq,
+  // whatever project is open. It supersedes an older read of the same run
+  // still in flight.
   function readRun(runId, seq) {
-    if (store.project === "") return
-    var runner = readC.createObject(store, { runId: runId, nudgeSeq: seq, madeFor: store.project })
+    var runner = readC.createObject(store, { runId: runId, nudgeSeq: seq })
     var latest = store.copyMap(readState.latest)
     latest[runId] = runner
     readState.latest = latest
@@ -844,8 +844,8 @@ Scope {
   }
 
   // One run read's reply. The runner leaves readRunners and is destroyed. A
-  // reply that is not its run's latest read, or for a project the user has
-  // left, changes nothing. ok:true records its store_id (seeStore): one
+  // reply that is not its run's latest read changes nothing, whatever project
+  // is open. ok:true records its store_id (seeStore): one
   // naming another store than the one last seen is not applied and starts
   // over (resetCursor), raising no toast and leaving amStatus and lastError;
   // else it goes to applyRunRead. UnknownRunError launches one list snapshot:
@@ -857,7 +857,6 @@ Scope {
     var runId = runner.runId
     var seq = runner.nudgeSeq
     var latest = store.hasKey(readState.latest, runId) && readState.latest[runId] === runner
-    var current = latest && runner.madeFor === store.project
     readState.runners = readState.runners.filter(function(r) { return r !== runner })
     if (latest) {
       var next = store.copyMap(readState.latest)
@@ -865,7 +864,7 @@ Scope {
       readState.latest = next
     }
     runner.destroy()
-    if (!current) return
+    if (!latest) return
     var envelope = store.parseEnvelope(stdout)
     if (envelope === null) return
     if (envelope.ok === true) {
@@ -895,11 +894,13 @@ Scope {
 
   // A good run read, {run, as_of_seq, status}: for the run asked, with a
   // non-negative integer as_of_seq and an object status, still in `runs` and
-  // not covered by a newer snapshot, the run at its position is rebuilt from
-  // its remembered `am runs` row and the reply's status (the other runs stay
-  // the same objects) and appliedSeq[run] becomes as_of_seq. Then alerts,
-  // settling, logs and the stale clock as after a list snapshot; asOfSeq,
-  // amStatus and lastError are left alone. Anything else changes nothing.
+  // not covered by a newer read, the run at its position is rebuilt from its
+  // remembered `am runs` row and the reply's status, keeping the replaced
+  // run's project (Runs.withProject), and it replaces that run in its root's
+  // runsByProject list too (withRun); the other runs stay the same objects.
+  // appliedSeq[run] becomes as_of_seq. Then alerts, settling, logs and the
+  // stale clock as after a list snapshot; asOfSeq, amStatus and lastError are
+  // left alone. Anything else changes nothing.
   function applyRunRead(runId, envelope) {
     var asOf = envelope.as_of_seq
     var status = envelope.status
@@ -915,11 +916,15 @@ Scope {
     }
     if (index < 0) return
     var row = store.hasKey(readState.rows, runId) ? readState.rows[runId] : { id: runId }
+    var old = store.runs[index]
+    var project = old.project !== null && typeof old.project === "object" ? old.project : { root: "", name: "" }
+    var rebuilt = Runs.withProject(Runs.normalizeRun({ row: row, status: status }), project.root, project.name)
     var next = store.runs.slice()
-    next[index] = Runs.normalizeRun({ row: row, status: status })
+    next[index] = rebuilt
     // Compared before the runs are replaced; raised below only while open.
     var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, next)
     store.runs = next
+    store.runsByProject = store.withRun(store.runsByProject, project.root, rebuilt)
     var applied = store.copyMap(store.appliedSeq)
     applied[runId] = asOf
     store.appliedSeq = applied
@@ -930,6 +935,21 @@ Scope {
       staleTimer.restart()
       store.raiseAlerts(alerts)
     }
+  }
+
+  // byProject with the run of rebuilt's id replaced by rebuilt in every list
+  // whose root, without its trailing "/", is `root`; the other lists and runs
+  // stay the same objects.
+  function withRun(byProject, root, rebuilt) {
+    var out = {}
+    var keys = Object.keys(byProject)
+    for (var i = 0; i < keys.length; i++) {
+      var list = byProject[keys[i]]
+      out[keys[i]] = store.trimSlashes(keys[i]) !== root ? list : list.map(function(r) {
+        return r !== null && typeof r === "object" && r.id === rebuilt.id ? rebuilt : r
+      })
+    }
+    return out
   }
 
   // ---- run controls (S2 4.1)
@@ -990,8 +1010,8 @@ Scope {
   }
 
   // The request this runner was launched for, while it is still the one
-  // pending for its run; null once it was settled, emptied by a project switch
-  // or replaced by a newer request.
+  // pending for its run; null once it was settled or replaced by a newer
+  // request.
   function requestOf(runner) {
     if (!store.hasKey(controlState.requests, runner.runId)) return null
     var req = controlState.requests[runner.runId]
@@ -1035,6 +1055,16 @@ Scope {
   function dropRunner(runner) {
     controlState.runners = controlState.runners.filter(function(r) { return r !== runner })
     runner.destroy()
+  }
+
+  // A runner whose reply its guard dropped (the open project changed while it
+  // was in flight): a request still pending for its run is settled -- its
+  // buttons come back, with no control error -- and the runner goes. A
+  // request am already acknowledged has no runner left and stays pending
+  // until a snapshot settles it.
+  function controlDropped(runner) {
+    if (store.requestOf(runner) !== null) store.settle(runner.runId)
+    store.dropRunner(runner)
   }
 
   // One run-control.py reply, for the project the request was made in. ok:true
@@ -1632,11 +1662,13 @@ Scope {
 
   // The attempt-logs helper. Guarded by the project, so a reply for a project
   // the user has left is dropped; a newer fetch (another attempt, a Refresh)
-  // wins over an older one.
+  // wins over an older one. Whenever the runner goes idle, dropped reply or
+  // not, no fetch is loading; the shown text, error and time stay.
   HelperRunner {
     id: logsRunner
     script: store.backendDir + "runs/runs-logs.py"
     guard: store.project
+    onBusyChanged: if (!logsRunner.busy) store.logsLoading = false
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
   }
 
@@ -1812,11 +1844,11 @@ Scope {
   }
 
   // One HelperRunner per control request, so requests for different runs never
-  // stop each other. Guarded by the project like the others: a reply for a
-  // project the user has left is dropped, and its runner goes when its process
-  // exits (the runner clears `busy` on that exit but emits no `finished`). No
-  // onGuardChanged: the snapshot runner's already runs projectSwitched(). A
-  // milestone resume uses its runner twice: viewer-state.py, then run-control.py.
+  // stop each other. Guarded by the project: a reply for a project the user
+  // has left is dropped, and when its process exits (the runner clears `busy`
+  // but emits no `finished`) controlDropped settles its request and the
+  // runner goes. A milestone resume uses its runner twice: viewer-state.py,
+  // then run-control.py.
   Component {
     id: controlC
 
@@ -1829,7 +1861,7 @@ Scope {
       property bool settingsStep: false   // reading the run settings; run-control comes next
       guard: store.project
       onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
-      onBusyChanged: if (!cr.busy && cr.guard !== cr.madeFor) store.dropRunner(cr)
+      onBusyChanged: if (!cr.busy && cr.guard !== cr.madeFor) store.controlDropped(cr)
     }
   }
 
@@ -1866,8 +1898,8 @@ Scope {
   }
 
   // One HelperRunner per run read, so reads of different runs run in
-  // parallel. Guard "": readReplied checks the project and the latest read
-  // itself, so every exit lands there and the runner always goes.
+  // parallel. Guard "": readReplied checks the latest read itself, so every
+  // exit lands there and the runner always goes.
   Component {
     id: readC
 
@@ -1875,7 +1907,6 @@ Scope {
       id: rr
       property string runId: ""
       property int nudgeSeq: 0        // the nudge seq it was launched for
-      property string madeFor: ""     // the project the read was made in
       script: store.backendDir + "runs/runs-snapshot.py"
       guard: ""
       onFinished: function(stdout, exitCode) { store.readReplied(rr, stdout) }
