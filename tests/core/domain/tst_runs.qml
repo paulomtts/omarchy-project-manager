@@ -2454,6 +2454,98 @@ TestCase {
     }
   }
 
+  // offersRelaunch(error) is exactly the boolean `want`, never another falsy or truthy value.
+  function checkRelaunch(error, want, label) {
+    var got = Runs.offersRelaunch(error)
+    compare(typeof got, "boolean", label + " is a boolean")
+    compare(got, want, label)
+  }
+
+  function test_offers_relaunch_table() {
+    var table = controlErrorTable()
+    var offered = 0
+    for (var i = 0; i < table.length; i++) {
+      var type = table[i][0]
+      var want = type === "NotResumableError" || type === "CheckpointMismatchError"
+      if (want) offered++
+      checkRelaunch({ ok: false, error: { type: type, message: "m" } }, want, "envelope " + type)
+      checkRelaunch({ type: type }, want, "bare " + type)
+      checkRelaunch({ type: type, message: "m" }, want, "bare with message " + type)
+    }
+    compare(offered, 2, "two types offer relaunch")
+  }
+
+  function test_offers_relaunch_reading() {
+    checkRelaunch({ ok: false, error: { type: "  NotResumableError\n", message: "m" } }, true, "trimmed envelope")
+    checkRelaunch({ type: "  NotResumableError\n" }, true, "trimmed bare")
+    checkRelaunch({ type: " CheckpointMismatchError " }, true, "trimmed bare checkpoint")
+    checkRelaunch({ ok: false, error: { type: "notresumableerror", message: "m" } }, false, "case-sensitive envelope")
+    checkRelaunch({ type: "CHECKPOINTMISMATCHERROR" }, false, "case-sensitive bare")
+    var bare = Object.create(null)
+    bare.type = "CheckpointMismatchError"
+    checkRelaunch(bare, true, "prototype-less bare error")
+    checkRelaunch({ ok: false, type: "NotResumableError", error: { type: "Foo" } }, false,
+                  "the envelope's error wins over a stray outer type")
+    checkRelaunch({ ok: false, type: "Foo", error: { type: "NotResumableError" } }, true,
+                  "the envelope's error is read")
+    checkRelaunch({ ok: true, error: { type: "NotResumableError" } }, false, "ok:true")
+    checkRelaunch({ ok: false, error: "NotResumableError" }, false, "a string error reads the outer object")
+  }
+
+  function test_offers_relaunch_unknown_and_garbage() {
+    checkRelaunch({ ok: false, error: { type: "Foo", message: "bar" } }, false, "unknown type")
+    checkRelaunch({ ok: false, error: { type: "", message: "bar" } }, false, "empty type")
+    checkRelaunch({ type: "" }, false, "empty bare type")
+    var protoNames = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]
+    for (var k = 0; k < protoNames.length; k++) {
+      checkRelaunch({ ok: false, error: { type: protoNames[k], message: "m" } }, false, "envelope " + protoNames[k])
+      checkRelaunch({ type: protoNames[k] }, false, "bare " + protoNames[k])
+    }
+    var noProto = Object.create(null)
+    checkRelaunch({ ok: false, error: { type: noProto, message: "m" } }, false, "prototype-less type object, envelope")
+    checkRelaunch({ type: noProto }, false, "prototype-less type object, bare")
+    var arrayError = []
+    arrayError.type = "NotResumableError"
+    var garbage = [undefined, null, "NotResumableError", 5, true, [], {}, { ok: false }, { ok: true },
+                   Object.create(null), arrayError]
+    for (var i = 0; i < garbage.length; i++)
+      checkRelaunch(garbage[i], false, "garbage " + i)
+  }
+
+  function test_offers_relaunch_parsed_json() {
+    // synthetic: am's reply text as RunStore parses it
+    checkRelaunch(JSON.parse('{"ok": false, "error": {"type": "NotResumableError", "message": "run r1 is cancelled"}}'),
+                  true, "parsed NotResumableError")
+    checkRelaunch(JSON.parse('{"ok": false, "error": {"type": "CheckpointMismatchError", "message": "m"}}'),
+                  true, "parsed CheckpointMismatchError")
+    checkRelaunch(JSON.parse('{"ok": false, "error": {"type": "RunIsLiveError", "message": "run r1 is live"}}'),
+                  false, "parsed RunIsLiveError")
+    checkRelaunch(JSON.parse('{"__proto__": {"type": "NotResumableError"}}'), false,
+                  "an own __proto__ key is not read as the prototype")
+    checkRelaunch(JSON.parse('{"ok": false, "error": {"__proto__": {"type": "NotResumableError"}}}'), false,
+                  "an own __proto__ key inside the envelope")
+  }
+
+  function test_offers_relaunch_agrees_with_control_error() {
+    var relaunchSentences = [controlErrorTable()[5][1], controlErrorTable()[6][1]]
+    var noProto = Object.create(null)
+    noProto.type = "NotResumableError"
+    var inputs = [undefined, null, "x", 5, [], {}, { ok: true }, { ok: false }, noProto,
+                  { type: "Foo" }, { ok: false, error: "CheckpointMismatchError" },
+                  { ok: false, type: "NotResumableError", error: { type: "Foo" } },
+                  { ok: false, type: "Foo", error: { type: "CheckpointMismatchError" } }]
+    var table = controlErrorTable()
+    for (var i = 0; i < table.length; i++) {
+      inputs.push({ ok: false, error: { type: table[i][0], message: "m" } })
+      inputs.push({ type: " " + table[i][0] + " " })
+    }
+    for (var j = 0; j < inputs.length; j++) {
+      var sentence = Runs.controlError(inputs[j])
+      var isRelaunchSentence = sentence === relaunchSentences[0] || sentence === relaunchSentences[1]
+      compare(Runs.offersRelaunch(inputs[j]), isRelaunchSentence, "input " + j + ": " + sentence)
+    }
+  }
+
   // ---- S2 1.2: run alerts ------------------------------------------------------------------
 
   // A tree whose subtask t1 failed review: escalationReason gives "escalated at review".

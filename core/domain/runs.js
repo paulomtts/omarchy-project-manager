@@ -928,18 +928,30 @@ var _CONTROL_ERRORS = [
   ["LockTimeoutError", "am is busy; try again in a moment"]
 ]
 
-// The sentence for a failed pause / resume / cancel. Reads the type the way
-// errorText does (envelope or bare, trimmed, case-sensitive); a known type gives
-// its sentence without am's message, anything else gives errorText(error).
+// The trimmed, case-sensitive type of an am control error, envelope or bare, the
+// way errorText reads it; "" when error is not an object or is ok:true.
+function _controlErrorType(error) {
+  if (!_isObject(error) || error.ok === true) return ""
+  var e = _isObject(error.error) ? error.error : error
+  return _textOf(e.type)
+}
+
+// The sentence for a failed pause / resume / cancel. A known type gives its
+// sentence without am's message; anything else gives errorText(error).
 function controlError(error) {
-  if (_isObject(error) && error.ok !== true) {
-    var e = _isObject(error.error) ? error.error : error
-    var type = _textOf(e.type)
-    for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
-      if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
-    }
+  var type = _controlErrorType(error)
+  for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
+    if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
   }
   return errorText(error)
+}
+
+// Whether a failed control call is answered by relaunching: true exactly when
+// its type (read as controlError reads it) is NotResumableError or
+// CheckpointMismatchError, false for anything else.
+function offersRelaunch(error) {
+  var type = _controlErrorType(error)
+  return type === "NotResumableError" || type === "CheckpointMismatchError"
 }
 
 
