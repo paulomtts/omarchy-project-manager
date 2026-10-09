@@ -104,7 +104,7 @@ QtObject {
   // registry's roots and names in registry order, the selected project's root
   // path (never the project object), the panel-open flag that starts and
   // stops its watch, and the stores its shims read (controlStore,
-  // alertsStore).
+  // alertsStore, dispatchStore).
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
     projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
@@ -113,6 +113,7 @@ QtObject {
     searchQuery: app.nav.searchQuery
     alertsStore: app.runAlerts
     controlStore: app.runControl
+    dispatchStore: app.runDispatch
     onRunFilterToggled: {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
@@ -151,6 +152,25 @@ QtObject {
     active: app.panelOpen
     notifyOnEscalation: app.runControl.notifyOnEscalation
     projectRoots: app.runs.projectRoots
+  }
+
+  // The dispatch never imports the run store: App hands it the backend
+  // directory, the open project's root, the panel-open flag, the run list and
+  // the run settings, routes its refreshRequested to the run store, its
+  // noticeRequested to run control's flash and its runSettingsUpdated into
+  // the run store's runSettings.
+  readonly property RunDispatchStore runDispatch: RunDispatchStore {
+    backendDir: app.backendDir
+    project: app.runs.project
+    active: app.panelOpen
+    runs: app.runs.runs
+    runSettings: app.runs.runSettings
+    onRefreshRequested: function(roots) {
+      if (roots === "all") app.runs.refresh()
+      else app.runs.requestSnapshot(roots)
+    }
+    onNoticeRequested: function(text) { app.runControl.flash(text) }
+    onRunSettingsUpdated: function(settings) { app.runs.runSettings = settings }
   }
 
   readonly property GraphStore graph: GraphStore {

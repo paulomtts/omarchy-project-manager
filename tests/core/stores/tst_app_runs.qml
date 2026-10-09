@@ -6,8 +6,11 @@
 // driven through App, including `app.runAlerts`, which App feeds with the run
 // store's snapshotReplied, and `app.runControl`, whose requests App settles on
 // each ok snapshotReplied and whose refreshRequested App routes to the run
-// store. The stores' own behaviour is tested in tst_run_store.qml,
-// tst_run_alerts_store.qml and tst_run_control_store.qml.
+// store, and `app.runDispatch`, which App feeds with the run store's project,
+// run list and run settings and whose refreshRequested, noticeRequested and
+// runSettingsUpdated App routes. The stores' own behaviour is tested in
+// tst_run_store.qml, tst_run_alerts_store.qml, tst_run_control_store.qml and
+// tst_run_dispatch_store.qml.
 import QtQuick
 import QtTest
 
@@ -675,5 +678,84 @@ TestCase {
     snapshot(app, listReply([escalatedIn("r1"), escalatedIn("r2")], []))
     compare(app.runAlerts.toasts.length, 2, "r2's escalation is raised")
     compare(app.runAlerts.notifyRunners.length, 0, "the switch is off: a toast only")
+  }
+
+  // ---- app.runDispatch (split-runstore 4.1)
+
+  // A-D1
+  function test_app_composes_run_dispatch_wired_to_the_run_store() {
+    var app = make(); if (!app) return
+    verify(app.runDispatch, "App composes the dispatch store")
+    verify(app.runs.dispatchStore === app.runDispatch, "the run store's shim handle")
+    compare(app.runDispatch.backendDir, "/plugin/core/backend/")
+    compare(app.runDispatch.project, "/home/u/my proj")
+    compare(app.runDispatch.active, false)
+    app.panelOpen = true
+    compare(app.runDispatch.active, true, "active follows panelOpen")
+    app.panelOpen = false
+    compare(app.runDispatch.active, false)
+    verify(app.runDispatch.runs === app.runs.runs, "the run store's merged list")
+    reply(app.runs.snapshotRunner.current, listReply([runningIn("r1")], []), 0)
+    compare(app.runDispatch.runs.length, 1)
+    verify(app.runDispatch.runs === app.runs.runs)
+    reply(app.runs.runSettingsRunner.current, dispatchSettings(), 0)
+    verify(app.runDispatch.runSettings === app.runs.runSettings, "the run store's run settings")
+    compare(app.runDispatch.runSettings.parallelism, 4)
+    app.projects.chooseProject(pB)
+    compare(app.runDispatch.project, "/home/u/b", "the project follows the selection")
+  }
+
+  // A-D2 and Review Focus 3
+  function test_a_start_through_app_writes_the_run_settings_back_and_keeps_the_binding() {
+    var app = readyApp(); if (!app) return
+    compare(app.runDispatch.dispatchStart(), true)
+    reply(app.runDispatch.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
+    compare(app.runDispatch.dispatchState, "started")
+    compare(app.runs.runSettings.prefixByMilestone.m1, "old", "the start's values reach the run store")
+    verify(app.runDispatch.runSettings === app.runs.runSettings, "the binding survives the write")
+    app.projects.chooseProject(pB)
+    compare(Object.keys(app.runs.runSettings).length, 0)
+    compare(Object.keys(app.runDispatch.runSettings).length, 0, "B's form will not start from A's settings")
+    reply(app.runs.runSettingsRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
+    compare(app.runDispatch.runSettings.parallelism, 9)
+  }
+
+  // A-D3 and Review Focus 2
+  function test_a_start_through_app_announces_started_once_on_each_store() {
+    var app = readyApp(); if (!app) return
+    var onDispatch = createTemporaryObject(spyC, tc, { target: app.runDispatch, signalName: "dispatchStarted" })
+    var onRuns = createTemporaryObject(spyC, tc, { target: app.runs, signalName: "dispatchStarted" })
+    compare(app.runDispatch.dispatchStart(), true)
+    reply(app.runDispatch.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
+    compare(onDispatch.count, 1)
+    compare(onDispatch.signalArguments[0][0], "r-1")
+    compare(onRuns.count, 1, "re-emitted once: Panel opens the run once")
+    compare(onRuns.signalArguments[0][0], "r-1")
+  }
+
+  // A-D4
+  function test_a_dispatch_notice_through_app_is_run_controls_flash() {
+    var app = readyApp(); if (!app) return
+    compare(app.runDispatch.dispatchStart(), true)
+    var runner = app.runDispatch.dispatchStartRunners[0]
+    reply(runner.current, startOk("r-1", ""), 0)
+    compare(app.runControl.flashText, "")
+    reply(runner.current, ctlFail("Invalid", "x"), 1)
+    compare(app.runControl.flashText, "Dispatch settings could not be saved")
+    compare(app.runControl.flashTimer.running, true)
+  }
+
+  // A-D5 and Review Focus 5
+  function test_closing_the_panel_through_app_keeps_a_start_in_flight() {
+    var app = readyApp(); if (!app) return
+    app.panelOpen = true
+    compare(app.runDispatch.dispatchState, "ready", "opening the panel leaves the dispatch")
+    compare(app.runDispatch.dispatchStart(), true)
+    var proc = app.runDispatch.dispatchStartRunners[0].current
+    app.panelOpen = false
+    compare(app.runDispatch.dispatchState, "starting", "a start in flight is not closed")
+    compare(proc.running, true)
+    reply(proc, startOk("r-1", ""), 0)
+    compare(app.runDispatch.dispatchState, "started", "it lands normally")
   }
 }

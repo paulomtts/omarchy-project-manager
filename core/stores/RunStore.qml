@@ -11,8 +11,8 @@ import "../domain/runs.js" as Runs
 // whose latest entry failed; `runs` every root's runs merged in registry
 // order, a run id listed once, under the first root that lists it. A project
 // switch leaves the run list alone: `project`, the open project, decides only
-// the run settings and the dispatch; the attempt logs act on each run's own
-// project root. Plus the selected run, the
+// the run settings; the attempt logs act on each run's own project
+// root. Plus the selected run, the
 // attempt the Run detail pane shows and that
 // attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
 // asked at all. One list snapshot is in flight at a time, plus at most one
@@ -29,9 +29,8 @@ import "../domain/runs.js" as Runs
 // the watch's last cursor, held in memory only. Logs are fetched on a
 // selection, on Refresh and when a snapshot changes the selected attempt's
 // status -- never on a timer.
-// Dispatch (openDispatch .. dispatchStart) previews a run with
-// dispatch-preview.py and starts it with start-run.py, one HelperRunner per
-// Start. Each applied list snapshot reply is announced per project
+// The dispatch is RunDispatchStore's; its members here are shims through
+// `dispatchStore`. Each applied list snapshot reply is announced per project
 // (snapshotReplied).
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
@@ -172,35 +171,52 @@ Scope {
   function dismissToast(key) { return store.alertsStore ? store.alertsStore.dismissToast(key) : undefined }
   function dismissAllToasts() { return store.alertsStore ? store.alertsStore.dismissAllToasts() : undefined }
   function notify(alert) { return store.alertsStore ? store.alertsStore.notify(alert) : undefined }
+
+  // Moved to RunDispatchStore; removed by the last story
+  property var dispatchStore: null
+  property string dispatchState: "idle"
+  Binding { target: store; property: "dispatchState"; value: store.dispatchStore ? store.dispatchStore.dispatchState : "idle" }
+  onDispatchStateChanged: {
+    var target = store.dispatchStore ? store.dispatchStore.dispatchState : "idle"
+    if (store.dispatchState === target) return
+    if (store.dispatchStore) store.dispatchStore.dispatchState = store.dispatchState
+    else store.dispatchState = "idle"
+  }
+  readonly property var dispatchTarget: store.dispatchStore ? store.dispatchStore.dispatchTarget : null
+  readonly property string dispatchTargetLabel: store.dispatchStore ? store.dispatchStore.dispatchTargetLabel : ""
+  readonly property var dispatchForm: store.dispatchStore ? store.dispatchStore.dispatchForm : null
+  readonly property var dispatchPreview: store.dispatchStore ? store.dispatchStore.dispatchPreview : null
+  readonly property string dispatchError: store.dispatchStore ? store.dispatchStore.dispatchError : ""
+  readonly property string dispatchErrorType: store.dispatchStore ? store.dispatchStore.dispatchErrorType : ""
+  readonly property var dispatchErrors: store.dispatchStore ? store.dispatchStore.dispatchErrors : []
+  readonly property var dispatchSuggest: store.dispatchStore ? store.dispatchStore.dispatchSuggest : null
+  readonly property string dispatchRunId: store.dispatchStore ? store.dispatchStore.dispatchRunId : ""
+  readonly property string dispatchMessage: store.dispatchStore ? store.dispatchStore.dispatchMessage : ""
+  readonly property string dispatchLog: store.dispatchStore ? store.dispatchStore.dispatchLog : ""
+  readonly property string dispatchLogTail: store.dispatchStore ? store.dispatchStore.dispatchLogTail : ""
+  readonly property var dispatchExitCode: store.dispatchStore ? store.dispatchStore.dispatchExitCode : null
+  readonly property var dispatchDefaultsRunner: store.dispatchStore ? store.dispatchStore.dispatchDefaultsRunner : null
+  readonly property var dispatchPreviewRunner: store.dispatchStore ? store.dispatchStore.dispatchPreviewRunner : null
+  readonly property var dispatchDebounceTimer: store.dispatchStore ? store.dispatchStore.dispatchDebounceTimer : null
+  readonly property var dispatchStartRunners: store.dispatchStore ? store.dispatchStore.dispatchStartRunners : []
+  signal dispatchStarted(var runId)
+  Connections {
+    target: store.dispatchStore
+    function onDispatchStarted(runId) { store.dispatchStarted(runId) }
+  }
+  function openDispatch(card, cardMap) { return store.dispatchStore ? store.dispatchStore.openDispatch(card, cardMap) : undefined }
+  function closeDispatch() { return store.dispatchStore ? store.dispatchStore.closeDispatch() : undefined }
+  function retargetToMilestone() { return store.dispatchStore ? store.dispatchStore.retargetToMilestone() : undefined }
+  function setDispatchField(name, value) { return store.dispatchStore ? store.dispatchStore.setDispatchField(name, value) : undefined }
+  function dispatchStart() { return store.dispatchStore ? store.dispatchStore.dispatchStart() : undefined }
+  function checkDispatch() { return store.dispatchStore ? store.dispatchStore.checkDispatch() : undefined }
+
   // The open project's last get-run-settings object (runSettingsRunner), as
   // it was read: {} until its reply, when the reply is unreadable, and after
   // a project switch. The dispatch form starts from it; its
   // notifyOnEscalation is never read.
   property var runSettings: ({})
 
-  // Dispatch (S3 3.1): starting an am run. The UI opens it for a target
-  // (openDispatch), edits the form (setDispatchField) and presses Start
-  // (dispatchStart); the store checks the form, previews it with
-  // dispatch-preview.py and starts it with start-run.py. `dispatchState` is
-  // idle | previewing | ready | refused | starting | started | failed. Every
-  // object here is replaced, never changed in place.
-  property string dispatchState: "idle"
-  property var dispatchTarget: null     // Runs.dispatchPlan of the opened target; null while idle
-  property string dispatchTargetLabel: "" // Runs.dispatchLabel of the opened target; "" while idle
-  property var dispatchForm: null       // {base, prefix, verify, parallelism, allowNoVerification}; null while idle
-  property var dispatchPreview: null    // Runs.previewSummary of the latest good preview
-  property string dispatchError: ""     // the sentence for refused / failed
-  property string dispatchErrorType: "" // am's or the helper's error.type, "Form", "Target" or ""
-  property var dispatchErrors: []       // Runs.validateDispatch errors of a form refusal
-  property var dispatchSuggest: null    // a blocked story's milestone {id, title}, which retargetToMilestone() opens; else null
-  property string dispatchRunId: ""     // the started run's id; "" when none (yet)
-  property string dispatchMessage: ""   // start-run.py's message after a start
-  property string dispatchLog: ""       // a failed start's log path
-  property string dispatchLogTail: ""   // the end of that log
-  property var dispatchExitCode: null   // a failed start's exit code, when a number
-  // A start for the current project went: the run id, or null while am does
-  // not list it yet.
-  signal dispatchStarted(var runId)
   // A debounce window's nudged run ids, each once, in first-nudge order,
   // known to the store or not. Never for a snapshot the store started itself.
   // (`runs` already owns the runsChanged name.)
@@ -226,10 +242,6 @@ Scope {
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
   readonly property alias runSettingsRunner: runSettingsRunner
-  readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
-  readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
-  readonly property alias dispatchDebounceTimer: dispatchDebounceTimer
-  readonly property alias dispatchStartRunners: dispatchBook.runners // in-flight start runners, oldest first
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -375,8 +387,7 @@ Scope {
     store.refresh()
   }
 
-  // The panel closed: no process and no timer is left running, and no
-  // dispatch outlives the opening (a start in flight runs to its end). The
+  // The panel closed: no process and no timer is left running. The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
   // and is applied. The project filter is back to All projects, with no
   // projectFilterToggled. The runs, the selection, the chip and amStatus stay
@@ -391,8 +402,6 @@ Scope {
     staleTimer.stop()
     store.stale = false
     store.watchWarning = ""
-    // A start in flight refuses and lands normally.
-    store.closeDispatch()
   }
 
   // Nothing is stale yet; the 30 s clock starts again while the panel is open.
@@ -660,12 +669,9 @@ Scope {
   // Another project was opened, or none. The run list, the selection, the
   // logs, the watch, the coverage and the notify switch belong to every
   // registered project and stay, and no snapshot is launched. Reset: the run settings
-  // (loaded for the new project on runSettingsRunner) and the dispatch.
+  // (loaded for the new project on runSettingsRunner).
   function projectSwitched() {
     store.runSettings = {}
-    // The dispatch is the old project's, even mid-start: a start already
-    // launched still runs, and its reply is no longer this dispatch's.
-    store.resetDispatch()
     runSettingsRunner.guard = store.project
     if (store.project !== "") runSettingsRunner.run(["get-run-settings", store.project])
   }
@@ -1054,342 +1060,6 @@ Scope {
     store.runSettings = settings !== null ? settings : {}
   }
 
-  // ---- dispatch (S3 3.1)
-
-  // No refusal, failure or suggestion to show.
-  function clearDispatchError() {
-    store.dispatchError = ""
-    store.dispatchErrorType = ""
-    store.dispatchErrors = []
-    store.dispatchLog = ""
-    store.dispatchLogTail = ""
-    store.dispatchExitCode = null
-    store.dispatchSuggest = null
-  }
-
-  // Every dispatch field back to its "none" value; runSettings stays. The
-  // pending check, the preview and the defaults lookup are dropped; a start
-  // already launched runs on, but its reply is no longer this dispatch's.
-  function resetDispatch() {
-    dispatchDebounceTimer.stop()
-    dispatchPreviewRunner.cancel()
-    dispatchDefaultsRunner.cancel()
-    dispatchBook.startRunner = null
-    dispatchBook.baseTouched = false
-    dispatchBook.defaultsPending = false
-    dispatchBook.cardMap = null
-    dispatchBook.milestone = null
-    store.dispatchState = "idle"
-    store.dispatchTarget = null
-    store.dispatchTargetLabel = ""
-    store.dispatchForm = null
-    store.dispatchPreview = null
-    store.clearDispatchError()
-    store.dispatchRunId = ""
-    store.dispatchMessage = ""
-  }
-
-  // Opens the dispatch for a brd card (as Board.indexTree() leaves it) or
-  // "board", with its {id: card} map, and returns whether it may be started.
-  // Refused (false, nothing changes) without a project or while a start is in
-  // flight. Every opening sets dispatchTargetLabel and records cardMap and
-  // cardMap's entry for the target's milestone (Runs.dispatchMilestone), or
-  // null. A target dispatchPlan does not offer is `refused` at once; any
-  // other starts from dispatchDefaults with this project's runSettings and
-  // the Runs snapshot, and looks up the default branch before anything is
-  // checked.
-  function openDispatch(card, cardMap) {
-    if (store.project === "" || store.dispatchState === "starting") return false
-    store.resetDispatch()
-    var plan = Runs.dispatchPlan(card, cardMap)
-    var milestone = Runs.dispatchMilestone(card, cardMap)
-    var isMap = cardMap !== null && typeof cardMap === "object"
-    dispatchBook.cardMap = cardMap
-    dispatchBook.milestone = milestone !== null && isMap && Runs.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
-    store.dispatchTarget = plan
-    store.dispatchTargetLabel = Runs.dispatchLabel(card, cardMap)
-    if (!plan.offered) {
-      store.dispatchState = "refused"
-      store.dispatchError = plan.reason
-      store.dispatchErrorType = "Target"
-      return false
-    }
-    var d = Runs.dispatchDefaults({ defaultBranch: "", settings: store.runSettings }, card, cardMap, store.runs)
-    store.dispatchForm = { base: d.base, prefix: d.prefix, verify: d.verify, parallelism: d.parallelism,
-                           allowNoVerification: d.allowNoVerification }
-    store.dispatchState = "previewing"
-    dispatchBook.defaultsPending = true
-    dispatchDefaultsRunner.run(["--defaults", store.project])
-    return true
-  }
-
-  // Back to idle. Refused while a start is in flight: its outcome must land in
-  // a dialog that still shows what was started.
-  function closeDispatch() {
-    if (store.dispatchState === "starting") return false
-    store.resetDispatch()
-    return true
-  }
-
-  // The milestone a StoryBlockedError refusal offers: the recorded milestone
-  // card as Runs.dispatchMilestone's {id, title} when the target is a story
-  // and its milestone is known, else null.
-  function blockedSuggest() {
-    if (store.dispatchTarget === null || store.dispatchTarget.level !== "story" || dispatchBook.milestone === null) return null
-    return Runs.dispatchMilestone(dispatchBook.milestone, dispatchBook.cardMap)
-  }
-
-  // From a blocked story's refusal (`refused` with a dispatchSuggest), opens
-  // the dispatch afresh on the milestone card and cardMap recorded at the
-  // story's opening and returns openDispatch's result. Refused (false,
-  // nothing changes) in any other state or refusal.
-  function retargetToMilestone() {
-    if (store.dispatchState !== "refused" || store.dispatchSuggest === null) return false
-    return store.openDispatch(dispatchBook.milestone, dispatchBook.cardMap)
-  }
-
-  // A copy of the form with one field set as given; verify is copied as a
-  // fresh array when it is one. The store converts nothing else.
-  function withField(form, name, value) {
-    var next = Runs.copyMap(form)
-    next[name] = name === "verify" && Array.isArray(value) ? value.slice() : value
-    return next
-  }
-
-  // The helpers' target words: milestone ID, card ID or board.
-  function dispatchTargetArgs() {
-    var plan = store.dispatchTarget
-    return plan.command === "board" ? ["board"] : [plan.command, plan.flags[1]]
-  }
-
-  // The form's verify commands that are non-blank strings, verbatim, in order.
-  function dispatchCommands(form) {
-    var list = Array.isArray(form.verify) ? form.verify : []
-    return list.filter(function(c) { return typeof c === "string" && c.trim() !== "" })
-  }
-
-  // The options the preview and the start share. A blank base is left out, so
-  // am uses its own default; each verify command is one argument.
-  function dispatchOptionArgs() {
-    var form = store.dispatchForm
-    var args = []
-    var base = typeof form.base === "string" ? form.base.trim() : ""
-    if (base !== "") args.push("--base-branch", base)
-    args.push("--branch-prefix", form.prefix.trim(), "--max-concurrent", String(form.parallelism))
-    var commands = store.dispatchCommands(form)
-    for (var i = 0; i < commands.length; i++) args.push("--verify", commands[i])
-    if (form.allowNoVerification === true) args.push("--allow-no-verification")
-    return args
-  }
-
-  // The --defaults reply: a non-blank default branch becomes base unless the
-  // user set base since the opening; anything else leaves base as it is.
-  // Then the form is checked at once.
-  function dispatchDefaultsReplied(stdout) {
-    if (!dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
-    dispatchBook.defaultsPending = false
-    var envelope = Results.parseEnvelope(stdout)
-    var data = envelope !== null && envelope.ok === true ? envelope.data : null
-    var branch = data !== null && typeof data === "object" && typeof data.default_branch === "string"
-        ? data.default_branch.trim() : ""
-    if (branch !== "" && !dispatchBook.baseTouched) store.dispatchForm = store.withField(store.dispatchForm, "base", branch)
-    store.checkDispatch()
-  }
-
-  // The form is checked: an invalid one is refused and launches nothing, a
-  // subtask is ready (am has no dry run for one card), a milestone, a story
-  // or the board is previewed. Waits for the defaults lookup, whose reply checks.
-  function checkDispatch() {
-    if (dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
-    dispatchDebounceTimer.stop()
-    var result = Runs.validateDispatch(store.dispatchForm)
-    if (!result.ok) {
-      store.dispatchState = "refused"
-      store.dispatchErrors = result.errors
-      store.dispatchError = result.errors[0].message
-      store.dispatchErrorType = "Form"
-      return
-    }
-    if (store.dispatchTarget.level === "subtask") {
-      store.dispatchState = "ready"
-      return
-    }
-    dispatchPreviewRunner.run([store.project].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
-  }
-
-  // The newest preview's reply for this project and these values (a form
-  // change cancels the runner). ok: ready with Runs.previewSummary for the
-  // target's level, except a story with nothing left, refused as `Nothing
-  // left to run` (Empty); am's refusal: its message verbatim, and for a
-  // StoryBlockedError the blockedSuggest() milestone; anything else cannot
-  // be read.
-  function dispatchPreviewReplied(stdout) {
-    if (store.dispatchState !== "previewing") return
-    var envelope = Results.parseEnvelope(stdout)
-    if (envelope !== null && envelope.ok === true) {
-      var level = store.dispatchTarget.level
-      var preview = Runs.previewSummary(envelope.data, level)
-      if (level === "story" && preview.summary === "Nothing left to run") {
-        store.dispatchState = "refused"
-        store.dispatchError = preview.summary
-        store.dispatchErrorType = "Empty"
-        return
-      }
-      store.dispatchPreview = preview
-      store.dispatchState = "ready"
-      return
-    }
-    var err = envelope !== null && envelope.ok === false ? envelope.error : null
-    var message = err !== null && typeof err === "object" && typeof err.message === "string" ? err.message : ""
-    store.dispatchState = "refused"
-    if (message.trim() !== "") {
-      store.dispatchError = message
-      store.dispatchErrorType = typeof err.type === "string" ? err.type : ""
-      if (store.dispatchErrorType === "StoryBlockedError") store.dispatchSuggest = store.blockedSuggest()
-    } else {
-      store.dispatchError = "The preview could not be read"
-      store.dispatchErrorType = ""
-    }
-  }
-
-  // One form field changed (name one of base, prefix, verify, parallelism,
-  // allowNoVerification) while the form may be edited: back to previewing,
-  // the preview, any refusal or failure and any preview in flight dropped,
-  // and the 400 ms check restarted, so a burst of changes costs one check.
-  // Refused (false, nothing changes) for another name, without a form, and
-  // while idle, starting or started.
-  function setDispatchField(name, value) {
-    if (["base", "prefix", "verify", "parallelism", "allowNoVerification"].indexOf(name) < 0) return false
-    var state = store.dispatchState
-    if (state !== "previewing" && state !== "ready" && state !== "refused" && state !== "failed") return false
-    if (store.dispatchForm === null) return false
-    store.dispatchForm = store.withField(store.dispatchForm, name, value)
-    if (name === "base") dispatchBook.baseTouched = true
-    store.dispatchState = "previewing"
-    store.dispatchPreview = null
-    store.clearDispatchError()
-    dispatchPreviewRunner.cancel()
-    dispatchDebounceTimer.restart()
-    return true
-  }
-
-  // A fresh {milestone id: prefix} map: stored's own entries when stored is
-  // an object that is not an array, then entry's, which override them, as
-  // set-run-settings merges prefixByMilestone.
-  function mergedPrefixes(stored, entry) {
-    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? Runs.copyMap(stored) : {}
-    for (var id in entry) merged[id] = entry[id]
-    return merged
-  }
-
-  // Start: only from ready. start-run.py runs on a HelperRunner of its own
-  // (guard "", madeFor this project), which no preview, project switch or
-  // other Start stops. The settings a successful start saves are fixed now,
-  // from this project's runSettings: the non-blank verify commands sent, the
-  // opt-out, the prefix sent followed by the stored history without it (at
-  // most 20), the parallelism and, for a story or milestone whose milestone
-  // card is known, prefixByMilestone {<milestone id>: prefix sent}.
-  function dispatchStart() {
-    if (store.dispatchState !== "ready") return false
-    var form = store.dispatchForm
-    var prefix = form.prefix.trim()
-    var history = [prefix]
-    var stored = Array.isArray(store.runSettings.prefixHistory) ? store.runSettings.prefixHistory : []
-    for (var i = 0; i < stored.length && history.length < 20; i++) {
-      var p = stored[i]
-      if (typeof p === "string" && p.trim() !== "" && p !== prefix) history.push(p)
-    }
-    var saved = { verify: store.dispatchCommands(form), allowNoVerification: form.allowNoVerification === true,
-                  prefixHistory: history, parallelism: form.parallelism }
-    var level = store.dispatchTarget.level
-    if ((level === "story" || level === "milestone") && dispatchBook.milestone !== null) {
-      var keyed = {}
-      keyed[dispatchBook.milestone.id] = prefix
-      saved.prefixByMilestone = keyed
-    }
-    var runner = dispatchStartC.createObject(store, { madeFor: store.project, savedJson: JSON.stringify(saved) })
-    dispatchBook.runners = dispatchBook.runners.concat([runner])
-    dispatchBook.startRunner = runner
-    store.dispatchState = "starting"
-    runner.run([store.project].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
-    return true
-  }
-
-  // A start runner's reply is this dispatch's: it was made in the current
-  // project and is the runner that put the store into `starting` (an idle
-  // reset, and so a project switch, forgets it).
-  function isHereStart(runner) {
-    return runner.madeFor === store.project && dispatchBook.startRunner === runner
-  }
-
-  // start-run.py's reply. When it is this dispatch's: ok gives `started`,
-  // the run id and message, the saved values in runSettings (prefixByMilestone
-  // merged per milestone id), a re-snapshot and dispatchStarted(id or null);
-  // a StoryBlockedError gives `refused` with am's message, no log fields and
-  // the blockedSuggest() milestone; anything else gives `failed` with what
-  // the helper said. After any successful start, wherever it was made, the
-  // same runner writes the saved values for the project it was made in.
-  function dispatchStartReplied(runner, stdout) {
-    if (runner.saving) {
-      store.dispatchSaveReplied(runner, stdout)
-      return
-    }
-    var here = store.isHereStart(runner)
-    var envelope = Results.parseEnvelope(stdout)
-    if (envelope !== null && envelope.ok === true) {
-      if (here) {
-        store.dispatchRunId = typeof envelope.run_id === "string" ? envelope.run_id : ""
-        store.dispatchMessage = typeof envelope.message === "string" ? envelope.message : ""
-        var settings = Runs.copyMap(store.runSettings)
-        // Parsed from the JSON that is written: a var property hands back a
-        // list Runs.dispatchDefaults does not take for an array.
-        var saved = JSON.parse(runner.savedJson)
-        for (var key in saved) {
-          settings[key] = key === "prefixByMilestone" ? store.mergedPrefixes(settings.prefixByMilestone, saved[key]) : saved[key]
-        }
-        store.runSettings = settings
-        store.dispatchState = "started"
-        store.refresh()
-        store.dispatchStarted(store.dispatchRunId !== "" ? store.dispatchRunId : null)
-      }
-      runner.saving = true
-      runner.script = store.backendDir + "projects/viewer-state.py"
-      runner.run(["set-run-settings", runner.madeFor, runner.savedJson])
-      return
-    }
-    if (here) {
-      var failure = envelope !== null && envelope.ok === false ? envelope : {}
-      var err = failure.error
-      var isErr = err !== null && err !== undefined && typeof err === "object"
-      var message = isErr && typeof err.message === "string" ? err.message : ""
-      var type = isErr && typeof err.type === "string" ? err.type : ""
-      var blocked = type === "StoryBlockedError"
-      store.dispatchState = blocked ? "refused" : "failed"
-      store.dispatchError = message.trim() !== "" ? message : "The launch could not be read"
-      store.dispatchErrorType = type
-      store.dispatchLog = !blocked && typeof failure.log === "string" ? failure.log : ""
-      store.dispatchLogTail = !blocked && typeof failure.log_tail === "string" ? failure.log_tail : ""
-      store.dispatchExitCode = !blocked && typeof failure.exit_code === "number" ? failure.exit_code : null
-      store.dispatchSuggest = blocked ? store.blockedSuggest() : null
-    }
-    store.dropStartRunner(runner)
-  }
-
-  // set-run-settings after a start: a failure is said only while the
-  // dispatch is still this one. The runner then goes.
-  function dispatchSaveReplied(runner, stdout) {
-    var reply = Results.parseEnvelope(stdout)
-    if (store.isHereStart(runner) && !(reply !== null && reply.ok === true)) store.flash("Dispatch settings could not be saved")
-    store.dropStartRunner(runner)
-  }
-
-  // A start runner's work is over: it leaves dispatchStartRunners and is destroyed.
-  function dropStartRunner(runner) {
-    dispatchBook.runners = dispatchBook.runners.filter(function(r) { return r !== runner })
-    if (dispatchBook.startRunner === runner) dispatchBook.startRunner = null
-    runner.destroy()
-  }
-
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is
   // matched to the registry by root, whatever project is open. Only
   // refresh() with no usable root and resetCursor() stop it.
@@ -1418,23 +1088,6 @@ Scope {
     id: runSettingsRunner
     script: store.backendDir + "projects/viewer-state.py"
     onFinished: function(stdout, exitCode) { store.applyRunSettings(stdout, exitCode) }
-  }
-
-  // dispatch-preview.py --defaults, once per opening. Guarded by the project:
-  // a reply for a project the user has left is dropped.
-  HelperRunner {
-    id: dispatchDefaultsRunner
-    script: store.backendDir + "runs/dispatch-preview.py"
-    guard: store.project
-    onFinished: function(stdout, exitCode) { store.dispatchDefaultsReplied(stdout) }
-  }
-
-  // The dispatch preview; latest wins, and every form change cancels it.
-  HelperRunner {
-    id: dispatchPreviewRunner
-    script: store.backendDir + "runs/dispatch-preview.py"
-    guard: store.project
-    onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
   }
 
   // A burst of changed lines is taken in one go (triggerNudges).
@@ -1475,15 +1128,6 @@ Scope {
     onTriggered: store.refresh()
   }
 
-  // only while a change waits to be checked.
-  Timer {
-    id: dispatchDebounceTimer
-    objectName: "dispatchDebounceTimer"
-    interval: 400
-    repeat: false
-    onTriggered: store.checkDispatch()
-  }
-
   // What the watch Process aliases read; kept apart so consumers cannot write it.
   // `roots` are the roots the current watch was launched with.
   QtObject {
@@ -1500,41 +1144,6 @@ Scope {
     id: snapshotState
     property var roots: []
     property var pending: null
-  }
-
-  // The dispatch's own bookkeeping; kept apart so consumers cannot write it.
-  // `startRunner` is the runner that put the store into `starting`, forgotten
-  // by an idle reset (and so by a project switch); `baseTouched` says the user
-  // set base since the opening; `defaultsPending` that the --defaults lookup
-  // has not replied yet; `cardMap` and `milestone` are the opening's card map
-  // and its entry for the target's milestone card (null when unknown).
-  QtObject {
-    id: dispatchBook
-    property var runners: []
-    property var startRunner: null
-    property bool baseTouched: false
-    property bool defaultsPending: false
-    property var cardMap: null
-    property var milestone: null
-  }
-
-  // One HelperRunner per Start. Guard "": start-run.py may take ~20 s, and
-  // neither a preview, a project switch nor a Start in another project may
-  // stop it. After a successful start the same runner writes the settings
-  // for `madeFor`; it goes when that write replies, or at once after a
-  // failed start.
-  Component {
-    id: dispatchStartC
-
-    HelperRunner {
-      id: sr
-      property string madeFor: ""     // the project the start was made in
-      property string savedJson: ""   // `saved` as set-run-settings takes it
-      property bool saving: false     // the settings write is in flight
-      script: store.backendDir + "runs/start-run.py"
-      guard: ""
-      onFinished: function(stdout, exitCode) { store.dispatchStartReplied(sr, stdout) }
-    }
   }
 
   // One Process per watch launch, so each carries what it was launched with.
