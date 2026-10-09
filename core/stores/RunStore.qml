@@ -134,6 +134,9 @@ Scope {
   property string eventsStatus: "idle" // idle | loading | ok | error
   property string eventsError: ""     // why the last fetch failed; "" after a good one and after a reset
   property string eventsFilter: "All" // All | Phases | Failures, read by RunEvents.filterRows; the store never sets it
+  // Run detail's bottom area: output | events. Every selectedRunId change
+  // sets it to output; only setDetailTab and toggleDetailTab change it otherwise.
+  property string detailTab: "output"
 
   // Run controls (S2 4.1). `pending` holds the requests not yet settled,
   // {runId: action}; `stillWaiting` the pending ones 30 s or more old,
@@ -860,11 +863,25 @@ Scope {
   }
 
   // Another run (or none): the pane starts over on that run's default
-  // attempt, and the events start over (selectEvents).
+  // attempt, the events start over (selectEvents) and the tab is Output.
   onSelectedRunIdChanged: {
     store.clearLogs()
     if (store.selectedRunId !== "") store.openDefaultAttempt()
     store.selectEvents()
+    store.detailTab = "output"
+  }
+
+  // "output" or "events": sets detailTab and returns true; anything else
+  // leaves it and returns false.
+  function setDetailTab(tab) {
+    if (tab !== "output" && tab !== "events") return false
+    store.detailTab = tab
+    return true
+  }
+
+  // output -> events, events -> output.
+  function toggleDetailTab() {
+    store.detailTab = store.detailTab === "events" ? "output" : "events"
   }
 
   // ---- the selected run's events (3.1)
