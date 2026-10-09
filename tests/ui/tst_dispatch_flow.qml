@@ -363,8 +363,8 @@ TestCase {
 
   // ---- the Runs entry
 
-  // 21
-  function test_the_runs_toolbar_opens_the_whole_board_with_a_row_of_targets() {
+  // 21 (spec 12)
+  function test_the_runs_toolbar_opens_the_project_step() {
     var p = make(); if (!p) return
     compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 }), true)
     wait(50)
@@ -373,44 +373,61 @@ TestCase {
     compare(button.enabled, true)
     compare(String(button.tooltipText), "Start an am run")
     button.clicked()
-    compare(H.find(p, "dispatchDialog").visible, true)
-    compare(p.dispatchCardId, "")
-    compare(text(p, "dispatchTarget"), "Target   Whole board")
-    compare(H.find(p, "dispatchTargetChoices").visible, true)
-    compare(p.dispatchChoices.map(function(c) { return c.id + ":" + c.label }).join(","), "board:Whole board,m1:M one")
-    verify(H.find(p, "dispatchTargetChoiceboard"), "the board chip")
-    verify(!H.find(p, "dispatchTargetChoicem9"), "a done milestone is not offered")
-    compare(H.find(p, "dispatchTargetChoiceboard").active, true)
-    // The board has no milestone to name a branch prefix after: refused until one is typed.
-    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
-    compare(p.app.runs.dispatchState, "refused")
-    compare(H.find(p, "dispatchTargetChoices").visible, true, "a refused board keeps its row")
-    H.find(p, "dispatchTargetChoicem1").clicked()
-    compare(p.dispatchCardId, "m1")
-    compare(p.app.runs.dispatchState, "previewing")
-    compare(text(p, "dispatchTarget"), "Target   Milestone \"M one\"")
-    compare(H.find(p, "dispatchTargetChoices").visible, true, "the row survives a re-target")
-    compare(p.dispatchChoices.length, 2)
-    compare(H.find(p, "dispatchTargetChoicem1").active, true)
-    compare(H.find(p, "dispatchTargetChoiceboard").active, false)
-    H.find(p, "dispatchCancel").clicked()
-    compare(H.find(p, "dispatchDialog").visible, false)
-    compare(p.dispatchChoices.length, 0, "a close drops the row")
-    dispatchCard(p, "m1")
-    compare(H.find(p, "dispatchDialog").visible, true)
-    compare(H.find(p, "dispatchTargetChoices").visible, false, "the card detail has no row")
+    var dialog = H.find(p, "dispatchDialog")
+    compare(dialog.visible, true)
+    compare(p.app.runs.dispatchStep, "project")
+    compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.runs.dispatchRoot, "")
+    compare(String(dialog.step), "project")
+    compare(H.find(p, "dispatchProjectList").visible, true)
+    compare(H.find(p, "dispatchTarget").visible, false, "not the whole board")
+    compare(H.find(p, "dispatchTargetChoices").visible, false, "no row of targets")
+    p.app.runs.closeDispatch()
   }
 
-  // 30
-  function test_a_project_switch_drops_the_dialog_and_its_targets() {
+  // 30 (spec 13): a card dialog closes on a project switch; a Runs dialog
+  // stays (tests/ui/tst_runs_flow.qml).
+  function test_a_project_switch_closes_a_card_dialog() {
     var p = make(); if (!p) return
-    p.navigator.showSection("runs")
-    H.find(p, "startRunButton").clicked()
-    compare(p.dispatchChoices.length, 2)
+    dispatchCard(p, "m1")
+    compare(H.find(p, "dispatchDialog").visible, true)
     p.navigator.chooseProject(tc.pB)
+    if (p.app.extras.exportProc) {
+      p.app.extras.exportProc.running = false
+      p.app.extras.exportProc.launchGuard = "stale"
+    }
+    p.app.runs.settingsLoadRunner.cancel()
+    p.app.runs.runSettingsRunner.cancel()
     compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.runs.dispatchStep, "")
     compare(H.find(p, "dispatchDialog").visible, false)
-    compare(p.dispatchChoices.length, 0)
+  }
+
+  // spec 14: the card entry points skip the Runs steps.
+  function test_the_card_entries_open_the_form_at_once_data() {
+    return [{ tag: "card-detail" }, { tag: "d-on-the-board" }]
+  }
+
+  function test_the_card_entries_open_the_form_at_once(data) {
+    var p = make(); if (!p) return
+    if (data.tag === "card-detail") {
+      dispatchCard(p, "m1")
+    } else {
+      p.navigator.showSection("board")
+      p.app.nav.cursorIndex = 0
+      wait(50)
+      H.find(p, "searchField").forceActiveFocus()
+      keyClick("d")
+    }
+    var dialog = H.find(p, "dispatchDialog")
+    compare(dialog.visible, true)
+    compare(p.dispatchCardId, "m1")
+    compare(p.app.runs.dispatchStep, "")
+    compare(p.app.runs.dispatchRoot, "/home/u/a")
+    compare(String(dialog.step), "")
+    compare(H.find(p, "dispatchBack").visible, false, "no Back")
+    compare(H.find(p, "dispatchForm").visible, true, "the form at once")
+    verify(!p.app.runs.dispatchProjectRunner.current, "a card entry probes nothing")
   }
 
   // 31
