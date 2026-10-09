@@ -843,6 +843,17 @@ TestCase {
     compare(opensOn(node), "verify/0")
   }
 
+  function test_fixture_default_attempt_on_a_started_step() {
+    compare(JSON.stringify(Runs.defaultAttempt(Runs.normalizeRun(startedStepRaw("verify")))),
+            JSON.stringify({ card_id: "2280a6ab-9c40-434b-9729-63fd1f373754", phase: "verify", attempt: 0, step: true }))
+    var runs = fixtureRuns()
+    for (var i = 0; i < runs.length; i++) {
+      var d = Runs.defaultAttempt(runs[i])
+      verify(d !== null, "a default for " + runs[i].id)
+      verify(!("step" in d), "an agent attempt carries no step key: " + runs[i].id)
+    }
+  }
+
   function test_state_running() {
     compare(Runs.runState({ status: "started", lease: { live: true } }), "running")
     compare(Runs.runState(Runs.normalizeRun(amRun("status-started.json"))), "running")
@@ -2228,6 +2239,34 @@ TestCase {
     compare(at(Runs.defaultAttempt(mkRun("r", "started", true))), "null", "an empty tree")
     var bad = [undefined, null, "x", 5, [], {}, { tree: "x", rows: "y" }, { rows: [null, 5, { card_id: 7, phase: "x", n: 1 }] }]
     for (var i = 0; i < bad.length; i++) compare(Runs.defaultAttempt(bad[i]), null, "garbage " + i)
+  }
+
+  function test_default_attempt_prefers_the_first_started_phase() {
+    function step(name, status) { return { name: name, kind: "deterministic", status: status, attempts: [] } }
+    function agent(name, status, attempts) { return { name: name, kind: "agent", status: status, attempts: attempts } }
+    function dflt(subtasks, rows) {
+      // synthetic: hand-built normalized subtasks for the default-attempt rule
+      var run = mkRun("r", "started", true, { rows: rows || [], tree: { stories: [], subtasks: subtasks } })
+      var before = JSON.stringify(run)
+      var d = Runs.defaultAttempt(run)
+      compare(JSON.stringify(run), before, "the run is not mutated")
+      return JSON.stringify(d)
+    }
+    compare(dflt([{ card_id: "a", phases: [step("worktree", "done"), step("verify", "started")] },
+                  { card_id: "b", phases: [agent("implement", "started", [{ n: 1, status: "started" }])] }]),
+            JSON.stringify({ card_id: "a", phase: "verify", attempt: 0, step: true }),
+            "a started step of an earlier subtask wins over a later numbered attempt")
+    compare(dflt([{ card_id: "a", phases: [agent("plan", "started", []), step("verify", "started")] }]),
+            JSON.stringify({ card_id: "a", phase: "verify", attempt: 0, step: true }),
+            "a started agent phase without numbers is passed over for a later started step")
+    compare(dflt([{ card_id: "a", phases: [agent("implement", "started", [{ n: 2, status: "started" }]), step("verify", "started")] }]),
+            JSON.stringify({ card_id: "a", phase: "implement", attempt: 2 }),
+            "a started agent attempt before a started step wins, with no step key")
+    compare(dflt([{ card_id: "integrate", phases: [step("integrate", "started")] }]), "null",
+            "a bookkeeping id with a started step is never a card")
+    compare(dflt([{ card_id: "a", phases: [step("", "started"), step("verify", "running"), step("verify", "done")] }],
+                 [{ card_id: "a", phase: "verify", attempt: null, status: "done" }]), "null",
+            "an unnamed or not-started step is not chosen, and the row fallback never yields a step")
   }
 
   function test_attempt_status() {

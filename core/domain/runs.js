@@ -828,10 +828,12 @@ function runTree(run) {
   return { stories: out, synthetic: synthetic }
 }
 
-// The attempt the output pane opens on: the newest numbered attempt of the
-// first started phase (in subtask order) that has one; else, walking the flat
-// rows from the last, the newest attempt of a real card's row phase (the row's
-// own number or the tree's, whichever is higher); else null.
+// The selection the output pane opens on: the first started phase, in subtask
+// and phase order, that is a step ({card_id, phase, attempt: 0, step: true})
+// or an agent phase with a numbered attempt ({card_id, phase, attempt}, its
+// newest number); else, walking the flat rows from the last, the newest
+// attempt of a real card's row phase (the row's own number or the tree's,
+// whichever is higher); else null.
 function defaultAttempt(run) {
   var subtasks = _subtasksOf(run)
   for (var i = 0; i < subtasks.length; i++) {
@@ -841,6 +843,7 @@ function defaultAttempt(run) {
     for (var j = 0; j < phases.length; j++) {
       var p = phases[j]
       if (!_isObject(p) || p.status !== "started" || typeof p.name !== "string" || p.name === "") continue
+      if (_isStepPhase(p)) return { card_id: t.card_id, phase: p.name, attempt: 0, step: true }
       var n = _newestAttempt(p)
       if (n > 0) return { card_id: t.card_id, phase: p.name, attempt: n }
     }
