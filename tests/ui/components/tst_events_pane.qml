@@ -23,6 +23,8 @@ TestCase {
 
   Component { id: paneC; UI.EventsPane { width: 600 } }
 
+  SignalSpy { id: attemptSpy; signalName: "attemptRequested" }
+
   // A pane in testTheme unless props names a theme (null included). Props are
   // assigned after creation: createTemporaryObject's property map turns a JS
   // array into a list that Array.isArray rejects, and an owner binds real arrays.
@@ -31,6 +33,8 @@ TestCase {
     if (!("theme" in p)) p.theme = testTheme
     var pane = createTemporaryObject(paneC, tc)
     for (var key in p) pane[key] = p[key]
+    attemptSpy.target = pane
+    attemptSpy.clear()
     wait(30)
     return pane
   }
@@ -149,5 +153,32 @@ TestCase {
     pane.theme = null
     wait(30)
     verify(pane.palette, "back to its own Theme when the owner's goes away")
+  }
+
+  // ---- clicks --------------------------------------------------------------
+
+  function test_a_row_naming_an_attempt_emits_attemptRequested() {
+    var pane = make({ rows: [eventRow(5, { card: "card-a", phase: "implement", attempt: 2 })] })
+    compare(rowOf(pane, 5).hoverCursorShape, Qt.PointingHandCursor)
+    mouseClick(rowOf(pane, 5))
+    compare(attemptSpy.count, 1)
+    compare(attemptSpy.signalArguments[0][0], "card-a")
+    compare(attemptSpy.signalArguments[0][1], "implement")
+    compare(attemptSpy.signalArguments[0][2], 2)
+  }
+
+  function test_a_row_without_an_attempt_emits_nothing() {
+    var pane = make({ rows: [
+      eventRow(1, { level: "phase", attempt: 0 }),
+      eventRow(2, { card: "" }),
+      eventRow(3, { phase: "" }),
+      eventRow(4, { attempt: "2" }),
+      eventRow(5, { level: "run", card: "", phase: "", attempt: 0, label: "run started", status: "started" })
+    ] })
+    for (var s = 1; s <= 5; s++) {
+      compare(rowOf(pane, s).hoverCursorShape, Qt.ArrowCursor, "row " + s + " has the arrow")
+      mouseClick(rowOf(pane, s))
+      compare(attemptSpy.count, 0, "row " + s + " emits nothing")
+    }
   }
 }

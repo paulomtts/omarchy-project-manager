@@ -27,12 +27,19 @@ Item {
   readonly property var palette: pane.theme || paneTheme
   readonly property var shownRows: RunEvents.filterRows(pane.rows, "All")
 
+  signal attemptRequested(string card, string phase, int attempt)
+
   // row[key] when row is an object and that field is a string, else "".
   function _field(row, key) {
     return row !== null && typeof row === "object" && typeof row[key] === "string" ? row[key] : ""
   }
 
   function _isFailure(row) { return RunEvents.filterRows([row], "Failures").length === 1 }
+
+  function _namesAttempt(row) {
+    return pane._field(row, "card") !== "" && pane._field(row, "phase") !== ""
+      && typeof row.attempt === "number" && isFinite(row.attempt) && row.attempt > 0
+  }
 
   function _glyphOf(row) {
     if (pane._isFailure(row)) return RunGlyphs.glyphOf("escalated")
@@ -65,10 +72,14 @@ Item {
         id: row
         required property var modelData
         readonly property bool failure: pane._isFailure(row.modelData)
+        readonly property bool namesAttempt: pane._namesAttempt(row.modelData)
 
         objectName: "eventsRow" + (row.modelData ? row.modelData.seq : "")
         width: list.width
         theme: pane.palette
+        hoverCursorShape: row.namesAttempt ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onActivated: if (row.namesAttempt)
+          pane.attemptRequested(row.modelData.card, row.modelData.phase, row.modelData.attempt)
 
         Row {
           spacing: Style.space(8)
