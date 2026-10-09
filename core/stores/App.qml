@@ -130,8 +130,9 @@ QtObject {
 
   // The run controls never import the run store: App hands them the backend
   // directory, the open project's root, the panel-open flag and the run list,
-  // settles their requests on each ok snapshot reply and routes their
-  // refreshRequested to the run store.
+  // settles their requests on each ok snapshot reply, routes their
+  // refreshRequested to the run store and their runSettingsSaveFailed to the
+  // dispatch's dispatchSaveFailed.
   readonly property RunControlStore runControl: RunControlStore {
     backendDir: app.backendDir
     project: app.runs.project
@@ -141,6 +142,7 @@ QtObject {
       if (roots === "all") app.runs.refresh()
       else app.runs.requestSnapshot(roots)
     }
+    onRunSettingsSaveFailed: function(root, patch) { app.runDispatch.dispatchSaveFailed(root, patch) }
   }
 
   // The run alerts never import the run store: App hands them the backend
@@ -154,23 +156,25 @@ QtObject {
     projectRoots: app.runs.projectRoots
   }
 
-  // The dispatch never imports the run store: App hands it the backend
-  // directory, the open project's root, the panel-open flag, the run list and
-  // the run settings, routes its refreshRequested to the run store, its
-  // noticeRequested to run control's flash and its runSettingsUpdated into
-  // the run store's runSettings.
+  // The dispatch never imports the run store or run control: App hands it the
+  // backend directory, the open project's root, the panel-open flag, the run
+  // list and the open project's run settings from run control, routes its
+  // refreshRequested to the run store, its noticeRequested to run control's
+  // flash, and its runSettingsWanted and runSettingsSaveRequested to run
+  // control's loadRunSettings and saveRunSettings.
   readonly property RunDispatchStore runDispatch: RunDispatchStore {
     backendDir: app.backendDir
     project: app.runs.project
     active: app.panelOpen
     runs: app.runs.runs
-    runSettings: app.runs.runSettings
+    runSettings: app.runControl.runSettingsOf(app.runs.project)
     onRefreshRequested: function(roots) {
       if (roots === "all") app.runs.refresh()
       else app.runs.requestSnapshot(roots)
     }
     onNoticeRequested: function(text) { app.runControl.flash(text) }
-    onRunSettingsUpdated: function(settings) { app.runs.runSettings = settings }
+    onRunSettingsWanted: function(root) { app.runControl.loadRunSettings(root) }
+    onRunSettingsSaveRequested: function(root, patch) { app.runControl.saveRunSettings(root, patch) }
   }
 
   readonly property GraphStore graph: GraphStore {

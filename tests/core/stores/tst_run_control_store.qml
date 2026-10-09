@@ -1507,4 +1507,22 @@ TestCase {
     compare(controlOf(store).notifyOnEscalation, true)
     compare(controlOf(store).notifyTouched, true)
   }
+
+  // C-S10 (moved from tst_run_store.qml)
+  function test_run_settings_kept_even_after_notify_touched() {
+    var store = makeWithProject(rootA); if (!store) return
+    var c = controlOf(store)
+    c.loadRunSettings(tc.rootA)
+    compare(Object.keys(store.runSettings).length, 0, "{} until the reply")
+    var load = c.runSettingsLoadRunner.current
+    store.setNotifyOnEscalation(true)
+    reply(load, dispatchSettings(), 0)
+    compare(store.notifyOnEscalation, true, "the switch keeps the user's value")
+    compare(store.runSettings.prefixHistory.length, 1)
+    compare(store.runSettings.prefixHistory[0], "old")
+    compare(store.runSettings.parallelism, 4)
+    compare(store.runSettings.confirmDispatch, true)
+    compare(store.runSettings.verify[0], "uv run pytest")
+    compare(store.runSettings.notifyOnEscalation, false, "the object is kept as it was read")
+  }
 }

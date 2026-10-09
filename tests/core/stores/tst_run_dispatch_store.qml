@@ -1,10 +1,10 @@
 // tests/core/stores/tst_run_dispatch_store.qml
 // The dispatch store: the dispatch state machine (open, the --defaults
-// lookup, the debounced check and preview, Start on one runner per Start and
-// that runner's settings write), the story target and retargetToMilestone,
-// and the four signals it emits. Built alone, and wired to a RunStore and a
-// RunControlStore the way App wires app.runDispatch, with stubbed Process
-// objects standing in for every helper.
+// lookup, the debounced check and preview, Start on one runner per Start),
+// the story target and retargetToMilestone, and the signals it emits,
+// including the run settings it asks for and asks to save. Built alone, and
+// wired to a RunStore and a RunControlStore the way App wires
+// app.runDispatch, with stubbed Process objects standing in for every helper.
 import QtQuick
 import QtTest
 
@@ -31,11 +31,14 @@ TestCase {
 
   // A RunStore, a RunControlStore wired to it the way App wires
   // app.runControl, and a RunDispatchStore wired to both the way App wires
-  // app.runDispatch: backendDir copied; project, active, runs and runSettings
-  // bound to the run store's own; refreshRequested to refresh() ("all") or
+  // app.runDispatch: backendDir copied; project, active and runs bound to the
+  // run store's own, runSettings to the control store's
+  // runSettingsOf(project); refreshRequested to refresh() ("all") or
   // requestSnapshot(roots); noticeRequested to the control store's flash;
-  // runSettingsUpdated into the run store's runSettings. The run store's
-  // dispatchStore handle is not set. Returns the dispatch store.
+  // runSettingsWanted and runSettingsSaveRequested to its loadRunSettings and
+  // saveRunSettings, and its runSettingsSaveFailed back to
+  // dispatchSaveFailed. The run store's dispatchStore handle is not set.
+  // Returns the dispatch store.
   function make() {
     var runsComp = Qt.createComponent("../../../core/stores/RunStore.qml")
     if (runsComp.status !== Component.Ready) { fail(runsComp.errorString()); return null }
@@ -57,13 +60,15 @@ TestCase {
     d.project = Qt.binding(function() { return store.project })
     d.active = Qt.binding(function() { return store.active })
     d.runs = Qt.binding(function() { return store.runs })
-    d.runSettings = Qt.binding(function() { return store.runSettings })
+    d.runSettings = Qt.binding(function() { return c.runSettingsOf(store.project) })
     d.refreshRequested.connect(function(roots) {
       if (roots === "all") store.refresh()
       else store.requestSnapshot(roots)
     })
     d.noticeRequested.connect(function(text) { c.flash(text) })
-    d.runSettingsUpdated.connect(function(settings) { store.runSettings = settings })
+    d.runSettingsWanted.connect(function(root) { c.loadRunSettings(root) })
+    d.runSettingsSaveRequested.connect(function(root, patch) { c.saveRunSettings(root, patch) })
+    c.runSettingsSaveFailed.connect(function(root, patch) { d.dispatchSaveFailed(root, patch) })
     tc.wired = tc.wired.concat([{ dispatch: d, runs: store, control: c }])
     return d
   }
@@ -82,6 +87,15 @@ TestCase {
       if (tc.wired[i].dispatch === d) return tc.wired[i].control
     }
     return null
+  }
+
+  // The paired control store's newest run settings load; null once it replied.
+  function loadOf(d) { return controlOf(d).runSettingsLoadRunner }
+
+  // The paired control store's newest run settings save in flight; null when none.
+  function saveOf(d) {
+    var saves = controlOf(d).runSettingsRunners.filter(function(r) { return r.saving })
+    return saves.length > 0 ? saves[saves.length - 1] : null
   }
 
   // A root's registry entry: rootA is "alpha", rootB "beta", any other "proj".
@@ -232,7 +246,7 @@ TestCase {
     var d = bareReady(); if (!d) return
     var started = spyC.createObject(tc, { target: d, signalName: "dispatchStarted" })
     var refresh = spyC.createObject(tc, { target: d, signalName: "refreshRequested" })
-    var updated = spyC.createObject(tc, { target: d, signalName: "runSettingsUpdated" })
+    var saves = spyC.createObject(tc, { target: d, signalName: "runSettingsSaveRequested" })
     compare(d.dispatchStart(), true)
     var runner = d.dispatchStartRunners[0]
     var proc = runner.current
@@ -243,20 +257,24 @@ TestCase {
     checkDispatchIdle(d, "after A's late start")
     compare(started.count, 0)
     compare(refresh.count, 0)
-    compare(updated.count, 0)
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "recorded against A")
+    compare(saves.count, 1, "the save is still asked for")
+    compare(saves.signalArguments[0][0], tc.rootA, "recorded against A")
+    compare(JSON.stringify(saves.signalArguments[0][1]), tc.savedJson)
+    compare(d.dispatchStartRunners.length, 0)
   }
 
   // D-N4 (the coupling order of an ok start)
   function test_a_start_reply_emits_settings_then_refresh_then_started() {
     var d = bareReady(); if (!d) return
     var record = []
-    var payload = null
+    var root = ""
+    var patch = null
     var stateAtSettings = ""
     var stateAtStarted = ""
-    d.runSettingsUpdated.connect(function(settings) {
+    d.runSettingsSaveRequested.connect(function(r, p) {
       record.push("settings")
-      payload = settings
+      root = r
+      patch = p
       stateAtSettings = d.dispatchState
     })
     d.refreshRequested.connect(function(roots) { record.push("refresh:" + JSON.stringify(roots)) })
@@ -267,15 +285,17 @@ TestCase {
     compare(d.dispatchStart(), true)
     reply(d.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
     compare(JSON.stringify(record), JSON.stringify(["settings", 'refresh:"all"', "started:r-1"]))
-    compare(stateAtSettings, "starting", "the settings are announced before started")
+    compare(stateAtSettings, "starting", "the save is asked for before started")
     compare(stateAtStarted, "started")
-    compare(payload.prefixHistory.join(","), "old")
-    compare(payload.parallelism, 4)
-    compare(payload.confirmDispatch, true, "a key the start does not write is kept")
-    compare(payload.prefixByMilestone.m1, "old")
+    compare(root, tc.rootA)
+    compare(patch.prefixHistory.join(","), "old")
+    compare(patch.parallelism, 4)
+    compare(patch.confirmDispatch, undefined, "the patch holds only what the start writes")
+    compare(patch.prefixByMilestone.m1, "old")
+    compare(d.dispatchStartRunners.length, 0)
   }
 
-  // D-N5 (Review Focus 3)
+  // D-N5 (Review Focus 3 of 4.1)
   function test_the_store_never_writes_its_own_run_settings() {
     var d = makeDispatch(); if (!d) return
     var s = JSON.parse(dispatchSettings())
@@ -286,45 +306,90 @@ TestCase {
     reply(d.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
     reply(d.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
     compare(d.dispatchStart(), true)
-    var runner = d.dispatchStartRunners[0]
-    reply(runner.current, startOk("r-1", ""), 0)
+    reply(d.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
     compare(d.dispatchState, "started")
     verify(d.runSettings === s, "the input is left as it was handed over")
     compare(d.runSettings.prefixByMilestone, undefined)
-    reply(runner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    verify(d.runSettings === s)
+    compare(d.dispatchStartRunners.length, 0)
   }
 
-  // D-N6 (A.3: the notice)
-  function test_a_failed_settings_write_emits_one_notice_only_while_here() {
-    var d = bareReady(); if (!d) return
+  // bareReady() after an ok Start: `started`.
+  function bareStarted() {
+    var d = bareReady(); if (!d) return null
+    compare(d.dispatchStart(), true)
+    reply(d.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
+    compare(d.dispatchState, "started")
+    return d
+  }
+
+  // D-N6 (A.3: the notice) and Review Focus 5
+  function test_a_failed_save_notices_only_while_it_is_this_dispatchs() {
+    var d = bareStarted(); if (!d) return
     var notices = spyC.createObject(tc, { target: d, signalName: "noticeRequested" })
-    d.dispatchStart()
-    var runner = d.dispatchStartRunners[0]
-    reply(runner.current, startOk("r-1", ""), 0)
-    compare(notices.count, 0, "nothing to say before the write replies")
-    reply(runner.current, "garbage\n", 1)
+    d.dispatchSaveFailed(tc.rootA, JSON.parse(tc.savedJson))
     compare(notices.count, 1)
     compare(notices.signalArguments[0][0], "Dispatch settings could not be saved")
-    compare(d.dispatchStartRunners.length, 0)
+    d.dispatchSaveFailed(tc.rootA, JSON.parse(tc.savedJson))
+    compare(notices.count, 1, "said once")
 
-    var left = bareReady(); if (!left) return
+    var other = bareStarted(); if (!other) return
+    var otherNotices = spyC.createObject(tc, { target: other, signalName: "noticeRequested" })
+    other.dispatchSaveFailed(tc.rootA, { parallelism: 1 })
+    other.dispatchSaveFailed(tc.rootB, JSON.parse(tc.savedJson))
+    compare(otherNotices.count, 0, "another save's failure says nothing")
+
+    var left = bareStarted(); if (!left) return
     var leftNotices = spyC.createObject(tc, { target: left, signalName: "noticeRequested" })
-    left.dispatchStart()
-    var leftRunner = left.dispatchStartRunners[0]
     left.project = tc.rootB
-    reply(leftRunner.current, startOk("r-2", ""), 0)
-    reply(leftRunner.current, "garbage\n", 1)
+    left.dispatchSaveFailed(tc.rootA, JSON.parse(tc.savedJson))
     compare(leftNotices.count, 0, "no notice about A once the project changed")
-    compare(left.dispatchStartRunners.length, 0)
 
-    var ok = bareReady(); if (!ok) return
-    var okNotices = spyC.createObject(tc, { target: ok, signalName: "noticeRequested" })
-    ok.dispatchStart()
-    var okRunner = ok.dispatchStartRunners[0]
-    reply(okRunner.current, startOk("r-3", ""), 0)
-    reply(okRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(okNotices.count, 0, "a saved write says nothing")
+    var closed = bareStarted(); if (!closed) return
+    var closedNotices = spyC.createObject(tc, { target: closed, signalName: "noticeRequested" })
+    compare(closed.closeDispatch(), true)
+    closed.dispatchSaveFailed(tc.rootA, JSON.parse(tc.savedJson))
+    compare(closedNotices.count, 0, "no notice once the dispatch was closed")
+  }
+
+  // D-N7 (the store's own project reaction asks for the run settings)
+  function test_its_own_project_change_wants_the_run_settings() {
+    var d = makeDispatch(); if (!d) return
+    var wanted = spyC.createObject(tc, { target: d, signalName: "runSettingsWanted" })
+    var states = []
+    d.runSettingsWanted.connect(function(root) { states.push(d.dispatchState) })
+    d.project = tc.rootA
+    compare(wanted.count, 1)
+    compare(wanted.signalArguments[0][0], tc.rootA)
+    var cards = dispatchCards()
+    compare(d.openDispatch(cards.m1, cards), true)
+    compare(d.dispatchState, "previewing")
+    d.project = tc.rootB
+    compare(wanted.count, 2)
+    compare(wanted.signalArguments[1][0], tc.rootB)
+    d.project = ""
+    compare(wanted.count, 2, "no project: nothing is wanted")
+    compare(states.join(","), "idle,idle", "the store is reset before it asks")
+  }
+
+  // D-N8
+  function test_a_start_launches_no_viewer_state_and_a_failed_start_saves_nothing() {
+    var d = bareReady(); if (!d) return
+    var saves = spyC.createObject(tc, { target: d, signalName: "runSettingsSaveRequested" })
+    compare(d.dispatchStart(), true)
+    var proc = d.dispatchStartRunners[0].current
+    compare(argv(proc).indexOf("viewer-state.py"), -1)
+    reply(proc, startOk("r-1", ""), 0)
+    compare(d.dispatchStartRunners.length, 0, "no runner is left to write the settings")
+    compare(saves.count, 1, "the save is only asked for")
+    var replies = [ctlFail("AmExited", "am run exited at once (exit 2)"), startBlocked()]
+    for (var i = 0; i < replies.length; i++) {
+      var failed = bareReady(); if (!failed) return
+      var none = spyC.createObject(tc, { target: failed, signalName: "runSettingsSaveRequested" })
+      compare(failed.dispatchStart(), true)
+      reply(failed.dispatchStartRunners[0].current, replies[i], 0)
+      compare(none.count, 0, "reply " + i + ": nothing saved")
+      compare(failed.dispatchStartRunners.length, 0, "reply " + i)
+    }
   }
   // ---- dispatch (S3 3.1)
 
@@ -351,7 +416,7 @@ TestCase {
   // Project A with its run settings read (dispatchSettings).
   function dispatchStore() {
     var store = makeWithProject(rootA); if (!store) return null
-    reply(runsOf(store).runSettingsRunner.current, dispatchSettings(), 0)
+    reply(loadOf(store).current, dispatchSettings(), 0)
     return store
   }
 
@@ -397,7 +462,7 @@ TestCase {
   // 3
   function test_open_milestone_goes_previewing_and_asks_defaults() {
     var store = makeWithProject(rootA); if (!store) return
-    reply(runsOf(store).runSettingsRunner.current, JSON.stringify({ verify: ["uv run pytest", "  "], allowNoVerification: true,
+    reply(loadOf(store).current, JSON.stringify({ verify: ["uv run pytest", "  "], allowNoVerification: true,
       notifyOnEscalation: false, prefixHistory: [], parallelism: 6, confirmDispatch: true }) + "\n", 0)
     var cards = dispatchCards()
     compare(store.openDispatch(cards.m1, cards), true)
@@ -428,7 +493,7 @@ TestCase {
     compare(store.openDispatch(cards.m1, cards), true)
     compare(store.dispatchForm.verify.length, 0)
     compare(store.dispatchForm.parallelism, 4)
-    reply(runsOf(store).runSettingsRunner.current, dispatchSettings(), 0)
+    reply(loadOf(store).current, dispatchSettings(), 0)
     compare(store.dispatchForm.verify.length, 0, "a late settings reply does not touch the open form")
     compare(store.runSettings.verify[0], "uv run pytest", "but it is kept for the next opening")
   }
@@ -911,9 +976,9 @@ TestCase {
     compare(spy.signalArguments[0][0], "r-1")
     compare(runsOf(store).snapshotRunner.seq, seq + 1, "the runs are fetched again")
     compare(argv(runsOf(store).snapshotRunner.current), tc.snapCmd + "|" + tc.rootA)
-    compare(store.dispatchStartRunners.length, 1, "the same runner writes the settings")
-    verify(store.dispatchStartRunners[0] === runner)
-    var save = runner.current
+    compare(store.dispatchStartRunners.length, 0, "the start runner goes at its reply")
+    verify(saveOf(store), "run control writes the settings")
+    var save = saveOf(store).current
     compare(save.command.length, 5)
     compare(argv(save), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson)
     compare(store.runSettings.prefixHistory.join(","), "old")
@@ -923,6 +988,7 @@ TestCase {
     compare(store.runSettings.confirmDispatch, true, "keys the start does not write are kept")
     reply(save, JSON.stringify({ ok: true }) + "\n", 0)
     compare(store.dispatchStartRunners.length, 0, "the runner goes after the write")
+    compare(controlOf(store).runSettingsRunners.length, 0, "and so does the save's")
     compare(controlOf(store).flashText, "")
     compare(store.dispatchState, "started")
   }
@@ -948,7 +1014,7 @@ TestCase {
     var store = makeWithProject(rootA); if (!store) return
     var history = ["a", "m3", "", "  ", 7, "b"]
     for (var i = 0; i < 25; i++) history.push("p" + i)
-    reply(runsOf(store).runSettingsRunner.current, JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false,
+    reply(loadOf(store).current, JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false,
       notifyOnEscalation: false, prefixHistory: history, parallelism: 4, confirmDispatch: true }) + "\n", 0)
     var cards = dispatchCards()
     store.openDispatch(cards.m1, cards)
@@ -962,13 +1028,13 @@ TestCase {
     reply(runner.current, startOk("r-1", ""), 0)
     var expected = ["m3", "a", "b"]
     for (var j = 0; j < 17; j++) expected.push("p" + j)
-    var saved = JSON.parse(runner.current.command[4])
+    var saved = JSON.parse(saveOf(store).current.command[4])
     compare(saved.prefixHistory.length, 20)
     compare(saved.prefixHistory.join(","), expected.join(","))
     compare(store.runSettings.prefixHistory.join(","), expected.join(","))
 
     var bare = makeWithProject(rootA); if (!bare) return
-    reply(runsOf(bare).runSettingsRunner.current, "Traceback: boom\n", 1)
+    reply(loadOf(bare).current, "Traceback: boom\n", 1)
     bare.openDispatch(cards.m1, cards)
     reply(bare.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
     bare.setDispatchField("verify", ["make test"])
@@ -977,7 +1043,7 @@ TestCase {
     compare(bare.dispatchStart(), true)
     var bareRunner = bare.dispatchStartRunners[0]
     reply(bareRunner.current, startOk("r-2", ""), 0)
-    compare(argv(bareRunner.current), tc.viewerCmd +
+    compare(argv(saveOf(bare).current), tc.viewerCmd +
             'set-run-settings|/home/u/my proj|{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["m3"],"parallelism":4,"prefixByMilestone":{"m1":"m3"}}')
   }
 
@@ -1055,7 +1121,7 @@ TestCase {
   function test_a_dispatch_start_refreshes_every_usable_root() {
     var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
     runsOf(store).project = rootA
-    reply(runsOf(store).runSettingsRunner.current, dispatchSettings(), 0)
+    reply(loadOf(store).current, dispatchSettings(), 0)
     reply(runsOf(store).snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
     var cards = dispatchCards()
     compare(store.openDispatch(cards.m1, cards), true)
@@ -1077,7 +1143,7 @@ TestCase {
       store.dispatchStart()
       var runner = store.dispatchStartRunners[0]
       reply(runner.current, startOk("r-1", ""), 0)
-      reply(runner.current, replies[i], 1)
+      reply(saveOf(store).current, replies[i], 1)
       compare(controlOf(store).flashText, "Dispatch settings could not be saved", "reply " + i)
       compare(store.dispatchState, "started", "the run still started")
       compare(store.dispatchStartRunners.length, 0)
@@ -1139,8 +1205,8 @@ TestCase {
     compare(spy.count, 0)
     compare(runsOf(store).snapshotRunner.seq, seq, "no refresh for B")
     compare(Object.keys(store.runSettings).length, 0, "B's settings do not take A's values")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "recorded against A")
-    reply(runner.current, "garbage\n", 1)
+    compare(argv(saveOf(store).current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "recorded against A")
+    reply(saveOf(store).current, "garbage\n", 1)
     compare(controlOf(store).flashText, "", "no flash about A in B")
     compare(store.dispatchStartRunners.length, 0)
   }
@@ -1154,7 +1220,7 @@ TestCase {
     runsOf(store).project = rootB
     runsOf(store).project = rootA
     checkDispatchIdle(store, "back in A")
-    reply(runsOf(store).runSettingsRunner.current, dispatchSettings(), 0)
+    reply(loadOf(store).current, dispatchSettings(), 0)
     var cards = dispatchCards()
     compare(store.openDispatch(cards.m1, cards), true)
     compare(store.dispatchState, "previewing")
@@ -1163,7 +1229,7 @@ TestCase {
     compare(store.dispatchRunId, "")
     compare(spy.count, 0)
     compare(store.runSettings.prefixHistory.join(","), "old")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "still recorded for A")
+    compare(argv(saveOf(store).current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "still recorded for A")
   }
 
   // 33
@@ -1172,7 +1238,7 @@ TestCase {
     store.dispatchStart()
     var procA = store.dispatchStartRunners[0].current
     runsOf(store).project = rootB
-    reply(runsOf(store).runSettingsRunner.current, dispatchSettings(), 0)
+    reply(loadOf(store).current, dispatchSettings(), 0)
     var cards = dispatchCards()
     compare(store.openDispatch(cards.m1, cards), true, "B's dispatch opens while A's start is in flight")
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
@@ -1195,7 +1261,7 @@ TestCase {
   // 34
   function test_panel_close_closes_dispatch_but_not_a_start() {
     var store = activeStore(rootA); if (!store) return
-    reply(runsOf(store).runSettingsRunner.current, dispatchSettings(), 0)
+    reply(loadOf(store).current, dispatchSettings(), 0)
     var cards = dispatchCards()
     store.openDispatch(cards.m1, cards)
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
@@ -1256,7 +1322,7 @@ TestCase {
   // 2.1 test 5
   function test_story_prefix_reads_the_snapshot_then_the_keyed_map() {
     var store = makeWithProject(rootA); if (!store) return
-    reply(runsOf(store).runSettingsRunner.current, keyedSettings({ m9: "m9-map" }), 0)
+    reply(loadOf(store).current, keyedSettings({ m9: "m9-map" }), 0)
     runsOf(store).runs = [{ id: "r-old", milestone_id: "m1", branch_prefix: "m3-old", started_at: "2026-10-01T00:00:00Z" },
                   { id: "r-live", milestone_id: "m1", branch_prefix: " m3-live ", started_at: "2026-10-06T00:00:00Z" },
                   { id: "r-other", milestone_id: "m2", branch_prefix: "m2-x", started_at: "2026-10-07T00:00:00Z" }]
@@ -1267,7 +1333,7 @@ TestCase {
     compare(store.dispatchForm.prefix, "m3-live", "the same default serves the milestone")
 
     var keyed = makeWithProject(rootA); if (!keyed) return
-    reply(runsOf(keyed).runSettingsRunner.current, keyedSettings({ m1: "m3-map" }), 0)
+    reply(loadOf(keyed).current, keyedSettings({ m1: "m3-map" }), 0)
     keyed.openDispatch(cards.s1, cards)
     compare(keyed.dispatchForm.prefix, "m3-map", "the keyed map beats the prefix history")
     keyed.openDispatch(cards.t1, cards)
@@ -1502,7 +1568,7 @@ TestCase {
   // 2.1 test 6
   function test_a_story_start_saves_the_prefix_under_its_milestone() {
     var store = makeWithProject(rootA); if (!store) return
-    reply(runsOf(store).runSettingsRunner.current, keyedSettings({ m9: "x" }), 0)
+    reply(loadOf(store).current, keyedSettings({ m9: "x" }), 0)
     var cards = dispatchCards()
     store.openDispatch(cards.s1, cards)
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
@@ -1512,7 +1578,7 @@ TestCase {
     compare(argv(runner.current), tc.startCmd + tc.storyPreviewArgs)
     reply(runner.current, startOk("r-1", ""), 0)
     compare(store.dispatchState, "started")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" +
+    compare(argv(saveOf(store).current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" +
             '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4,"prefixByMilestone":{"m1":"old"}}')
     var map = store.runSettings.prefixByMilestone
     compare(Object.keys(map).sort().join(","), "m1,m9", "merged locally")
@@ -1528,7 +1594,7 @@ TestCase {
     store.dispatchStart()
     var runner = store.dispatchStartRunners[0]
     reply(runner.current, startOk("r-1", ""), 0)
-    compare(runner.current.command[4], tc.savedJson, "a milestone start keys its own id")
+    compare(saveOf(store).current.command[4], tc.savedJson, "a milestone start keys its own id")
     compare(store.runSettings.prefixByMilestone.m1, "old")
 
     var plain = '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4}'
@@ -1539,7 +1605,7 @@ TestCase {
     compare(subtask.dispatchStart(), true)
     var subtaskRunner = subtask.dispatchStartRunners[0]
     reply(subtaskRunner.current, startOk("r-2", ""), 0)
-    compare(argv(subtaskRunner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + plain, "a subtask start keys nothing")
+    compare(argv(saveOf(subtask).current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + plain, "a subtask start keys nothing")
     compare(subtask.runSettings.prefixByMilestone, undefined, "nothing keyed locally")
 
     var board = dispatchStore(); if (!board) return
@@ -1552,7 +1618,7 @@ TestCase {
     compare(board.dispatchStart(), true)
     var boardRunner = board.dispatchStartRunners[0]
     reply(boardRunner.current, startOk("r-3", ""), 0)
-    compare(argv(boardRunner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + plain, "a board start keys nothing")
+    compare(argv(saveOf(board).current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + plain, "a board start keys nothing")
   }
 
   // 2.1 Review Focus 2
@@ -1560,7 +1626,7 @@ TestCase {
     var stored = [[], "x", ["a"], 7, null]
     for (var i = 0; i < stored.length; i++) {
       var store = makeWithProject(rootA); if (!store) return
-      reply(runsOf(store).runSettingsRunner.current, keyedSettings(stored[i]), 0)
+      reply(loadOf(store).current, keyedSettings(stored[i]), 0)
       var cards = dispatchCards()
       store.openDispatch(cards.s1, cards)
       reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
@@ -1667,7 +1733,7 @@ TestCase {
     var backProc = back.dispatchStartRunners[0].current
     runsOf(back).project = rootB
     runsOf(back).project = rootA
-    reply(runsOf(back).runSettingsRunner.current, dispatchSettings(), 0)
+    reply(loadOf(back).current, dispatchSettings(), 0)
     var cards = dispatchCards()
     compare(back.openDispatch(cards.m1, cards), true)
     reply(backProc, startBlocked(), 0)

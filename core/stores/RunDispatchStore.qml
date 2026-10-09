@@ -8,17 +8,20 @@ import "../domain/runs.js" as Runs
 // (openDispatch), edits the form (setDispatchField) and presses Start
 // (dispatchStart); the store checks the form, previews it with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
-// Start, which after an ok start writes the saved values with viewer-state.py
-// set-run-settings. `dispatchState` is idle | previewing | ready | refused |
-// starting | started | failed. Every object here is replaced, never changed
-// in place. The backend directory, the open project's root, the panel-open
-// flag, the run list and the open project's run settings are handed to it
-// from outside -- it never reaches for another store. It asks for a
-// re-snapshot (refreshRequested), a footer sentence (noticeRequested) and
-// the run settings an ok start saves (runSettingsUpdated; it never writes
-// its own runSettings), and announces a start (dispatchStarted). A project
-// change resets it; closing the panel closes it unless a start is in flight.
-// App composes it as `app.runDispatch`.
+// Start. `dispatchState` is idle | previewing | ready | refused | starting |
+// started | failed. Every object here is replaced, never changed in place.
+// The backend directory, the open project's root, the panel-open flag, the
+// run list and the open project's run settings are handed to it from
+// outside -- it never reaches for another store. It never reads or writes
+// the run settings itself: it asks for the open project's run settings
+// (runSettingsWanted) on each project change and for an ok start's values to
+// be saved (runSettingsSaveRequested, for the project the start was made
+// in), reads runSettings as handed in, and says a failed save of this
+// dispatch's start (dispatchSaveFailed) as a notice. It also asks for a
+// re-snapshot (refreshRequested) and a footer sentence (noticeRequested), and
+// announces a start (dispatchStarted). A project change resets it; closing
+// the panel closes it unless a start is in flight. App composes it as
+// `app.runDispatch`.
 Scope {
   id: dispatch
 
@@ -32,16 +35,21 @@ Scope {
   signal refreshRequested(var roots)
   // A sentence for the footer flash.
   signal noticeRequested(string text)
-  // After an ok start of this dispatch: the open project's run settings as
-  // that start saves them (prefixByMilestone merged per milestone id).
-  signal runSettingsUpdated(var settings)
+  // This project's run settings are wanted: `root` is the open project.
+  signal runSettingsWanted(var root)
+  // An ok start's values are to be saved for the project it was made in.
+  signal runSettingsSaveRequested(var root, var patch)
 
   // Closing the panel closes the dispatch; a start in flight refuses and
   // lands normally.
   onActiveChanged: if (!dispatch.active) dispatch.closeDispatch()
   // The dispatch is the old project's, even mid-start: a start already
-  // launched still runs, and its reply is no longer this dispatch's.
-  onProjectChanged: dispatch.resetDispatch()
+  // launched still runs, and its reply is no longer this dispatch's. Then
+  // the new project's run settings are wanted (none for no project).
+  onProjectChanged: {
+    dispatch.resetDispatch()
+    if (dispatch.project !== "") dispatch.runSettingsWanted(dispatch.project)
+  }
 
   property string dispatchState: "idle"
   property var dispatchTarget: null     // Runs.dispatchPlan of the opened target; null while idle
@@ -79,12 +87,14 @@ Scope {
 
   // Every dispatch field back to its "none" value; runSettings stays. The
   // pending check, the preview and the defaults lookup are dropped; a start
-  // already launched runs on, but its reply is no longer this dispatch's.
+  // already launched runs on, but its reply, and its save's failure, are no
+  // longer this dispatch's.
   function resetDispatch() {
     dispatchDebounceTimer.stop()
     dispatchPreviewRunner.cancel()
     dispatchDefaultsRunner.cancel()
     dispatchBook.startRunner = null
+    dispatchBook.savingFor = null
     dispatchBook.baseTouched = false
     dispatchBook.defaultsPending = false
     dispatchBook.cardMap = null
@@ -283,15 +293,6 @@ Scope {
     return true
   }
 
-  // A fresh {milestone id: prefix} map: stored's own entries when stored is
-  // an object that is not an array, then entry's, which override them, as
-  // set-run-settings merges prefixByMilestone.
-  function mergedPrefixes(stored, entry) {
-    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? Runs.copyMap(stored) : {}
-    for (var id in entry) merged[id] = entry[id]
-    return merged
-  }
-
   // Start: only from ready. start-run.py runs on a HelperRunner of its own
   // (guard "", madeFor this project), which no preview, project switch or
   // other Start stops. The settings a successful start saves are fixed now,
@@ -332,44 +333,34 @@ Scope {
     return runner.madeFor === dispatch.project && dispatchBook.startRunner === runner
   }
 
-  // start-run.py's reply. When it is this dispatch's: ok gives `started`,
-  // the run id and message, the saved values over runSettings
-  // (runSettingsUpdated, prefixByMilestone merged per milestone id), a
-  // re-snapshot of every root (refreshRequested("all")) and
-  // dispatchStarted(id or null);
-  // a StoryBlockedError gives `refused` with am's message, no log fields and
+  // start-run.py's reply; the runner then goes. Any ok start, wherever it
+  // was made, asks for its saved values to be saved for the project it was
+  // made in (runSettingsSaveRequested). When it is this dispatch's: ok gives
+  // the run id and message, that save request (watched by
+  // dispatchSaveFailed), `started`, a re-snapshot of every root
+  // (refreshRequested("all")) and dispatchStarted(id or null); a
+  // StoryBlockedError gives `refused` with am's message, no log fields and
   // the blockedSuggest() milestone; anything else gives `failed` with what
-  // the helper said. After any successful start, wherever it was made, the
-  // same runner writes the saved values for the project it was made in.
+  // the helper said. A start that is not ok asks for no save.
   function dispatchStartReplied(runner, stdout) {
-    if (runner.saving) {
-      dispatch.dispatchSaveReplied(runner, stdout)
-      return
-    }
     var here = dispatch.isHereStart(runner)
     var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
+      // Parsed from the JSON that is written: a var property hands back a
+      // list Runs.dispatchDefaults does not take for an array.
+      var patch = JSON.parse(runner.savedJson)
       if (here) {
         dispatch.dispatchRunId = typeof envelope.run_id === "string" ? envelope.run_id : ""
         dispatch.dispatchMessage = typeof envelope.message === "string" ? envelope.message : ""
-        var settings = Runs.copyMap(dispatch.runSettings)
-        // Parsed from the JSON that is written: a var property hands back a
-        // list Runs.dispatchDefaults does not take for an array.
-        var saved = JSON.parse(runner.savedJson)
-        for (var key in saved) {
-          settings[key] = key === "prefixByMilestone" ? dispatch.mergedPrefixes(settings.prefixByMilestone, saved[key]) : saved[key]
-        }
-        dispatch.runSettingsUpdated(settings)
+        dispatchBook.savingFor = { root: runner.madeFor, json: runner.savedJson }
+        dispatch.runSettingsSaveRequested(runner.madeFor, patch)
         dispatch.dispatchState = "started"
         dispatch.refreshRequested("all")
         dispatch.dispatchStarted(dispatch.dispatchRunId !== "" ? dispatch.dispatchRunId : null)
+      } else {
+        dispatch.runSettingsSaveRequested(runner.madeFor, patch)
       }
-      runner.saving = true
-      runner.script = dispatch.backendDir + "projects/viewer-state.py"
-      runner.run(["set-run-settings", runner.madeFor, runner.savedJson])
-      return
-    }
-    if (here) {
+    } else if (here) {
       var failure = envelope !== null && envelope.ok === false ? envelope : {}
       var err = failure.error
       var isErr = err !== null && err !== undefined && typeof err === "object"
@@ -387,12 +378,15 @@ Scope {
     dispatch.dropStartRunner(runner)
   }
 
-  // set-run-settings after a start: a failure is said only while the
-  // dispatch is still this one. The runner then goes.
-  function dispatchSaveReplied(runner, stdout) {
-    var reply = Results.parseEnvelope(stdout)
-    if (dispatch.isHereStart(runner) && !(reply !== null && reply.ok === true)) dispatch.noticeRequested("Dispatch settings could not be saved")
-    dispatch.dropStartRunner(runner)
+  // A save of `patch` for `root` failed (App routes run control's
+  // runSettingsSaveFailed here): one notice, only when it is the save of this
+  // dispatch's ok start -- the open project, the same values -- and only
+  // once. A reset forgets that save.
+  function dispatchSaveFailed(root, patch) {
+    var saving = dispatchBook.savingFor
+    if (saving === null || saving.root !== root || root !== dispatch.project || saving.json !== JSON.stringify(patch)) return
+    dispatchBook.savingFor = null
+    dispatch.noticeRequested("Dispatch settings could not be saved")
   }
 
   // A start runner's work is over: it leaves dispatchStartRunners and is destroyed.
@@ -433,11 +427,14 @@ Scope {
   // by an idle reset (and so by a project switch); `baseTouched` says the user
   // set base since the opening; `defaultsPending` that the --defaults lookup
   // has not replied yet; `cardMap` and `milestone` are the opening's card map
-  // and its entry for the target's milestone card (null when unknown).
+  // and its entry for the target's milestone card (null when unknown);
+  // `savingFor` is {root, json} of this dispatch's ok start's save until its
+  // failure is said or a reset, else null.
   QtObject {
     id: dispatchBook
     property var runners: []
     property var startRunner: null
+    property var savingFor: null
     property bool baseTouched: false
     property bool defaultsPending: false
     property var cardMap: null
@@ -446,9 +443,7 @@ Scope {
 
   // One HelperRunner per Start. Guard "": start-run.py may take ~20 s, and
   // neither a preview, a project switch nor a Start in another project may
-  // stop it. After a successful start the same runner writes the settings
-  // for `madeFor`; it goes when that write replies, or at once after a
-  // failed start.
+  // stop it. It goes when its start replies.
   Component {
     id: dispatchStartC
 
@@ -456,7 +451,6 @@ Scope {
       id: sr
       property string madeFor: ""     // the project the start was made in
       property string savedJson: ""   // `saved` as set-run-settings takes it
-      property bool saving: false     // the settings write is in flight
       script: dispatch.backendDir + "runs/start-run.py"
       guard: ""
       onFinished: function(stdout, exitCode) { dispatch.dispatchStartReplied(sr, stdout) }

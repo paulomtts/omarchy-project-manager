@@ -10,8 +10,8 @@ import "../domain/runs.js" as Runs
 // run domain model and tagged with their project; `projectErrors` the roots
 // whose latest entry failed; `runs` every root's runs merged in registry
 // order, a run id listed once, under the first root that lists it. A project
-// switch leaves the run list alone: `project`, the open project, decides only
-// the run settings; the attempt logs act on each run's own project
+// switch leaves the run list alone: `project`, the open project, is read only
+// by the run settings shims; the attempt logs act on each run's own project
 // root. Plus the selected run, the
 // attempt the Run detail pane shows and that
 // attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
@@ -157,6 +157,13 @@ Scope {
   function closeCancel() { return store.controlStore ? store.controlStore.closeCancel() : undefined }
   function confirmCancel() { return store.controlStore ? store.controlStore.confirmCancel() : undefined }
   function setNotifyOnEscalation(on) { return store.controlStore ? store.controlStore.setNotifyOnEscalation(on) : undefined }
+  property var runSettings: ({})
+  Binding { target: store; property: "runSettings"; value: store.controlStore ? store.controlStore.runSettingsOf(store.project) : ({}) }
+  onRunSettingsChanged: {
+    if (!store.controlStore || store.runSettings === store.controlStore.runSettingsOf(store.project)) return
+    store.controlStore.applyRunSettings(store.project, store.runSettings)
+  }
+  readonly property var runSettingsRunner: store.controlStore ? store.controlStore.runSettingsLoadRunner : null
 
   // Moved to RunAlertsStore; removed by the last story
   property var alertsStore: null
@@ -211,12 +218,6 @@ Scope {
   function dispatchStart() { return store.dispatchStore ? store.dispatchStore.dispatchStart() : undefined }
   function checkDispatch() { return store.dispatchStore ? store.dispatchStore.checkDispatch() : undefined }
 
-  // The open project's last get-run-settings object (runSettingsRunner), as
-  // it was read: {} until its reply, when the reply is unreadable, and after
-  // a project switch. The dispatch form starts from it; its
-  // notifyOnEscalation is never read.
-  property var runSettings: ({})
-
   // A debounce window's nudged run ids, each once, in first-nudge order,
   // known to the store or not. Never for a snapshot the store started itself.
   // (`runs` already owns the runsChanged name.)
@@ -241,7 +242,6 @@ Scope {
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
-  readonly property alias runSettingsRunner: runSettingsRunner
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -666,18 +666,6 @@ Scope {
     store.watchSchemaError = ""
   }
 
-  // Another project was opened, or none. The run list, the selection, the
-  // logs, the watch, the coverage and the notify switch belong to every
-  // registered project and stay, and no snapshot is launched. Reset: the run settings
-  // (loaded for the new project on runSettingsRunner).
-  function projectSwitched() {
-    store.runSettings = {}
-    runSettingsRunner.guard = store.project
-    if (store.project !== "") runSettingsRunner.run(["get-run-settings", store.project])
-  }
-
-  onProjectChanged: store.projectSwitched()
-
   // The registry's usable entries, {root, name}, in registry order: an object
   // whose root is a non-empty string not starting with "-" (runs-snapshot-all.py
   // refuses any other), each root once, at its first position with its first
@@ -1053,13 +1041,6 @@ Scope {
     })
   }
 
-  // get-run-settings: one bare object, kept whole as runSettings ({} when
-  // unreadable) on every reply. Never touches the notify switch.
-  function applyRunSettings(stdout, exitCode) {
-    var settings = Results.parseEnvelope(stdout)
-    store.runSettings = settings !== null ? settings : {}
-  }
-
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is
   // matched to the registry by root, whatever project is open. Only
   // refresh() with no usable root and resetCursor() stop it.
@@ -1077,17 +1058,6 @@ Scope {
     script: store.backendDir + "runs/runs-logs.py"
     onBusyChanged: if (!logsRunner.busy) store.logsLoading = false
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
-  }
-
-  // get-run-settings on a project switch, for runSettings only. Its guard is
-  // set by projectSwitched() itself rather than bound to `project`:
-  // projectSwitched() runs from onProjectChanged, before a binding here is
-  // sure to have followed the project, and this launch must carry the NEW
-  // project.
-  HelperRunner {
-    id: runSettingsRunner
-    script: store.backendDir + "projects/viewer-state.py"
-    onFinished: function(stdout, exitCode) { store.applyRunSettings(stdout, exitCode) }
   }
 
   // A burst of changed lines is taken in one go (triggerNudges).

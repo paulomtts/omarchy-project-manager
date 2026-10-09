@@ -6,9 +6,11 @@
 // driven through App, including `app.runAlerts`, which App feeds with the run
 // store's snapshotReplied, and `app.runControl`, whose requests App settles on
 // each ok snapshotReplied and whose refreshRequested App routes to the run
-// store, and `app.runDispatch`, which App feeds with the run store's project,
-// run list and run settings and whose refreshRequested, noticeRequested and
-// runSettingsUpdated App routes. The stores' own behaviour is tested in
+// store, and `app.runDispatch`, which App feeds with the run store's project
+// and run list and run control's run settings, and whose refreshRequested,
+// noticeRequested, runSettingsWanted and runSettingsSaveRequested App routes,
+// as it routes run control's runSettingsSaveFailed back to the dispatch. The
+// stores' own behaviour is tested in
 // tst_run_store.qml, tst_run_alerts_store.qml, tst_run_control_store.qml and
 // tst_run_dispatch_store.qml.
 import QtQuick
@@ -181,6 +183,12 @@ TestCase {
     reply(app.runs.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
     compare(app.runs.dispatchState, "ready")
     return app
+  }
+
+  // run control's newest run settings save in flight; null when none.
+  function saveOf(app) {
+    var saves = app.runControl.runSettingsRunners.filter(function(r) { return r.saving })
+    return saves.length > 0 ? saves[saves.length - 1] : null
   }
 
   // The argv prefix of a notify.py command.
@@ -386,7 +394,7 @@ TestCase {
     compare(spy.signalArguments[0][0], "r-1")
     compare(app.runs.snapshotRunner.seq, seq + 1, "one snapshot")
     compare(argv(app.runs.snapshotRunner.current), tc.snapAll, "of every registered root, not only the started run's")
-    var save = runner.current
+    var save = saveOf(app).current
     compare(save.command.length, 5)
     compare(save.command.slice(0, 4).join("|"), tc.viewerCmd + "set-run-settings|/home/u/my proj")
   }
@@ -397,7 +405,7 @@ TestCase {
     var runner = app.runs.dispatchStartRunners[0]
     reply(runner.current, startOk("r-1", ""), 0)
     compare(app.runs.flashText, "")
-    reply(runner.current, ctlFail("Invalid", "x"), 1)
+    reply(saveOf(app).current, ctlFail("Invalid", "x"), 1)
     compare(app.runs.flashText, "Dispatch settings could not be saved")
     compare(app.runs.dispatchState, "started", "the run still started")
     compare(app.runs.dispatchStartRunners.length, 0)
@@ -740,7 +748,7 @@ TestCase {
     var runner = app.runDispatch.dispatchStartRunners[0]
     reply(runner.current, startOk("r-1", ""), 0)
     compare(app.runControl.flashText, "")
-    reply(runner.current, ctlFail("Invalid", "x"), 1)
+    reply(saveOf(app).current, ctlFail("Invalid", "x"), 1)
     compare(app.runControl.flashText, "Dispatch settings could not be saved")
     compare(app.runControl.flashTimer.running, true)
   }
@@ -757,5 +765,75 @@ TestCase {
     compare(proc.running, true)
     reply(proc, startOk("r-1", ""), 0)
     compare(app.runDispatch.dispatchState, "started", "it lands normally")
+  }
+
+  // A-S1
+  function test_the_dispatch_reads_its_run_settings_from_run_control() {
+    var app = make(); if (!app) return
+    var load = app.runControl.runSettingsLoadRunner
+    verify(load, "selecting a project asks run control for its run settings")
+    compare(argv(load.current), tc.viewerCmd + "get-run-settings|/home/u/my proj")
+    reply(load.current, dispatchSettings(), 0)
+    verify(app.runDispatch.runSettings === app.runControl.runSettingsOf("/home/u/my proj"))
+    verify(app.runDispatch.runSettings === app.runs.runSettings, "the run store's shim reads the same object")
+    compare(app.runDispatch.runSettings.parallelism, 4)
+  }
+
+  // A-S2
+  function test_a_start_through_app_saves_through_run_control() {
+    var app = readyApp(); if (!app) return
+    compare(app.runControl.runSettingsRunners.length, 0, "the load has replied")
+    compare(app.runDispatch.dispatchStart(), true)
+    reply(app.runDispatch.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
+    compare(app.runControl.runSettingsRunners.length, 1, "exactly one save")
+    var save = saveOf(app)
+    verify(save)
+    compare(argv(save.current).indexOf(tc.viewerCmd + "set-run-settings|/home/u/my proj|"), 0)
+    compare(app.runControl.runSettingsOf("/home/u/my proj").prefixByMilestone.m1, "old")
+    verify(app.runDispatch.runSettings === app.runControl.runSettingsOf("/home/u/my proj"))
+    compare(app.runDispatch.dispatchStartRunners.length, 0)
+  }
+
+  // A-S3 and Review Focus 3
+  function test_a_project_switch_through_app_loads_each_projects_settings_apart() {
+    var app = make(); if (!app) return
+    var loadA = app.runControl.runSettingsLoadRunner
+    app.projects.chooseProject(pB)
+    compare(app.runControl.runSettingsRunners.length, 2, "A's load is not stopped")
+    var loadB = app.runControl.runSettingsLoadRunner
+    compare(argv(loadB.current), tc.viewerCmd + "get-run-settings|/home/u/b")
+    reply(loadA.current, dispatchSettings(), 0)
+    compare(Object.keys(app.runDispatch.runSettings).length, 0, "A's late reply is A's")
+    compare(app.runControl.runSettingsOf("/home/u/my proj").parallelism, 4)
+    reply(loadB.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
+    compare(app.runDispatch.runSettings.parallelism, 9)
+    app.projects.chooseProject(pA)
+    compare(Object.keys(app.runDispatch.runSettings).length, 0, "A's old entry is not shown before its reply")
+    reply(app.runControl.runSettingsLoadRunner.current, JSON.stringify({ parallelism: 6 }) + "\n", 0)
+    compare(app.runDispatch.runSettings.parallelism, 6)
+  }
+
+  // A-S4 and Review Focus 1, 2
+  function test_a_write_to_the_run_store_shim_reaches_the_dispatch_form() {
+    failOnWarning(/Binding loop/)
+    var app = make(); if (!app) return
+    app.runs.runSettingsRunner.cancel()
+    app.runs.runSettings = { verify: ["make check"] }
+    verify(app.runDispatch.runSettings === app.runs.runSettings)
+    var cards = dispatchCards()
+    compare(app.runDispatch.openDispatch(cards.m1, cards), true)
+    compare(app.runDispatch.dispatchForm.verify[0], "make check")
+  }
+
+  // A-S5 and Review Focus 5
+  function test_a_save_failure_after_switching_away_flashes_nothing() {
+    var app = readyApp(); if (!app) return
+    compare(app.runDispatch.dispatchStart(), true)
+    reply(app.runDispatch.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
+    var save = saveOf(app)
+    verify(save)
+    app.projects.chooseProject(pB)
+    reply(save.current, ctlFail("Invalid", "x"), 1)
+    compare(app.runControl.flashText, "")
   }
 }

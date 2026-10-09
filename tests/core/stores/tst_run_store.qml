@@ -7,7 +7,8 @@
 // app.runControl and app.runAlerts, and driven through stubbed Process
 // objects. The run controls and the notify switch are tested in
 // tst_run_control_store.qml, the alerts in tst_run_alerts_store.qml. The
-// dispatch is tested in tst_run_dispatch_store.qml.
+// dispatch is tested in tst_run_dispatch_store.qml, the run settings load
+// and save in tst_run_control_store.qml.
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
@@ -505,8 +506,6 @@ TestCase {
     compare(store.debounceTimer.running, true, "a watch line after the switch is still handled")
     compare(store.nudges.r2, 7)
     store.project = tc.rootB
-    compare(argv(store.runSettingsRunner.current), tc.viewerCmd + "get-run-settings|" + tc.rootB,
-            "the new project's run settings still load")
     compare(store.dispatchState, "idle", "and the dispatch is still reset")
   }
 
@@ -2790,83 +2789,6 @@ TestCase {
   function escalated(id) { return entry(id, "escalated", false) }
   function toastIds(store) { return store.toasts.map(function(t) { return t.id }).join(",") }
 
-  // ---- alerts: the setting and the desktop notifications (S2 4.4)
-
-  property string viewerCmd: "python3|/plugin/core/backend/projects/viewer-state.py|"
-
-  function runSettings(notify) {
-    return JSON.stringify({ verify: [], allowNoVerification: false, notifyOnEscalation: notify }) + "\n"
-  }
-
-  // 12
-  function test_run_settings_load_per_project_and_never_set_the_switch() {
-    var store = makeWithProject(rootA); if (!store) return
-    var loadA = store.runSettingsRunner.current
-    verify(loadA, "selecting a project loads its run settings")
-    compare(argv(loadA), tc.viewerCmd + "get-run-settings|/home/u/my proj")
-    compare(loadA.command.length, 4)
-    compare(loadA.launchGuard, "/home/u/my proj")
-    verify(!store.settingsLoadRunner.current, "and no global load")
-    reply(loadA, runSettings(true), 0)
-    compare(store.runSettings.notifyOnEscalation, true, "the object is kept as it was read")
-    compare(store.notifyOnEscalation, false, "a stored per-project value is never the switch")
-    compare(store.notifySaved, false)
-    store.project = rootB
-    compare(Object.keys(store.runSettings).length, 0, "a project switch forgets A's settings")
-    var loadB = store.runSettingsRunner.current
-    verify(loadB !== loadA, "a new load")
-    compare(argv(loadB), tc.viewerCmd + "get-run-settings|/home/u/b")
-    compare(loadB.launchGuard, "/home/u/b", "the launch is guarded by the NEW project")
-    var seq = store.runSettingsRunner.seq
-    store.project = ""
-    compare(store.runSettingsRunner.seq, seq, "no project: nothing is loaded")
-    compare(store.runSettingsRunner.guard, "")
-
-    var other = makeWithProject(rootA); if (!other) return
-    var lateA = other.runSettingsRunner.current
-    other.project = rootB
-    reply(lateA, dispatchSettings(), 0)
-    compare(Object.keys(other.runSettings).length, 0, "a late reply for A is dropped")
-    compare(other.notifyOnEscalation, false)
-  }
-
-  // ---- run settings
-
-  // get-run-settings with every key, as viewer-state.py prints it.
-  function dispatchSettings() {
-    return JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false, notifyOnEscalation: false,
-                            prefixHistory: ["old"], parallelism: 4, confirmDispatch: true }) + "\n"
-  }
-
-  // 35
-  function test_run_settings_kept_even_after_notify_touched() {
-    var store = makeWithProject(rootA); if (!store) return
-    compare(Object.keys(store.runSettings).length, 0, "{} until the reply")
-    var load = store.runSettingsRunner.current
-    store.setNotifyOnEscalation(true)
-    reply(load, dispatchSettings(), 0)
-    compare(store.notifyOnEscalation, true, "the switch keeps the user's value")
-    compare(store.runSettings.prefixHistory.length, 1)
-    compare(store.runSettings.prefixHistory[0], "old")
-    compare(store.runSettings.parallelism, 4)
-    compare(store.runSettings.confirmDispatch, true)
-    compare(store.runSettings.verify[0], "uv run pytest")
-    compare(store.runSettings.notifyOnEscalation, false, "the object is kept as it was read")
-  }
-
-  function test_run_settings_follow_the_project() {
-    var store = makeWithProject(rootA); if (!store) return
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    compare(store.runSettings.parallelism, 4)
-    store.project = rootB
-    compare(Object.keys(store.runSettings).length, 0, "a project switch forgets A's settings")
-    reply(store.runSettingsRunner.current, "Traceback: boom\n", 1)
-    compare(Object.keys(store.runSettings).length, 0, "an unreadable reply is {}")
-    var other = makeWithProject(rootA); if (!other) return
-    reply(other.runSettingsRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
-    compare(other.runSettings.parallelism, 9)
-  }
-
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).
@@ -3775,10 +3697,13 @@ TestCase {
 
   // A RunDispatchStore with backendDir copied, set as `store`'s dispatchStore
   // handle. When `bound`, it is wired the way App wires app.runDispatch:
-  // project, active, runs and runSettings bound to the run store's own;
-  // refreshRequested to refresh() ("all") or requestSnapshot(roots);
-  // noticeRequested to the paired control store's flash; runSettingsUpdated
-  // into the run store's runSettings. Otherwise nothing is bound or routed.
+  // project, active and runs bound to the run store's own, runSettings to the
+  // paired control store's runSettingsOf(project); refreshRequested to
+  // refresh() ("all") or requestSnapshot(roots); noticeRequested to the
+  // paired control store's flash; runSettingsWanted and
+  // runSettingsSaveRequested to its loadRunSettings and saveRunSettings, and
+  // its runSettingsSaveFailed back to dispatchSaveFailed. Otherwise nothing
+  // is bound or routed.
   function wireDispatch(store, bound) {
     var comp = Qt.createComponent("../../../core/stores/RunDispatchStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
@@ -3787,13 +3712,16 @@ TestCase {
       d.project = Qt.binding(function() { return store.project })
       d.active = Qt.binding(function() { return store.active })
       d.runs = Qt.binding(function() { return store.runs })
-      d.runSettings = Qt.binding(function() { return store.runSettings })
+      d.runSettings = Qt.binding(function() { return controlOf(store).runSettingsOf(store.project) })
       d.refreshRequested.connect(function(roots) {
         if (roots === "all") store.refresh()
         else store.requestSnapshot(roots)
       })
       d.noticeRequested.connect(function(text) { controlOf(store).flash(text) })
-      d.runSettingsUpdated.connect(function(settings) { store.runSettings = settings })
+      var c = controlOf(store)
+      d.runSettingsWanted.connect(function(root) { c.loadRunSettings(root) })
+      d.runSettingsSaveRequested.connect(function(root, patch) { c.saveRunSettings(root, patch) })
+      c.runSettingsSaveFailed.connect(function(root, patch) { d.dispatchSaveFailed(root, patch) })
     }
     store.dispatchStore = d
     return d
@@ -3895,5 +3823,54 @@ TestCase {
     compare(d.dispatchState, "previewing", "closing the run store leaves the dispatch")
     store.project = rootB
     compare(d.dispatchState, "previewing", "switching the run store's project leaves the dispatch")
+  }
+
+  // ---- the run settings shims (split-runstore 4.2)
+
+  // R-S1 and Review Focus 1
+  function test_without_a_control_store_the_run_settings_shims_are_empty() {
+    var comp = Qt.createComponent("../../../core/stores/RunStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return }
+    var store = comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
+    compare(Object.keys(store.runSettings).length, 0)
+    compare(store.runSettingsRunner, null)
+    store.project = tc.rootA
+    store.project = tc.rootB
+    compare(Object.keys(store.runSettings).length, 0)
+    compare(store.runSettingsRunner, null, "nothing is loaded")
+    var w = { verify: ["make check"] }
+    store.runSettings = w
+    verify(store.runSettings === w, "a write is kept as written")
+  }
+
+  // R-S2
+  function test_the_run_settings_shims_follow_the_control_store() {
+    var store = makeWithProject(rootA); if (!store) return
+    var c = controlOf(store)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runSettingsChanged" })
+    compare(c.runSettingsRunners.length, 0, "the run store loads nothing on a project change")
+    compare(store.runSettingsRunner, null)
+    c.loadRunSettings(tc.rootA)
+    verify(store.runSettingsRunner === c.runSettingsLoadRunner)
+    reply(store.runSettingsRunner.current, JSON.stringify({ parallelism: 4 }) + "\n", 0)
+    verify(store.runSettings === c.runSettingsOf(tc.rootA))
+    compare(store.runSettings.parallelism, 4)
+    store.project = tc.rootB
+    compare(Object.keys(store.runSettings).length, 0)
+    verify(spy.count >= 1, "the shim notifies")
+  }
+
+  // R-S3 and Review Focus 1, 2
+  function test_writing_the_run_settings_shim_reaches_the_control_store() {
+    failOnWarning(/Binding loop/)
+    var store = makeWithProject(rootA); if (!store) return
+    var c = controlOf(store)
+    var w = { verify: ["make check"] }
+    store.runSettings = w
+    verify(c.runSettingsOf(tc.rootA) === w, "the write goes to the control store")
+    verify(store.runSettings === w)
+    c.loadRunSettings(tc.rootA)
+    reply(c.runSettingsLoadRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
+    compare(store.runSettings.parallelism, 9, "the shim follows the control store again")
   }
 }
