@@ -4631,6 +4631,24 @@ TestCase {
     compare(store.dispatchStartRunners.length, 1)
   }
 
+  // A start re-snapshots every usable root, not only the project it was made in.
+  function test_a_dispatch_start_refreshes_every_usable_root() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    store.project = rootA
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchStart(), true)
+    var seq = store.snapshotRunner.seq
+    reply(store.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(store.snapshotRunner.seq, seq + 1, "one snapshot")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB)
+  }
+
   // 30
   function test_settings_write_failure_flashes() {
     var replies = [JSON.stringify({ ok: false, error: { type: "Invalid", message: "x" } }) + "\n", "garbage\n"]
@@ -5558,6 +5576,16 @@ TestCase {
     compare(store.lastControlError, "The run is not running")
     compare(store.lastControlErrorRunId, "b1")
     compare(store.snapshotRunner.seq, seq + 1)
+  }
+
+  // A control reply re-snapshots every usable root, not only the run's.
+  function test_a_control_reply_refreshes_every_usable_root() {
+    var store = crossStore(rootA, [running("a1")], [bWork(running("b1"))]); if (!store) return
+    compare(store.control("pause", "a1"), true)
+    var seq = store.snapshotRunner.seq
+    reply(store.controlRunners[0].current, ctlOk({ run_id: "a1", command: "pause", requested_at: "t1" }), 0)
+    compare(store.snapshotRunner.seq, seq + 1, "one snapshot")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB)
   }
 
   // Review Focus 2.
