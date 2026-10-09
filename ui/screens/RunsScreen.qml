@@ -17,10 +17,11 @@ import "../theme" as T
 // with run counts) sits above the status chips, hidden when only one project
 // has runs and none is open; clicking one asks the store to toggle its
 // project filter. Needs attention / Live / Parked / All chips apply across
-// groups -- clicking the active chip means All again -- and a footer says
-// whether the runs are watched. It reads the run store and asks the navigator
-// to open a run or move the cursor; it owns no state of its own. Ages are
-// read against the clock once per snapshot: there is no timer.
+// groups and count within the project filter -- clicking the active chip
+// means All again -- and a footer says whether the runs are watched. It reads
+// the run store and asks the navigator to open a run or move the cursor; it
+// owns no state of its own. Ages are read against the clock once per
+// snapshot: there is no timer.
 Column {
   id: screen
   objectName: "runsView"
@@ -38,7 +39,8 @@ Column {
   // Re-read whenever the list changes, i.e. with every snapshot.
   readonly property real nowMs: screen.app.runs.filteredRuns ? Date.now() : 0
   readonly property bool amMissing: screen.app.runs.amStatus === "missing"
-  readonly property var counts: Runs.runFilterCounts(screen.app.runs.runs)
+  // The status chips' counts: the project filter's runs, whatever the search.
+  readonly property var counts: Runs.runFilterCounts(Runs.filterByProject(screen.app.runs.runs, screen.app.runs.projectFilter))
   // The registry is empty: the status line says so whatever the chip or the
   // search.
   readonly property bool noProjects: screen.sizeOf(screen.app.runs.projectRoots) === 0

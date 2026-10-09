@@ -1226,4 +1226,57 @@ TestCase {
     s.runs.project = ""
     compare(H.find(s.screen, "runProjectChip/home/u/b").active, true)
   }
+
+  // 8
+  function test_status_chip_counts_apply_within_the_project_filter() {
+    var s = make(twoProjects()); if (!s) return
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
+    compare(H.find(s.screen, "runChiplive").text, "Live 1")
+    s.runs.toggleProjectFilter("/home/u/b")
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 0")
+    compare(H.find(s.screen, "runChiplive").text, "Live 1")
+    compare(H.find(s.screen, "runChipparked").text, "Parked 0")
+    s.runs.toggleProjectFilter("/home/u/a")
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
+    compare(H.find(s.screen, "runChiplive").text, "Live 0")
+  }
+
+  // 9
+  function test_a_status_chip_and_the_project_filter_compose_and_project_counts_stay_whole() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.toggleProjectFilter("/home/u/a")
+    tap(H.find(s.screen, "runChiplive"))
+    compare(H.find(s.screen, "runRow0"), null, "alpha has no live run")
+    compare(H.find(s.screen, "runsMessage").text, "No Live runs.")
+    s.runs.toggleProjectFilter("")
+    tap(H.find(s.screen, "runChipattention"))
+    compare(projectChipText(s, "/home/u/b"), "beta 1", "beta's chip keeps its full count")
+    compare(projectChipText(s, "/home/u/a"), "alpha 2")
+  }
+
+  // Review Focus 3.
+  function test_the_search_changes_neither_project_chips_nor_status_counts() {
+    var s = make(twoProjects()); if (!s) return
+    s.nav.searchQuery = "zeta"
+    compare(H.find(s.screen, "runRowId0").text, "…live0003")
+    compare(H.find(s.screen, "runRow1"), null)
+    compare(projectChipText(s, "/home/u/a"), "alpha 2", "alpha's runs are all searched out; its chip stays")
+    compare(projectChipText(s, "/home/u/b"), "beta 1")
+    s.runs.toggleProjectFilter("/home/u/a")
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 2", "counts within the filter, not the search")
+    compare(H.find(s.screen, "runRow0"), null)
+  }
+
+  // Review Focus 5.
+  function test_runs_without_a_project_count_under_all_projects_only() {
+    var s = make(sample().concat(twoProjects())); if (!s) return
+    compare(projectChipIds(s), "all,/home/u/a,/home/u/b", "untagged runs get no chip")
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 4")
+    compare(H.find(s.screen, "runChiplive").text, "Live 2")
+    compare(H.find(s.screen, "runChipparked").text, "Parked 1")
+    s.runs.toggleProjectFilter("/home/u/a")
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
+    compare(H.find(s.screen, "runChiplive").text, "Live 0")
+    compare(H.find(s.screen, "runChipparked").text, "Parked 0")
+  }
 }
