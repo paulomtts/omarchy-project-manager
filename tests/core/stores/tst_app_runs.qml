@@ -175,13 +175,13 @@ TestCase {
   // runs, and milestone m1's dispatch ready: its default branch read and its preview landed.
   function readyApp() {
     var app = make(); if (!app) return null
-    reply(app.runs.runSettingsRunner.current, dispatchSettings(), 0)
+    reply(app.runControl.runSettingsLoadRunner.current, dispatchSettings(), 0)
     reply(app.runs.snapshotRunner.current, listReply([], []), 0)
     var cards = dispatchCards()
-    compare(app.runs.openDispatch(cards.m1, cards), true)
-    reply(app.runs.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(app.runs.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(app.runs.dispatchState, "ready")
+    compare(app.runDispatch.openDispatch(cards.m1, cards), true)
+    reply(app.runDispatch.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(app.runDispatch.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    compare(app.runDispatch.dispatchState, "ready")
     return app
   }
 
@@ -330,66 +330,66 @@ TestCase {
 
   function test_a_snapshot_through_app_settles_a_pending_request() {
     var app = openApp([runningIn("r1")], []); if (!app) return
-    compare(app.runs.control("pause", "r1"), true)
-    compare(app.runs.pending.r1, "pause")
-    reply(app.runs.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
-    compare(app.runs.pending.r1, "pause", "am has it; a snapshot settles it")
+    compare(app.runControl.control("pause", "r1"), true)
+    compare(app.runControl.pending.r1, "pause")
+    reply(app.runControl.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
+    compare(app.runControl.pending.r1, "pause", "am has it; a snapshot settles it")
     reply(app.runs.snapshotRunner.current,
           listReply([runEntry("r1", "started", true, tc.pA.root_path, [{ command: "pause", requested_at: "t1", handled_at: null }])], []), 0)
-    compare(app.runs.pending.r1, "pause", "not handled yet")
+    compare(app.runControl.pending.r1, "pause", "not handled yet")
     snapshot(app, listReply([runEntry("r1", "started", true, tc.pA.root_path, [{ command: "pause", requested_at: "t1", handled_at: "t1h" }])], []))
-    compare(app.runs.pending.r1, undefined, "the handled request is settled")
+    compare(app.runControl.pending.r1, undefined, "the handled request is settled")
   }
 
   function test_a_snapshot_through_app_raises_one_toast_after_arming() {
     var app = openApp([runningIn("r1")], []); if (!app) return
-    compare(app.runs.toasts.length, 0, "the first snapshots only arm")
-    compare(app.runs.alertsArmed, true)
+    compare(app.runAlerts.toasts.length, 0, "the first snapshots only arm")
+    compare(app.runAlerts.alertsArmed, true)
     snapshot(app, listReply([escalatedIn("r1")], []))
-    compare(app.runs.toasts.length, 1)
-    compare(app.runs.toasts[0].id, "r1")
+    compare(app.runAlerts.toasts.length, 1)
+    compare(app.runAlerts.toasts[0].id, "r1")
   }
 
   function test_am_missing_through_app_disarms_and_the_next_snapshot_only_rearms() {
     var app = openApp([runningIn("r1")], []); if (!app) return
-    compare(app.runs.alertsArmed, true)
+    compare(app.runAlerts.alertsArmed, true)
     snapshot(app, missingReply())
     compare(app.runs.amStatus, "missing")
-    compare(app.runs.alertsArmed, false)
+    compare(app.runAlerts.alertsArmed, false)
     compare(app.runs.runs.length, 0)
     snapshot(app, listReply([escalatedIn("r1")], []))
-    compare(app.runs.toasts.length, 0, "the first good snapshot after am came back only arms")
-    compare(app.runs.alertsArmed, true)
+    compare(app.runAlerts.toasts.length, 0, "the first good snapshot after am came back only arms")
+    compare(app.runAlerts.alertsArmed, true)
   }
 
   function test_a_control_reply_through_app_snapshots_every_registered_root() {
     var app = openApp([runningIn("r1")], []); if (!app) return
-    compare(app.runs.control("pause", "r1"), true)
+    compare(app.runControl.control("pause", "r1"), true)
     var seq = app.runs.snapshotRunner.seq
-    reply(app.runs.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
+    reply(app.runControl.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
     compare(app.runs.snapshotRunner.seq, seq + 1, "one snapshot")
     compare(argv(app.runs.snapshotRunner.current), tc.snapAll, "of every registered root, not only the run's")
   }
 
   function test_a_failed_control_reply_through_app_also_snapshots_every_root() {
     var app = openApp([runningIn("r1")], []); if (!app) return
-    compare(app.runs.control("pause", "r1"), true)
+    compare(app.runControl.control("pause", "r1"), true)
     var seq = app.runs.snapshotRunner.seq
-    reply(app.runs.controlRunners[0].current, ctlFail("NotAcceptingError", "run r1 is in integrate"), 0)
-    compare(app.runs.lastControlError, "Integrate is running; it cannot be paused or cancelled")
-    compare(app.runs.pending.r1, undefined)
+    reply(app.runControl.controlRunners[0].current, ctlFail("NotAcceptingError", "run r1 is in integrate"), 0)
+    compare(app.runControl.lastControlError, "Integrate is running; it cannot be paused or cancelled")
+    compare(app.runControl.pending.r1, undefined)
     compare(app.runs.snapshotRunner.seq, seq + 1, "one snapshot")
     compare(argv(app.runs.snapshotRunner.current), tc.snapAll)
   }
 
   function test_a_dispatch_start_through_app_snapshots_every_registered_root() {
     var app = readyApp(); if (!app) return
-    var spy = createTemporaryObject(spyC, tc, { target: app.runs, signalName: "dispatchStarted" })
-    compare(app.runs.dispatchStart(), true)
-    var runner = app.runs.dispatchStartRunners[0]
+    var spy = createTemporaryObject(spyC, tc, { target: app.runDispatch, signalName: "dispatchStarted" })
+    compare(app.runDispatch.dispatchStart(), true)
+    var runner = app.runDispatch.dispatchStartRunners[0]
     var seq = app.runs.snapshotRunner.seq
     reply(runner.current, startOk("r-1", ""), 0)
-    compare(app.runs.dispatchState, "started")
+    compare(app.runDispatch.dispatchState, "started")
     compare(spy.count, 1)
     compare(spy.signalArguments[0][0], "r-1")
     compare(app.runs.snapshotRunner.seq, seq + 1, "one snapshot")
@@ -401,91 +401,91 @@ TestCase {
 
   function test_a_dispatch_settings_save_failure_through_app_flashes() {
     var app = readyApp(); if (!app) return
-    compare(app.runs.dispatchStart(), true)
-    var runner = app.runs.dispatchStartRunners[0]
+    compare(app.runDispatch.dispatchStart(), true)
+    var runner = app.runDispatch.dispatchStartRunners[0]
     reply(runner.current, startOk("r-1", ""), 0)
-    compare(app.runs.flashText, "")
+    compare(app.runControl.flashText, "")
     reply(saveOf(app).current, ctlFail("Invalid", "x"), 1)
-    compare(app.runs.flashText, "Dispatch settings could not be saved")
-    compare(app.runs.dispatchState, "started", "the run still started")
-    compare(app.runs.dispatchStartRunners.length, 0)
+    compare(app.runControl.flashText, "Dispatch settings could not be saved")
+    compare(app.runDispatch.dispatchState, "started", "the run still started")
+    compare(app.runDispatch.dispatchStartRunners.length, 0)
   }
 
   function test_a_project_switch_through_app_resets_the_dispatch_and_reloads_run_settings() {
     var app = openApp([runningIn("r1"), runningIn("r2")], []); if (!app) return
-    reply(app.runs.runSettingsRunner.current, dispatchSettings(), 0)
-    compare(app.runs.runSettings.parallelism, 4)
+    reply(app.runControl.runSettingsLoadRunner.current, dispatchSettings(), 0)
+    compare(app.runControl.runSettingsOf(app.runs.project).parallelism, 4)
     snapshot(app, listReply([escalatedIn("r1"), runningIn("r2")], []))
-    compare(app.runs.toasts.length, 1)
-    compare(app.runs.control("pause", "r2"), true)
-    app.runs.flash("kept")
+    compare(app.runAlerts.toasts.length, 1)
+    compare(app.runControl.control("pause", "r2"), true)
+    app.runControl.flash("kept")
     var cards = dispatchCards()
-    compare(app.runs.openDispatch(cards.m1, cards), true)
-    reply(app.runs.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(app.runs.dispatchState, "previewing")
+    compare(app.runDispatch.openDispatch(cards.m1, cards), true)
+    reply(app.runDispatch.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(app.runDispatch.dispatchState, "previewing")
     var seq = app.runs.snapshotRunner.seq
     app.projects.chooseProject(pB)
-    compare(app.runs.dispatchState, "idle")
-    compare(Object.keys(app.runs.runSettings).length, 0)
-    compare(argv(app.runs.runSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b")
-    compare(app.runs.toasts.length, 1, "the toast stays")
-    compare(app.runs.toasts[0].id, "r1")
-    compare(app.runs.pending.r2, "pause", "the request stays")
-    compare(app.runs.flashText, "kept", "the flash stays")
+    compare(app.runDispatch.dispatchState, "idle")
+    compare(Object.keys(app.runControl.runSettingsOf(app.runs.project)).length, 0)
+    compare(argv(app.runControl.runSettingsLoadRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b")
+    compare(app.runAlerts.toasts.length, 1, "the toast stays")
+    compare(app.runAlerts.toasts[0].id, "r1")
+    compare(app.runControl.pending.r2, "pause", "the request stays")
+    compare(app.runControl.flashText, "kept", "the flash stays")
     compare(app.runs.snapshotRunner.seq, seq, "no snapshot is launched")
   }
 
   function test_opening_the_panel_through_app_reads_the_notify_switch() {
     var app = make(); if (!app) return
-    verify(!app.runs.settingsLoadRunner.current, "a closed panel reads nothing")
-    app.runs.setNotifyOnEscalation(false)
-    compare(app.runs.notifyTouched, true)
-    reply(app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    verify(!app.runControl.settingsLoadRunner.current, "a closed panel reads nothing")
+    app.runControl.setNotifyOnEscalation(false)
+    compare(app.runControl.notifyTouched, true)
+    reply(app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
     app.panelOpen = true
-    compare(argv(app.runs.settingsLoadRunner.current), tc.viewerCmd + "get-global-settings")
-    compare(app.runs.notifyTouched, false, "the opening's load is not too late")
-    reply(app.runs.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
-    compare(app.runs.notifyOnEscalation, true)
+    compare(argv(app.runControl.settingsLoadRunner.current), tc.viewerCmd + "get-global-settings")
+    compare(app.runControl.notifyTouched, false, "the opening's load is not too late")
+    reply(app.runControl.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(app.runControl.notifyOnEscalation, true)
   }
 
   function test_closing_the_panel_through_app_empties_toasts_disarms_and_closes_the_dispatch() {
     var app = openApp([runningIn("r1")], []); if (!app) return
     snapshot(app, listReply([escalatedIn("r1")], []))
-    compare(app.runs.toasts.length, 1)
+    compare(app.runAlerts.toasts.length, 1)
     var cards = dispatchCards()
-    compare(app.runs.openDispatch(cards.m1, cards), true)
-    compare(app.runs.dispatchState, "previewing")
+    compare(app.runDispatch.openDispatch(cards.m1, cards), true)
+    compare(app.runDispatch.dispatchState, "previewing")
     app.panelOpen = false
-    compare(app.runs.toasts.length, 0)
-    compare(app.runs.alertsArmed, false)
-    compare(app.runs.dispatchState, "idle")
+    compare(app.runAlerts.toasts.length, 0)
+    compare(app.runAlerts.alertsArmed, false)
+    compare(app.runDispatch.dispatchState, "idle")
   }
 
   function test_an_escalation_through_app_notifies_only_with_the_switch_on() {
     var app = openApp([runningIn("r1"), runningIn("r2")], []); if (!app) return
-    compare(app.runs.notifyOnEscalation, false)
+    compare(app.runControl.notifyOnEscalation, false)
     snapshot(app, listReply([escalatedIn("r1"), runningIn("r2")], []))
-    compare(app.runs.toasts.length, 1)
-    compare(app.runs.notifyRunners.length, 0, "the switch is off: a toast only")
-    reply(app.runs.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
-    compare(app.runs.notifyOnEscalation, true)
+    compare(app.runAlerts.toasts.length, 1)
+    compare(app.runAlerts.notifyRunners.length, 0, "the switch is off: a toast only")
+    reply(app.runControl.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(app.runControl.notifyOnEscalation, true)
     snapshot(app, listReply([escalatedIn("r1"), escalatedIn("r2")], []))
-    compare(app.runs.toasts.length, 2)
-    compare(app.runs.notifyRunners.length, 1, "one notification, for r2")
-    compare(argv(app.runs.notifyRunners[0].current), tc.notifyCmd + "m-r2|escalated")
+    compare(app.runAlerts.toasts.length, 2)
+    compare(app.runAlerts.notifyRunners.length, 1, "one notification, for r2")
+    compare(argv(app.runAlerts.notifyRunners[0].current), tc.notifyCmd + "m-r2|escalated")
   }
 
   function test_a_project_leaving_the_registry_through_app_loses_its_arming() {
     var app = openApp([runningIn("a1")], [runningIn("b1", tc.pB.root_path)]); if (!app) return
-    compare(Object.keys(app.runs.armedRoots).sort().join(","), [tc.pA.root_path, tc.pB.root_path].sort().join(","))
+    compare(Object.keys(app.runAlerts.armedRoots).sort().join(","), [tc.pA.root_path, tc.pB.root_path].sort().join(","))
     app.projects.applyProjectsList([pA])
-    compare(Object.keys(app.runs.armedRoots).join(","), tc.pA.root_path, "pB's arming goes with it")
+    compare(Object.keys(app.runAlerts.armedRoots).join(","), tc.pA.root_path, "pB's arming goes with it")
     reply(app.runs.snapshotRunner.current, listReply([runningIn("a1")], null), 0)
     app.projects.applyProjectsList([pA, pB])
     reply(app.runs.snapshotRunner.current, listReply([escalatedIn("a1")], [escalatedIn("b1", tc.pB.root_path)]), 0)
-    compare(app.runs.toasts.length, 1, "pB's first entry back only re-arms it")
-    compare(app.runs.toasts[0].id, "a1", "pA stayed armed")
-    compare(Object.keys(app.runs.armedRoots).length, 2)
+    compare(app.runAlerts.toasts.length, 1, "pB's first entry back only re-arms it")
+    compare(app.runAlerts.toasts[0].id, "a1", "pA stayed armed")
+    compare(Object.keys(app.runAlerts.armedRoots).length, 2)
   }
 
   // ---- app.runAlerts (split-runstore 2.2)
@@ -494,7 +494,6 @@ TestCase {
   function test_app_composes_run_alerts_wired_to_the_run_store() {
     var app = makeBare(); if (!app) return
     verify(app.runAlerts, "App composes the alerts store")
-    verify(app.runs.alertsStore === app.runAlerts, "the run store's shim handle")
     compare(app.runAlerts.backendDir, "/plugin/core/backend/")
     app.backendDir = "/other/"
     compare(app.runAlerts.backendDir, "/other/", "backendDir follows App")
@@ -521,7 +520,6 @@ TestCase {
     compare(app.runAlerts.toasts.length, 1)
     compare(app.runAlerts.toasts[0].id, "r1")
     compare(app.runAlerts.toasts[0].project, "alpha")
-    verify(app.runs.toasts === app.runAlerts.toasts, "the run store's shim reads the same list")
   }
 
   // A3
@@ -551,7 +549,6 @@ TestCase {
   function test_app_composes_run_control_wired_to_the_run_store() {
     var app = makeBare(); if (!app) return
     verify(app.runControl, "App composes the control store")
-    verify(app.runs.controlStore === app.runControl, "the run store's shim handle")
     compare(app.runControl.backendDir, "/plugin/core/backend/")
     app.backendDir = "/other/"
     compare(app.runControl.backendDir, "/other/", "backendDir follows App")
@@ -567,6 +564,8 @@ TestCase {
     reply(app.runs.snapshotRunner.current, listReply([runningIn("r1")], []), 0)
     compare(app.runControl.runs.length, 1)
     verify(app.runControl.runs === app.runs.runs, "the run store's merged list")
+    app.projects.chooseProject(pB)
+    compare(app.runControl.project, "/home/u/b", "the project follows the selection")
   }
 
   // A2
@@ -574,7 +573,6 @@ TestCase {
     var app = openApp([runningIn("r1")], []); if (!app) return
     compare(app.runControl.control("pause", "r1"), true)
     compare(app.runControl.pending.r1, "pause")
-    verify(app.runs.pending === app.runControl.pending, "the run store's shim reads the same map")
     reply(app.runControl.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
     compare(app.runControl.controlRunners.length, 0)
     compare(app.runControl.pending.r1, "pause", "am has it; a snapshot settles it")
@@ -583,7 +581,6 @@ TestCase {
     compare(app.runControl.pending.r1, "pause", "not handled yet")
     snapshot(app, listReply([runEntry("r1", "started", true, tc.pA.root_path, [{ command: "pause", requested_at: "t1", handled_at: "t1h" }])], []))
     compare(app.runControl.pending.r1, undefined, "the handled request is settled")
-    verify(app.runs.pending === app.runControl.pending)
   }
 
   // A3
@@ -664,8 +661,7 @@ TestCase {
     reply(load, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
     compare(app.runControl.notifyOnEscalation, true)
     compare(app.runAlerts.notifyOnEscalation, true, "the alerts input follows run control's")
-    verify(app.runs.settingsLoadRunner === app.runControl.settingsLoadRunner, "the run store's shim")
-    compare(app.runs.notifyOnEscalation, true)
+    compare(app.runControl.notifyOnEscalation, true)
   }
 
   // A9
@@ -694,7 +690,6 @@ TestCase {
   function test_app_composes_run_dispatch_wired_to_the_run_store() {
     var app = make(); if (!app) return
     verify(app.runDispatch, "App composes the dispatch store")
-    verify(app.runs.dispatchStore === app.runDispatch, "the run store's shim handle")
     compare(app.runDispatch.backendDir, "/plugin/core/backend/")
     compare(app.runDispatch.project, "/home/u/my proj")
     compare(app.runDispatch.active, false)
@@ -706,8 +701,8 @@ TestCase {
     reply(app.runs.snapshotRunner.current, listReply([runningIn("r1")], []), 0)
     compare(app.runDispatch.runs.length, 1)
     verify(app.runDispatch.runs === app.runs.runs)
-    reply(app.runs.runSettingsRunner.current, dispatchSettings(), 0)
-    verify(app.runDispatch.runSettings === app.runs.runSettings, "the run store's run settings")
+    reply(app.runControl.runSettingsLoadRunner.current, dispatchSettings(), 0)
+    verify(app.runDispatch.runSettings === app.runControl.runSettingsOf(app.runs.project), "the run store's run settings")
     compare(app.runDispatch.runSettings.parallelism, 4)
     app.projects.chooseProject(pB)
     compare(app.runDispatch.project, "/home/u/b", "the project follows the selection")
@@ -719,26 +714,23 @@ TestCase {
     compare(app.runDispatch.dispatchStart(), true)
     reply(app.runDispatch.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
     compare(app.runDispatch.dispatchState, "started")
-    compare(app.runs.runSettings.prefixByMilestone.m1, "old", "the start's values reach the run store")
-    verify(app.runDispatch.runSettings === app.runs.runSettings, "the binding survives the write")
+    compare(app.runControl.runSettingsOf(app.runs.project).prefixByMilestone.m1, "old", "the start's values reach the run store")
+    verify(app.runDispatch.runSettings === app.runControl.runSettingsOf(app.runs.project), "the binding survives the write")
     app.projects.chooseProject(pB)
-    compare(Object.keys(app.runs.runSettings).length, 0)
+    compare(Object.keys(app.runControl.runSettingsOf(app.runs.project)).length, 0)
     compare(Object.keys(app.runDispatch.runSettings).length, 0, "B's form will not start from A's settings")
-    reply(app.runs.runSettingsRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
+    reply(app.runControl.runSettingsLoadRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
     compare(app.runDispatch.runSettings.parallelism, 9)
   }
 
   // A-D3 and Review Focus 2
-  function test_a_start_through_app_announces_started_once_on_each_store() {
+  function test_a_start_through_app_announces_started_once() {
     var app = readyApp(); if (!app) return
     var onDispatch = createTemporaryObject(spyC, tc, { target: app.runDispatch, signalName: "dispatchStarted" })
-    var onRuns = createTemporaryObject(spyC, tc, { target: app.runs, signalName: "dispatchStarted" })
     compare(app.runDispatch.dispatchStart(), true)
     reply(app.runDispatch.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
     compare(onDispatch.count, 1)
     compare(onDispatch.signalArguments[0][0], "r-1")
-    compare(onRuns.count, 1, "re-emitted once: Panel opens the run once")
-    compare(onRuns.signalArguments[0][0], "r-1")
   }
 
   // A-D4
@@ -775,7 +767,7 @@ TestCase {
     compare(argv(load.current), tc.viewerCmd + "get-run-settings|/home/u/my proj")
     reply(load.current, dispatchSettings(), 0)
     verify(app.runDispatch.runSettings === app.runControl.runSettingsOf("/home/u/my proj"))
-    verify(app.runDispatch.runSettings === app.runs.runSettings, "the run store's shim reads the same object")
+    verify(app.runDispatch.runSettings === app.runControl.runSettingsOf(app.runs.project), "the run store's shim reads the same object")
     compare(app.runDispatch.runSettings.parallelism, 4)
   }
 
@@ -811,18 +803,6 @@ TestCase {
     compare(Object.keys(app.runDispatch.runSettings).length, 0, "A's old entry is not shown before its reply")
     reply(app.runControl.runSettingsLoadRunner.current, JSON.stringify({ parallelism: 6 }) + "\n", 0)
     compare(app.runDispatch.runSettings.parallelism, 6)
-  }
-
-  // A-S4 and Review Focus 1, 2
-  function test_a_write_to_the_run_store_shim_reaches_the_dispatch_form() {
-    failOnWarning(/Binding loop/)
-    var app = make(); if (!app) return
-    app.runs.runSettingsRunner.cancel()
-    app.runs.runSettings = { verify: ["make check"] }
-    verify(app.runDispatch.runSettings === app.runs.runSettings)
-    var cards = dispatchCards()
-    compare(app.runDispatch.openDispatch(cards.m1, cards), true)
-    compare(app.runDispatch.dispatchForm.verify[0], "make check")
   }
 
   // A-S5 and Review Focus 5
