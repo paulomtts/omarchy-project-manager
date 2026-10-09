@@ -38,6 +38,10 @@ import threading
 USAGE = "usage: runs-logs-follow.py REPO RUN CARD PHASE ATTEMPT [OFFSET]"
 
 
+class SchemaMismatch(Exception):
+    """A hello whose schema is not the integer 1 or 2."""
+
+
 def say(payload, code=0):
     """Print `payload` as one compact JSON line and flush it now: stdout is a
     pipe, so it is block-buffered."""
@@ -108,11 +112,21 @@ def stop(proc):
             proc.wait()
 
 
+def check_hello(hello):
+    """Raises SchemaMismatch unless the hello's schema is the integer 1 or 2."""
+    schema = hello.get("schema")
+    if not (type(schema) is int and schema in (1, 2)):
+        raise SchemaMismatch("am logs speaks schema " + json.dumps(schema)
+                             + "; this helper reads schema 1 or 2.")
+
+
+
+
 def stream(lines, seen):
     """Print each of am's stdout `lines` that is a JSON object, recording in
     `seen`. An object with an `ok` key read before any printed line is the
     refusal: printed, and every later line ignored. Every other line that is not
-    a JSON object without an `ok` key is skipped and counted."""
+    a JSON object without an `ok` key is skipped and counted. A hello is checked before it is printed. Raises SchemaMismatch."""
     for raw in lines:
         seen.lines += 1
         if seen.refusal:
@@ -127,14 +141,25 @@ def stream(lines, seen):
         if "ok" in line:
             seen.refusal = True
         elif line.get("event") == "logs":
+            check_hello(line)
             seen.hello = True
         say(line)
         seen.printed = True
 
 
 def finish(code, seen, stderr):
-    """Print the last line, if any, for how am ended; return the helper's exit code."""
-    return 0
+    """Print the last line, if any, for how am ended; return the helper's exit
+    code. `stderr` is am's whole stderr; its last non-empty line is the message."""
+    if seen.refusal or code == 0:
+        return 0
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    message = lines[-1] if lines else ""
+    if code == 2 and seen.lines == 0:
+        if message:
+            return failure("FollowUnsupported", "am logs cannot follow (exit 2): " + message)
+        return failure("FollowUnsupported", "am logs cannot follow (exit 2).")
+    kind = "StreamError" if seen.hello else "HelperError"
+    return failure(kind, message or "am logs exited " + str(code) + ".")
 
 
 def main(argv):
@@ -149,7 +174,11 @@ def main(argv):
     err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
     err_reader.start()
     try:
-        stream(proc.stdout, seen)
+        try:
+            stream(proc.stdout, seen)
+        except SchemaMismatch as e:
+            stop(proc)
+            return failure("SchemaMismatch", str(e))
         code = proc.wait()
         err_reader.join(timeout=2)
     finally:
@@ -160,5 +189,17 @@ def main(argv):
     return finish(code, seen, "".join(err))
 
 
+def guarded(argv):
+    """Any unexpected exception ends with one HelperError line, exit 0 (main's
+    finally has already stopped am)."""
+    try:
+        return main(argv)
+    except SystemExit:
+        raise
+    except BaseException as e:  # noqa: BLE001 - deliberate catch-all
+        reason = str(e) or e.__class__.__name__
+        return failure("HelperError", "The log follow failed: " + reason)
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(guarded(sys.argv[1:]))

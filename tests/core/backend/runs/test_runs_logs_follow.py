@@ -434,3 +434,113 @@ def test_ok_object_after_a_printed_line_is_skipped(world):
     assert code == 0
     assert lines == [hello, chunk, end]
     assert "runs-logs-follow: skipped 1 non-JSON lines" in err
+
+
+# --- how am ended ---------------------------------------------------------------------
+
+UNSUPPORTED = "usage: am logs ... error: unrecognized arguments: --follow"
+
+
+@pytest.mark.parametrize("stderr, message", [
+    (UNSUPPORTED + "\n", "am logs cannot follow (exit 2): " + UNSUPPORTED),
+    ("usage: am logs [-h] RUN CARD\n" + UNSUPPORTED + "\n\n",
+     "am logs cannot follow (exit 2): " + UNSUPPORTED),
+    ("", "am logs cannot follow (exit 2)."),
+], ids=["one-line", "last-non-empty-line", "empty-stderr"])
+def test_follow_unsupported(world, stderr, message):
+    set_script(world, [], exit=2, stderr=stderr)
+    code, lines, _, _ = run_helper(world)
+    assert code == 0
+    assert lines == [error("FollowUnsupported", message)]
+
+
+def test_exit_2_after_output_is_helper_error(world):
+    set_script(world, [raw("noise")], exit=2, stderr="bad\n")
+    code, lines, _, _ = run_helper(world)
+    assert code == 0
+    assert lines == [error("HelperError", "bad")]
+
+
+@pytest.mark.parametrize("stderr, message", [
+    ("am logs: run left the projection\n", "am logs: run left the projection"),
+    ("", "am logs exited 3."),
+], ids=["stderr-line", "empty-stderr"])
+def test_stream_error(world, stderr, message):
+    hello, chunk, _ = agent()
+    set_script(world, [step(hello), step(chunk)], exit=3, stderr=stderr)
+    code, lines, _, _ = run_helper(world)
+    assert code == 0
+    assert lines == [hello, chunk, error("StreamError", message)]
+
+
+def test_chatty_stderr_never_blocks(world):
+    hello, chunk, _ = agent()
+    noise = "warning: chatty\n" * 20000 + "am logs: disk vanished\n"  # ~320 KB, past a pipe buffer
+    set_script(world, [step(hello), step(chunk)], exit=3, stderr=noise)
+    code, lines, _, _ = run_helper(world, timeout=20)
+    assert code == 0
+    assert lines == [hello, chunk, error("StreamError", "am logs: disk vanished")]
+
+
+@pytest.mark.parametrize("steps, exit, stderr, message", [
+    ([], 3, "", "am logs exited 3."),
+    ([], 1, "boom\n", "boom"),
+    ([raw("noise")], 1, "", "am logs exited 1."),
+], ids=["exit-3-no-output", "exit-1-boom", "exit-1-after-skipped-line"])
+def test_helper_error(world, steps, exit, stderr, message):
+    set_script(world, steps, exit=exit, stderr=stderr)
+    code, lines, _, _ = run_helper(world)
+    assert code == 0
+    assert lines == [error("HelperError", message)]
+
+
+# --- schema ---------------------------------------------------------------------------
+
+def mismatch(value):
+    return error("SchemaMismatch", "am logs speaks schema " + json.dumps(value)
+                 + "; this helper reads schema 1 or 2.")
+
+
+@pytest.mark.parametrize("schema", [3, 0, True, "1", 1.0, MISSING],
+                         ids=["synthetic: three", "synthetic: zero", "synthetic: true",
+                              "synthetic: string-one", "synthetic: one-float",
+                              "synthetic: missing"])
+def test_schema_mismatch_stops_am(world, schema):
+    set_script(world, [step(edited(agent()[0], schema=schema)), pause(30)])
+    began = time.monotonic()
+    code, lines, _, _ = run_helper(world, timeout=10)
+    assert time.monotonic() - began < 5
+    assert code == 0
+    assert lines == [mismatch(None if schema is MISSING else schema)]
+    assert_gone(am_pid(world))  # am was stopped, not left streaming
+
+
+def test_schema_mismatch_keeps_lines_already_printed(world):
+    hello, chunk, _ = agent()
+    set_script(world, [step(hello), step(chunk), step(edited(hello, schema=3)), pause(30)])
+    code, lines, _, _ = run_helper(world, timeout=10)
+    assert code == 0
+    assert lines == [hello, chunk, mismatch(3)]
+    assert_gone(am_pid(world))
+
+
+def test_schema_2_accepted(world):
+    hello, chunk, end = agent()
+    hello2 = edited(hello, schema=2)
+    set_script(world, [step(hello2), step(chunk), step(end)])
+    code, lines, _, _ = run_helper(world)
+    assert code == 0
+    assert lines == [hello2, chunk, end]
+
+
+# --- unexpected failure -----------------------------------------------------------------
+
+def test_unexpected_failure_is_helper_error(world):
+    write_exec(world["bin"] / "am", "#!/nonexistent/interpreter\n")  # found on PATH, cannot start
+    code, lines, err, _ = run_helper(world)
+    assert code == 0
+    assert len(lines) == 1, lines
+    assert lines[0]["ok"] is False
+    assert lines[0]["error"]["type"] == "HelperError"
+    assert lines[0]["error"]["message"].startswith("The log follow failed: ")
+    assert "Traceback" not in err
