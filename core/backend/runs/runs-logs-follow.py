@@ -182,11 +182,11 @@ def main(argv):
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
-    proc = spawn(command(am, *parsed))
-    err, seen = [], Seen()
-    err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
-    err_reader.start()
+    proc, err, seen = None, [], Seen()
     try:
+        proc = spawn(command(am, *parsed))
+        err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
+        err_reader.start()
         try:
             stream(proc.stdout, seen)
         except SchemaMismatch as e:
@@ -195,7 +195,8 @@ def main(argv):
         code = proc.wait()
         err_reader.join(timeout=2)
     finally:
-        stop(proc)  # no-op once am has exited; terminates it on every other path
+        if proc is not None:
+            stop(proc)  # no-op once am has exited; terminates it on every other path
         if seen.skipped:
             sys.stderr.write("runs-logs-follow: skipped %d non-JSON lines\n" % seen.skipped)
             sys.stderr.flush()
