@@ -6384,4 +6384,207 @@ TestCase {
     compare(store.events.length, 1)
     compare(store.events[0].label, "Card one explore.1", "the reply's row replaces the held one")
   }
+
+  // ---- the follow-up fetch on a change (3.2)
+
+  // heldStore()'s rows (8..10, cursor 10, dropped 7) with the panel open.
+  function activeHeld() {
+    var store = make(); if (!store) return null
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    return store
+  }
+
+  // 1
+  function test_a_change_fetches_since_the_cursor() {
+    var store = activeHeld(); if (!store) return
+    var others = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                  logsSeq: store.logsRunner.seq, filter: store.eventsFilter })
+    store.runsNudged(["r1"])
+    var proc = store.eventsRunner.current
+    compare(argv(proc), tc.eventsCmd + "r1|--since|10")
+    compare(proc.command.length, 5, "no project root argument")
+    compare(proc.launchGuard, "r1", "guarded by the run id")
+    compare(store.eventsStatus, "loading")
+    compare(seqs(store.events), "8,9,10", "the rows stay until the reply")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    reply(proc, eventsReply(attemptEvents(11, 2), 12, 2), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsDropped, 7, "a --since reply counts only events after the cursor")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                             logsSeq: store.logsRunner.seq, filter: store.eventsFilter }),
+            others, "nothing else is touched")
+  }
+
+  // 2 and Review Focus 5
+  function test_a_change_for_other_runs_fetches_nothing() {
+    var store = activeHeld(); if (!store) return
+    var held = JSON.stringify(store.events)
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r2", "z9"])
+    compare(store.eventsRunner.seq, seq, "nothing is launched")
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsCursor, 10)
+    compare(store.eventsDropped, 7)
+    // synthetic: the selected id twice, among other ids and non-strings.
+    store.runsNudged(["r2", "r1", null, 5, "r1"])
+    compare(store.eventsRunner.seq, seq + 1, "one launch")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+  }
+
+  // Review Focus 5
+  function test_a_change_passes_the_run_id_verbatim() {
+    var store = make(); if (!store) return
+    store.active = true
+    // synthetic: a run id with a space and a ";".
+    store.selectedRunId = "r 2;x"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 2), 2, 2), 0)
+    store.runsNudged(["r 2;x"])
+    var proc = store.eventsRunner.current
+    compare(proc.command.length, 5)
+    compare(proc.command[2], "r 2;x", "one argument, unchanged")
+    compare(proc.command[3], "--since")
+    compare(proc.command[4], "2")
+  }
+
+  // 3
+  function test_no_selection_a_closed_panel_or_bad_ids_fetch_nothing() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.runsNudged(["r1"])
+    verify(!store.eventsRunner.current, "no run selected: nothing is launched")
+    compare(store.eventsStatus, "idle")
+    var closed = heldStore(); if (!closed) return
+    var seq = closed.eventsRunner.seq
+    closed.runsNudged(["r1"])
+    compare(closed.eventsRunner.seq, seq, "the panel is closed")
+    compare(closed.eventsStatus, "ok")
+    var open = activeHeld(); if (!open) return
+    seq = open.eventsRunner.seq
+    // synthetic: ids that are not a list.
+    var bad = ["r1", null, undefined, { r1: true }, 7]
+    for (var i = 0; i < bad.length; i++) {
+      open.runsNudged(bad[i])
+      compare(open.eventsRunner.seq, seq, String(bad[i]))
+      compare(open.eventsStatus, "ok", String(bad[i]))
+    }
+    open.runsNudged(["r1"])
+    compare(open.eventsRunner.seq, seq + 1, "a list naming the selected run launches")
+    compare(argv(open.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+  }
+
+  // 9 and Review Focus 4
+  function test_a_finished_run_gets_its_last_events_from_the_watch() {
+    var store = threeRoots(); if (!store) return
+    compare(Runs.runState(store.runById("a1")), "done")
+    store.selectedRunId = "a1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    nudge(store, ["a1", 11])
+    fire(store.debounceTimer)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "a1|--since|10")
+    reply(store.eventsRunner.current,
+          eventsReply([{ seq: 11, gseq: 1011, ts: "2026-10-08T14:40:00Z", run_id: "a1", event: "run_upsert",
+                         payload: { status: "done" } }], 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.events[3].level, "run")
+    compare(store.events[3].label, "run done")
+    compare(store.events[3].status, "done")
+    compare(store.eventsCursor, 11)
+    compare(store.eventsDropped, 7)
+  }
+
+  // 10
+  function test_a_change_reply_out_of_order_with_repeats_folds_one_row_per_seq() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    // synthetic: am lists each seq once, ascending; this reply does neither.
+    var first12 = attemptEvents(12, 1)[0]
+    var nine = attemptEvents(9, 1)[0]
+    nine.payload.status = "failed"
+    var eleven = attemptEvents(11, 1)[0]
+    var last12 = attemptEvents(12, 1)[0]
+    last12.payload.status = "escalated"
+    reply(store.eventsRunner.current, eventsReply([first12, nine, eleven, last12], 12, 4), 0)
+    compare(seqs(store.events), "8,9,10,11,12", "ascending, one row per seq")
+    compare(store.events[1].status, "failed", "the reply's 9 wins over the held one")
+    compare(store.events[4].status, "escalated", "the reply's last 12 wins")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsDropped, 7)
+  }
+
+  // 12
+  function test_a_change_with_no_cursor_fetches_the_last_200() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsCursor, 0)
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq + 1, "a fetch is launched")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200", "never --since 0")
+    compare(store.eventsStatus, "loading")
+    compare(store.eventsError, "UnknownRunError: no run r1", "the error stays until the reply")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.eventsDropped, 7, "a --tail reply keeps 3.1's count")
+    compare(store.eventsCursor, 10)
+
+    var empty = make(); if (!empty) return
+    empty.active = true
+    empty.selectedRunId = "r1"
+    reply(empty.eventsRunner.current, eventsReply([], 0, 0), 0)
+    compare(empty.eventsCursor, 0, "a run with no events")
+    var emptySeq = empty.eventsRunner.seq
+    empty.runsNudged(["r1"])
+    compare(empty.eventsRunner.seq, emptySeq + 1)
+    compare(argv(empty.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+  }
+
+  // 13
+  function test_the_cap_counts_on_a_change_reply() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 500), 500, 500), 0)
+    compare(store.events.length, 500)
+    compare(store.eventsDropped, 0)
+    store.runsNudged(["r1"])
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|500")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(501, 20), 520, 20), 0)
+    compare(store.events.length, 500)
+    compare(store.events[0].seq, 21, "the lowest seqs were dropped")
+    compare(store.events[499].seq, 520)
+    compare(store.eventsDropped, 20)
+    compare(store.eventsCursor, 520)
+  }
+
+  // Review Focus 3
+  function test_a_change_reply_with_a_bad_last_seq_is_folded() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    // synthetic: last_seq values runs-events.py never prints.
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: true, events: attemptEvents(11, 1), total: 1 }) + "\n", 0)
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.eventsCursor, 11, "the highest held seq")
+    compare(store.eventsDropped, 7)
+    var lasts = [null, "5", -1, 2.5]
+    for (var i = 0; i < lasts.length; i++) {
+      store.runsNudged(["r1"])
+      compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|11", String(lasts[i]))
+      reply(store.eventsRunner.current,
+            JSON.stringify({ ok: true, events: [], last_seq: lasts[i], total: 0 }) + "\n", 0)
+      compare(store.eventsStatus, "ok", String(lasts[i]))
+      compare(seqs(store.events), "8,9,10,11", String(lasts[i]))
+      compare(store.eventsCursor, 11, String(lasts[i]))
+      compare(store.eventsDropped, 7, String(lasts[i]))
+    }
+  }
 }

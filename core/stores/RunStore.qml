@@ -29,8 +29,10 @@ import "../domain/runEvents.js" as RunEvents
 // the watch's last cursor, held in memory only. Logs are fetched on a
 // selection, on Refresh and when a snapshot changes the selected attempt's
 // status -- never on a timer. The selected run's events (runs-events.py RUN
-// --tail 200) are fetched on a selection and on refreshEvents() -- never on
-// a timer, and a project switch leaves them alone.
+// --tail 200) are fetched on a selection and on refreshEvents(), and, while
+// `active`, the ones after eventsCursor (RUN --since eventsCursor) on each
+// runsNudged naming the selected run -- never on a timer, and a project
+// switch leaves them alone.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
@@ -123,7 +125,8 @@ Scope {
   // card id -> title map, handed in by App. `events` is RunEvents.eventRow
   // rows, ascending seq, at most 500, replaced, never changed in place.
   // A selection empties them and fetches the run's last 200 events; leaving
-  // Run detail empties them and fetches nothing.
+  // Run detail empties them and fetches nothing. While active, a runsNudged
+  // naming the selected run fetches the events after eventsCursor.
   property var titles: ({})
   property var events: []
   property int eventsDropped: 0       // the selected run's events not held
@@ -890,7 +893,34 @@ Scope {
   function fetchEvents() {
     store.eventsStatus = "loading"
     eventsRunner.guard = store.selectedRunId
+    eventsState.kind = "tail"
     eventsRunner.run([store.selectedRunId, "--tail", "200"])
+  }
+
+  // A debounce window's run ids (runsNudged). While active, with ids an array
+  // holding selectedRunId: the change fetch (fetchNewEvents), unless a fetch
+  // is in flight, which is left alone. The run's status is never read.
+  function nudgeEvents(ids) {
+    if (!store.active || store.selectedRunId === "" || !Array.isArray(ids)) return
+    if (ids.indexOf(store.selectedRunId) < 0) return
+    if (eventsRunner.busy) return
+    store.fetchNewEvents()
+  }
+
+  onRunsNudged: function(ids) { store.nudgeEvents(ids) }
+
+  // The change fetch: runs-events.py RUN --since eventsCursor, guarded by the
+  // run id; with eventsCursor 0, fetchEvents (--tail 200). The rows,
+  // eventsDropped, eventsCursor and eventsError stay until the reply.
+  function fetchNewEvents() {
+    if (store.eventsCursor <= 0) {
+      store.fetchEvents()
+      return
+    }
+    store.eventsStatus = "loading"
+    eventsRunner.guard = store.selectedRunId
+    eventsState.kind = "since"
+    eventsRunner.run([store.selectedRunId, "--since", String(store.eventsCursor)])
   }
 
   // The labels for an events reply, a fresh object: every own key of
@@ -937,10 +967,12 @@ Scope {
   // A good reply. Its events become RunEvents.eventRow rows, labelled from
   // eventTitles() at the local UTC offset (null rows skipped), folded into
   // the held rows, at most 500.
-  // eventsDropped: (total - received) less the held rows below the reply's
-  // lowest seq, at least 0, plus the rows the cap removed; total is the
-  // reply's when an integer >= received, else received. eventsCursor: the
-  // highest of itself, a non-negative integer last_seq and the held rows' seqs.
+  // eventsDropped, after a --tail launch: (total - received) less the held
+  // rows below the reply's lowest seq, at least 0, plus the rows the cap
+  // removed; total is the reply's when an integer >= received, else
+  // received. After a --since launch: its value plus the rows the cap
+  // removed. eventsCursor: the highest of itself, a non-negative integer
+  // last_seq and the held rows' seqs.
   function foldReply(envelope) {
     var list = envelope.events
     var titles = store.eventTitles()
@@ -967,7 +999,8 @@ Scope {
     var rows = fold.rows
     if (rows.length > 0 && rows[rows.length - 1].seq > cursor) cursor = rows[rows.length - 1].seq
     store.events = rows
-    store.eventsDropped = Math.max(0, total - received - priorBelow) + fold.dropped
+    if (eventsState.kind === "since") store.eventsDropped = store.eventsDropped + fold.dropped
+    else store.eventsDropped = Math.max(0, total - received - priorBelow) + fold.dropped
     store.eventsCursor = cursor
     store.eventsStatus = "ok"
     store.eventsError = ""
@@ -2065,6 +2098,14 @@ Scope {
     id: snapshotState
     property var roots: []
     property var pending: null
+  }
+
+  // The selected run's events fetches' own state; kept apart so consumers
+  // cannot write it. `kind` is the newest launch's: "tail" (RUN --tail 200)
+  // or "since" (RUN --since eventsCursor).
+  QtObject {
+    id: eventsState
+    property string kind: "tail"
   }
 
   // The control requests' own state; kept apart so consumers cannot write it.
