@@ -13,7 +13,11 @@ import "../theme" as T
 // (targetChosen), a blocked story's milestone, whose action emits
 // suggestionRequested(), and a Start that takes two clicks (confirmFirst).
 // At step "project" it lists the projects instead (projectRows), with Cancel
-// only; the owner maps projectChosen onto dispatchProjectPick.
+// only; the owner maps projectChosen onto dispatchProjectPick. At step
+// "target" it lists the picked project's targets under a filter (targetRows),
+// with Back and Cancel; the owner maps targetPicked onto dispatchTargetPick.
+// Back shows at steps "target" and "form"; the owner maps backRequested onto
+// dispatchBack.
 Item {
   id: dialog
   objectName: "dispatchDialog"
@@ -55,14 +59,21 @@ Item {
   // so ready alone is not an explicit confirm).
   property bool confirmFirst: false
   readonly property bool armed: arming.armed
-  // RunStore's dispatchStep. "project" shows the project list in place of the
-  // target line, the form, the preview, the warning and Start; any other value
-  // shows those.
+  // RunStore's dispatchStep. "project" shows the project list and "target"
+  // the target list, each in place of the target line, the form, the preview,
+  // the warning and Start; any other value shows those.
   property string step: ""
+  // The picked project's name, for the target step's heading.
+  property string projectName: ""
   // RunStore's dispatchProjectRows, [{root, name, open, enabled, reason}];
   // anything not array-like reads as [].
   property var projectRows: []
   readonly property bool atProject: dialog.step === "project"
+  readonly property bool atTarget: dialog.step === "target"
+  // The form step's parts show at every step but the two pickers.
+  readonly property bool atForm: !dialog.atProject && !dialog.atTarget
+  // Back shows at the target step and at the form step a Runs dispatch reaches.
+  readonly property bool canGoBack: dialog.atTarget || dialog.step === "form"
   readonly property bool hasEnabledProject: dialog.nextEnabledProject(0, 1) >= 0
 
   readonly property Item focusItem: dialog.atProject ? projectKeys : dialog.form ? baseField : cancelButton
@@ -80,7 +91,7 @@ Item {
   readonly property int verifyRows: Math.max(1, dialog.storedVerify().length)
   readonly property bool hasChoices: !!dialog.targetChoices && typeof dialog.targetChoices.length === "number"
     && dialog.targetChoices.length > 0
-  readonly property bool canOffer: !dialog.atProject && dialog.dispatchState === "refused" && !!dialog.suggestion
+  readonly property bool canOffer: dialog.atForm && dialog.dispatchState === "refused" && !!dialog.suggestion
     && typeof dialog.suggestion.id === "string" && dialog.suggestion.id !== ""
 
   // Every object prop is read guarded: a refused target has no form, and
@@ -103,13 +114,13 @@ Item {
   }
 
   // The preview area shows exactly one of these, checked in this order; the
-  // project step shows none.
-  readonly property bool showRefusal: !dialog.atProject
+  // two pickers show none.
+  readonly property bool showRefusal: dialog.atForm
     && (dialog.dispatchState === "refused" || dialog.dispatchState === "failed")
-  readonly property bool showSubtask: !dialog.atProject && !dialog.showRefusal && dialog.targetLevel === "subtask"
-  readonly property bool showChecking: !dialog.atProject && !dialog.showRefusal && !dialog.showSubtask
+  readonly property bool showSubtask: dialog.atForm && !dialog.showRefusal && dialog.targetLevel === "subtask"
+  readonly property bool showChecking: dialog.atForm && !dialog.showRefusal && !dialog.showSubtask
     && dialog.dispatchState === "previewing"
-  readonly property bool showSummary: !dialog.atProject && !dialog.showRefusal && !dialog.showSubtask
+  readonly property bool showSummary: dialog.atForm && !dialog.showRefusal && !dialog.showSubtask
     && ["ready", "starting", "started"].indexOf(dialog.dispatchState) >= 0
   // A failed launch adds its exit code, log path and tail under the sentence.
   readonly property bool showLaunch: dialog.showRefusal && dialog.dispatchState === "failed"
@@ -133,6 +144,7 @@ Item {
   signal targetChosen(string id)
   signal suggestionRequested()
   signal projectChosen(string root)
+  signal backRequested()
 
   visible: shown
   // Any change to what Start would start drops the first click.
@@ -170,6 +182,11 @@ Item {
 
   function cancel() {
     if (!dialog.busy) dialog.cancelRequested()
+  }
+
+  // Back one step: at the target step, and at the form step unless starting.
+  function back() {
+    if (dialog.canGoBack && !dialog.busy) dialog.backRequested()
   }
 
   // Escape in any field cancels (not while starting); Return is left alone,
@@ -357,7 +374,10 @@ Item {
       objectName: "dispatchHeading"
       variant: "heading"
       theme: dialog.theme
-      text: dialog.atProject ? "Dispatch · 1 Project" : "Dispatch"
+      text: dialog.atProject ? "Dispatch · 1 Project"
+        : !dialog.atTarget ? "Dispatch"
+        : dialog.projectName !== "" ? "Dispatch · 2 Target in " + dialog.projectName
+        : "Dispatch · 2 Target"
       font.bold: true
     }
 
@@ -451,7 +471,7 @@ Item {
     UI.ThemedText {
       objectName: "dispatchTarget"
       theme: dialog.theme
-      visible: !dialog.atProject
+      visible: dialog.atForm
       width: parent.width
       text: "Target   " + dialog.targetText
       elide: Text.ElideRight
@@ -461,7 +481,7 @@ Item {
     UI.ChipRow {
       objectName: "dispatchTargetChoices"
       width: parent.width
-      visible: dialog.hasChoices && !dialog.atProject
+      visible: dialog.hasChoices && dialog.atForm
       chipPrefix: "dispatchTargetChoice"
       theme: dialog.theme
       model: dialog.hasChoices ? dialog.targetChoices : []
@@ -472,7 +492,7 @@ Item {
 
     Column {
       objectName: "dispatchForm"
-      visible: !!dialog.form && !dialog.atProject
+      visible: !!dialog.form && dialog.atForm
       width: parent.width
       spacing: Style.space(8)
 
@@ -620,7 +640,7 @@ Item {
       objectName: "dispatchPreviewHeading"
       variant: "caption"
       theme: dialog.theme
-      visible: !dialog.atProject
+      visible: dialog.atForm
       text: dialog.targetLevel === "board" || dialog.targetLevel === "milestone"
         ? "Preview  (am run --dry-run)" : "Preview"
     }
@@ -734,12 +754,12 @@ Item {
     }
 
     // The cost warning shows in every state, a refused target's included; the
-    // project step has none.
+    // two pickers have none.
     UI.ThemedText {
       objectName: "dispatchWarning"
       variant: "small"
       theme: dialog.theme
-      visible: !dialog.atProject
+      visible: dialog.atForm
       width: parent.width
       text: dialog.targetLevel === "board"
         ? "⚠ This starts agents on every open milestone and spends tokens."
@@ -752,7 +772,7 @@ Item {
       objectName: "dispatchConfirmNote"
       variant: "caption"
       theme: dialog.theme
-      visible: arming.armed && !dialog.atProject
+      visible: arming.armed && dialog.atForm
       width: parent.width
       text: "Click Confirm start to start this subtask."
       wrapMode: Text.WordWrap
@@ -760,6 +780,16 @@ Item {
 
     Row {
       spacing: Style.spacing.md
+
+      UI.ActionButton {
+        id: backButton
+        objectName: "dispatchBack"
+        visible: dialog.canGoBack
+        text: "Back"
+        enabled: !dialog.busy
+        theme: dialog.theme
+        onClicked: dialog.back()
+      }
 
       UI.ActionButton {
         id: cancelButton
@@ -772,7 +802,7 @@ Item {
 
       UI.ActionButton {
         objectName: "dispatchStart"
-        visible: !dialog.atProject
+        visible: dialog.atForm
         iconText: "▶"
         text: dialog.busy ? "Starting…" : arming.armed ? "Confirm start" : "Start run"
         enabled: dialog.canStart

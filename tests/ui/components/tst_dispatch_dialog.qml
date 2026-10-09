@@ -20,6 +20,7 @@ TestCase {
   SignalSpy { id: chosen; signalName: "targetChosen" }
   SignalSpy { id: offers; signalName: "suggestionRequested" }
   SignalSpy { id: picks; signalName: "projectChosen" }
+  SignalSpy { id: backs; signalName: "backRequested" }
 
   function milestoneForm(over) {
     return Object.assign({ base: "main", prefix: "m3", verify: ["uv run pytest"], parallelism: 4,
@@ -39,8 +40,9 @@ TestCase {
   function make(over) {
     var d = createTemporaryObject(dialogC, tc, milestone(over))
     edits.target = d; starts.target = d; cancels.target = d; chosen.target = d; offers.target = d
-    picks.target = d
+    picks.target = d; backs.target = d
     edits.clear(); starts.clear(); cancels.clear(); chosen.clear(); offers.clear(); picks.clear()
+    backs.clear()
     d.shown = true
     wait(30)
     return d
@@ -1042,7 +1044,7 @@ TestCase {
     d.step = ""
     compare(heading.text, "Dispatch")
     d.step = "target"
-    compare(heading.text, "Dispatch")
+    compare(heading.text, "Dispatch · 2 Target")
     compare(picks.count, 0)
   }
 
@@ -1410,5 +1412,94 @@ TestCase {
     verify(row.hasCursor)
     compare(picks.count, 0)
     compare(row.hoverCursorShape, Qt.PointingHandCursor)
+  }
+
+  // ---- the target step --------------------------------------------------
+
+  // 3
+  function test_the_target_step_heads_the_card_with_back_and_cancel() {
+    var d = make({ step: "target", projectName: "agent-manager" })
+    var heading = H.find(d, "dispatchHeading")
+    compare(heading.text, "Dispatch · 2 Target in agent-manager")
+    verify(H.find(d, "dispatchBack").visible, "Back")
+    verify(H.find(d, "dispatchBack").enabled, "Back is enabled")
+    verify(H.find(d, "dispatchCancel").visible, "Cancel")
+    verify(!H.find(d, "dispatchStart").visible, "no Start")
+    verify(!H.find(d, "dispatchProjectList").visible, "no project list")
+    verify(!H.find(d, "dispatchProjectEmpty").visible, "no project empty line")
+    d.projectName = ""
+    compare(heading.text, "Dispatch · 2 Target")
+    d.step = "form"
+    compare(heading.text, "Dispatch")
+    d.step = "project"
+    compare(heading.text, "Dispatch · 1 Project")
+  }
+
+  // 3: every part the project step hides is hidden at the target step too.
+  function test_the_target_step_hides_the_form_steps_parts_data() {
+    return tc.test_the_project_step_hides_the_form_steps_parts_data()
+  }
+
+  function test_the_target_step_hides_the_form_steps_parts(data) {
+    var d = make(data.over)
+    if (data.arm) click(H.find(d, "dispatchStart"))
+    verify(H.find(d, data.name).visible, "shown at the form step")
+    d.step = "target"
+    verify(!H.find(d, data.name).visible, "hidden at the target step")
+    d.step = "form"
+    verify(H.find(d, data.name).visible, "shown again at the form step")
+  }
+
+  // 15, 21
+  function test_back_shows_at_the_target_and_form_steps_only() {
+    var d = make()
+    var back = H.find(d, "dispatchBack")
+    verify(!back.visible, "no Back on a card-opened dialog")
+    d.step = "project"
+    verify(!back.visible, "no Back at the project step")
+    d.step = "target"
+    verify(back.visible, "Back at the target step")
+    verify(back.enabled)
+    click(back)
+    compare(backs.count, 1)
+    d.step = "form"
+    verify(back.visible, "Back at the form step")
+    verify(back.enabled)
+    verify(H.find(d, "dispatchStart").visible, "the form step keeps Start")
+    verify(H.find(d, "dispatchForm").visible, "and its form")
+    click(back)
+    compare(backs.count, 2)
+    compare(cancels.count, 0)
+    compare(starts.count, 0)
+  }
+
+  // 21
+  function test_back_at_the_form_step_is_disabled_while_starting() {
+    var d = make({ step: "form", dispatchState: "starting" })
+    var back = H.find(d, "dispatchBack")
+    verify(back.visible)
+    verify(!back.enabled)
+    click(back)
+    compare(backs.count, 0)
+    d.back()
+    compare(backs.count, 0, "back() refuses while starting")
+  }
+
+  // 22
+  function test_the_card_opened_dialog_has_no_back_data() {
+    return tc.dispatchStates.map(function(s) { return { tag: s, state: s } })
+  }
+
+  function test_the_card_opened_dialog_has_no_back(data) {
+    var d = make({ dispatchState: data.state })
+    verify(!H.find(d, "dispatchBack").visible)
+    var base = H.find(d, "dispatchBase")
+    base.forceActiveFocus()
+    base.cursorPosition = base.text.length
+    keyClick(Qt.Key_Backspace)
+    compare(backs.count, 0)
+    if (d.editable) compare(base.text, "mai", "Backspace edits the field")
+    d.back()
+    compare(backs.count, 0, "back() refuses at step \"\"")
   }
 }
