@@ -8,6 +8,7 @@ import QtTest
 import "../helpers/find.js" as H
 import "../helpers/amFixtures.js" as F
 import "../../core/domain/runs.js" as Runs
+import "../../ui/components/runGlyphs.js" as RG
 
 TestCase {
   id: tc
@@ -1183,5 +1184,39 @@ TestCase {
     wait(50)
     compare(p.focusItem.objectName, "keyCatcher")
     verify(p.focusItem.activeFocus, "the key catcher has the keyboard")
+  }
+
+  // ---- why it stopped (RR 3.3)
+
+  // 22
+  function test_a_cancelled_run_relaunches_into_the_prefilled_dispatch_dialog() {
+    var p = make(); if (!p) return
+    p.app.backendDir = "/plugin/core/backend/"
+    p.app.runs.runSettings = { verify: ["uv run pytest"] }
+    p.app.board.applyTreeData([{ id: "m1", title: "M one", status: "todo", description: "d", children: [] }])
+    var r = run("run-0000000000f7", "cancelled", null, "m1")
+    r.branch_prefix = "old-m1"
+    r.base_branch = "release"
+    p.app.runs.runs = [r]
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    p.shortcuts.handleSearchKey(key(Qt.Key_Return))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000f7")
+    wait(50)
+    var block = H.find(p, "runDetailStop")
+    compare(block.visible, true)
+    compare(H.find(block, "stopHeadline").text, RG.glyphOf("cancelled") + " " + Runs.stopReport(r).headline)
+    var relaunch = H.find(block, "stopRelaunch")
+    compare(relaunch.visible, true)
+    compare(relaunch.enabled, true)
+    mouseClick(relaunch)
+    compare(p.app.runs.dispatchState, "previewing")
+    wait(50)
+    compare(H.find(p, "dispatchDialog").visible, true)
+    compare(H.find(p, "dispatchPrefix").text, "old-m1")
+    compare(H.find(p, "dispatchBase").text, "release")
+    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}', 0)
+    compare(H.find(p, "dispatchBase").text, "release", "the run's base is kept over the default branch")
   }
 }
