@@ -1,6 +1,7 @@
 import QtQml
 import Quickshell
 import Quickshell.Io
+import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
 
 // The am run monitor's data. One list snapshot covers every registered
@@ -439,11 +440,11 @@ Scope {
     var out = []
     var seen = {}
     for (var i = 0; i < usable.length; i++) {
-      var list = store.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
+      var list = Runs.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
       for (var j = 0; j < list.length; j++) {
         var run = list[j]
         var id = run !== null && typeof run === "object" && typeof run.id === "string" ? run.id : ""
-        if (id === "" || id.charAt(0) === "-" || id.charAt(0) === "/" || store.hasKey(seen, id)) continue
+        if (id === "" || id.charAt(0) === "-" || id.charAt(0) === "/" || Runs.hasKey(seen, id)) continue
         seen[id] = true
         out.push(id)
       }
@@ -493,7 +494,7 @@ Scope {
       store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
       var changed = store.seeStore(value.hello.storeId)
       if (changed || value.hello.cursorReset === true) store.resetCursor()
-    } else if (store.hasKey(value, "cursor")) {
+    } else if (Runs.hasKey(value, "cursor")) {
       if (store.isSeq(value.cursor)) store.watchCursor = value.cursor
     }
   }
@@ -507,8 +508,8 @@ Scope {
       var e = entries[i]
       if (e === null || typeof e !== "object" || Array.isArray(e)) continue
       if (typeof e.run !== "string" || e.run === "" || !store.isSeq(e.seq) || e.seq < 1) continue
-      if (next === null) next = store.copyMap(store.nudges)
-      if (!store.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
+      if (next === null) next = Runs.copyMap(store.nudges)
+      if (!Runs.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
     }
     if (next === null) return
     store.nudges = next
@@ -544,7 +545,7 @@ Scope {
 
   // root's runsByProject list holds a run with this id.
   function listsRun(root, id) {
-    var list = store.hasKey(store.runsByProject, root) ? store.runsByProject[root] : []
+    var list = Runs.hasKey(store.runsByProject, root) ? store.runsByProject[root] : []
     for (var i = 0; i < list.length; i++) {
       if (list[i] !== null && typeof list[i] === "object" && list[i].id === id) return true
     }
@@ -557,7 +558,7 @@ Scope {
     var usable = store.usableRoots()
     var roots = []
     for (var i = 0; i < usable.length; i++) {
-      var list = store.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
+      var list = Runs.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
       for (var j = 0; j < list.length; j++) {
         if (Runs.runState(list[j]) === "running") {
           roots.push(usable[i].root)
@@ -676,7 +677,7 @@ Scope {
       var p = list[i]
       if (p === null || typeof p !== "object" || Array.isArray(p)) continue
       var root = p.root
-      if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || store.hasKey(seen, root)) continue
+      if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || Runs.hasKey(seen, root)) continue
       seen[root] = true
       out.push({ root: root, name: p.name })
     }
@@ -690,7 +691,7 @@ Scope {
     var out = {}
     for (var i = 0; i < usable.length; i++) {
       var p = usable[i]
-      if (!store.hasKey(byProject, p.root)) continue
+      if (!Runs.hasKey(byProject, p.root)) continue
       var tag = Runs.withProject({}, p.root, p.name).project
       out[p.root] = byProject[p.root].map(function(run) {
         var cur = run !== null && typeof run === "object" ? run.project : null
@@ -710,12 +711,12 @@ Scope {
     var owner = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
-      var list = store.hasKey(byProject, root) ? byProject[root] : []
+      var list = Runs.hasKey(byProject, root) ? byProject[root] : []
       for (var j = 0; j < list.length; j++) {
         var run = list[j]
         var id = run !== null && typeof run === "object" && typeof run.id === "string" ? run.id : ""
         if (id !== "") {
-          if (store.hasKey(owner, id)) continue
+          if (Runs.hasKey(owner, id)) continue
           owner[id] = root
         }
         out.push(run)
@@ -734,8 +735,8 @@ Scope {
     var armed = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
-      if (store.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
-      if (store.hasKey(store.armedRoots, root)) armed[root] = true
+      if (Runs.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
+      if (Runs.hasKey(store.armedRoots, root)) armed[root] = true
     }
     var byProject = store.taggedByProject(store.runsByProject, usable)
     store.runsByProject = byProject
@@ -751,11 +752,7 @@ Scope {
 
   // The run with this id in the snapshot, or null.
   function runById(id) {
-    var list = store.runs
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] && list[i].id === id) return list[i]
-    }
-    return null
+    return Runs.runById(store.runs, id)
   }
 
   // The run's project root when it is a non-empty string, else "".
@@ -849,7 +846,7 @@ Scope {
   // gets here (the runner's latest-wins).
   function applyLogs(stdout, exitCode) {
     store.logsLoading = false
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var tail = Runs.logTail(envelope.data, 200)
       store.logsText = tail.text
@@ -865,33 +862,13 @@ Scope {
     store.logsError = "The logs snapshot gave no usable result (exit " + exitCode + ")."
   }
 
-  // The helper prints exactly one JSON line; anything before it (a warning) and
-  // blank lines after it are ignored.
-  function lastLine(text) {
-    var lines = String(text || "").split("\n")
-    for (var i = lines.length - 1; i >= 0; i--) {
-      var line = lines[i].trim()
-      if (line !== "") return line
-    }
-    return ""
-  }
-
-  // The reply's envelope object, or null when there is none to read.
-  function parseEnvelope(text) {
-    var line = store.lastLine(text)
-    if (line === "") return null
-    var value = null
-    try { value = JSON.parse(line) } catch (e) { return null }
-    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
-  }
-
   // The `am runs` summary without its `status` key: the helper replaced the
   // summary's status string with the `am status` object, which normalizeRun
   // must never read as the row's status ("[object Object]").
   function rowOf(entry) {
     var row = {}
     for (var key in entry) {
-      if (key !== "status" && Object.prototype.hasOwnProperty.call(entry, key)) row[key] = entry[key]
+      if (key !== "status" && Runs.hasKey(entry, key)) row[key] = entry[key]
     }
     return row
   }
@@ -907,7 +884,7 @@ Scope {
   // projectErrors and only reports why this one failed. Never reads a
   // store_id. Never throws.
   function applySnapshot(stdout, exitCode, launched) {
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       store.applyProjects(Array.isArray(envelope.projects) ? envelope.projects : [], exitCode, launched)
       return
@@ -945,7 +922,7 @@ Scope {
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i]
       if (e === null || typeof e !== "object" || Array.isArray(e)) continue
-      if (typeof e.root !== "string" || !store.hasKey(names, e.root) || store.hasKey(seen, e.root)) continue
+      if (typeof e.root !== "string" || !Runs.hasKey(names, e.root) || Runs.hasKey(seen, e.root)) continue
       seen[e.root] = true
       matched.push(e)
     }
@@ -953,7 +930,7 @@ Scope {
       var gone = true
       var roots = Array.isArray(launched) ? launched : []
       for (var g = 0; g < roots.length; g++) {
-        if (store.hasKey(names, roots[g])) gone = false
+        if (Runs.hasKey(names, roots[g])) gone = false
       }
       if (gone && roots.length > 0) return
       store.amStatus = "error"
@@ -980,8 +957,8 @@ Scope {
       return
     }
     var prev = store.runsByProject
-    var byProject = store.copyMap(store.runsByProject)
-    var errors = store.copyMap(store.projectErrors)
+    var byProject = Runs.copyMap(store.runsByProject)
+    var errors = Runs.copyMap(store.projectErrors)
     var anyOk = false
     var okRoots = {}
     var firstError = ""
@@ -1001,7 +978,7 @@ Scope {
         byProject[root] = out
         delete errors[root]
       } else {
-        if (!store.hasKey(byProject, root)) byProject[root] = []
+        if (!Runs.hasKey(byProject, root)) byProject[root] = []
         errors[root] = Runs.errorText(entry.error)
         if (firstError === "") firstError = errors[root]
       }
@@ -1042,7 +1019,7 @@ Scope {
         store.startWatch()
       }
       store.raiseAlerts(alerts)
-      var armed = store.copyMap(store.armedRoots)
+      var armed = Runs.copyMap(store.armedRoots)
       for (var ok in okRoots) armed[ok] = true
       store.armedRoots = armed
     }
@@ -1058,14 +1035,14 @@ Scope {
     var raised = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
-      if (!store.hasKey(okRoots, root) || !store.hasKey(store.armedRoots, root)) continue
+      if (!Runs.hasKey(okRoots, root) || !Runs.hasKey(store.armedRoots, root)) continue
       var mine = byProject[root].filter(function(run) {
-        return run !== null && typeof run === "object" && store.hasKey(owner, run.id) && owner[run.id] === root
+        return run !== null && typeof run === "object" && Runs.hasKey(owner, run.id) && owner[run.id] === root
       })
       var name = Runs.withProject({}, root, usable[i].name).project.name
-      var found = Runs.newAlerts(store.hasKey(prev, root) ? prev[root] : [], mine)
+      var found = Runs.newAlerts(Runs.hasKey(prev, root) ? prev[root] : [], mine)
       for (var j = 0; j < found.length; j++) {
-        if (store.hasKey(raised, found[j].id)) continue
+        if (Runs.hasKey(raised, found[j].id)) continue
         raised[found[j].id] = true
         found[j].project = name
         out.push(found[j])
@@ -1076,19 +1053,6 @@ Scope {
 
   // ---- run controls (S2 4.1)
 
-  // A copy of a {key: value} map, so a change is a new object.
-  function copyMap(map) {
-    var out = {}
-    for (var key in map) {
-      if (Object.prototype.hasOwnProperty.call(map, key)) out[key] = map[key]
-    }
-    return out
-  }
-
-  function hasKey(map, key) {
-    return Object.prototype.hasOwnProperty.call(map, key)
-  }
-
   // Starts a pause, resume or cancel of one run in `runs`, of any project, and
   // returns whether it started: only when refusalOf(action, runId) is "".
   // The request acts on the run's repo_dir; a milestone resume reads the run
@@ -1098,11 +1062,11 @@ Scope {
     var run = store.runById(runId)
     store.dismissControlError()
     controlState.nextToken += 1
-    var requests = store.copyMap(controlState.requests)
+    var requests = Runs.copyMap(controlState.requests)
     requests[runId] = { token: controlState.nextToken, action: action, baseline: Runs.runState(run),
                         launchedMs: Date.now(), acknowledged: false, requestedAt: "" }
     controlState.requests = requests
-    var p = store.copyMap(store.pending)
+    var p = Runs.copyMap(store.pending)
     p[runId] = action
     store.pending = p
     var runner = controlC.createObject(store, { runId: runId, action: action, token: controlState.nextToken,
@@ -1131,7 +1095,7 @@ Scope {
   // pending for its run; null once it was settled or replaced by a newer
   // request.
   function requestOf(runner) {
-    if (!store.hasKey(controlState.requests, runner.runId)) return null
+    if (!Runs.hasKey(controlState.requests, runner.runId)) return null
     var req = controlState.requests[runner.runId]
     return req.token === runner.token ? req : null
   }
@@ -1139,18 +1103,18 @@ Scope {
   // The request for runId is over: its pending entry, its still-waiting mark
   // and its bookkeeping go.
   function settle(runId) {
-    if (store.hasKey(store.pending, runId)) {
-      var p = store.copyMap(store.pending)
+    if (Runs.hasKey(store.pending, runId)) {
+      var p = Runs.copyMap(store.pending)
       delete p[runId]
       store.pending = p
     }
-    if (store.hasKey(store.stillWaiting, runId)) {
-      var w = store.copyMap(store.stillWaiting)
+    if (Runs.hasKey(store.stillWaiting, runId)) {
+      var w = Runs.copyMap(store.stillWaiting)
       delete w[runId]
       store.stillWaiting = w
     }
-    if (store.hasKey(controlState.requests, runId)) {
-      var r = store.copyMap(controlState.requests)
+    if (Runs.hasKey(controlState.requests, runId)) {
+      var r = Runs.copyMap(controlState.requests)
       delete r[runId]
       controlState.requests = r
     }
@@ -1191,11 +1155,11 @@ Scope {
       store.resumeWithSettings(runner, stdout, exitCode)
       return
     }
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var data = envelope.data
       var requestedAt = data !== null && typeof data === "object" && typeof data.requested_at === "string" ? data.requested_at : ""
-      var requests = store.copyMap(controlState.requests)
+      var requests = Runs.copyMap(controlState.requests)
       requests[runner.runId] = { token: req.token, action: req.action, baseline: req.baseline,
                                  launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
       controlState.requests = requests
@@ -1214,7 +1178,7 @@ Scope {
   // neither, or no readable reply, run-control is never launched and the
   // request ends with a sentence -- no re-snapshot, nothing was asked of am.
   function resumeWithSettings(runner, stdout, exitCode) {
-    var settings = store.parseEnvelope(stdout)
+    var settings = Results.parseEnvelope(stdout)
     if (settings === null) {
       store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").")
       store.dropRunner(runner)
@@ -1245,7 +1209,7 @@ Scope {
     var ids = Object.keys(store.pending)
     for (var i = 0; i < ids.length; i++) {
       var id = ids[i]
-      if (!store.hasKey(controlState.requests, id)) continue
+      if (!Runs.hasKey(controlState.requests, id)) continue
       var req = controlState.requests[id]
       if (!req.acknowledged) continue
       var run = store.runById(id)
@@ -1273,7 +1237,7 @@ Scope {
     var ids = Object.keys(store.pending)
     for (var i = 0; i < ids.length; i++) {
       var id = ids[i]
-      if (store.hasKey(controlState.requests, id) && nowMs - controlState.requests[id].launchedMs >= 30000) out[id] = true
+      if (Runs.hasKey(controlState.requests, id) && nowMs - controlState.requests[id].launchedMs >= 30000) out[id] = true
     }
     store.stillWaiting = out
   }
@@ -1290,7 +1254,7 @@ Scope {
     if (run === null) return "This run is no longer in the snapshot"
     if (typeof run.repo_dir !== "string" || run.repo_dir === "") return "This run has no repository"
     if (action === "resume" && run.workflow !== "task" && store.runRoot(run) === "") return "This run's project is not known"
-    if (store.hasKey(store.pending, runId)) return "A request for this run is pending"
+    if (Runs.hasKey(store.pending, runId)) return "A request for this run is pending"
     return Runs.controls(run)[action].reason
   }
 
@@ -1406,7 +1370,7 @@ Scope {
   // opening.
   function applyGlobalSettings(stdout, exitCode) {
     if (store.notifyTouched) return
-    var settings = store.parseEnvelope(stdout)
+    var settings = Results.parseEnvelope(stdout)
     var on = settings !== null && settings.notifyOnEscalation === true
     store.notifyOnEscalation = on
     store.notifySaved = on
@@ -1415,14 +1379,14 @@ Scope {
   // get-run-settings: one bare object, kept whole as runSettings ({} when
   // unreadable) on every reply. Never touches the notify switch.
   function applyRunSettings(stdout, exitCode) {
-    var settings = store.parseEnvelope(stdout)
+    var settings = Results.parseEnvelope(stdout)
     store.runSettings = settings !== null ? settings : {}
   }
 
   // set-global-settings: {"ok": true} means `sent` is stored; anything else puts
   // the switch back to what is stored and says so.
   function notifySaveReplied(stdout, exitCode, sent) {
-    var reply = store.parseEnvelope(stdout)
+    var reply = Results.parseEnvelope(stdout)
     if (reply !== null && reply.ok === true) {
       store.notifySaved = sent
       return
@@ -1482,7 +1446,7 @@ Scope {
     var milestone = Runs.dispatchMilestone(card, cardMap)
     var isMap = cardMap !== null && typeof cardMap === "object"
     dispatchBook.cardMap = cardMap
-    dispatchBook.milestone = milestone !== null && isMap && store.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
+    dispatchBook.milestone = milestone !== null && isMap && Runs.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
     store.dispatchTarget = plan
     store.dispatchTargetLabel = Runs.dispatchLabel(card, cardMap)
     if (!plan.offered) {
@@ -1528,7 +1492,7 @@ Scope {
   // A copy of the form with one field set as given; verify is copied as a
   // fresh array when it is one. The store converts nothing else.
   function withField(form, name, value) {
-    var next = store.copyMap(form)
+    var next = Runs.copyMap(form)
     next[name] = name === "verify" && Array.isArray(value) ? value.slice() : value
     return next
   }
@@ -1565,7 +1529,7 @@ Scope {
   function dispatchDefaultsReplied(stdout) {
     if (!dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
     dispatchBook.defaultsPending = false
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     var data = envelope !== null && envelope.ok === true ? envelope.data : null
     var branch = data !== null && typeof data === "object" && typeof data.default_branch === "string"
         ? data.default_branch.trim() : ""
@@ -1602,7 +1566,7 @@ Scope {
   // be read.
   function dispatchPreviewReplied(stdout) {
     if (store.dispatchState !== "previewing") return
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var level = store.dispatchTarget.level
       var preview = Runs.previewSummary(envelope.data, level)
@@ -1654,7 +1618,7 @@ Scope {
   // an object that is not an array, then entry's, which override them, as
   // set-run-settings merges prefixByMilestone.
   function mergedPrefixes(stored, entry) {
-    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? store.copyMap(stored) : {}
+    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? Runs.copyMap(stored) : {}
     for (var id in entry) merged[id] = entry[id]
     return merged
   }
@@ -1712,12 +1676,12 @@ Scope {
       return
     }
     var here = store.isHereStart(runner)
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       if (here) {
         store.dispatchRunId = typeof envelope.run_id === "string" ? envelope.run_id : ""
         store.dispatchMessage = typeof envelope.message === "string" ? envelope.message : ""
-        var settings = store.copyMap(store.runSettings)
+        var settings = Runs.copyMap(store.runSettings)
         // Parsed from the JSON that is written: a var property hands back a
         // list Runs.dispatchDefaults does not take for an array.
         var saved = JSON.parse(runner.savedJson)
@@ -1755,7 +1719,7 @@ Scope {
   // set-run-settings after a start: a failure is said only while the
   // dispatch is still this one. The runner then goes.
   function dispatchSaveReplied(runner, stdout) {
-    var reply = store.parseEnvelope(stdout)
+    var reply = Results.parseEnvelope(stdout)
     if (store.isHereStart(runner) && !(reply !== null && reply.ok === true)) store.flash("Dispatch settings could not be saved")
     store.dropStartRunner(runner)
   }
