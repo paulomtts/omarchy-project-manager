@@ -352,13 +352,14 @@ Scope {
     else store.stopLive()
   }
 
-  // The panel opened: fetch now and read the notify switch (get-global-settings,
-  // notifyTouched cleared first); the first good snapshot starts the watch and
-  // arms every root that answers in it, and the stale clock counts from now.
+  // The panel opened: fetch now and read the notify switch (get-global-settings;
+  // notifyTouched is cleared first unless a save is in flight); the first good
+  // snapshot starts the watch and arms every root that answers in it, and the
+  // stale clock counts from now.
   function startLive() {
     store.watchTried = false
     store.armedRoots = {}
-    store.notifyTouched = false
+    if (!settingsSaveRunner.busy) store.notifyTouched = false
     settingsLoadRunner.run(["get-global-settings"])
     store.restartStale()
     store.refresh()
@@ -1391,15 +1392,14 @@ Scope {
     runner.destroy()
   }
 
-  // The switch changed: shown at once, written in the background. Refused
-  // (false, nothing changes) without a project.
+  // The switch changed: shown at once, written to the global settings in the
+  // background. Always works, with or without a project, and returns true.
   function setNotifyOnEscalation(on) {
-    if (store.project === "") return false
     var value = !!on
     store.notifyOnEscalation = value
     store.notifyTouched = true
     settingsSaveRunner.sent = value
-    settingsSaveRunner.run(["set-run-settings", store.project, JSON.stringify({ notifyOnEscalation: value })])
+    settingsSaveRunner.run(["set-global-settings", JSON.stringify({ notifyOnEscalation: value })])
     return true
   }
 
@@ -1421,7 +1421,7 @@ Scope {
     store.runSettings = settings !== null ? settings : {}
   }
 
-  // set-run-settings: {"ok": true} means `sent` is stored; anything else puts
+  // set-global-settings: {"ok": true} means `sent` is stored; anything else puts
   // the switch back to what is stored and says so.
   function notifySaveReplied(stdout, exitCode, sent) {
     var reply = store.parseEnvelope(stdout)
@@ -1810,14 +1810,13 @@ Scope {
     onFinished: function(stdout, exitCode) { store.applyRunSettings(stdout, exitCode) }
   }
 
-  // set-run-settings on a change of the switch; latest wins. Bound to the
-  // project like the logs: it is launched by a click, long after the binding
-  // followed the project. `sent` is the value the latest launch writes.
+  // set-global-settings on a change of the switch; latest wins. No guard: a
+  // project switch never drops its reply. `sent` is the value the latest
+  // launch writes.
   HelperRunner {
     id: settingsSaveRunner
     property bool sent: false
     script: store.backendDir + "projects/viewer-state.py"
-    guard: store.project
     onFinished: function(stdout, exitCode) { store.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
   }
 

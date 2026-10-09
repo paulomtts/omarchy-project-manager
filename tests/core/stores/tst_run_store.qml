@@ -3794,22 +3794,27 @@ TestCase {
   }
 
   // 13
-  function test_the_switch_saves_at_once_and_a_failed_save_puts_it_back() {
-    var store = makeWithProject(rootA); if (!store) return
-    compare(store.setNotifyOnEscalation(true), true)
+  function test_the_switch_saves_globally_and_a_failed_save_puts_it_back() {
+    var store = make(); if (!store) return
+    compare(store.notifyOnEscalation, false)
+    compare(store.notifySaved, false)
+    compare(store.notifyTouched, false)
+    compare(store.notifyRunners.length, 0)
+    compare(store.setNotifyOnEscalation(true), true, "no project and no registry: it still works")
     compare(store.notifyOnEscalation, true, "the switch flips at once")
     compare(store.notifyTouched, true)
     var save = store.settingsSaveRunner.current
     verify(save, "a save was launched")
-    compare(save.command.length, 5)
-    compare(argv(save), tc.viewerCmd + 'set-run-settings|/home/u/my proj|{"notifyOnEscalation":true}')
-    compare(save.launchGuard, "/home/u/my proj")
+    compare(save.command.length, 4)
+    compare(argv(save), tc.viewerCmd + 'set-global-settings|{"notifyOnEscalation":true}')
+    compare(save.launchGuard, "")
+    verify(!store.settingsLoadRunner.current, "a closed panel loads nothing")
     reply(save, JSON.stringify({ ok: true }) + "\n", 0)
     compare(store.notifySaved, true)
     compare(store.flashText, "")
     compare(store.setNotifyOnEscalation(false), true)
     compare(store.notifyOnEscalation, false)
-    compare(argv(store.settingsSaveRunner.current), tc.viewerCmd + 'set-run-settings|/home/u/my proj|{"notifyOnEscalation":false}')
+    compare(argv(store.settingsSaveRunner.current), tc.viewerCmd + 'set-global-settings|{"notifyOnEscalation":false}')
     reply(store.settingsSaveRunner.current, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
     compare(store.notifyOnEscalation, true, "back to the value last saved")
     compare(store.notifySaved, true)
@@ -3819,6 +3824,49 @@ TestCase {
     reply(store.settingsSaveRunner.current, "garbage\n", 1)
     compare(store.notifyOnEscalation, true, "an unreadable reply is a failure too")
     compare(store.flashText, "Notify on escalation could not be saved")
+  }
+
+  // 10
+  function test_a_save_reply_survives_a_project_switch() {
+    var store = makeWithProject(rootA); if (!store) return
+    store.setNotifyOnEscalation(true)
+    var save = store.settingsSaveRunner.current
+    store.project = rootB
+    compare(store.notifyOnEscalation, true, "the switch is viewer-wide")
+    compare(store.notifyTouched, true)
+    reply(save, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(store.notifyOnEscalation, false, "rolled back to the value last saved")
+    compare(store.notifySaved, false)
+    compare(store.flashText, "Notify on escalation could not be saved")
+    store.flash("")
+    store.setNotifyOnEscalation(true)
+    var second = store.settingsSaveRunner.current
+    store.project = ""
+    reply(second, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.notifySaved, true, "an ok reply after a switch is applied")
+    compare(store.notifyOnEscalation, true)
+  }
+
+  // 11
+  function test_a_save_in_flight_survives_a_reopening() {
+    var store = make(); if (!store) return
+    store.active = true
+    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    store.setNotifyOnEscalation(true)
+    var save = store.settingsSaveRunner.current
+    store.active = false
+    store.active = true
+    compare(store.notifyTouched, true, "a save is in flight: the touch stays")
+    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(store.notifyOnEscalation, true, "the new load cannot undo the user's choice")
+    reply(save, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.notifySaved, true, "the save reply settles notifySaved")
+    store.active = false
+    store.active = true
+    compare(store.notifyTouched, false, "no save in flight: the next opening reads again")
+    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(store.notifyOnEscalation, false)
+    compare(store.notifySaved, false)
   }
 
   // 14
@@ -3831,20 +3879,6 @@ TestCase {
     reply(load, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
     compare(store.notifyOnEscalation, true)
     compare(store.notifyTouched, true)
-  }
-
-  // 15
-  function test_without_a_project_the_switch_does_nothing() {
-    var store = make(); if (!store) return
-    compare(store.notifyOnEscalation, false)
-    compare(store.notifySaved, false)
-    compare(store.notifyTouched, false)
-    compare(store.notifyRunners.length, 0)
-    compare(store.setNotifyOnEscalation(true), false)
-    compare(store.notifyOnEscalation, false)
-    compare(store.notifyTouched, false)
-    verify(!store.settingsSaveRunner.current, "nothing was launched")
-    verify(!store.runSettingsRunner.current, "nothing was loaded")
   }
 
   // ---- dispatch (S3 3.1)
