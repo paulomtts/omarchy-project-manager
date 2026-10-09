@@ -1379,6 +1379,7 @@ TestCase {
     s.runs.project = "/home/u/a"
     s.nav.cursorIndex = 2
     wait(20)
+    compare(openButton(s, 2).visible, true, "the full registry shows it")
     var lists = [undefined, null, "abc", 7, ({ length: 1 })]
     for (var i = 0; i < lists.length; i++) {
       s.app.projects = registry(lists[i])
