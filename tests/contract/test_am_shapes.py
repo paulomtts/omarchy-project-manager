@@ -10,6 +10,13 @@ am.db is never read. Skipped when am is absent.
 Story tests build a real git repo and brd board under tmp_path and run am with
 a PATH holding only am, brd and git, so no agent CLI is reachable. When am is
 present they fail, never skip, if am run lacks --story or brd or git is absent.
+
+Finished-run tests add to that PATH the stub claude (stub_claude.py, run by
+this interpreter) and verify-ok, so story S1 runs to done; they fail, never
+skip, when it does not. Their am logs --follow captures, with the scratch root
+rewritten to /home/user, equal tests/fixtures/am/logs-follow-agent.jsonl,
+logs-follow-step.jsonl and logs-follow-refusal.json; with AM_RECORD_FIXTURES=1
+the captures are written there instead.
 """
 import json
 import os
@@ -670,3 +677,48 @@ def test_stub_claude_exits_1_naming_a_phase_it_has_no_behaviour_for(tmp_path):
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "stub claude: no behaviour for phase 'resolve'" in proc.stderr, proc.stderr
     assert proc.stdout == "" and not result.exists()
+
+
+def stub_executable(path, body):
+    """`body` as an executable at `path`, run by this interpreter."""
+    path.write_text(f"#!{os.path.realpath(sys.executable)}\n{body}", encoding="utf-8")
+    path.chmod(0o755)
+
+
+@pytest.fixture
+def finished_run(am, story_board, tmp_path):
+    """Story S1 run to done through the real am: the bin dir also holds the stub `claude`
+    and `verify-ok` (prints `verified`, exits 0), the run's only verify command."""
+    bin_dir = tmp_path / "bin"
+    stub_executable(bin_dir / "claude", STUB_CLAUDE.read_text(encoding="utf-8"))
+    stub_executable(bin_dir / "verify-ok", 'print("verified")\n')
+    proc = am.run("run", "--story", story_board.s1, "--branch-prefix", "p", "--verify",
+                  "verify-ok", "--repo-dir", am.repo)
+    output = f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    if proc.returncode != 0:
+        pytest.fail(f"am run of story S1 exited {proc.returncode}: {output}")
+    runs = am.run("runs", "--repo-dir", am.repo)
+    rows = json.loads(runs.stdout)["data"]["runs"] if runs.returncode == 0 else None
+    if not rows or len(rows) != 1 or rows[0]["status"] != "done":
+        pytest.fail(f"am run of story S1 did not finish as one done run: runs={runs.stdout!r} "
+                    f"{output}")
+    return SimpleNamespace(id=rows[0]["id"], card=story_board.s1_subtasks[0], root=tmp_path)
+
+
+def phases_of(am, run, card):
+    """`am status RUN`'s phases of subtask `card`, by name."""
+    proc = am.run("status", run.id, "--repo-dir", am.repo)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    subtasks = [subtask for story in json.loads(proc.stdout)["data"]["stories"]
+                for subtask in story["subtasks"] if subtask["card_id"] == card]
+    assert len(subtasks) == 1, proc.stdout
+    return {phase["name"]: phase for phase in subtasks[0]["phases"]}
+
+
+def test_finished_run_reaches_verify_and_is_done(am, finished_run):
+    phases = phases_of(am, finished_run, finished_run.card)
+    assert [(attempt["n"], attempt["status"]) for attempt in phases["review"]["attempts"]] \
+        == [(1, "ok")], phases["review"]
+    assert phases["verify"]["status"] == "done", phases["verify"]
+    assert phases["verify"]["attempts"] == [], phases["verify"]
+    assert phases["worktree"]["attempts"] == [], phases["worktree"]
