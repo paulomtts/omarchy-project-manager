@@ -26,3 +26,25 @@ function parseJsonLine(stdout, exitCode, generic, requireOk) {
     ? payload.error : generic
   return { ok: false, data: payload, error: message }
 }
+
+// The last line of `text` (String(text || ""), split on "\n") that is
+// non-empty after trim(), trimmed; "" when there is none.
+function lastLine(text) {
+  var lines = String(text || "").split("\n")
+  for (var i = lines.length - 1; i >= 0; i--) {
+    var line = lines[i].trim()
+    if (line !== "") return line
+  }
+  return ""
+}
+
+// The object JSON-parsed from lastLine(text), or null when that line is
+// empty, is not JSON, or is not a plain object (an array, a scalar, null).
+// Never throws.
+function parseEnvelope(text) {
+  var line = lastLine(text)
+  if (line === "") return null
+  var value = null
+  try { value = JSON.parse(line) } catch (e) { return null }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
+}

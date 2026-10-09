@@ -1331,3 +1331,32 @@ function previewSummary(dryRunData, level) {
   var branch = _isObject(integrate) && typeof integrate.branch === "string" ? _textOf(integrate.branch) : ""
   return { board: false, integrate: branch !== "" ? "Integrate \u2192 " + branch : "", summary: summary }
 }
+
+// ---- Store helpers (split-runstore 2.1) --------------------------------------------------
+
+// The first entry of `runs`, in order, that is truthy and whose `id` is ===
+// `id`; null when there is none or `runs` is not an array. The entry itself,
+// not a copy.
+function runById(runs, id) {
+  if (!Array.isArray(runs)) return null
+  for (var i = 0; i < runs.length; i++) {
+    if (runs[i] && runs[i].id === id) return runs[i]
+  }
+  return null
+}
+
+// Whether `map` has `key` as an own property; false for a null or undefined map.
+function hasKey(map, key) {
+  if (map === null || map === undefined) return false
+  return Object.prototype.hasOwnProperty.call(map, key)
+}
+
+// A new plain object with every own enumerable key of `map` and its value
+// (a shallow copy); {} for null or undefined.
+function copyMap(map) {
+  var out = {}
+  for (var key in map) {
+    if (hasKey(map, key)) out[key] = map[key]
+  }
+  return out
+}

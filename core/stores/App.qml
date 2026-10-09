@@ -102,14 +102,15 @@ QtObject {
 
   // The run store never imports the project or board store: App hands it the
   // registry's roots and names in registry order, the selected project's root
-  // path (never the project object) and the panel-open flag that starts and
-  // stops its watch.
+  // path (never the project object), the panel-open flag that starts and
+  // stops its watch, and the alerts store its shims read (alertsStore).
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
     projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
     project: app.projects.selectedProject ? app.projects.selectedProject.root_path : ""
     active: app.panelOpen
     searchQuery: app.nav.searchQuery
+    alertsStore: app.runAlerts
     onRunFilterToggled: {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
@@ -118,6 +119,19 @@ QtObject {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
     }
+    onSnapshotReplied: function(root, outcome, previousRuns, runs) {
+      app.runAlerts.snapshotReplied(root, outcome, previousRuns, runs)
+    }
+  }
+
+  // The run alerts never import the run store: App hands them the backend
+  // directory, the panel-open flag, the notify switch and the registry, and
+  // routes every project's snapshot reply (runs.snapshotReplied) here.
+  readonly property RunAlertsStore runAlerts: RunAlertsStore {
+    backendDir: app.backendDir
+    active: app.panelOpen
+    notifyOnEscalation: app.runs.notifyOnEscalation
+    projectRoots: app.runs.projectRoots
   }
 
   readonly property GraphStore graph: GraphStore {

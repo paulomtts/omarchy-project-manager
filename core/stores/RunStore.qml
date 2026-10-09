@@ -1,6 +1,7 @@
 import QtQml
 import Quickshell
 import Quickshell.Io
+import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
 
 // The am run monitor's data. One list snapshot covers every registered
@@ -31,7 +32,8 @@ import "../domain/runs.js" as Runs
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
-// Start.
+// Start. Each applied list snapshot reply is announced per project
+// (snapshotReplied).
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
 // as `app.runs` and binds `active` to the panel being open.
@@ -137,19 +139,19 @@ Scope {
   // The footer flash: why a run key was refused. flashTimer clears it.
   property string flashText: ""
 
-  // Alerts (S2 4.4): a toast for every run of any registered project that
-  // newly needs a human while the panel is open. `armedRoots` is {root: true}
-  // of every usable root whose runs may be compared against, and is replaced,
-  // never changed in place: a root's first good entry after an opening, a
-  // store change, an am-missing spell or its return to the registry only arms
-  // it, so history is never replayed. `alertsArmed`: some root is armed.
-  // `toasts` is {key, id, title, state, reason, project, expiresMs}, oldest
-  // first, at most 3, and is replaced, never changed in place; `project` is
-  // the name of the run's project.
-  property var armedRoots: ({})
-  readonly property bool alertsArmed: Object.keys(store.armedRoots).length > 0
-  property var toasts: []
-  property int toastMs: 8000
+  // Moved to RunAlertsStore; removed by the last story
+  property var alertsStore: null
+  readonly property var armedRoots: store.alertsStore ? store.alertsStore.armedRoots : ({})
+  readonly property bool alertsArmed: store.alertsStore ? store.alertsStore.alertsArmed : false
+  readonly property var toasts: store.alertsStore ? store.alertsStore.toasts : []
+  readonly property int toastMs: store.alertsStore ? store.alertsStore.toastMs : 0
+  readonly property var toastTimer: store.alertsStore ? store.alertsStore.toastTimer : null
+  readonly property var notifyRunners: store.alertsStore ? store.alertsStore.notifyRunners : []
+  function raiseAlerts(alerts) { return store.alertsStore ? store.alertsStore.raiseAlerts(alerts) : undefined }
+  function expireToasts(nowMs) { return store.alertsStore ? store.alertsStore.expireToasts(nowMs) : undefined }
+  function dismissToast(key) { return store.alertsStore ? store.alertsStore.dismissToast(key) : undefined }
+  function dismissAllToasts() { return store.alertsStore ? store.alertsStore.dismissAllToasts() : undefined }
+  function notify(alert) { return store.alertsStore ? store.alertsStore.notify(alert) : undefined }
   // "Notify on escalation", viewer-wide and off until read: the switch's
   // value, the last value read from or written to viewer-state.py's global
   // settings, and whether the user changed it since this opening's load was
@@ -191,6 +193,13 @@ Scope {
   // known to the store or not. Never for a snapshot the store started itself.
   // (`runs` already owns the runsChanged name.)
   signal runsNudged(var ids)
+  // One project's list snapshot reply, once its state is applied: per usable
+  // root with a matched entry, in registry order, whether or not `active`.
+  // `outcome` is "ok", "failed" or "missing" (AmMissing, and a start-over);
+  // `previousRuns` are the root's runs before the reply ([] when it had none);
+  // `runs` are, for "ok", the root's runs that the merged `runs` lists under
+  // it, else [].
+  signal snapshotReplied(var root, var outcome, var previousRuns, var runs)
 
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
@@ -207,11 +216,9 @@ Scope {
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
-  readonly property alias toastTimer: toastTimer
   readonly property alias settingsLoadRunner: settingsLoadRunner
   readonly property alias settingsSaveRunner: settingsSaveRunner
   readonly property alias runSettingsRunner: runSettingsRunner
-  readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
   readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
   readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
   readonly property alias dispatchDebounceTimer: dispatchDebounceTimer
@@ -355,19 +362,17 @@ Scope {
 
   // The panel opened: fetch now and read the notify switch (get-global-settings;
   // notifyTouched is cleared first unless a save is in flight); the first good
-  // snapshot starts the watch and arms every root that answers in it, and the
-  // stale clock counts from now.
+  // snapshot starts the watch, and the stale clock counts from now.
   function startLive() {
     store.watchTried = false
-    store.armedRoots = {}
     if (!settingsSaveRunner.busy) store.notifyTouched = false
     settingsLoadRunner.run(["get-global-settings"])
     store.restartStale()
     store.refresh()
   }
 
-  // The panel closed: no process and no timer is left running, and no toast
-  // or dispatch outlives the opening (a start in flight runs to its end). The
+  // The panel closed: no process and no timer is left running, and no
+  // dispatch outlives the opening (a start in flight runs to its end). The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
   // and is applied. The project filter is back to All projects, with no
   // projectFilterToggled. The runs, the selection, the chip and amStatus stay
@@ -382,8 +387,6 @@ Scope {
     staleTimer.stop()
     store.stale = false
     store.watchWarning = ""
-    store.armedRoots = {}
-    store.toasts = []
     // A start in flight refuses and lands normally.
     store.closeDispatch()
   }
@@ -439,11 +442,11 @@ Scope {
     var out = []
     var seen = {}
     for (var i = 0; i < usable.length; i++) {
-      var list = store.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
+      var list = Runs.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
       for (var j = 0; j < list.length; j++) {
         var run = list[j]
         var id = run !== null && typeof run === "object" && typeof run.id === "string" ? run.id : ""
-        if (id === "" || id.charAt(0) === "-" || id.charAt(0) === "/" || store.hasKey(seen, id)) continue
+        if (id === "" || id.charAt(0) === "-" || id.charAt(0) === "/" || Runs.hasKey(seen, id)) continue
         seen[id] = true
         out.push(id)
       }
@@ -493,7 +496,7 @@ Scope {
       store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
       var changed = store.seeStore(value.hello.storeId)
       if (changed || value.hello.cursorReset === true) store.resetCursor()
-    } else if (store.hasKey(value, "cursor")) {
+    } else if (Runs.hasKey(value, "cursor")) {
       if (store.isSeq(value.cursor)) store.watchCursor = value.cursor
     }
   }
@@ -507,8 +510,8 @@ Scope {
       var e = entries[i]
       if (e === null || typeof e !== "object" || Array.isArray(e)) continue
       if (typeof e.run !== "string" || e.run === "" || !store.isSeq(e.seq) || e.seq < 1) continue
-      if (next === null) next = store.copyMap(store.nudges)
-      if (!store.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
+      if (next === null) next = Runs.copyMap(store.nudges)
+      if (!Runs.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
     }
     if (next === null) return
     store.nudges = next
@@ -544,7 +547,7 @@ Scope {
 
   // root's runsByProject list holds a run with this id.
   function listsRun(root, id) {
-    var list = store.hasKey(store.runsByProject, root) ? store.runsByProject[root] : []
+    var list = Runs.hasKey(store.runsByProject, root) ? store.runsByProject[root] : []
     for (var i = 0; i < list.length; i++) {
       if (list[i] !== null && typeof list[i] === "object" && list[i].id === id) return true
     }
@@ -557,7 +560,7 @@ Scope {
     var usable = store.usableRoots()
     var roots = []
     for (var i = 0; i < usable.length; i++) {
-      var list = store.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
+      var list = Runs.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
       for (var j = 0; j < list.length; j++) {
         if (Runs.runState(list[j]) === "running") {
           roots.push(usable[i].root)
@@ -581,16 +584,20 @@ Scope {
   }
 
   // The live state of the store last seen is forgotten: the cursor, the
-  // nudges and their debounce, the runs and every root's list of them, and
-  // the alerts (the next list snapshot only arms). Selection, logs, controls
-  // and dispatch stay.
+  // nudges and their debounce, the runs and every root's list of them. Then
+  // snapshotReplied(root, "missing", previousRuns, []) for every usable root,
+  // in registry order. Selection, logs, controls and dispatch stay.
   function forgetLive() {
+    var prev = store.runsByProject
     store.watchCursor = 0
     store.nudges = {}
     debounceTimer.stop()
     store.runs = []
     store.runsByProject = {}
-    store.armedRoots = {}
+    var usable = store.usableRoots()
+    var outcomes = {}
+    for (var i = 0; i < usable.length; i++) outcomes[usable[i].root] = "missing"
+    store.emitReplied(usable, outcomes, prev, {})
   }
 
   // A store id seen in a hello. A non-empty string is recorded as storeId;
@@ -648,9 +655,9 @@ Scope {
 
   // Another project was opened, or none. The run list, the selection, the
   // logs, the watch, the coverage, the requests (pending, stillWaiting,
-  // controlRunners), the control error, the cancel dialog, the footer flash,
-  // the alerts, the toasts and the notify switch belong to every registered
-  // project and stay, and no snapshot is launched. Reset: the run settings
+  // controlRunners), the control error, the cancel dialog, the footer flash
+  // and the notify switch belong to every registered project and stay, and
+  // no snapshot is launched. Reset: the run settings
   // (loaded for the new project on runSettingsRunner) and the dispatch.
   function projectSwitched() {
     store.runSettings = {}
@@ -676,7 +683,7 @@ Scope {
       var p = list[i]
       if (p === null || typeof p !== "object" || Array.isArray(p)) continue
       var root = p.root
-      if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || store.hasKey(seen, root)) continue
+      if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || Runs.hasKey(seen, root)) continue
       seen[root] = true
       out.push({ root: root, name: p.name })
     }
@@ -690,7 +697,7 @@ Scope {
     var out = {}
     for (var i = 0; i < usable.length; i++) {
       var p = usable[i]
-      if (!store.hasKey(byProject, p.root)) continue
+      if (!Runs.hasKey(byProject, p.root)) continue
       var tag = Runs.withProject({}, p.root, p.name).project
       out[p.root] = byProject[p.root].map(function(run) {
         var cur = run !== null && typeof run === "object" ? run.project : null
@@ -710,12 +717,12 @@ Scope {
     var owner = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
-      var list = store.hasKey(byProject, root) ? byProject[root] : []
+      var list = Runs.hasKey(byProject, root) ? byProject[root] : []
       for (var j = 0; j < list.length; j++) {
         var run = list[j]
         var id = run !== null && typeof run === "object" && typeof run.id === "string" ? run.id : ""
         if (id !== "") {
-          if (store.hasKey(owner, id)) continue
+          if (Runs.hasKey(owner, id)) continue
           owner[id] = root
         }
         out.push(run)
@@ -724,23 +731,20 @@ Scope {
     return { runs: out, owner: owner }
   }
 
-  // The registry changed. First the roots no longer usable lose their runs,
-  // their errors and their arming (armedRoots is replaced only when a root
-  // went), and `runs` is merged again in the new order with the new names;
-  // no alert is raised. Then every usable root is snapshotted.
+  // The registry changed. First the roots no longer usable lose their runs
+  // and their errors, and `runs` is merged again in the new order with the
+  // new names; no snapshotReplied is emitted. Then every usable root is
+  // snapshotted.
   function registryChanged() {
     var usable = store.usableRoots()
     var errors = {}
-    var armed = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
-      if (store.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
-      if (store.hasKey(store.armedRoots, root)) armed[root] = true
+      if (Runs.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
     }
     var byProject = store.taggedByProject(store.runsByProject, usable)
     store.runsByProject = byProject
     store.projectErrors = errors
-    if (Object.keys(armed).length !== Object.keys(store.armedRoots).length) store.armedRoots = armed
     store.runs = store.mergedRuns(byProject, usable).runs
     store.refresh()
   }
@@ -751,11 +755,7 @@ Scope {
 
   // The run with this id in the snapshot, or null.
   function runById(id) {
-    var list = store.runs
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] && list[i].id === id) return list[i]
-    }
-    return null
+    return Runs.runById(store.runs, id)
   }
 
   // The run's project root when it is a non-empty string, else "".
@@ -849,7 +849,7 @@ Scope {
   // gets here (the runner's latest-wins).
   function applyLogs(stdout, exitCode) {
     store.logsLoading = false
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var tail = Runs.logTail(envelope.data, 200)
       store.logsText = tail.text
@@ -865,33 +865,13 @@ Scope {
     store.logsError = "The logs snapshot gave no usable result (exit " + exitCode + ")."
   }
 
-  // The helper prints exactly one JSON line; anything before it (a warning) and
-  // blank lines after it are ignored.
-  function lastLine(text) {
-    var lines = String(text || "").split("\n")
-    for (var i = lines.length - 1; i >= 0; i--) {
-      var line = lines[i].trim()
-      if (line !== "") return line
-    }
-    return ""
-  }
-
-  // The reply's envelope object, or null when there is none to read.
-  function parseEnvelope(text) {
-    var line = store.lastLine(text)
-    if (line === "") return null
-    var value = null
-    try { value = JSON.parse(line) } catch (e) { return null }
-    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
-  }
-
   // The `am runs` summary without its `status` key: the helper replaced the
   // summary's status string with the `am status` object, which normalizeRun
   // must never read as the row's status ("[object Object]").
   function rowOf(entry) {
     var row = {}
     for (var key in entry) {
-      if (key !== "status" && Object.prototype.hasOwnProperty.call(entry, key)) row[key] = entry[key]
+      if (key !== "status" && Runs.hasKey(entry, key)) row[key] = entry[key]
     }
     return row
   }
@@ -907,7 +887,7 @@ Scope {
   // projectErrors and only reports why this one failed. Never reads a
   // store_id. Never throws.
   function applySnapshot(stdout, exitCode, launched) {
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       store.applyProjects(Array.isArray(envelope.projects) ? envelope.projects : [], exitCode, launched)
       return
@@ -921,21 +901,21 @@ Scope {
   // roots by exact root: the first entry of a root counts, any other entry is
   // ignored. No matched entry at all is a reply with no usable result --
   // unless none of the roots it was launched for (`launched`) is usable any
-  // more, when it changes nothing. Every
+  // more, when it changes nothing; neither emits snapshotReplied. Every
   // matched entry AmMissing: the runs, runsByProject, projectErrors and the
-  // coverage are emptied and amStatus is "missing", and every root is disarmed.
-  // Otherwise an ok entry replaces its root's runs and clears its error
-  // (entries that are not objects are skipped); a failed one keeps its
-  // root's runs ([] when it had none) and records Runs.errorText of its
-  // error; a usable root with no entry keeps both. `runs` is merged again,
-  // and asOfSeq is 0 and appliedSeq {id: 0} for every run in it. With an
-  // entry ok, everything after a good snapshot follows, and while active a
-  // running watch whose roots are no longer the usable "/" roots is started
-  // again, the alerts of every armed root with an ok entry are raised
-  // (alertsOf) and every root with an ok entry is armed. With none, amStatus
-  // is "error" with the first failed entry's sentence, and armedRoots and
-  // `stale` stay as they are. A failed entry, a root with no entry and a
-  // closed panel never change armedRoots.
+  // coverage are emptied and amStatus is "missing". Otherwise an ok entry
+  // replaces its root's runs and clears its error (entries that are not
+  // objects are skipped); a failed one keeps its root's runs ([] when it had
+  // none) and records Runs.errorText of its error; a usable root with no
+  // entry keeps both. `runs` is merged again, and asOfSeq is 0 and appliedSeq
+  // {id: 0} for every run in it. With an entry ok, everything after a good
+  // snapshot follows, and while active a running watch whose roots are no
+  // longer the usable "/" roots is started again. With none, amStatus is
+  // "error" with the first failed entry's sentence, and `stale` stays as it
+  // is. Last, once the state is applied, each root with a matched entry gets
+  // snapshotReplied in registry order (emitReplied): "missing" for each in an
+  // AmMissing reply, else "ok" for an ok entry, with the runs the merged list
+  // attributes to it (ownedRuns), and "failed" for any other, with [].
   function applyProjects(entries, exitCode, launched) {
     var usable = store.usableRoots()
     var names = {}
@@ -945,7 +925,7 @@ Scope {
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i]
       if (e === null || typeof e !== "object" || Array.isArray(e)) continue
-      if (typeof e.root !== "string" || !store.hasKey(names, e.root) || store.hasKey(seen, e.root)) continue
+      if (typeof e.root !== "string" || !Runs.hasKey(names, e.root) || Runs.hasKey(seen, e.root)) continue
       seen[e.root] = true
       matched.push(e)
     }
@@ -953,7 +933,7 @@ Scope {
       var gone = true
       var roots = Array.isArray(launched) ? launched : []
       for (var g = 0; g < roots.length; g++) {
-        if (store.hasKey(names, roots[g])) gone = false
+        if (Runs.hasKey(names, roots[g])) gone = false
       }
       if (gone && roots.length > 0) return
       store.amStatus = "error"
@@ -966,6 +946,8 @@ Scope {
       var type = err !== null && typeof err === "object" ? err.type : ""
       if (matched[m].ok === true || type !== "AmMissing") missing = false
     }
+    var prev = store.runsByProject
+    var outcomes = {}
     if (missing) {
       store.runs = []
       store.runsByProject = {}
@@ -974,14 +956,12 @@ Scope {
       store.asOfSeq = 0
       store.amStatus = "missing"
       store.lastError = Runs.errorText(matched[0].error)
-      // Every root is disarmed: comparing its next good entry against []
-      // would alert every escalated run again.
-      store.armedRoots = {}
+      for (var mr = 0; mr < matched.length; mr++) outcomes[matched[mr].root] = "missing"
+      store.emitReplied(usable, outcomes, prev, {})
       return
     }
-    var prev = store.runsByProject
-    var byProject = store.copyMap(store.runsByProject)
-    var errors = store.copyMap(store.projectErrors)
+    var byProject = Runs.copyMap(store.runsByProject)
+    var errors = Runs.copyMap(store.projectErrors)
     var anyOk = false
     var okRoots = {}
     var firstError = ""
@@ -991,6 +971,7 @@ Scope {
       if (entry.ok === true) {
         anyOk = true
         okRoots[root] = true
+        outcomes[root] = "ok"
         var list = Array.isArray(entry.runs) ? entry.runs : []
         var out = []
         for (var r = 0; r < list.length; r++) {
@@ -1001,7 +982,8 @@ Scope {
         byProject[root] = out
         delete errors[root]
       } else {
-        if (!store.hasKey(byProject, root)) byProject[root] = []
+        outcomes[root] = "failed"
+        if (!Runs.hasKey(byProject, root)) byProject[root] = []
         errors[root] = Runs.errorText(entry.error)
         if (firstError === "") firstError = errors[root]
       }
@@ -1011,8 +993,8 @@ Scope {
     var applied = {}
     var ids = Object.keys(merged.owner)
     for (var d = 0; d < ids.length; d++) applied[ids[d]] = 0
-    // Compared before the runs are replaced; raised below only while open.
-    var alerts = store.active ? store.alertsOf(prev, byProject, merged.owner, okRoots, usable) : []
+    var after = {}
+    for (var o in okRoots) after[o] = store.ownedRuns(byProject[o], merged.owner, o)
     store.runsByProject = byProject
     store.projectErrors = errors
     store.asOfSeq = 0
@@ -1021,6 +1003,7 @@ Scope {
     if (!anyOk) {
       store.amStatus = "error"
       store.lastError = firstError
+      store.emitReplied(usable, outcomes, prev, after)
       return
     }
     store.settleAfterSnapshot()
@@ -1041,53 +1024,31 @@ Scope {
         store.stopWatch()
         store.startWatch()
       }
-      store.raiseAlerts(alerts)
-      var armed = store.copyMap(store.armedRoots)
-      for (var ok in okRoots) armed[ok] = true
-      store.armedRoots = armed
+    }
+    store.emitReplied(usable, outcomes, prev, after)
+  }
+
+  // snapshotReplied for each root of `usable` that `outcomes` ({root:
+  // outcome}) names, in registry order: previousRuns is prev[root] ([] when it
+  // had none), runs is after[root] ([] when it has none).
+  function emitReplied(usable, outcomes, prev, after) {
+    for (var i = 0; i < usable.length; i++) {
+      var root = usable[i].root
+      if (!Runs.hasKey(outcomes, root)) continue
+      store.snapshotReplied(root, outcomes[root], Runs.hasKey(prev, root) ? prev[root] : [],
+                            Runs.hasKey(after, root) ? after[root] : [])
     }
   }
 
-  // One list reply's alerts, in registry order, then each root's order: for
-  // every armed root in okRoots, Runs.newAlerts of its runs before the reply
-  // (prev; [] when it had none) against the runs of byProject it owns in the
-  // merged list (owner), each with `project`, the name Runs.withProject gives
-  // that root. A run id is raised at most once.
-  function alertsOf(prev, byProject, owner, okRoots, usable) {
-    var out = []
-    var raised = {}
-    for (var i = 0; i < usable.length; i++) {
-      var root = usable[i].root
-      if (!store.hasKey(okRoots, root) || !store.hasKey(store.armedRoots, root)) continue
-      var mine = byProject[root].filter(function(run) {
-        return run !== null && typeof run === "object" && store.hasKey(owner, run.id) && owner[run.id] === root
-      })
-      var name = Runs.withProject({}, root, usable[i].name).project.name
-      var found = Runs.newAlerts(store.hasKey(prev, root) ? prev[root] : [], mine)
-      for (var j = 0; j < found.length; j++) {
-        if (store.hasKey(raised, found[j].id)) continue
-        raised[found[j].id] = true
-        found[j].project = name
-        out.push(found[j])
-      }
-    }
-    return out
+  // The runs of `list`, in its order, that `owner` (mergedRuns' {id: root})
+  // attributes to `root`; a run without an owned id is no root's.
+  function ownedRuns(list, owner, root) {
+    return list.filter(function(run) {
+      return run !== null && typeof run === "object" && Runs.hasKey(owner, run.id) && owner[run.id] === root
+    })
   }
 
   // ---- run controls (S2 4.1)
-
-  // A copy of a {key: value} map, so a change is a new object.
-  function copyMap(map) {
-    var out = {}
-    for (var key in map) {
-      if (Object.prototype.hasOwnProperty.call(map, key)) out[key] = map[key]
-    }
-    return out
-  }
-
-  function hasKey(map, key) {
-    return Object.prototype.hasOwnProperty.call(map, key)
-  }
 
   // Starts a pause, resume or cancel of one run in `runs`, of any project, and
   // returns whether it started: only when refusalOf(action, runId) is "".
@@ -1098,11 +1059,11 @@ Scope {
     var run = store.runById(runId)
     store.dismissControlError()
     controlState.nextToken += 1
-    var requests = store.copyMap(controlState.requests)
+    var requests = Runs.copyMap(controlState.requests)
     requests[runId] = { token: controlState.nextToken, action: action, baseline: Runs.runState(run),
                         launchedMs: Date.now(), acknowledged: false, requestedAt: "" }
     controlState.requests = requests
-    var p = store.copyMap(store.pending)
+    var p = Runs.copyMap(store.pending)
     p[runId] = action
     store.pending = p
     var runner = controlC.createObject(store, { runId: runId, action: action, token: controlState.nextToken,
@@ -1131,7 +1092,7 @@ Scope {
   // pending for its run; null once it was settled or replaced by a newer
   // request.
   function requestOf(runner) {
-    if (!store.hasKey(controlState.requests, runner.runId)) return null
+    if (!Runs.hasKey(controlState.requests, runner.runId)) return null
     var req = controlState.requests[runner.runId]
     return req.token === runner.token ? req : null
   }
@@ -1139,18 +1100,18 @@ Scope {
   // The request for runId is over: its pending entry, its still-waiting mark
   // and its bookkeeping go.
   function settle(runId) {
-    if (store.hasKey(store.pending, runId)) {
-      var p = store.copyMap(store.pending)
+    if (Runs.hasKey(store.pending, runId)) {
+      var p = Runs.copyMap(store.pending)
       delete p[runId]
       store.pending = p
     }
-    if (store.hasKey(store.stillWaiting, runId)) {
-      var w = store.copyMap(store.stillWaiting)
+    if (Runs.hasKey(store.stillWaiting, runId)) {
+      var w = Runs.copyMap(store.stillWaiting)
       delete w[runId]
       store.stillWaiting = w
     }
-    if (store.hasKey(controlState.requests, runId)) {
-      var r = store.copyMap(controlState.requests)
+    if (Runs.hasKey(controlState.requests, runId)) {
+      var r = Runs.copyMap(controlState.requests)
       delete r[runId]
       controlState.requests = r
     }
@@ -1191,11 +1152,11 @@ Scope {
       store.resumeWithSettings(runner, stdout, exitCode)
       return
     }
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var data = envelope.data
       var requestedAt = data !== null && typeof data === "object" && typeof data.requested_at === "string" ? data.requested_at : ""
-      var requests = store.copyMap(controlState.requests)
+      var requests = Runs.copyMap(controlState.requests)
       requests[runner.runId] = { token: req.token, action: req.action, baseline: req.baseline,
                                  launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
       controlState.requests = requests
@@ -1214,7 +1175,7 @@ Scope {
   // neither, or no readable reply, run-control is never launched and the
   // request ends with a sentence -- no re-snapshot, nothing was asked of am.
   function resumeWithSettings(runner, stdout, exitCode) {
-    var settings = store.parseEnvelope(stdout)
+    var settings = Results.parseEnvelope(stdout)
     if (settings === null) {
       store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").")
       store.dropRunner(runner)
@@ -1245,7 +1206,7 @@ Scope {
     var ids = Object.keys(store.pending)
     for (var i = 0; i < ids.length; i++) {
       var id = ids[i]
-      if (!store.hasKey(controlState.requests, id)) continue
+      if (!Runs.hasKey(controlState.requests, id)) continue
       var req = controlState.requests[id]
       if (!req.acknowledged) continue
       var run = store.runById(id)
@@ -1273,7 +1234,7 @@ Scope {
     var ids = Object.keys(store.pending)
     for (var i = 0; i < ids.length; i++) {
       var id = ids[i]
-      if (store.hasKey(controlState.requests, id) && nowMs - controlState.requests[id].launchedMs >= 30000) out[id] = true
+      if (Runs.hasKey(controlState.requests, id) && nowMs - controlState.requests[id].launchedMs >= 30000) out[id] = true
     }
     store.stillWaiting = out
   }
@@ -1290,7 +1251,7 @@ Scope {
     if (run === null) return "This run is no longer in the snapshot"
     if (typeof run.repo_dir !== "string" || run.repo_dir === "") return "This run has no repository"
     if (action === "resume" && run.workflow !== "task" && store.runRoot(run) === "") return "This run's project is not known"
-    if (store.hasKey(store.pending, runId)) return "A request for this run is pending"
+    if (Runs.hasKey(store.pending, runId)) return "A request for this run is pending"
     return Runs.controls(run)[action].reason
   }
 
@@ -1341,54 +1302,7 @@ Scope {
     return true
   }
 
-  // ---- alerts (S2 4.4)
-
-  // One toast per alert, newest last: a run's older toast goes first, then the
-  // oldest beyond three. With the setting on, each alert also notifies.
-  // Called from applySnapshot only while active.
-  function raiseAlerts(alerts) {
-    var list = Array.isArray(alerts) ? alerts : []
-    for (var i = 0; i < list.length; i++) {
-      var a = list[i]
-      toastState.nextKey += 1
-      var next = store.toasts.filter(function(t) { return t.id !== a.id })
-      next.push({ key: toastState.nextKey, id: a.id, title: a.title, state: a.state, reason: a.reason,
-                  project: typeof a.project === "string" ? a.project : "", expiresMs: Date.now() + store.toastMs })
-      while (next.length > 3) next.shift()
-      store.toasts = next
-      if (store.notifyOnEscalation) store.notify(a)
-    }
-  }
-
-  // Drops every toast whose time is up at nowMs (the timer passes Date.now()).
-  function expireToasts(nowMs) {
-    var next = store.toasts.filter(function(t) { return t.expiresMs > nowMs })
-    if (next.length !== store.toasts.length) store.toasts = next
-  }
-
-  // The toast with this key goes; an unknown key changes nothing.
-  function dismissToast(key) {
-    var next = store.toasts.filter(function(t) { return t.key !== key })
-    if (next.length !== store.toasts.length) store.toasts = next
-  }
-
-  function dismissAllToasts() {
-    if (store.toasts.length > 0) store.toasts = []
-  }
-
-  // One notify.py launch for an alert, on a runner of its own so two never
-  // stop each other. The reply is not read: a failed or skipped notification
-  // changes nothing here.
-  function notify(alert) {
-    var runner = notifyC.createObject(store)
-    notifyState.runners = notifyState.runners.concat([runner])
-    runner.run([String(alert.title), String(alert.reason)])
-  }
-
-  function dropNotifyRunner(runner) {
-    notifyState.runners = notifyState.runners.filter(function(r) { return r !== runner })
-    runner.destroy()
-  }
+  // ---- the notify switch (S2 4.4)
 
   // The switch changed: shown at once, written to the global settings in the
   // background. Always works, with or without a project, and returns true.
@@ -1406,7 +1320,7 @@ Scope {
   // opening.
   function applyGlobalSettings(stdout, exitCode) {
     if (store.notifyTouched) return
-    var settings = store.parseEnvelope(stdout)
+    var settings = Results.parseEnvelope(stdout)
     var on = settings !== null && settings.notifyOnEscalation === true
     store.notifyOnEscalation = on
     store.notifySaved = on
@@ -1415,14 +1329,14 @@ Scope {
   // get-run-settings: one bare object, kept whole as runSettings ({} when
   // unreadable) on every reply. Never touches the notify switch.
   function applyRunSettings(stdout, exitCode) {
-    var settings = store.parseEnvelope(stdout)
+    var settings = Results.parseEnvelope(stdout)
     store.runSettings = settings !== null ? settings : {}
   }
 
   // set-global-settings: {"ok": true} means `sent` is stored; anything else puts
   // the switch back to what is stored and says so.
   function notifySaveReplied(stdout, exitCode, sent) {
-    var reply = store.parseEnvelope(stdout)
+    var reply = Results.parseEnvelope(stdout)
     if (reply !== null && reply.ok === true) {
       store.notifySaved = sent
       return
@@ -1482,7 +1396,7 @@ Scope {
     var milestone = Runs.dispatchMilestone(card, cardMap)
     var isMap = cardMap !== null && typeof cardMap === "object"
     dispatchBook.cardMap = cardMap
-    dispatchBook.milestone = milestone !== null && isMap && store.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
+    dispatchBook.milestone = milestone !== null && isMap && Runs.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
     store.dispatchTarget = plan
     store.dispatchTargetLabel = Runs.dispatchLabel(card, cardMap)
     if (!plan.offered) {
@@ -1528,7 +1442,7 @@ Scope {
   // A copy of the form with one field set as given; verify is copied as a
   // fresh array when it is one. The store converts nothing else.
   function withField(form, name, value) {
-    var next = store.copyMap(form)
+    var next = Runs.copyMap(form)
     next[name] = name === "verify" && Array.isArray(value) ? value.slice() : value
     return next
   }
@@ -1565,7 +1479,7 @@ Scope {
   function dispatchDefaultsReplied(stdout) {
     if (!dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
     dispatchBook.defaultsPending = false
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     var data = envelope !== null && envelope.ok === true ? envelope.data : null
     var branch = data !== null && typeof data === "object" && typeof data.default_branch === "string"
         ? data.default_branch.trim() : ""
@@ -1602,7 +1516,7 @@ Scope {
   // be read.
   function dispatchPreviewReplied(stdout) {
     if (store.dispatchState !== "previewing") return
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var level = store.dispatchTarget.level
       var preview = Runs.previewSummary(envelope.data, level)
@@ -1654,7 +1568,7 @@ Scope {
   // an object that is not an array, then entry's, which override them, as
   // set-run-settings merges prefixByMilestone.
   function mergedPrefixes(stored, entry) {
-    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? store.copyMap(stored) : {}
+    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? Runs.copyMap(stored) : {}
     for (var id in entry) merged[id] = entry[id]
     return merged
   }
@@ -1712,12 +1626,12 @@ Scope {
       return
     }
     var here = store.isHereStart(runner)
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       if (here) {
         store.dispatchRunId = typeof envelope.run_id === "string" ? envelope.run_id : ""
         store.dispatchMessage = typeof envelope.message === "string" ? envelope.message : ""
-        var settings = store.copyMap(store.runSettings)
+        var settings = Runs.copyMap(store.runSettings)
         // Parsed from the JSON that is written: a var property hands back a
         // list Runs.dispatchDefaults does not take for an array.
         var saved = JSON.parse(runner.savedJson)
@@ -1755,7 +1669,7 @@ Scope {
   // set-run-settings after a start: a failure is said only while the
   // dispatch is still this one. The runner then goes.
   function dispatchSaveReplied(runner, stdout) {
-    var reply = store.parseEnvelope(stdout)
+    var reply = Results.parseEnvelope(stdout)
     if (store.isHereStart(runner) && !(reply !== null && reply.ok === true)) store.flash("Dispatch settings could not be saved")
     store.dropStartRunner(runner)
   }
@@ -1891,16 +1805,6 @@ Scope {
     onTriggered: store.flashText = ""
   }
 
-  // Only while the panel is open and a toast shows: no timer while idle.
-  Timer {
-    id: toastTimer
-    objectName: "toastTimer"
-    interval: 250
-    repeat: true
-    running: store.active && store.toasts.length > 0
-    onTriggered: store.expireToasts(Date.now())
-  }
-
   // only while a change waits to be checked.
   Timer {
     id: dispatchDebounceTimer
@@ -1939,18 +1843,6 @@ Scope {
     property int nextToken: 0
   }
 
-  // The toast keys only grow, so a stale Dismiss never removes a newer toast.
-  QtObject {
-    id: toastState
-    property int nextKey: 0
-  }
-
-  // The notify.py runners in flight; kept apart so consumers cannot write it.
-  QtObject {
-    id: notifyState
-    property var runners: []
-  }
-
   // The dispatch's own bookkeeping; kept apart so consumers cannot write it.
   // `startRunner` is the runner that put the store into `starting`, forgotten
   // by an idle reset (and so by a project switch); `baseTouched` says the user
@@ -1983,19 +1875,6 @@ Scope {
       property string projectRoot: ""     // the run's project.root then; "" when it had none
       property bool settingsStep: false   // reading the run settings; run-control comes next
       onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
-    }
-  }
-
-  // One HelperRunner per notification. Guard "": a project switch does not
-  // stop a notification already launched. It goes when its process exits.
-  Component {
-    id: notifyC
-
-    HelperRunner {
-      id: nr
-      script: store.backendDir + "runs/notify.py"
-      guard: ""
-      onFinished: store.dropNotifyRunner(nr)
     }
   }
 

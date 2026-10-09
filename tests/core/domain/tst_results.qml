@@ -62,4 +62,67 @@ TestCase {
     compare(Results.parseJsonLine('{"last_project": "/x"}', 1, "generic", false).ok, false)
     compare(Results.parseJsonLine('{"last_project": "/x"}', 0, "generic", true).ok, false)
   }
+
+  function test_last_line_is_the_last_non_empty_line_trimmed() {
+    compare(Results.lastLine("noise\n  {\"a\":1}  \n\n \n"), '{"a":1}')
+  }
+
+  function test_last_line_of_nothing_is_empty() {
+    compare(Results.lastLine(null), "")
+    compare(Results.lastLine(undefined), "")
+    compare(Results.lastLine(""), "")
+    compare(Results.lastLine("\n \n\t"), "")
+    compare(Results.lastLine(0), "")
+  }
+
+  function test_last_line_drops_a_carriage_return() {
+    compare(Results.lastLine("x\r\ny\r\n"), "y")
+  }
+
+  function test_parse_envelope_reads_the_last_line_object() {
+    var envelope = Results.parseEnvelope('warning: something\n{"ok":true,"n":2}\n\n')
+    verify(envelope !== null, "an object")
+    compare(envelope.n, 2)
+    compare(envelope.ok, true)
+  }
+
+  function test_parse_envelope_rejects_json_that_is_not_an_object() {
+    compare(Results.parseEnvelope("[1]"), null)
+    compare(Results.parseEnvelope("3"), null)
+    compare(Results.parseEnvelope("\"s\""), null)
+    compare(Results.parseEnvelope("true"), null)
+    compare(Results.parseEnvelope("null"), null)
+  }
+
+  function test_parse_envelope_rejects_garbage() {
+    compare(Results.parseEnvelope("{not json"), null)
+    compare(Results.parseEnvelope("ok"), null)
+    compare(Results.parseEnvelope('{"ok":true}\ngarbage'), null)
+  }
+
+  function test_parse_envelope_of_nothing_is_null() {
+    compare(Results.parseEnvelope(""), null)
+    compare(Results.parseEnvelope(null), null)
+    compare(Results.parseEnvelope(undefined), null)
+    compare(Results.parseEnvelope("\n\n"), null)
+  }
+
+  // String.prototype.trim strips U+00A0, which JSON.parse does not accept as whitespace.
+  function test_parse_envelope_trims_what_trim_strips() {
+    var envelope = Results.parseEnvelope('{"a":1} ')
+    verify(envelope !== null, "an object")
+    compare(envelope.a, 1)
+  }
+
+  function test_parse_envelope_reads_a_crlf_reply() {
+    var envelope = Results.parseEnvelope('warn\r\n{"ok":true}\r\n')
+    verify(envelope !== null, "an object")
+    compare(envelope.ok, true)
+  }
+
+  function test_parse_envelope_of_a_non_string_is_null() {
+    compare(Results.parseEnvelope(5), null)
+    compare(Results.parseEnvelope(true), null)
+    compare(Results.parseEnvelope({}), null)
+  }
 }
