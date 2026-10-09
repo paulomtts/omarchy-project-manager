@@ -7,12 +7,17 @@ import "../components/runControlFacts.js" as ControlFacts
 import "../components" as UI
 import "../theme" as T
 
-// The Runs section: the selected project's am runs, one row each (state glyph,
-// short id, title, done/total, current phase, age), with Needs attention /
-// Live / Parked / All chips -- clicking the active chip means All again -- and
-// a footer that says whether the runs are watched. It reads the run store and
-// asks the navigator to open a run or move the cursor; it owns no state of its
-// own. Ages are read against the clock once per snapshot: there is no timer.
+// The Runs section: every registered project's am runs, grouped by project
+// with a header each (name; live, parked and needs-attention counts; the
+// project's snapshot error), flat with no header under a project filter. Each
+// run is one row (state glyph, short id, title, done/total, current phase,
+// age) whose index is its position in the store's filteredRuns, the one list
+// the cursor walks; headers are not cursor targets. Needs attention / Live /
+// Parked / All chips apply across groups -- clicking the active chip means All
+// again -- and a footer says whether the runs are watched. It reads the run
+// store and asks the navigator to open a run or move the cursor; it owns no
+// state of its own. Ages are read against the clock once per snapshot: there
+// is no timer.
 Column {
   id: screen
   objectName: "runsView"
@@ -35,6 +40,10 @@ Column {
   // search.
   readonly property bool noProjects: screen.sizeOf(screen.app.runs.projectRoots) === 0
 
+  // What the list draws, in order (entriesOf).
+  readonly property var entries: screen.entriesOf(screen.app.runs.groups, screen.app.runs.filteredRuns,
+    screen.app.runs.projectRoots, screen.app.runs.projectErrors, screen.app.runs.projectFilter)
+
   visible: screen.app.nav.viewMode === "runs"
   spacing: Style.space(6)
 
@@ -46,6 +55,38 @@ Column {
   // The length of a list or array-like object; 0 for anything else.
   function sizeOf(list) {
     return list !== null && typeof list === "object" && typeof list.length === "number" ? list.length : 0
+  }
+
+  // A group's counts: the non-zero parts of "<n> live", "<n> parked" and
+  // "<n> needs attention", in that order, joined by " · "; "" when all are zero.
+  function countsText(counts) {
+    var c = counts !== null && typeof counts === "object" ? counts : {}
+    var parts = []
+    if (c.live > 0) parts.push(c.live + " live")
+    if (c.parked > 0) parts.push(c.parked + " parked")
+    if (c.attention > 0) parts.push(c.attention + " needs attention")
+    return parts.join(" · ")
+  }
+
+  // The list's entries, scalar values only (a Repeater converts nested ones):
+  // { kind: "header", g, name, counts, error } and { kind: "run", i }, i the
+  // run's index in `runs` (filteredRuns, which is displayOrder of `groups`).
+  // Each group of `groups` in turn: a header unless its root is "", then its
+  // runs. g counts the headers from 0; name is the project's name, else its
+  // root.
+  function entriesOf(groups, runs, roots, errors, filter) {
+    var out = []
+    var g = 0
+    var i = 0
+    for (var n = 0; n < screen.sizeOf(groups); n++) {
+      var group = groups[n]
+      var root = group.project.root
+      if (root !== "")
+        out.push({ kind: "header", g: g++, name: group.project.name !== "" ? group.project.name : root,
+                   counts: screen.countsText(group.counts), error: "" })
+      for (var j = 0; j < screen.sizeOf(group.runs); j++) out.push({ kind: "run", i: i++ })
+    }
+    return out
   }
 
   // A dead or parked run's state, spelled out with its age folded in so the
@@ -118,8 +159,8 @@ Column {
       : "No " + screen.chipLabel(screen.app.runs.runFilter) + " runs."
     emptyText: screen.noProjects ? "No projects registered." : "No runs yet."
 
-    model: screen.app.runs.filteredRuns
-    rowDelegate: Component { RunRow {} }
+    model: screen.entries
+    rowDelegate: Component { RunEntry {} }
   }
 
   // The global Notify on escalation setting: a desktop notification for
@@ -164,10 +205,87 @@ Column {
     wrapMode: Text.WordWrap
   }
 
+  // One entry of `entries`: a project's header or a run's row.
+  component RunEntry: Loader {
+    id: entry
+    required property var modelData
+    readonly property var fact: entry.modelData !== null && typeof entry.modelData === "object" ? entry.modelData : ({})
+
+    width: screen.width
+    sourceComponent: entry.fact.kind === "header" ? headerC : entry.fact.kind === "run" ? rowC : null
+
+    Component {
+      id: headerC
+      RunGroupHeader {
+        g: typeof entry.fact.g === "number" ? entry.fact.g : 0
+        name: typeof entry.fact.name === "string" ? entry.fact.name : ""
+        counts: typeof entry.fact.counts === "string" ? entry.fact.counts : ""
+        error: typeof entry.fact.error === "string" ? entry.fact.error : ""
+      }
+    }
+
+    Component {
+      id: rowC
+      RunRow { index: typeof entry.fact.i === "number" ? entry.fact.i : -1 }
+    }
+  }
+
+  // A project's header: its name, its counts and, when its snapshot failed,
+  // the error. Not a row: no cursor, no hover, no click.
+  component RunGroupHeader: Column {
+    id: header
+    property int g: 0
+    property string name: ""
+    property string counts: ""
+    property string error: ""
+    readonly property real innerWidth: Math.max(0, header.width - header.leftPadding - header.rightPadding)
+
+    objectName: "runGroup" + header.g
+    width: screen.width
+    leftPadding: Style.space(10)
+    rightPadding: Style.space(10)
+    topPadding: Style.space(4)
+    spacing: Style.space(2)
+
+    Row {
+      width: header.innerWidth
+      spacing: Style.space(8)
+
+      UI.ThemedText {
+        objectName: "runGroupName" + header.g
+        theme: screen.theme
+        font.bold: true
+        width: Math.max(0, Math.min(implicitWidth,
+          parent.width - (groupCounts.visible ? groupCounts.width + parent.spacing : 0)))
+        text: header.name
+        elide: Text.ElideRight
+      }
+
+      UI.ThemedText {
+        id: groupCounts
+        objectName: "runGroupCounts" + header.g
+        variant: "caption"
+        theme: screen.theme
+        visible: text !== ""
+        text: header.counts
+      }
+    }
+
+    UI.ThemedText {
+      objectName: "runGroupError" + header.g
+      variant: "caption"
+      theme: screen.theme
+      width: header.innerWidth
+      visible: text !== ""
+      text: header.error
+      color: screen.theme.urgent
+      wrapMode: Text.WordWrap
+    }
+  }
+
+  // A run's row; `index` is the run's position in filteredRuns.
   component RunRow: UI.ListRow {
     id: row
-    required property var modelData
-    required index
     objectName: "runRow" + row.index
 
     // The run is read back out of the store's list by position, NOT taken from

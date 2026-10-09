@@ -129,6 +129,27 @@ TestCase {
   }
 
   // 0 running, 1 escalated, 2 dead, 3 parked, 4 cancelled (nothing but an id), 5 done.
+  // `r` as the store holds it: tagged with the registered project at `root`.
+  function tagged(r, root, name) { return Runs.withProject(r, root, name) }
+
+  // The item exists and is visible.
+  function shown(s, name) {
+    var item = H.find(s.screen, name)
+    return !!item && item.visible
+  }
+
+  // An item's top edge in the screen's coordinates.
+  function topOf(s, name) { return H.find(s.screen, name).mapToItem(s.screen, 0, 0).y }
+
+  // Project A (/home/u/a, "alpha") with an escalated and a dead run, project
+  // B (/home/u/b, "beta") with one live run. Display order: A (attention)
+  // then B (live), so filteredRuns is escl0001, dead0002, live0003.
+  function twoProjects() {
+    return [tagged(run("run-a-escl0001", "escalated", null, {}), "/home/u/a", "alpha"),
+            tagged(run("run-b-live0003", "started", true, { milestone: "zeta" }), "/home/u/b", "beta"),
+            tagged(run("run-a-dead0002", "started", false, {}), "/home/u/a", "alpha")]
+  }
+
   function sample() {
     return [
       run("run-20261004-live0001", "started", true, { milestone: "alpha", started_at: ago(5 * tc.minute), tree: { stories: [], subtasks: [
@@ -291,6 +312,151 @@ TestCase {
     s.runs.toggleRunFilter("attention")
     s.runs.runs = [sample()[0]]
     compare(H.find(s.screen, "runsMessage").text, "No Needs attention runs.")
+  }
+
+  // ---- groups
+
+  function test_each_project_gets_a_header_with_its_name_and_counts() {
+    var s = make([tagged(run("run-a-live0001", "started", true, {}), "/home/u/a", "alpha"),
+                  tagged(run("run-a-escl0002", "escalated", null, {}), "/home/u/a", "alpha"),
+                  tagged(run("run-b-park0003", "stopped", null, {}), "/home/u/b", "beta"),
+                  tagged(run("run-b-live0004", "started", true, {}), "/home/u/b", "beta")]); if (!s) return
+    compare(shown(s, "runGroup0"), true)
+    compare(shown(s, "runGroup1"), true)
+    compare(H.find(s.screen, "runGroup2"), null)
+    compare(H.find(s.screen, "runGroupName0").text, "alpha")
+    compare(H.find(s.screen, "runGroupCounts0").text, "1 live · 1 needs attention")
+    compare(H.find(s.screen, "runGroupCounts0").visible, true)
+    compare(H.find(s.screen, "runGroupName1").text, "beta")
+    compare(H.find(s.screen, "runGroupCounts1").text, "1 live · 1 parked")
+    verify(topOf(s, "runGroup0") < topOf(s, "runRow0"), "alpha's header above alpha's first run")
+    verify(topOf(s, "runRow1") < topOf(s, "runGroup1"), "beta's header after alpha's runs")
+    verify(topOf(s, "runGroup1") < topOf(s, "runRow2"), "beta's header above beta's first run")
+    compare(H.find(s.screen, "runGroupError0").visible, false, "no snapshot error")
+  }
+
+  function test_zero_counts_are_left_out_and_all_zero_hides_the_counts() {
+    var s = make([tagged(run("run-g-done0001", "done", null, {}), "/home/u/g", "gamma"),
+                  tagged(run("run-g-canc0002", "cancelled", null, {}), "/home/u/g", "gamma"),
+                  tagged(run("run-d-park0003", "stopped", null, {}), "/home/u/d", "delta")]); if (!s) return
+    compare(H.find(s.screen, "runGroupName0").text, "delta")
+    compare(H.find(s.screen, "runGroupCounts0").text, "1 parked")
+    compare(H.find(s.screen, "runGroupName1").text, "gamma")
+    compare(H.find(s.screen, "runGroupCounts1").text, "")
+    compare(H.find(s.screen, "runGroupCounts1").visible, false)
+  }
+
+  function test_groups_and_rows_follow_the_display_order() {
+    var s = make([tagged(run("run-g-done0001", "done", null, {}), "/home/u/g", "gamma"),
+                  tagged(run("run-A-live0002", "started", true, {}), "/home/u/A", "Alpha"),
+                  tagged(run("run-b-dead0003", "started", false, {}), "/home/u/b", "beta"),
+                  tagged(run("run-A-park0004", "stopped", null, {}), "/home/u/A", "Alpha")]); if (!s) return
+    compare(H.find(s.screen, "runGroupName0").text, "beta", "attention first")
+    compare(H.find(s.screen, "runGroupName1").text, "Alpha", "then live")
+    compare(H.find(s.screen, "runGroupName2").text, "gamma", "then the rest")
+    compare(s.runs.filteredRuns.map(function(r) { return r.id }).join(","),
+            "run-b-dead0003,run-A-live0002,run-A-park0004,run-g-done0001")
+    for (var i = 0; i < 4; i++)
+      compare(H.find(s.screen, "runRowId" + i).text, Runs.shortId(s.runs.filteredRuns[i]), "row " + i)
+    compare(H.find(s.screen, "runRow4"), null)
+    verify(topOf(s, "runRow0") < topOf(s, "runGroup1"))
+    verify(topOf(s, "runGroup1") < topOf(s, "runRow1"))
+    verify(topOf(s, "runRow2") < topOf(s, "runGroup2"))
+    verify(topOf(s, "runGroup2") < topOf(s, "runRow3"))
+  }
+
+  function test_runs_without_a_project_get_no_header() {
+    var s = make(sample()); if (!s) return
+    compare(H.find(s.screen, "runGroup0"), null)
+    verify(H.find(s.screen, "runRow0"), "the rows are there")
+    compare(H.find(s.screen, "runRowId5").text, "…done0006")
+  }
+
+  function test_a_project_name_that_is_empty_shows_the_root() {
+    var r = run("run-z-live0001", "started", true, {})
+    r.project = { root: "/home/u/z", name: "" }
+    var s = make([r]); if (!s) return
+    compare(H.find(s.screen, "runGroupName0").text, "/home/u/z")
+  }
+
+  function test_the_cursor_on_the_first_run_past_a_header_marks_that_row() {
+    var s = make(twoProjects()); if (!s) return
+    s.nav.cursorIndex = 2
+    compare(H.find(s.screen, "runRow2").hasCursor, true)
+    compare(H.find(s.screen, "runRowId2").text, "…live0003", "B's run")
+    compare(H.find(s.screen, "runRow0").hasCursor, false)
+    compare(H.find(s.screen, "runRow1").hasCursor, false)
+    verify(H.find(s.screen, "runGroup1").hasCursor !== true, "a header never has the cursor")
+  }
+
+  function test_hovering_a_header_moves_no_cursor_and_a_row_past_it_reports_its_global_index() {
+    var s = make(twoProjects()); if (!s) return
+    var header = H.find(s.screen, "runGroup1")
+    mouseMove(header, header.width / 2, header.height / 2)
+    // A row created under a resting pointer may report a hover of its own;
+    // only the moves over the header count here.
+    s.navi.hovered = -1
+    mouseMove(header, header.width / 4, header.height / 2)
+    compare(s.navi.hovered, -1)
+    var row = H.find(s.screen, "runRow2")
+    mouseMove(row, row.width / 2, row.height / 2)
+    compare(s.navi.hovered, 2)
+  }
+
+  function test_clicking_the_first_run_past_a_header_opens_that_run() {
+    var s = make(twoProjects()); if (!s) return
+    tap(H.find(s.screen, "runGroup1"))
+    compare(s.navi.opened, "", "a header opens nothing")
+    tap(H.find(s.screen, "runRow2"))
+    compare(s.navi.opened, "run-b-live0003")
+  }
+
+  function test_missing_am_shows_no_headers() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(shown(s, "runGroup0"), false)
+    compare(shown(s, "runsProjectError"), false)
+    compare(H.find(s.screen, "runsMessage").text, "am is not installed or not on PATH")
+  }
+
+  // Review Focus 1.
+  function test_the_counts_are_those_of_the_runs_listed_after_the_search() {
+    var s = make(twoProjects()); if (!s) return
+    compare(H.find(s.screen, "runGroupCounts0").text, "2 needs attention")
+    s.nav.searchQuery = "escl"
+    compare(H.find(s.screen, "runGroupName0").text, "alpha")
+    compare(H.find(s.screen, "runGroupCounts0").text, "1 needs attention")
+    compare(H.find(s.screen, "runGroup1"), null, "beta has nothing listed")
+    s.nav.searchQuery = ""
+    s.runs.toggleRunFilter("live")
+    compare(H.find(s.screen, "runGroupName0").text, "beta", "the chip applies across groups")
+    compare(H.find(s.screen, "runGroupCounts0").text, "1 live")
+    compare(H.find(s.screen, "runGroup1"), null)
+  }
+
+  // Review Focus 2.
+  function test_a_new_snapshot_reorders_headers_rows_and_the_cursor() {
+    var s = make(twoProjects()); if (!s) return
+    s.nav.cursorIndex = 0
+    compare(H.find(s.screen, "runRowId0").text, "…escl0001")
+    s.runs.runs = [tagged(run("run-a-live0005", "started", true, {}), "/home/u/a", "alpha"),
+                   tagged(run("run-b-escl0006", "escalated", null, {}), "/home/u/b", "beta")]
+    compare(H.find(s.screen, "runGroupName0").text, "beta")
+    compare(H.find(s.screen, "runGroupName1").text, "alpha")
+    compare(H.find(s.screen, "runRowId0").text, "…escl0006")
+    compare(H.find(s.screen, "runRow0").hasCursor, true)
+    compare(H.find(s.screen, "runRowId1").text, "…live0005")
+    compare(H.find(s.screen, "runRow1").hasCursor, false)
+    compare(H.find(s.screen, "runRow2"), null)
+  }
+
+  // Review Focus 3.
+  function test_stale_data_dims_rows_but_not_headers() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.stale = true
+    compare(H.find(s.screen, "runRow0").opacity, 0.5)
+    compare(H.find(s.screen, "runGroup0").opacity, 1)
   }
 
   // ---- empty and missing

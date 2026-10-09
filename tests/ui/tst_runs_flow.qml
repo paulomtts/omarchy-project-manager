@@ -18,11 +18,20 @@ TestCase {
   Component { id: hostC; Item { width: 900; height: 700 } }
 
   property var pA: ({ root_path: "/home/u/a", name: "alpha" })
+  property var pB: ({ root_path: "/home/u/b", name: "beta" })
 
   function run(id, status, live, milestone) {
     return { id: id, repo_dir: "/home/u/a", milestone_id: milestone, status: status, started_at: "",
              lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
              rows: [], tree: { stories: [], subtasks: [] }, project: { root: "/home/u/a", name: "alpha" } }
+  }
+
+  // run(), in the project at `root` named `name`.
+  function runIn(id, status, live, milestone, root, name) {
+    var r = run(id, status, live, milestone)
+    r.repo_dir = root
+    r.project = { root: root, name: name }
+    return r
   }
 
   function make() {
@@ -180,6 +189,29 @@ TestCase {
     p.shortcuts.handleSearchKey(key(Qt.Key_Return))
     compare(p.app.nav.viewMode, "runs")
     compare(H.find(p, "runsMessage").text, "No runs yet.", "the registry holds alpha")
+  }
+
+  // alpha (two runs that need attention) is listed before beta (one live
+  // run): the cursor's third position is beta's first run, under beta's header.
+  function test_enter_on_the_first_run_of_the_second_project_opens_it() {
+    var p = make(); if (!p) return
+    p.app.projects.applyProjectsList([pA, pB])
+    p.app.runs.snapshotRunner.cancel()
+    p.app.runs.runs = [runIn("run-0000000000f6", "started", true, "zeta", "/home/u/b", "beta"),
+                       runIn("run-0000000000b2", "escalated", null, "beta-ms", "/home/u/a", "alpha"),
+                       runIn("run-0000000000c3", "started", false, "gamma", "/home/u/a", "alpha")]
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    compare(ids(p.app.runs.filteredRuns), "run-0000000000b2,run-0000000000c3,run-0000000000f6")
+    compare(H.find(p, "runGroupName1").text, "beta")
+    compare(p.app.nav.cursorIndex, 0)
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    compare(p.app.nav.cursorIndex, 2)
+    compare(H.find(p, "runRow2").hasCursor, true, "the highlight is on beta's run")
+    p.shortcuts.handleSearchKey(key(Qt.Key_Return))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000f6")
   }
 
   function test_a_project_that_leaves_the_registry_takes_its_runs_with_it() {
