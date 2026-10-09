@@ -2077,9 +2077,15 @@ TestCase {
     d.step = "target"
     compare(d.targetCursor, 27)
     var list = H.find(d, "dispatchTargetList")
-    tryVerify(function() { return list.contentY > 0 }, 1000, "the list scrolled to the picked row")
-    var row = H.find(d, "dispatchTargetRow27")
-    verify(row.y >= list.contentY, "the row's top is in view")
-    verify(row.y + row.height <= list.contentY + list.height + 0.5, "the row's bottom is in view")
+    // The rows are laid out after the step change: the row comes wholly into
+    // view and stays there once the layout settles.
+    function inView() {
+      var row = H.find(d, "dispatchTargetRow27")
+      return !!row && row.y >= list.contentY && row.y + row.height <= list.contentY + list.height + 0.5
+    }
+    tryVerify(inView, 1000, "the picked row comes wholly into view")
+    wait(50)
+    verify(inView(), "and stays in view once laid out")
+    verify(list.contentY > 0, "the list scrolled to the picked row")
   }
 }
