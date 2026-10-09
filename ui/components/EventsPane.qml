@@ -13,6 +13,10 @@ import "../theme" as T
 //     errorMessage one Details click away, above the rows held.
 //   maxListHeight: the list's height cap; past it the list scrolls itself and
 //     a wheel at its ends reaches the enclosing Flickable.
+//   following (read-only): true while the list is at its bottom. New rows keep
+//     a following list at its bottom; otherwise the list keeps its contentY.
+//     A scroll sets it to whether the list is at its bottom; a filter change
+//     keeps it.
 //   filterRequested(filter): a chip was clicked.
 //   attemptRequested(card, phase, attempt): a row with a non-empty card and
 //     phase and an attempt above 0 was clicked.
@@ -34,6 +38,9 @@ Item {
   readonly property var shownRows: RunEvents.filterRows(pane.rows, pane.filter)
   readonly property int _heldCount: RunEvents.filterRows(pane.rows, "All").length
   property bool _errorExpanded: false
+  readonly property bool following: pane._following
+  property bool _following: true
+  property bool _relayout: false
 
   signal filterRequested(string filter)
   signal attemptRequested(string card, string phase, int attempt)
@@ -61,13 +68,32 @@ Item {
     return failure ? pane.palette.urgent : pane.palette[token]
   }
 
+  // True when the list's rows fit or its contentY is within 1 px of its bottom.
+  function _atBottom() {
+    return list.contentHeight <= list.height
+      || Math.abs(list.contentY - (list.originY + list.contentHeight - list.height)) <= 1
+  }
+
+  // Puts the list at its bottom; contentY moves made here are not a user scroll.
+  function _toBottom() {
+    pane._relayout = true
+    list.forceLayout()
+    list.positionViewAtEnd()
+    pane._relayout = false
+  }
+
   // Hands shownRows to the list. A new model puts a ListView back at its top,
-  // so the list keeps its scroll position instead, within its new bounds.
+  // so a following list goes to its bottom and any other keeps its scroll
+  // position, within its new bounds.
   function _showRows() {
+    pane._relayout = true
     var y = list.contentY
     list.model = pane.shownRows
     list.forceLayout()
-    list.contentY = Math.max(list.originY, Math.min(y, list.originY + list.contentHeight - list.height))
+    if (pane._following) list.positionViewAtEnd()
+    else list.contentY = Math.max(list.originY, Math.min(y, list.originY + list.contentHeight - list.height))
+    pane._relayout = false
+    pane._following = pane._atBottom()
   }
 
   implicitHeight: column.implicitHeight
@@ -159,6 +185,9 @@ Item {
       orientation: ListView.Vertical
       flickableDirection: Flickable.VerticalFlick
       boundsBehavior: Flickable.StopAtBounds
+      onContentYChanged: if (!pane._relayout) pane._following = pane._atBottom()
+      onContentHeightChanged: if (pane._following && !pane._relayout) pane._toBottom()
+      onHeightChanged: if (pane._following && !pane._relayout) pane._toBottom()
 
       delegate: ListRow {
         id: row

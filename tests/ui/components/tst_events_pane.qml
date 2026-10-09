@@ -4,6 +4,7 @@
 // Failures chips, "… N earlier events", the loading / empty / filtered-empty
 // line, the error block, a bounded list that scrolls itself and hands a wheel
 // to the page at its ends, and attemptRequested for a row naming an attempt.
+// The list follows the newest row while it is at its bottom.
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
@@ -448,8 +449,9 @@ TestCase {
     stack.pane.rows = manyRows(50)
     wait(50)
     stack.contentY = 50
-    wait(30)
     var list = listOf(stack.pane)
+    list.positionViewAtBeginning()
+    wait(30)
     verify(list.atYBeginning, "the list starts at its top")
     wheelOverList(stack, 120)
     tryVerify(function () { return stack.contentY < 50 }, 1000, "the page scrolls up")
@@ -480,5 +482,151 @@ TestCase {
     wait(50)
     compare(list.count, 3)
     compare(list.contentY, list.originY, "a list that now fits sits at its top")
+  }
+
+  // ---- following the newest row --------------------------------------------
+
+  function atBottom(list) {
+    return Math.abs(list.contentY - (list.originY + list.contentHeight - list.height)) <= 1
+  }
+
+  // A pane of 50 rows whose list is scrolled 300 px below its top, away from its bottom.
+  function scrolledUp() {
+    var pane = make({ rows: manyRows(50), maxListHeight: 200 })
+    var list = listOf(pane)
+    list.contentY = list.originY + 300
+    wait(30)
+    return pane
+  }
+
+  // n rows where every 4th is a story row: Phases drops those, and still scrolls.
+  function storyAndPhaseRows(n) {
+    var rows = []
+    for (var i = 1; i <= n; i++)
+      rows.push(eventRow(i, i % 4 === 0 ? { level: "story", card: "", phase: "", attempt: 0 } : {}))
+    return rows
+  }
+
+  function test_a_long_list_opens_at_its_newest_row() {
+    var pane = make({ rows: manyRows(50), maxListHeight: 200 })
+    var list = listOf(pane)
+    verify(list.contentHeight > list.height, "the list scrolls")
+    tryVerify(function () { return atBottom(list) }, 1000, "the list opens at its bottom")
+    compare(pane.following, true)
+  }
+
+  function test_appending_while_at_the_bottom_follows() {
+    var pane = make({ rows: manyRows(50), maxListHeight: 200 })
+    var list = listOf(pane)
+    pane.rows = manyRows(52)
+    wait(50)
+    compare(list.count, 52)
+    tryVerify(function () { return atBottom(list) }, 1000, "the newest row is in view")
+    compare(pane.following, true)
+  }
+
+  function test_scrolling_up_stops_following_and_new_rows_do_not_move_the_list() {
+    var pane = scrolledUp()
+    var list = listOf(pane)
+    compare(pane.following, false)
+    var before = list.contentY
+    pane.rows = manyRows(52)
+    wait(50)
+    compare(list.count, 52)
+    compare(list.contentY, before, "the list does not move toward the new rows")
+    compare(pane.following, false)
+  }
+
+  function test_scrolling_back_to_the_bottom_resumes_following() {
+    var pane = scrolledUp()
+    var list = listOf(pane)
+    compare(pane.following, false)
+    list.positionViewAtEnd()
+    wait(30)
+    compare(pane.following, true)
+    pane.rows = manyRows(52)
+    wait(50)
+    tryVerify(function () { return atBottom(list) }, 1000, "the append is followed")
+  }
+
+  function test_a_wheel_up_from_the_bottom_stops_following() {
+    var stack = createTemporaryObject(stackC, tc)
+    stack.pane.rows = manyRows(50)
+    wait(50)
+    verify(atBottom(listOf(stack.pane)), "the list opens at its bottom")
+    wheelOverList(stack, 120)
+    tryVerify(function () { return !stack.pane.following }, 1000, "the wheel leaves the bottom")
+    compare(stack.contentY, 0, "the page does not move")
+  }
+
+  function test_a_filter_change_keeps_following() {
+    var pane = make({ rows: storyAndPhaseRows(60), maxListHeight: 200 })
+    var list = listOf(pane)
+    tryVerify(function () { return atBottom(list) }, 1000)
+    pane.filter = "Phases"
+    wait(50)
+    compare(list.count, 45)
+    verify(list.contentHeight > list.height, "the Phases list scrolls")
+    tryVerify(function () { return atBottom(list) }, 1000, "the filtered list is at its bottom")
+    compare(pane.following, true)
+    pane.rows = storyAndPhaseRows(63)
+    wait(50)
+    compare(list.count, 48)
+    tryVerify(function () { return atBottom(list) }, 1000, "the append is followed")
+  }
+
+  function test_a_filter_change_keeps_a_scrolled_up_list_scrolled_up() {
+    var pane = make({ rows: storyAndPhaseRows(60), maxListHeight: 200 })
+    var list = listOf(pane)
+    list.contentY = list.originY + 100
+    wait(30)
+    compare(pane.following, false)
+    var before = list.contentY
+    pane.filter = "Phases"
+    wait(50)
+    compare(list.count, 45)
+    compare(pane.following, false)
+    compare(list.contentY, before, "the list keeps its contentY")
+    pane.filter = "All"
+    wait(50)
+    compare(pane.following, false, "the filter never resets to following")
+  }
+
+  function test_rows_filtered_out_while_scrolled_up_come_back_at_the_bottom() {
+    var pane = scrolledUp()
+    var list = listOf(pane)
+    pane.filter = "Failures"
+    wait(50)
+    compare(list.visible, false)
+    compare(pane.following, true, "an empty list is at its bottom")
+    pane.filter = "All"
+    wait(50)
+    tryVerify(function () { return atBottom(list) }, 1000, "the rows come back at the bottom")
+  }
+
+  function test_rows_with_detail_lines_follow_to_the_true_bottom() {
+    function detailed(n) {
+      var rows = []
+      for (var i = 1; i <= n; i++)
+        rows.push(eventRow(i, i % 3 === 0 ? { detail: "line one of a long reason\nline two\nline three" } : {}))
+      return rows
+    }
+    var pane = make({ rows: detailed(50), maxListHeight: 200 })
+    var list = listOf(pane)
+    pane.rows = detailed(52)
+    wait(50)
+    tryVerify(function () {
+      var last = rowOf(pane, 52)
+      return last && Math.abs(last.mapToItem(list, 0, last.height).y - list.height) <= 1
+    }, 1000, "the last row's bottom edge is the list's bottom edge")
+    compare(pane.following, true)
+  }
+
+  function test_destroying_the_pane_while_rows_arrive_warns_nothing() {
+    failOnWarning(/TypeError|ReferenceError|is not a function/)
+    var pane = make({ rows: manyRows(50), maxListHeight: 200 })
+    pane.rows = manyRows(52)
+    pane.destroy()
+    wait(50)
   }
 }
