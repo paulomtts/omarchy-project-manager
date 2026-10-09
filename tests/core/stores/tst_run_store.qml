@@ -5571,6 +5571,7 @@ TestCase {
     compare(store.flashText, "This run has no repository")
     compare(store.controlRunners.length, 0)
   }
+
   // 7
   function test_a_project_switch_keeps_the_dialog_the_flash_the_control_error_and_the_requests() {
     var store = ctlStore([running("r1"), running("r2"), running("r3")]); if (!store) return
@@ -5637,6 +5638,7 @@ TestCase {
     compare(store.logsLoading, false)
     compare(store.logsError, "")
     compare(store.selectedRunId, "r1")
+    verify(store.selectedAttempt !== null)
   }
 
   // 10
