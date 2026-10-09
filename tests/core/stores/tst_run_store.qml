@@ -3274,22 +3274,6 @@ TestCase {
     compare(store.controlRunners.length, 1, "no cancel was ever launched")
   }
 
-  // 6
-  function test_a_project_switch_closes_the_dialog_and_clears_the_flash() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    store.openCancel("r1")
-    store.cancelText = "can"
-    store.cancelError = "x"
-    store.flash("The run has finished")
-    store.project = rootB
-    compare(store.cancelOpen, false)
-    compare(store.cancelRunId, "")
-    compare(store.cancelText, "")
-    compare(store.cancelError, "")
-    compare(store.flashText, "")
-    compare(store.flashTimer.running, false)
-  }
-
   // ---- alerts: the toasts (S2 4.4)
 
   function escalated(id) { return entry(id, "escalated", false) }
@@ -5586,6 +5570,46 @@ TestCase {
     compare(store.flashText, "This run has no repository")
     compare(store.controlRunners.length, 0)
   }
+  // 7
+  function test_a_project_switch_keeps_the_dialog_the_flash_the_control_error_and_the_requests() {
+    var store = ctlStore([running("r1"), running("r2"), running("r3")]); if (!store) return
+    store.control("pause", "r3")
+    store.control("pause", "r2")
+    reply(store.controlRunners[1].current, ctlFail("NotRunningError", "not running"), 0)
+    compare(store.lastControlErrorRunId, "r2")
+    store.checkWaiting(Date.now() + 30000)
+    compare(store.stillWaiting.r3, true)
+    store.openCancel("r1")
+    store.cancelText = "can"
+    store.cancelError = "x"
+    store.flash("The run has finished")
+    store.project = rootB
+    compare(store.cancelOpen, true)
+    compare(store.cancelRunId, "r1")
+    compare(store.cancelText, "can")
+    compare(store.cancelError, "x")
+    compare(store.flashText, "The run has finished")
+    compare(store.flashTimer.running, true)
+    compare(store.lastControlError, "The run is not running")
+    compare(store.lastControlErrorRunId, "r2")
+    compare(store.pending.r3, "pause")
+    compare(store.stillWaiting.r3, true)
+    compare(store.controlRunners.length, 1)
+    compare(store.controlRunners[0].runId, "r3")
+  }
+
+  // Review Focus 1.
+  function test_a_cancel_dialog_for_another_projects_run_survives_closing_the_project_and_confirms() {
+    var store = crossStore(rootA, [running("a1")], [bWork(running("b1"))]); if (!store) return
+    compare(store.openCancel("b1"), true)
+    store.project = ""
+    compare(store.cancelRunId, "b1", "the dialog is kept")
+    store.cancelText = "cancel"
+    compare(store.confirmCancel(), true)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "cancel|b1|/home/u/b-work")
+    compare(store.cancelOpen, false)
+  }
+
   // 12 (the logs half)
   function test_a_logs_fetch_in_flight_at_a_switch_ends_and_keeps_the_text() {
     var store = opened(); if (!store) return

@@ -646,19 +646,16 @@ Scope {
   }
 
   // Another project was opened, or none. The run list, the selection, the
-  // logs, the watch, the coverage, the requests, the alerts, the toasts and
-  // the notify switch belong to every registered project and stay, and no
-  // snapshot is launched. Reset: the run settings (loaded for the new project
-  // on runSettingsRunner), the dispatch, the cancel dialog, the control error
-  // and the footer flash.
+  // logs, the watch, the coverage, the requests (pending, stillWaiting,
+  // controlRunners), the control error, the cancel dialog, the footer flash,
+  // the alerts, the toasts and the notify switch belong to every registered
+  // project and stay, and no snapshot is launched. Reset: the run settings
+  // (loaded for the new project on runSettingsRunner) and the dispatch.
   function projectSwitched() {
     store.runSettings = {}
     // The dispatch is the old project's, even mid-start: a start already
     // launched still runs, and its reply is no longer this dispatch's.
     store.resetDispatch()
-    store.dismissControlError()
-    store.closeCancel()
-    store.flash("")
     runSettingsRunner.guard = store.project
     if (store.project !== "") runSettingsRunner.run(["get-run-settings", store.project])
   }
