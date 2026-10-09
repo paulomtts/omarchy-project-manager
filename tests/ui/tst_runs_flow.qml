@@ -975,4 +975,213 @@ TestCase {
     compare(p.app.nav.viewMode, "runs")
     verify(p.app.memories.memoryOpError.indexOf("unsaved changes") >= 0, p.app.memories.memoryOpError)
   }
+
+  // ---- the Resume dialog (3.2)
+
+  function resumeDialog(p) { return H.find(p, "resumeVerifyDialog") }
+  function argv(proc) { return proc.command.join("|") }
+  function endsWith(text, tail) { return text.slice(-tail.length) === tail }
+  // filteredRuns' index of the run `id`: the cursor row that names it.
+  function indexOfRun(p, id) { return p.app.runs.filteredRuns.map(function(r) { return r.id }).indexOf(id) }
+
+  // The Runs list with the cursor on the escalated milestone run, `r` in the
+  // empty search, and get-run-settings answering with nothing stored.
+  function openResumeByKey(p) {
+    p.navigator.showSection("runs")
+    wait(50)
+    var field = H.find(p, "searchField")
+    field.forceActiveFocus()
+    p.app.nav.cursorIndex = indexOfRun(p, "run-0000000000b2")
+    keyClick("r")
+    compare(p.app.runs.controlRunners.length, 1, "one runner reads the run settings")
+    verify(argv(p.app.runs.controlRunners[0].current).indexOf("get-run-settings") >= 0,
+           "the runner reads get-run-settings")
+    reply(p.app.runs.controlRunners[0].current,
+          JSON.stringify({ verify: [], allowNoVerification: false }) + "\n", 0)
+    wait(50)
+    return field
+  }
+
+  // 11
+  function test_r_with_no_stored_set_opens_the_dialog_and_resume_launches_with_the_typed_commands() {
+    var p = make(); if (!p) return
+    var field = openResumeByKey(p)
+    var dialog = resumeDialog(p)
+    verify(dialog, "the Resume dialog is mounted")
+    compare(dialog.visible, true)
+    compare(p.app.runs.resumeRunId, "run-0000000000b2")
+    compare(Object.keys(p.app.runs.pending).length, 0, "nothing pending")
+    compare(H.find(p, "resumeDialogTitle").text, "Resume run …000000b2")
+    compare(p.focusItem.objectName, "resumeVerify0")
+    verify(p.focusItem.activeFocus, "row 0 has the keyboard")
+    compare(field.text, "", "the handled r was not typed")
+
+    H.find(p, "resumeVerify0").text = "bash tests/run.sh"
+    compare(p.app.runs.resumeVerify.length, 1)
+    compare(p.app.runs.resumeVerify[0], "bash tests/run.sh")
+    mouseClick(H.find(p, "resumeVerifyAdd"))
+    wait(50)
+    var row1 = H.find(p, "resumeVerify1")
+    verify(row1, "+ added a row")
+    row1.text = "uv run pytest"
+    compare(p.app.runs.resumeVerify.length, 2)
+    wait(450)
+    var accept = H.find(p, "resumeDialogAccept")
+    compare(accept.enabled, true)
+    mouseClick(accept)
+
+    compare(dialog.visible, false)
+    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.runs.pending["run-0000000000b2"], "resume")
+    compare(p.app.runs.controlRunners.length, 1)
+    var launched = argv(p.app.runs.controlRunners[0].current)
+    verify(endsWith(launched, "run-control.py|resume|run-0000000000b2|/home/u/a|--verify|bash tests/run.sh|--verify|uv run pytest"),
+           "run-control got the typed commands in order: " + launched)
+    compare(p.app.runs.resumeSaveRunner.seq, 1, "the set was saved")
+    verify(argv(p.app.runs.resumeSaveRunner.current).indexOf("set-run-settings|/home/u/a|") >= 0,
+           "saved for the run's project")
+    wait(50)
+    compare(p.focusItem.objectName, "searchField")
+    verify(field.activeFocus, "the focus is back in the search field")
+  }
+
+  // 12
+  function test_escape_closes_only_the_resume_dialog_and_the_run_keys_are_dead_under_it() {
+    var p = make(); if (!p) return
+    var field = openResumeByKey(p)
+    var row0 = H.find(p, "resumeVerify0")
+    verify(row0.activeFocus, "row 0 has the keyboard")
+    compare(p.shortcuts.modalOpen(), true)
+    keyClick("p")
+    keyClick("c")
+    compare(row0.text, "pc", "the letters were typed into the row")
+    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runs.controlRunners.length, 0)
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.resumeRunId, "")
+    compare(resumeDialog(p).visible, false)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.opened, true, "the panel stays open")
+    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(p.shortcuts.modalOpen(), false)
+    wait(50)
+    verify(field.activeFocus, "the focus is back in the search field")
+    compare(field.text, "")
+  }
+
+  // 13
+  function test_a_refused_confirm_keeps_the_dialog_with_the_reason_and_the_rows() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    wait(50)
+    H.find(p, "resumeVerify0").text = "bash tests/run.sh"
+    p.app.runs.runs = [run("run-0000000000b2", "started", true, "beta")]
+    var reason = p.app.runs.refusalOf("resume", "run-0000000000b2")
+    verify(reason !== "", "a live run cannot be resumed")
+    wait(450)
+    mouseClick(H.find(p, "resumeDialogAccept"))
+    compare(resumeDialog(p).visible, true)
+    compare(p.app.runs.resumeRunId, "run-0000000000b2")
+    var error = H.find(p, "resumeDialogError")
+    compare(error.visible, true)
+    compare(error.text, reason)
+    compare(H.find(p, "resumeVerify0").text, "bash tests/run.sh", "the typed row is kept")
+    compare(p.app.runs.controlRunners.length, 0, "run-control was never launched")
+    compare(p.app.runs.resumeSaveRunner.seq, 0, "nothing saved")
+  }
+
+  // Review Focus 2
+  function test_escape_at_the_panel_closes_only_the_resume_dialog_and_keeps_the_toast() {
+    var p = withToast("runs"); if (!p) return
+    p.app.runs.runs = sampleRuns()
+    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    wait(50)
+    p.shortcuts.closeRequested()
+    compare(p.app.runs.resumeRunId, "")
+    compare(resumeDialog(p).visible, false)
+    compare(p.app.runs.toasts.length, 1, "the toast is kept")
+    compare(p.opened, true)
+    compare(p.app.nav.viewMode, "runs")
+  }
+
+  // Review Focus 3
+  function test_global_chords_and_run_keys_are_dead_under_the_resume_dialog() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    p.app.nav.cursorIndex = indexOfRun(p, "run-0000000000b2")
+    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_1 }), false)
+    compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 }), false)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_R)), false)
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), false)
+    compare(p.app.runs.controlRunners.length, 0)
+    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runs.resumeRunId, "run-0000000000b2")
+  }
+
+  // Review Focus 4
+  function test_a_second_open_replaces_the_run_and_resets_the_rows() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    p.app.runs.resumeOpenFor("run-0000000000b2")
+    wait(50)
+    H.find(p, "resumeVerify0").text = "a"
+    mouseClick(H.find(p, "resumeVerifyAdd"))
+    wait(50)
+    verify(H.find(p, "resumeVerify1"), "two rows")
+    compare(p.app.runs.resumeOpenFor("run-0000000000d4"), true)
+    wait(50)
+    compare(H.find(p, "resumeDialogTitle").text, "Resume run …000000d4")
+    compare(H.find(p, "resumeVerify0").text, "")
+    verify(!H.find(p, "resumeVerify1"), "one empty row again")
+    compare(p.focusItem.objectName, "resumeVerify0")
+    verify(p.focusItem.activeFocus, "row 0 has the keyboard")
+  }
+
+  // Review Focus 5
+  function test_the_opt_out_resumes_without_verification() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    p.app.runs.resumeOpenFor("run-0000000000b2")
+    wait(50)
+    var accept = H.find(p, "resumeDialogAccept")
+    compare(accept.enabled, false, "blank rows, no opt-out")
+    mouseClick(H.find(p, "resumeNoVerify"))
+    compare(p.app.runs.resumeAllowNoVerification, true)
+    compare(accept.enabled, true)
+    wait(450)
+    mouseClick(accept)
+    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.runs.controlRunners.length, 1)
+    var launched = argv(p.app.runs.controlRunners[0].current)
+    verify(endsWith(launched, "run-control.py|resume|run-0000000000b2|/home/u/a|--allow-no-verification"),
+           "run-control got the opt-out: " + launched)
+    verify(endsWith(argv(p.app.runs.resumeSaveRunner.current),
+                    "set-run-settings|/home/u/a|" + JSON.stringify({ verify: [], allowNoVerification: true })),
+           "the opt-out was saved")
+  }
+
+  // Review Focus 5
+  function test_closing_on_run_detail_gives_the_focus_back_to_the_key_catcher() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    p.navigator.openRun("run-0000000000b2")
+    wait(50)
+    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    wait(50)
+    compare(p.focusItem.objectName, "resumeVerify0")
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.nav.viewMode, "run", "Escape closed only the dialog")
+    wait(50)
+    compare(p.focusItem.objectName, "keyCatcher")
+    verify(p.focusItem.activeFocus, "the key catcher has the keyboard")
+  }
 }
