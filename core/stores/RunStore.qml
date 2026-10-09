@@ -35,8 +35,11 @@ import "../domain/board.js" as Board
 // for dispatchRoot with dispatch-preview.py and starts it with start-run.py,
 // one HelperRunner per Start. It also opens from Runs with no root
 // (dispatchOpenFromRuns): a probe of every usable root (board-tree.py
-// --probe) gives the project step's rows, and dispatchProjectPick sets
-// dispatchRoot. A dispatch opened from Runs survives a project switch.
+// --probe) gives the project step's rows; dispatchProjectPick sets
+// dispatchRoot and reads its tree (board-tree.py ROOT, guarded by
+// dispatchRoot), whose target rows dispatchTargetPick opens S3's form on;
+// a failed tree read disables that project's row. A dispatch opened from
+// Runs survives a project switch.
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
 // as `app.runs` and binds `active` to the panel being open.
