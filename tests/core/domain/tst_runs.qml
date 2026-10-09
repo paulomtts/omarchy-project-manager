@@ -4351,4 +4351,112 @@ TestCase {
     verify(single !== g1.runs, "a new array for a single group")
     compare(single.length, 2, "its runs")
   }
+
+  function test_run_by_id_returns_the_entry_itself() {
+    var list = [{ id: "a" }, { id: "b" }, { id: "c" }]
+    verify(Runs.runById(list, "b") === list[1], "the entry itself")
+    compare(Runs.runById(list, "z"), null)
+  }
+
+  function test_run_by_id_skips_empty_entries() {
+    var list = [null, undefined, 0, { id: "a" }]
+    verify(Runs.runById(list, "a") === list[3], "found past the empty entries")
+  }
+
+  function test_run_by_id_on_a_non_list_is_null() {
+    compare(Runs.runById(null, "a"), null)
+    compare(Runs.runById(undefined, "a"), null)
+    compare(Runs.runById({}, "a"), null)
+    compare(Runs.runById({ a: { id: "a" } }, "a"), null)
+    compare(Runs.runById("abc", "a"), null)
+  }
+
+  function test_run_by_id_with_a_prototype_member_name() {
+    var names = ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]
+    for (var i = 0; i < names.length; i++) {
+      compare(Runs.runById([{ id: "a" }], names[i]), null, names[i] + " absent")
+      var list = [{ id: "a" }, { id: names[i] }]
+      verify(Runs.runById(list, names[i]) === list[1], names[i] + " present")
+    }
+  }
+
+  function test_run_by_id_is_strict() {
+    compare(Runs.runById([{ id: "1" }], 1), null)
+  }
+
+  function test_run_by_id_of_the_empty_id_matches_no_idless_entry() {
+    compare(Runs.runById([{}, { id: "a" }, { id: null }], ""), null)
+  }
+
+  function test_run_by_id_skips_primitive_entries() {
+    compare(Runs.runById(["a", 5, true], "a"), null)
+    var list = ["a", 5, true, { id: "a" }]
+    verify(Runs.runById(list, "a") === list[3], "the object entry")
+  }
+
+  function test_has_key_counts_own_keys_only() {
+    compare(Runs.hasKey({ a: 1 }, "a"), true)
+    var names = ["toString", "constructor", "hasOwnProperty", "valueOf", "__proto__"]
+    for (var i = 0; i < names.length; i++) {
+      compare(Runs.hasKey({}, names[i]), false, names[i] + " inherited")
+      var own = JSON.parse("{\"" + names[i] + "\": 1}")
+      compare(Runs.hasKey(own, names[i]), true, names[i] + " own")
+    }
+  }
+
+  function test_has_key_with_a_shadowed_has_own_property() {
+    var map = { hasOwnProperty: 1, a: 2 }
+    compare(Runs.hasKey(map, "a"), true)
+    compare(Runs.hasKey(map, "b"), false)
+  }
+
+  function test_has_key_on_nothing_is_false() {
+    compare(Runs.hasKey(null, "a"), false)
+    compare(Runs.hasKey(undefined, "a"), false)
+  }
+
+  function test_has_key_coerces_the_key_like_has_own_property() {
+    compare(Runs.hasKey({ "1": "x" }, 1), true)
+    compare(Runs.hasKey({ "1": "x" }, 2), false)
+  }
+
+  function test_copy_map_is_a_new_shallow_copy() {
+    var nested = { deep: true }
+    var map = { a: 1, b: "two", c: nested }
+    var copy = Runs.copyMap(map)
+    verify(copy !== map, "a new object")
+    compare(Object.keys(copy).sort().join(","), "a,b,c")
+    compare(copy.a, 1)
+    compare(copy.b, "two")
+    verify(copy.c === nested, "shallow: the nested object is the same reference")
+    copy.a = 99
+    copy.d = 4
+    compare(map.a, 1, "input value unchanged")
+    compare(Object.prototype.hasOwnProperty.call(map, "d"), false, "input keys unchanged")
+  }
+
+  function test_copy_map_copies_own_keys_only() {
+    var map = Object.create({ inherited: 1 })
+    map.a = 2
+    var copy = Runs.copyMap(map)
+    compare(Object.prototype.hasOwnProperty.call(copy, "a"), true)
+    compare(copy.a, 2)
+    compare(Object.prototype.hasOwnProperty.call(copy, "inherited"), false)
+    compare(copy.inherited, undefined)
+    var named = Runs.copyMap({ constructor: 1, toString: 2 })
+    compare(Object.prototype.hasOwnProperty.call(named, "constructor"), true)
+    compare(Object.prototype.hasOwnProperty.call(named, "toString"), true)
+    compare(named.constructor, 1)
+    compare(named.toString, 2)
+  }
+
+  function test_copy_map_of_nothing_is_empty() {
+    var a = Runs.copyMap(null)
+    var b = Runs.copyMap(undefined)
+    compare(typeof a, "object")
+    verify(a !== null, "an object, not null")
+    compare(Object.keys(a).length, 0)
+    compare(Object.keys(b).length, 0)
+    verify(a !== b, "a new object on each call")
+  }
 }
