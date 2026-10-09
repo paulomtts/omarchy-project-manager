@@ -722,3 +722,52 @@ def test_finished_run_reaches_verify_and_is_done(am, finished_run):
     assert phases["verify"]["status"] == "done", phases["verify"]
     assert phases["verify"]["attempts"] == [], phases["verify"]
     assert phases["worktree"]["attempts"] == [], phases["worktree"]
+
+
+def follow(am, run, card, *selector):
+    """`am logs RUN CARD *selector --follow` on a terminal attempt, which exits by itself."""
+    return am.run("logs", run.id, card, *selector, "--follow", "--repo-dir", am.repo)
+
+
+def jsonl(lines):
+    """`lines` as one compact JSON object per line, each ending in a newline."""
+    return "".join(json.dumps(line, separators=(",", ":"), ensure_ascii=False) + "\n"
+                   for line in lines)
+
+
+def hello_shape(hello, phase):
+    """`hello` with its path replaced by whether it reads
+    /home/user/data/agent-manager/runs/<run>/<card>/<phase>.1/stdout.log."""
+    shape = re.compile(rf"{SCRATCH_HOME}/data/agent-manager/runs/[^/]+/[^/]+/"
+                       rf"{re.escape(phase)}\.1/stdout\.log")
+    return {**hello, "path": bool(shape.fullmatch(str(hello.get("path"))))}
+
+
+def assert_stream_matches_fixture(lines, name, phase):
+    """The normalized stream `lines` equals tests/fixtures/am/`name` line for line; the
+    hello's path is compared by shape only."""
+    fixture = [json.loads(line) for line in recorded_fixture(name, jsonl(lines)).splitlines()]
+    assert hello_shape(lines[0], phase)["path"] is True, lines[0]
+    assert [hello_shape(fixture[0], phase), *fixture[1:]] == \
+        [hello_shape(lines[0], phase), *lines[1:]], (name, fixture, lines)
+
+
+def test_hello_shape_accepts_only_a_normalized_attempt_log_path():
+    hello = {"event": "logs", "offset": 0, "schema": 1,
+             "path": "/home/user/data/agent-manager/runs/r1/c1/review.1/stdout.log"}
+    assert hello_shape(hello, "review") == {**hello, "path": True}
+    assert hello_shape(hello, "verify")["path"] is False
+    assert hello_shape({**hello, "path": "/tmp/x/data/agent-manager/runs/r1/c1/review.1/stdout.log"},
+                       "review")["path"] is False
+
+
+def test_logs_follow_of_an_agent_attempt_prints_hello_chunks_and_end(am, finished_run):
+    proc = follow(am, finished_run, finished_run.card, "--phase", "review", "--attempt", "1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = json_lines(proc.stdout)
+    text = follow_stream_text(lines, f"{am.data}/agent-manager/runs/",
+                              f"/{finished_run.card}/review.1/stdout.log")
+    assert text == "stub claude ok phase=review\n", lines
+    assert lines[-1]["status"] == "ok", lines[-1]
+    assert_stream_matches_fixture(normalize(lines, finished_run.root),
+                                  "logs-follow-agent.jsonl", "review")
