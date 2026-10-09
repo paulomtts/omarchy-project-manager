@@ -184,7 +184,7 @@ Panel {
     : appStores.runs.cancelOpen ? runCancelModal.focusItem
     : (appStores.nav.viewMode === "memory" && appStores.memories.memoryEditing) ? memoryNoteScreen.editorItem
     : appStores.nav.dropdownOpen ? sidebar.filterItem
-    : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "run" || appStores.nav.viewMode === "graph" || !appStores.projects.selectedProject) ? keyCatcher
+    : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "run" || appStores.nav.viewMode === "graph" || (!appStores.projects.selectedProject && appStores.nav.viewMode !== "runs")) ? keyCatcher
     : searchField
 
   function focusForView() {
@@ -563,7 +563,8 @@ Panel {
         TextField {
           id: searchField
           objectName: "searchField"
-          visible: !!appStores.projects.selectedProject && (appStores.nav.viewMode === "board" || appStores.nav.viewMode === "documents" || appStores.nav.viewMode === "memories" || appStores.nav.viewMode === "issues" || appStores.nav.viewMode === "runs")
+          // The Runs list searches with or without a project; the other lists need one.
+          visible: appStores.nav.viewMode === "runs" || (!!appStores.projects.selectedProject && (appStores.nav.viewMode === "board" || appStores.nav.viewMode === "documents" || appStores.nav.viewMode === "memories" || appStores.nav.viewMode === "issues"))
           width: parent.width
           foreground: root.foreground
           placeholderText: appStores.nav.viewMode === "documents" ? "Search documents…" : appStores.nav.viewMode === "memories" ? "Search memories…" : appStores.nav.viewMode === "issues" ? "Search issues…" : appStores.nav.viewMode === "runs" ? "Search runs…" : "Search cards…"
@@ -627,10 +628,13 @@ Panel {
             wrapMode: Text.WrapAnywhere
           }
 
+          // Not on the run views: they list runs with or without a project.
           UI.ThemedText {
+            objectName: "noProjectsText"
             variant: "dim"
             theme: panelTheme
             visible: !appStores.projects.selectedProject && appStores.projects.loadError === ""
+              && appStores.nav.viewMode !== "runs" && appStores.nav.viewMode !== "run"
             width: parent.width
             text: "No projects registered with brd."
             wrapMode: Text.WordWrap

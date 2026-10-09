@@ -338,6 +338,24 @@ TestCase {
     compare(s.app.nav.viewMode, "board")
   }
 
+  // K3
+  function test_ctrl_6_opens_runs_without_a_project_and_ctrl_1_to_5_do_not() {
+    var s = make(); if (!s) return
+    s.app.runs.snapshotRunner.cancel()
+    s.app.projects.selectedProject = null
+    var digits = [Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5]
+    for (var i = 0; i < digits.length; i++) {
+      compare(s.handleGlobalKey(ctrl(digits[i])), true, "Ctrl+" + (i + 1) + " is still handled")
+      compare(s.app.nav.viewMode, "board", "Ctrl+" + (i + 1))
+    }
+    compare(s.handleGlobalKey(ctrl(Qt.Key_6)), true)
+    compare(s.app.nav.viewMode, "runs")
+    for (var j = 0; j < digits.length; j++) {
+      compare(s.handleGlobalKey(ctrl(digits[j])), true)
+      compare(s.app.nav.viewMode, "runs", "Ctrl+" + (j + 1) + " from Runs")
+    }
+  }
+
   function test_escape_and_the_left_arrow_go_back_from_an_open_run() {
     var s = inRuns(); if (!s) return
     s.navigator.openRun("run-0000000000a1")
