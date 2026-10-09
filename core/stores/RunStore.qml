@@ -176,6 +176,10 @@ Scope {
   // The project root the dispatch is for; every dispatch launch carries it;
   // "" while no dispatch has been opened since the last close or project switch.
   property string dispatchRoot: ""
+  // dispatchRoot's get-run-settings object as the dispatch read it, while
+  // dispatchRoot is not `project`: {} until its reply, when the reply is
+  // unreadable, and after every reset.
+  property var dispatchRunSettings: ({})
   property var dispatchTarget: null     // Runs.dispatchPlan of the opened target; null while idle
   property string dispatchTargetLabel: "" // Runs.dispatchLabel of the opened target; "" while idle
   property var dispatchForm: null       // {base, prefix, verify, parallelism, allowNoVerification}; null while idle
@@ -219,6 +223,7 @@ Scope {
   readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
   readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
   readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
+  readonly property alias dispatchSettingsRunner: dispatchSettingsRunner
   readonly property alias dispatchDebounceTimer: dispatchDebounceTimer
   readonly property alias dispatchStartRunners: dispatchBook.runners // in-flight start runners, oldest first
 
@@ -1451,18 +1456,23 @@ Scope {
     store.dispatchSuggest = null
   }
 
-  // Every dispatch field back to its "none" value; runSettings stays. The
-  // pending check, the preview and the defaults lookup are dropped; a start
-  // already launched runs on, but its reply is no longer this dispatch's.
+  // Every dispatch field back to its "none" value and dispatchRunSettings
+  // {}; runSettings and dispatchRoot stay. The pending check, the preview,
+  // the defaults lookup and the settings read are dropped; a start already
+  // launched runs on, but its reply is no longer this dispatch's.
   function resetDispatch() {
     dispatchDebounceTimer.stop()
     dispatchPreviewRunner.cancel()
     dispatchDefaultsRunner.cancel()
+    dispatchSettingsRunner.cancel()
     dispatchBook.startRunner = null
-    dispatchBook.baseTouched = false
+    dispatchBook.touched = {}
     dispatchBook.defaultsPending = false
+    dispatchBook.settingsPending = false
+    dispatchBook.card = null
     dispatchBook.cardMap = null
     dispatchBook.milestone = null
+    store.dispatchRunSettings = {}
     store.dispatchState = "idle"
     store.dispatchTarget = null
     store.dispatchTargetLabel = ""
@@ -1482,21 +1492,38 @@ Scope {
     return store.dispatchOpenFor(card, cardMap)
   }
 
+  // The run settings the dispatch reads and, after a start, merges into:
+  // runSettings when dispatchRoot is the open project, else
+  // dispatchRunSettings.
+  function dispatchSettingsSource() {
+    return store.dispatchRoot === store.project ? store.runSettings : store.dispatchRunSettings
+  }
+
+  // Runs.dispatchDefaults for the opened card with `settings` (a
+  // get-run-settings object), read against dispatchRoot's runs only.
+  function dispatchDefaultsFor(settings) {
+    return Runs.dispatchDefaults({ defaultBranch: "", settings: settings }, dispatchBook.card, dispatchBook.cardMap,
+                                 Runs.filterByProject(store.runs, store.dispatchRoot))
+  }
+
   // Opens the dispatch for dispatchRoot on a brd card (as Board.indexTree()
   // leaves it) or "board", with its {id: card} map, and returns whether it
   // may be started. Refused (false, nothing changes) without a dispatchRoot
   // or while a start is in flight. Every opening sets dispatchTargetLabel
-  // and records cardMap and cardMap's entry for the target's milestone
-  // (Runs.dispatchMilestone), or null. A target dispatchPlan does not offer
-  // is `refused` at once and launches nothing; any other starts from
-  // dispatchDefaults with runSettings and the Runs snapshot, and looks up
-  // dispatchRoot's default branch before anything is checked.
+  // and records the card, cardMap and cardMap's entry for the target's
+  // milestone (Runs.dispatchMilestone), or null. A target dispatchPlan does
+  // not offer is `refused` at once and launches nothing; any other starts
+  // from dispatchDefaultsFor(dispatchSettingsSource()) and looks up
+  // dispatchRoot's default branch. When dispatchRoot is not `project`,
+  // dispatchRoot's run settings are read too (dispatchSettingsRunner).
+  // Nothing is checked before every launched lookup has replied.
   function dispatchOpenFor(card, cardMap) {
     if (store.dispatchRoot === "" || store.dispatchState === "starting") return false
     store.resetDispatch()
     var plan = Runs.dispatchPlan(card, cardMap)
     var milestone = Runs.dispatchMilestone(card, cardMap)
     var isMap = cardMap !== null && typeof cardMap === "object"
+    dispatchBook.card = card
     dispatchBook.cardMap = cardMap
     dispatchBook.milestone = milestone !== null && isMap && store.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
     store.dispatchTarget = plan
@@ -1507,12 +1534,14 @@ Scope {
       store.dispatchErrorType = "Target"
       return false
     }
-    var d = Runs.dispatchDefaults({ defaultBranch: "", settings: store.runSettings }, card, cardMap, store.runs)
+    var d = store.dispatchDefaultsFor(store.dispatchSettingsSource())
     store.dispatchForm = { base: d.base, prefix: d.prefix, verify: d.verify, parallelism: d.parallelism,
                            allowNoVerification: d.allowNoVerification }
     store.dispatchState = "previewing"
     dispatchBook.defaultsPending = true
+    dispatchBook.settingsPending = store.dispatchRoot !== store.project
     dispatchDefaultsRunner.run(["--defaults", store.dispatchRoot])
+    if (dispatchBook.settingsPending) dispatchSettingsRunner.run(["get-run-settings", store.dispatchRoot])
     return true
   }
 
@@ -1535,12 +1564,12 @@ Scope {
   }
 
   // From a blocked story's refusal (`refused` with a dispatchSuggest), opens
-  // the dispatch afresh on the milestone card and cardMap recorded at the
-  // story's opening and returns openDispatch's result. Refused (false,
-  // nothing changes) in any other state or refusal.
+  // the dispatch afresh for the same dispatchRoot on the milestone card and
+  // cardMap recorded at the story's opening and returns dispatchOpenFor's
+  // result. Refused (false, nothing changes) in any other state or refusal.
   function retargetToMilestone() {
     if (store.dispatchState !== "refused" || store.dispatchSuggest === null) return false
-    return store.openDispatch(dispatchBook.milestone, dispatchBook.cardMap)
+    return store.dispatchOpenFor(dispatchBook.milestone, dispatchBook.cardMap)
   }
 
   // A copy of the form with one field set as given; verify is copied as a
@@ -1587,15 +1616,38 @@ Scope {
     var data = envelope !== null && envelope.ok === true ? envelope.data : null
     var branch = data !== null && typeof data === "object" && typeof data.default_branch === "string"
         ? data.default_branch.trim() : ""
-    if (branch !== "" && !dispatchBook.baseTouched) store.dispatchForm = store.withField(store.dispatchForm, "base", branch)
+    if (branch !== "" && !store.hasKey(dispatchBook.touched, "base")) store.dispatchForm = store.withField(store.dispatchForm, "base", branch)
+    store.checkDispatch()
+  }
+
+  // dispatchRoot's get-run-settings reply, while dispatchRoot is not
+  // `project`: the bare object becomes dispatchRunSettings ({} when
+  // unreadable); prefix, verify and parallelism are taken from
+  // dispatchDefaultsFor with it, except a field the user set since the
+  // opening; base and allowNoVerification stay. Then the form is checked.
+  // Dropped unless previewing with the read still pending.
+  function dispatchSettingsReplied(stdout) {
+    if (!dispatchBook.settingsPending || store.dispatchState !== "previewing") return
+    dispatchBook.settingsPending = false
+    var parsed = store.parseEnvelope(stdout)
+    var settings = parsed !== null ? parsed : {}
+    store.dispatchRunSettings = settings
+    var d = store.dispatchDefaultsFor(settings)
+    var form = store.dispatchForm
+    var fields = ["prefix", "verify", "parallelism"]
+    for (var i = 0; i < fields.length; i++) {
+      if (!store.hasKey(dispatchBook.touched, fields[i])) form = store.withField(form, fields[i], d[fields[i]])
+    }
+    store.dispatchForm = form
     store.checkDispatch()
   }
 
   // The form is checked: an invalid one is refused and launches nothing, a
   // subtask is ready (am has no dry run for one card), a milestone, a story
-  // or the board is previewed. Waits for the defaults lookup, whose reply checks.
+  // or the board is previewed. Waits for the defaults lookup and the
+  // settings read; whichever replies last checks.
   function checkDispatch() {
-    if (dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
+    if (dispatchBook.defaultsPending || dispatchBook.settingsPending || store.dispatchState !== "previewing") return
     dispatchDebounceTimer.stop()
     var result = Runs.validateDispatch(store.dispatchForm)
     if (!result.ok) {
@@ -1659,7 +1711,9 @@ Scope {
     if (state !== "previewing" && state !== "ready" && state !== "refused" && state !== "failed") return false
     if (store.dispatchForm === null) return false
     store.dispatchForm = store.withField(store.dispatchForm, name, value)
-    if (name === "base") dispatchBook.baseTouched = true
+    var touched = store.copyMap(dispatchBook.touched)
+    touched[name] = true
+    dispatchBook.touched = touched
     store.dispatchState = "previewing"
     store.dispatchPreview = null
     store.clearDispatchError()
@@ -1851,6 +1905,16 @@ Scope {
     guard: store.dispatchRoot
     onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
   }
+  // viewer-state.py get-run-settings for dispatchRoot, once per opening, only
+  // while dispatchRoot is not `project`; latest wins. Guarded by
+  // dispatchRoot: a reply for a root the dispatch has left is dropped.
+  HelperRunner {
+    id: dispatchSettingsRunner
+    script: store.backendDir + "projects/viewer-state.py"
+    guard: store.dispatchRoot
+    onFinished: function(stdout, exitCode) { store.dispatchSettingsReplied(stdout) }
+  }
+
 
   // A burst of changed lines is taken in one go (triggerNudges).
   Timer {
@@ -1972,16 +2036,20 @@ Scope {
 
   // The dispatch's own bookkeeping; kept apart so consumers cannot write it.
   // `startRunner` is the runner that put the store into `starting`, forgotten
-  // by an idle reset (and so by a project switch); `baseTouched` says the user
-  // set base since the opening; `defaultsPending` that the --defaults lookup
-  // has not replied yet; `cardMap` and `milestone` are the opening's card map
-  // and its entry for the target's milestone card (null when unknown).
+  // by an idle reset (and so by a project switch); `touched` is {field: true}
+  // for each form field the user set since the opening; `defaultsPending`
+  // says the --defaults lookup has not replied yet, `settingsPending` that
+  // dispatchRoot's get-run-settings read has not; `card`, `cardMap` and
+  // `milestone` are the opening's card, card map and its entry for the
+  // target's milestone card (null when unknown).
   QtObject {
     id: dispatchBook
     property var runners: []
     property var startRunner: null
-    property bool baseTouched: false
+    property var touched: ({})
     property bool defaultsPending: false
+    property bool settingsPending: false
+    property var card: null
     property var cardMap: null
     property var milestone: null
   }

@@ -4819,9 +4819,10 @@ TestCase {
   function test_story_prefix_reads_the_snapshot_then_the_keyed_map() {
     var store = makeWithProject(rootA); if (!store) return
     reply(store.runSettingsRunner.current, keyedSettings({ m9: "m9-map" }), 0)
-    store.runs = [{ id: "r-old", milestone_id: "m1", branch_prefix: "m3-old", started_at: "2026-10-01T00:00:00Z" },
-                  { id: "r-live", milestone_id: "m1", branch_prefix: " m3-live ", started_at: "2026-10-06T00:00:00Z" },
-                  { id: "r-other", milestone_id: "m2", branch_prefix: "m2-x", started_at: "2026-10-07T00:00:00Z" }]
+    var a = { root: tc.rootA, name: "alpha" }
+    store.runs = [{ id: "r-old", milestone_id: "m1", branch_prefix: "m3-old", started_at: "2026-10-01T00:00:00Z", project: a },
+                  { id: "r-live", milestone_id: "m1", branch_prefix: " m3-live ", started_at: "2026-10-06T00:00:00Z", project: a },
+                  { id: "r-other", milestone_id: "m2", branch_prefix: "m2-x", started_at: "2026-10-07T00:00:00Z", project: a }]
     var cards = dispatchCards()
     store.openDispatch(cards.s1, cards)
     compare(store.dispatchForm.prefix, "m3-live", "the milestone's newest snapshot run wins")
@@ -5308,6 +5309,207 @@ TestCase {
     compare(refused.dispatchErrorType, "Target")
     compare(refused.dispatchRoot, tc.rootB)
     verify(!refused.dispatchDefaultsRunner.current, "a refused target launches nothing")
+  }
+
+  // Projects A and B registered (their snapshot in flight), A open with its
+  // settings read (dispatchSettings), and the dispatch's root set to B.
+  function otherRootStore() {
+    var store = make(); if (!store) return null
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    store.project = tc.rootA
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
+    store.dispatchRoot = tc.rootB
+    return store
+  }
+
+  // B's get-run-settings: differs from A's in every value the form reads.
+  function bSettings() {
+    return JSON.stringify({ verify: ["make test"], parallelism: 2, prefixHistory: ["bpre", "bold"], confirmDispatch: false }) + "\n"
+  }
+
+  property string bPreviewArgs: "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test"
+
+  // Opens milestone m1 for the store's dispatchRoot (B) and lands the
+  // defaults (main), B's settings (bSettings) and the preview: Start is allowed.
+  function readyForB(store) {
+    var cards = dispatchCards()
+    store.dispatchOpenFor(cards.m1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+  }
+
+  // 2.1 RunStore dispatch test 3
+  function test_dispatch_open_for_other_root_argv() {
+    var store = otherRootStore(); if (!store) return
+    var aLoad = store.runSettingsRunner.current
+    var cards = dispatchCards()
+    compare(store.dispatchOpenFor(cards.m1, cards), true)
+    compare(store.dispatchState, "previewing")
+    var lookup = store.dispatchDefaultsRunner.current
+    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/b")
+    var read = store.dispatchSettingsRunner.current
+    verify(read, "B's run settings are read")
+    compare(argv(read), tc.viewerCmd + "get-run-settings|/home/u/b")
+    compare(read.command.length, 4)
+    compare(read.launchGuard, "/home/u/b")
+    verify(store.runSettingsRunner.current === aLoad, "A's run settings are not read again")
+    compare(Object.keys(store.dispatchRunSettings).length, 0, "{} until the reply")
+    compare(store.dispatchForm.verify.length, 0, "the form opens from {} settings")
+    compare(store.dispatchForm.parallelism, 4)
+    compare(store.dispatchForm.prefix, "m3", "the milestone's stem")
+    reply(lookup, defaultsOk("main"), 0)
+    compare(store.dispatchForm.base, "main")
+    compare(store.dispatchState, "previewing")
+    verify(!store.dispatchPreviewRunner.current, "no preview while B's settings are pending")
+    reply(read, bSettings(), 0)
+    compare(store.dispatchRunSettings.prefixHistory[0], "bpre")
+    compare(store.dispatchRunSettings.confirmDispatch, false, "the object is kept as it was read")
+    compare(store.dispatchForm.verify.join(","), "make test")
+    compare(store.dispatchForm.parallelism, 2)
+    compare(store.dispatchForm.prefix, "bpre")
+    compare(store.dispatchForm.base, "main", "base is not touched by the settings reply")
+    compare(store.dispatchForm.allowNoVerification, false)
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc, "the last reply checks the form")
+    compare(argv(proc), tc.previewCmd + tc.bPreviewArgs)
+    compare(proc.launchGuard, "/home/u/b")
+    compare(store.runSettings.prefixHistory[0], "old", "A's settings are untouched")
+    compare(store.runSettings.verify[0], "uv run pytest")
+
+    var settingsFirst = otherRootStore(); if (!settingsFirst) return
+    settingsFirst.dispatchOpenFor(cards.m1, cards)
+    reply(settingsFirst.dispatchSettingsRunner.current, bSettings(), 0)
+    verify(!settingsFirst.dispatchPreviewRunner.current, "no preview while the defaults are pending")
+    reply(settingsFirst.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(settingsFirst.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "whichever replies last checks")
+
+    var refused = otherRootStore(); if (!refused) return
+    compare(refused.dispatchOpenFor(cards.d1, cards), false)
+    verify(!refused.dispatchDefaultsRunner.current, "a refused target: no defaults lookup")
+    verify(!refused.dispatchSettingsRunner.current, "a refused target: no settings read")
+  }
+
+  // 2.1 RunStore dispatch test 4 + Review Focus 1, 2 and 3
+  function test_dispatch_settings_reply_keeps_user_edits_and_unreadable_is_empty() {
+    var cards = dispatchCards()
+    var edited = otherRootStore(); if (!edited) return
+    edited.dispatchOpenFor(cards.m1, cards)
+    compare(edited.setDispatchField("prefix", "mine"), true)
+    compare(edited.setDispatchField("parallelism", 3), true)
+    reply(edited.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    fire(edited.dispatchDebounceTimer)
+    verify(!edited.dispatchPreviewRunner.current, "the debounced check waits for B's settings")
+    reply(edited.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(edited.dispatchForm.prefix, "mine", "the user's prefix is kept")
+    compare(edited.dispatchForm.parallelism, 3, "the user's parallelism is kept")
+    compare(edited.dispatchForm.verify.join(","), "make test", "verify takes B's")
+    compare(argv(edited.dispatchPreviewRunner.current),
+            tc.previewCmd + "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|mine|--max-concurrent|3|--verify|make test")
+
+    var replies = ["Traceback: boom\n", "[1, 2]\n", ""]
+    for (var i = 0; i < replies.length; i++) {
+      var bad = otherRootStore(); if (!bad) return
+      bad.dispatchOpenFor(cards.m1, cards)
+      reply(bad.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+      reply(bad.dispatchSettingsRunner.current, replies[i], 1)
+      compare(Object.keys(bad.dispatchRunSettings).length, 0, "reply " + i + ": unreadable is {}")
+      compare(bad.dispatchForm.prefix, "m3", "reply " + i + ": the {} defaults stay")
+      compare(bad.dispatchForm.parallelism, 4, "reply " + i)
+      compare(bad.dispatchForm.verify.length, 0, "reply " + i)
+      compare(bad.dispatchState, "refused", "reply " + i + ": the check ran")
+      compare(bad.dispatchErrors[0].field, "verify", "reply " + i)
+    }
+
+    var late = otherRootStore(); if (!late) return
+    late.dispatchOpenFor(cards.m1, cards)
+    var lateRead = late.dispatchSettingsRunner.current
+    compare(late.closeDispatch(), true)
+    reply(lateRead, bSettings(), 0)
+    checkDispatchIdle(late, "a settings reply after the close")
+    compare(Object.keys(late.dispatchRunSettings).length, 0, "nothing kept after the close")
+
+    var reopened = otherRootStore(); if (!reopened) return
+    reopened.dispatchOpenFor(cards.m1, cards)
+    var bRead = reopened.dispatchSettingsRunner.current
+    compare(reopened.openDispatch(cards.m1, cards), true)
+    compare(reopened.dispatchRoot, tc.rootA)
+    reply(bRead, bSettings(), 0)
+    compare(Object.keys(reopened.dispatchRunSettings).length, 0, "B's late reply is dropped")
+    compare(reopened.dispatchForm.prefix, "old", "A's form stays")
+    compare(reopened.dispatchForm.verify.join(","), "uv run pytest")
+    compare(reopened.dispatchForm.parallelism, 4)
+  }
+
+  // 2.1 RunStore dispatch test 5
+  function test_dispatch_prefix_default_reads_only_the_roots_runs() {
+    var store = otherRootStore(); if (!store) return
+    var cards = dispatchCards()
+    var a = { root: tc.rootA, name: "alpha" }
+    var b = { root: tc.rootB, name: "beta" }
+    store.runs = [{ id: "r-a", milestone_id: "m1", branch_prefix: "a-pre", started_at: "2026-10-07T00:00:00Z", project: a },
+                  { id: "r-b", milestone_id: "m1", branch_prefix: "b-pre", started_at: "2026-10-06T00:00:00Z", project: b }]
+    store.dispatchOpenFor(cards.s1, cards)
+    compare(store.dispatchForm.prefix, "b-pre", "A's newer run of m1 does not supply B's prefix")
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(store.dispatchForm.prefix, "b-pre", "B's run still beats B's history")
+
+    compare(store.closeDispatch(), true)
+    store.runs = [{ id: "r-a", milestone_id: "m1", branch_prefix: "a-pre", started_at: "2026-10-06T00:00:00Z", project: a },
+                  { id: "r-b", milestone_id: "m1", branch_prefix: "b-pre", started_at: "2026-10-07T00:00:00Z", project: b }]
+    compare(store.openDispatch(cards.s1, cards), true)
+    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchForm.prefix, "a-pre", "a card entry reads only the open project's runs")
+  }
+
+  // 2.1 RunStore dispatch test 9
+  function test_dispatch_retarget_keeps_the_root() {
+    var store = otherRootStore(); if (!store) return
+    var cards = dispatchCards()
+    store.dispatchOpenFor(cards.s1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(argv(store.dispatchPreviewRunner.current),
+            tc.previewCmd + "/home/u/b|story|s1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
+    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
+    compare(store.dispatchState, "refused")
+    compare(JSON.stringify(store.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}')
+    var storyRead = store.dispatchSettingsRunner.current
+    compare(store.retargetToMilestone(), true)
+    compare(store.dispatchRoot, tc.rootB, "the retarget keeps the root")
+    compare(store.dispatchTarget.level, "milestone")
+    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/b")
+    verify(store.dispatchSettingsRunner.current !== storyRead, "B's settings are read afresh")
+    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "B's milestone is previewed")
+  }
+
+  // 2.1 RunStore dispatch test 10 + Review Focus 4
+  function test_dispatch_card_entry_launches_no_settings_read() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true)
+    verify(!store.dispatchSettingsRunner.current, "the open project's runSettings are used")
+    compare(Object.keys(store.dispatchRunSettings).length, 0)
+    compare(store.dispatchForm.prefix, "old")
+    compare(store.dispatchForm.verify.join(","), "uv run pytest")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs, "previewed on the defaults reply")
+
+    var both = otherRootStore(); if (!both) return
+    compare(both.openDispatch(cards.m1, cards), true)
+    compare(both.dispatchRoot, tc.rootA, "the card entry replaces a root set before")
+    verify(!both.dispatchSettingsRunner.current, "no settings read for the open project")
+
+    var same = dispatchStore(); if (!same) return
+    same.dispatchRoot = tc.rootA
+    compare(same.dispatchOpenFor(cards.m1, cards), true)
+    verify(!same.dispatchSettingsRunner.current, "dispatchOpenFor on the open project reads no settings")
+    compare(same.dispatchForm.verify.join(","), "uv run pytest")
+    reply(same.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(same.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs)
   }
 
   // ---- list snapshots
