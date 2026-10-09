@@ -306,14 +306,14 @@ TestCase {
   property var alertsPairs: []
 
   // A RunAlertsStore wired to `store` the way App wires app.runAlerts:
-  // backendDir copied; active, notifyOnEscalation and projectRoots bound to
-  // the run store's own; store.alertsStore set; snapshotReplied routed to it.
+  // backendDir copied; active and projectRoots bound to the run store's own;
+  // store.alertsStore set; snapshotReplied routed to it. notifyOnEscalation is
+  // left to each test.
   function wireAlerts(store) {
     var comp = Qt.createComponent("../../../core/stores/RunAlertsStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
     var a = comp.createObject(tc, { backendDir: store.backendDir })
     a.active = Qt.binding(function() { return store.active })
-    a.notifyOnEscalation = Qt.binding(function() { return store.notifyOnEscalation })
     a.projectRoots = Qt.binding(function() { return store.projectRoots })
     store.alertsStore = a
     store.snapshotReplied.connect(a.snapshotReplied)
@@ -698,7 +698,7 @@ TestCase {
   function test_an_escalation_in_another_project_raises_one_toast_with_its_project() {
     var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
     compare(store.project, "")
-    store.notifyOnEscalation = true
+    alerts(store).notifyOnEscalation = true
     answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1")])])
     compare(toastIds(store), "b1")
     compare(alerts(store).toasts[0].project, "beta")
@@ -760,7 +760,7 @@ TestCase {
   // 5 and Review Focus 4
   function test_a_run_listed_under_two_roots_alerts_once_under_the_first() {
     var store = armedTwo([running("x")], [running("x")]); if (!store) return
-    store.notifyOnEscalation = true
+    alerts(store).notifyOnEscalation = true
     // B's entry first: the registry's order decides, not the reply's.
     answer(store, [okEntry(tc.rootB, [escalated("x")]), okEntry(tc.rootA, [escalated("x")])])
     compare(toastIds(store), "x")
@@ -857,7 +857,7 @@ TestCase {
   function test_with_the_setting_on_each_alert_launches_its_own_notification() {
     var store = armedStore([running("a"), running("b")]); if (!store) return
     compare(alerts(store).notifyRunners.length, 0)
-    store.notifyOnEscalation = true
+    alerts(store).notifyOnEscalation = true
     snapshot(store, [escalated("a"), dead("b")])
     compare(alerts(store).notifyRunners.length, 2, "one runner per alert")
     var first = alerts(store).notifyRunners[0].current, second = alerts(store).notifyRunners[1].current
@@ -887,7 +887,7 @@ TestCase {
     compare(alerts(off).notifyRunners.length, 0, "setting off: toasts only")
 
     var five = armedStore([]); if (!five) return
-    five.notifyOnEscalation = true
+    alerts(five).notifyOnEscalation = true
     snapshot(five, [escalated("r1"), escalated("r2"), dead("r3"), escalated("r4"), dead("r5")])
     compare(alerts(five).toasts.length, 3)
     compare(alerts(five).notifyRunners.length, 5, "every alert notifies, even those whose toast was capped away")
@@ -896,7 +896,7 @@ TestCase {
   // 1 (the notification half)
   function test_no_notification_while_the_panel_is_closed() {
     var store = makeWithProject(rootA); if (!store) return
-    store.notifyOnEscalation = true
+    alerts(store).notifyOnEscalation = true
     reply(store.snapshotRunner.current, okReply([running("a")]), 0)
     snapshot(store, [escalated("a")])
     compare(alerts(store).notifyRunners.length, 0)

@@ -1345,6 +1345,15 @@ function runById(runs, id) {
   return null
 }
 
+// `run.project.root` when `run` is a non-null object whose `project` is a
+// non-null object whose `root` is a string (returned as it is, so "" stays
+// ""); "" otherwise.
+function runRoot(run) {
+  var p = run !== null && typeof run === "object" ? run.project : null
+  if (p === null || typeof p !== "object" || typeof p.root !== "string") return ""
+  return p.root
+}
+
 // Whether `map` has `key` as an own property; false for a null or undefined map.
 function hasKey(map, key) {
   if (map === null || map === undefined) return false
