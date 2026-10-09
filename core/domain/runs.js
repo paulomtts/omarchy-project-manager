@@ -731,11 +731,20 @@ function _syntheticLabel(id) {
   return id.length > 5 ? "Base " + id.slice(5) : "Base"
 }
 
+// am's phase statuses other than pending: the phase has started or finished.
+var _STARTED_OR_FINISHED = ["started", "done", "failed", "escalated", "stopped", "cancelled", "canceled"]
+
+// A phase am runs itself: kind exactly "deterministic".
+function _isStepPhase(p) { return _isObject(p) && p.kind === "deterministic" }
+
 // One subtask as the detail tree shows it. Its own status, else its last am
-// row's; phases with a name only; every attempt object (attempt 0 when it has
-// no number). The current phase is the first started one, else the last one
-// with a numbered attempt, else the last; the current attempt is that phase's
-// newest number, 0 when it has none.
+// row's; phases with a name only. Attempts in phase order: for a step phase
+// (kind "deterministic") that has started or finished, one step entry
+// {phase, attempt: 0, step: true, status}; then every attempt object of the
+// phase as {phase, attempt, status} (attempt 0 when it has no number). The
+// current phase is the first started one, else the last one with a numbered
+// attempt, else the last; the current attempt is that phase's newest number,
+// 0 when it has none.
 function _subtaskNode(run, subtask) {
   var phases = [], attempts = []
   var started = null, numbered = null, last = null
@@ -747,6 +756,8 @@ function _subtaskNode(run, subtask) {
     if (started === null && p.status === "started") started = p
     if (_newestAttempt(p) > 0) numbered = p
     last = p
+    if (_isStepPhase(p) && _STARTED_OR_FINISHED.indexOf(p.status) >= 0)
+      attempts.push({ phase: p.name, attempt: 0, step: true, status: p.status })
     var tries = _arrayOr(p.attempts)
     for (var k = 0; k < tries.length; k++) {
       if (_isObject(tries[k])) attempts.push({ phase: p.name, attempt: _attemptNumber(tries[k]), status: _stringOr(tries[k].status) })
