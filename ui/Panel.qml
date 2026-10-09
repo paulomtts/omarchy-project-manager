@@ -286,15 +286,20 @@ Panel {
     }
     return picked
   }
+  // The card map the dispatched card, its story, its blockers and the
+  // milestone offer are read from: a Runs dispatch's picked tree
+  // (dispatchTargetCardMap, {} before its read), else the open board's.
+  readonly property var dispatchCardMap: appStores.runs.dispatchStep !== ""
+    ? (appStores.runs.dispatchTargetCardMap || {}) : appStores.board.cardMap
   readonly property var dispatchCard: root.dispatchCardId !== ""
-    ? (appStores.board.cardMap[root.dispatchCardId] || null) : null
+    ? (root.dispatchCardMap[root.dispatchCardId] || null) : null
   readonly property bool dispatchSubtask: !!appStores.runs.dispatchTarget
     && appStores.runs.dispatchTarget.level === "subtask"
   // am has no dry run for one subtask, so its story and blockers are said
-  // here instead; "" for any other target, and for a card the board dropped.
+  // here instead; "" for any other target, and for a card the map dropped.
   readonly property string dispatchStoryTitle: {
     if (!root.dispatchSubtask || !root.dispatchCard) return ""
-    var story = appStores.board.cardMap[root.dispatchCard.parentId]
+    var story = root.dispatchCardMap[root.dispatchCard.parentId]
     return story ? String(story.title || "") : ""
   }
   readonly property string dispatchBlockedText: {
@@ -304,16 +309,18 @@ Panel {
     if (list.length === 0) return "Blocked by: nothing"
     return "Blocked by: " + list.map(function(id) { return root.blockerText(id) }).join(", ")
   }
-  // A refused story's milestone, offered only while it is on the board.
+  // A refused story's milestone, offered only while it is in the card map.
   readonly property var dispatchSuggestion: {
     var suggest = appStores.runs.dispatchSuggest
-    return suggest && typeof suggest.id === "string" && appStores.board.cardMap[suggest.id] ? suggest : null
+    return suggest && typeof suggest.id === "string" && root.dispatchCardMap[suggest.id] ? suggest : null
   }
 
-  // One blocker as the dialog lists it: a card of this board with its status,
-  // an issue with its state, anything else by its id.
+  // One blocker as the dialog lists it: a card of the card map with its
+  // status, an issue of the open board with its state while the dispatch is
+  // for the open project, anything else by its id.
   function blockerText(id) {
-    var resolved = appStores.board.resolvedCard(id)
+    var issues = appStores.runs.dispatchRoot === appStores.runs.project ? appStores.board.issueMap : {}
+    var resolved = Board.resolvedCard(id, root.dispatchCardMap, issues)
     if (resolved.inBoard) return "\"" + resolved.title + "\" (" + appStores.board.statusText(resolved.status) + ")"
     if (resolved.kind === "issue") return "\"" + resolved.title + "\" (" + Board.issueBlockerLabel(resolved.status) + ")"
     return id + " (not on this board)"
