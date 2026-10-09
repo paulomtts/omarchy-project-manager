@@ -81,10 +81,6 @@ MOVED = {
 # Callers still on the RunStore shims; each migrating task removes its own paths, the last removes the set.
 UNMIGRATED = {
     "ui/Panel.qml",
-    "ui/Navigator.qml",
-    "ui/Shortcuts.qml",
-    "tests/ui/tst_navigator.qml",
-    "tests/ui/tst_shortcuts.qml",
     "tests/ui/tst_runs_flow.qml",
     "tests/ui/tst_dispatch_flow.qml",
     "tests/ui/tst_board_flow.qml",

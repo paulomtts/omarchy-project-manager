@@ -42,14 +42,14 @@ QtObject {
   // dispatch closes like the other modals; while its start is in flight
   // closeDispatch() refuses, so that Escape does nothing at all.
   function closeRequested() {
-    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : keys.app.runs.dispatchState !== "idle" ? keys.app.runs.closeDispatch() : keys.app.runs.cancelOpen ? keys.app.runs.closeCancel() : keys.app.runs.toasts.length > 0 ? keys.app.runs.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
+    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : keys.app.runDispatch.dispatchState !== "idle" ? keys.app.runDispatch.closeDispatch() : keys.app.runControl.cancelOpen ? keys.app.runControl.closeCancel() : keys.app.runAlerts.toasts.length > 0 ? keys.app.runAlerts.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
   }
 
   // A modal is open: the global shortcuts, the run keys and d do nothing under it.
   function modalOpen() {
     return !!(keys.app.deleter.deleteTarget || keys.app.memories.memoryDeleteOpen || keys.app.memories.newMemoryOpen
-              || keys.app.milestones.dialogOpen || keys.app.board.archiveOpen || keys.app.runs.cancelOpen
-              || keys.app.runs.dispatchState !== "idle")
+              || keys.app.milestones.dialogOpen || keys.app.board.archiveOpen || keys.app.runControl.cancelOpen
+              || keys.app.runDispatch.dispatchState !== "idle")
   }
 
   // p / r / c with no modifier at all pause, resume or cancel a run, with or
@@ -70,10 +70,10 @@ QtObject {
     var run = mode === "run" ? keys.app.runs.runById(keys.app.runs.selectedRunId) : keys.app.runs.filteredRuns[keys.app.nav.cursorIndex]
     var id = run && typeof run.id === "string" ? run.id : ""
     if (id === "") return false
-    var reason = keys.app.runs.refusalOf(action, id)
-    if (reason !== "") keys.app.runs.flash(reason)
-    else if (action === "cancel") keys.app.runs.openCancel(id)
-    else keys.app.runs.control(action, id)
+    var reason = keys.app.runControl.refusalOf(action, id)
+    if (reason !== "") keys.app.runControl.flash(reason)
+    else if (action === "cancel") keys.app.runControl.openCancel(id)
+    else keys.app.runControl.control(action, id)
     return true
   }
 
@@ -123,7 +123,7 @@ QtObject {
   // the run toasts go first, then a non-empty search, then the panel.
   function handleSearchKey(event) {
     if (event.key === Qt.Key_Escape) {
-      if (keys.app.runs.toasts.length > 0) keys.app.runs.dismissAllToasts()
+      if (keys.app.runAlerts.toasts.length > 0) keys.app.runAlerts.dismissAllToasts()
       else if (keys.app.nav.searchQuery !== "") { keys.app.nav.searchQuery = "" }
       else keys.actions.close()
       event.accepted = true

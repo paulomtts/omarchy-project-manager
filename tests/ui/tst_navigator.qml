@@ -378,7 +378,7 @@ TestCase {
     var n = startedRuns(); if (!n) return
     n.openStartedRun(null)
     compare(n.app.nav.viewMode, "runs")
-    compare(n.app.runs.flashText, "Started — waiting for the run to appear")
+    compare(n.app.runControl.flashText, "Started — waiting for the run to appear")
     compare(n.awaitedRunId, "")
   }
 
@@ -398,7 +398,7 @@ TestCase {
     var n = startedRuns(); if (!n) return
     n.openStartedRun("run-b")
     compare(n.app.nav.viewMode, "runs")
-    compare(n.app.runs.flashText, "Started — opening the run when it appears")
+    compare(n.app.runControl.flashText, "Started — opening the run when it appears")
     compare(n.awaitedRunId, "run-b")
     compare(n.awaitedProject, "/home/u/a")
     n.app.runs.runs = n.app.runs.runs.concat([runOf("run-b", "started", true, "m1")])
