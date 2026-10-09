@@ -61,9 +61,6 @@ Item {
   // start is in flight, and never without a form.
   readonly property bool editable: !!dialog.form
     && ["previewing", "ready", "refused", "failed"].indexOf(dialog.dispatchState) >= 0
-  // The verify rows are counted, not listed: typing in a row sends a list of
-  // the same length, so the row (its focus, its cursor) is never recreated.
-  readonly property int verifyRows: Math.max(1, dialog.storedVerify().length)
   readonly property bool hasChoices: !!dialog.targetChoices && typeof dialog.targetChoices.length === "number"
     && dialog.targetChoices.length > 0
   readonly property bool canOffer: dialog.dispatchState === "refused" && !!dialog.suggestion
@@ -75,7 +72,6 @@ Item {
     ? dialog.target.level : ""
   readonly property color foregroundColor: dialog.theme ? dialog.theme.foreground : Color.foreground
   readonly property color urgentColor: dialog.theme ? dialog.theme.urgent : Color.urgent
-  readonly property color dimColor: dialog.theme ? dialog.theme.dim : Color.foreground
   readonly property string targetText: {
     if (dialog.targetLabel !== "") return dialog.targetLabel
     var quoted = "\"" + dialog.targetTitle + "\""
@@ -167,47 +163,6 @@ Item {
     return /^[0-9]+$/.test(trimmed) ? parseInt(trimmed, 10) : trimmed
   }
 
-  // The stored commands: a list, or the array-like a list arrives as through
-  // createObject; anything else (missing, a string, null) reads as []. Read
-  // straight from `form`, never through a bound property, which a formChanged
-  // handler could still find holding the previous list.
-  function storedVerify() {
-    var verify = dialog.form ? dialog.form.verify : null
-    if (!verify || typeof verify !== "object" || typeof verify.length !== "number") return []
-    return Array.prototype.slice.call(verify)
-  }
-
-  function verifyAt(index) {
-    var value = dialog.storedVerify()[index]
-    return value === undefined || value === null ? "" : String(value)
-  }
-
-  // A fresh copy of the stored commands, padded with "" to the rows shown.
-  function verifyPadded() {
-    var stored = dialog.storedVerify(), list = []
-    for (var i = 0; i < Math.max(1, stored.length); i++)
-      list.push(stored[i] === undefined || stored[i] === null ? "" : String(stored[i]))
-    return list
-  }
-
-  function editVerify(index, text) {
-    var list = dialog.verifyPadded()
-    list[index] = text
-    dialog.fieldEdited("verify", list)
-  }
-
-  function removeVerify(index) {
-    var list = dialog.verifyPadded()
-    list.splice(index, 1)
-    dialog.fieldEdited("verify", list)
-  }
-
-  function addVerify() {
-    var list = dialog.verifyPadded()
-    list.push("")
-    dialog.fieldEdited("verify", list)
-  }
-
   // Owner -> fields, never bound: a field emits only when it says something
   // other than the form, and these assignments make the two agree, so a new
   // form from the owner echoes nothing.
@@ -216,11 +171,7 @@ Item {
     if (prefixField.text !== dialog.formText("prefix")) prefixField.text = dialog.formText("prefix")
     if (dialog.parallelValue(parallelField.text) !== dialog.parallelValue(dialog.formText("parallelism")))
       parallelField.text = dialog.formText("parallelism")
-    // New rows sync themselves when the Repeater makes them.
-    for (var i = 0; i < verifyRepeater.count; i++) {
-      var row = verifyRepeater.itemAt(i)
-      if (row) row.sync()
-    }
+    verifyField.sync()
   }
 
   UI.ModalCard {
@@ -310,71 +261,17 @@ Item {
         }
       }
 
-      UI.ThemedText {
-        objectName: "dispatchVerifyLabel"
-        variant: "caption"
+      UI.VerifyCommandsField {
+        id: verifyField
+        width: parent.width
+        objectNamePrefix: "dispatch"
         theme: dialog.theme
-        text: "Verify"
-      }
-
-      Repeater {
-        id: verifyRepeater
-        model: dialog.verifyRows
-
-        Row {
-          id: verifyRow
-          required property int index
-          width: parent ? parent.width : 0
-          spacing: Style.space(8)
-
-          function sync() {
-            var want = dialog.verifyAt(verifyRow.index)
-            if (verifyField.text !== want) verifyField.text = want
-          }
-
-          Component.onCompleted: verifyRow.sync()
-
-          TextField {
-            id: verifyField
-            objectName: "dispatchVerify" + verifyRow.index
-            width: Math.max(0, verifyRow.width - (removeButton.visible ? removeButton.width + verifyRow.spacing : 0))
-            foreground: dialog.foregroundColor
-            placeholderText: "uv run pytest"
-            enabled: dialog.editable
-            onTextChanged: if (text !== dialog.verifyAt(verifyRow.index)) dialog.editVerify(verifyRow.index, text)
-            Keys.onPressed: function(event) { dialog.fieldKey(event) }
-          }
-
-          UI.ActionButton {
-            id: removeButton
-            objectName: "dispatchVerifyRemove" + verifyRow.index
-            visible: dialog.verifyRows >= 2
-            text: "✕"
-            enabled: dialog.editable
-            theme: dialog.theme
-            onClicked: dialog.removeVerify(verifyRow.index)
-          }
-        }
-      }
-
-      UI.ActionButton {
-        objectName: "dispatchVerifyAdd"
-        text: "+"
-        enabled: dialog.editable
-        theme: dialog.theme
-        onClicked: dialog.addVerify()
-      }
-
-      // The opt-out from verification is a chip, so the form adds no checkbox.
-      UI.Chip {
-        id: noVerifyChip
-        objectName: "dispatchNoVerify"
-        theme: dialog.theme
-        text: "run without any verification"
-        active: !!dialog.form && dialog.form.allowNoVerification === true
-        busy: !dialog.editable
-        tint: noVerifyChip.active ? dialog.urgentColor : dialog.dimColor
-        onClicked: dialog.fieldEdited("allowNoVerification", !noVerifyChip.active)
+        commands: dialog.form ? dialog.form.verify : null
+        allowNoVerification: !!dialog.form && dialog.form.allowNoVerification === true
+        editable: dialog.editable
+        onCommandsEdited: function(commands) { dialog.fieldEdited("verify", commands) }
+        onAllowNoVerificationEdited: function(on) { dialog.fieldEdited("allowNoVerification", on) }
+        onKeyPressed: function(event) { dialog.fieldKey(event) }
       }
 
       Row {
