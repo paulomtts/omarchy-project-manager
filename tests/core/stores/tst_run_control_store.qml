@@ -1,9 +1,10 @@
 // tests/core/stores/tst_run_control_store.qml
 // The run controls store: control requests and their settling, the resume
 // verify read, the still-waiting clock, the control error, the cancel
-// confirmation and the footer flash. Built alone and driven through its
-// `runs` input and settleAfterSnapshot(); and, through a RunStore wired to it
-// the way App wires them, a real snapshot reply settling a real request.
+// confirmation, the footer flash and the notify switch. Built alone and
+// driven through its `runs` and `active` inputs and settleAfterSnapshot();
+// and, through a RunStore wired to it the way App wires them, a real
+// snapshot reply settling a real request and each opening reading the switch.
 // Stubbed Process objects stand in for every helper.
 import QtQuick
 import QtTest
@@ -17,6 +18,7 @@ TestCase {
   property string rootB: "/home/u/b"
   property string ctlCmd: "python3|/plugin/core/backend/runs/run-control.py|"
   property string settingsCmd: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/my proj"
+  property string viewerCmd: "python3|/plugin/core/backend/projects/viewer-state.py|"
   property string noVerifySentence: "Resume needs verify commands: none are stored for this project, and running without verification was not chosen."
 
   Component { id: spyC; SignalSpy {} }
@@ -258,6 +260,54 @@ TestCase {
     verify(c.controlRunners === runners, "controlRunners")
     compare(c.controlRunners.length, 1)
     compare(c.controlRunners[0].seq, seq, "nothing launched")
+  }
+
+  // C9
+  function test_a_bare_control_store_has_the_switch_off_and_untouched() {
+    var c = makeControl(); if (!c) return
+    compare(c.notifyOnEscalation, false)
+    compare(c.notifySaved, false)
+    compare(c.notifyTouched, false)
+    verify(c.settingsLoadRunner, "the load runner exists")
+    verify(c.settingsSaveRunner, "the save runner exists")
+    verify(!c.settingsLoadRunner.current, "nothing is loaded")
+    verify(!c.settingsSaveRunner.current, "nothing is saved")
+    compare(c.settingsSaveRunner.sent, false)
+  }
+
+  // C10 and Review Focus 5
+  function test_the_stores_own_active_loads_the_switch_and_closing_launches_nothing() {
+    var c = makeControl(); if (!c) return
+    c.active = true
+    var load = c.settingsLoadRunner.current
+    verify(load, "the opening loads the switch")
+    compare(argv(load), tc.viewerCmd + "get-global-settings")
+    compare(load.command.length, 3)
+    compare(load.launchGuard, "")
+    var seq = c.settingsLoadRunner.seq
+    c.active = false
+    compare(c.settingsLoadRunner.seq, seq, "closing launches nothing")
+    c.project = "/x"
+    compare(c.settingsLoadRunner.seq, seq, "a project change launches no load")
+    verify(!c.settingsSaveRunner.current, "and no save")
+    c.active = true
+    compare(c.settingsLoadRunner.seq, seq + 1, "each opening loads once")
+  }
+
+  // C11 and Review Focus 3
+  function test_a_failed_save_flashes_on_this_store() {
+    var c = makeControl(); if (!c) return
+    c.flash("The run has finished")
+    compare(c.setNotifyOnEscalation(true), true)
+    compare(c.notifyOnEscalation, true)
+    var save = c.settingsSaveRunner.current
+    compare(argv(save), tc.viewerCmd + 'set-global-settings|{"notifyOnEscalation":true}')
+    compare(save.command.length, 4)
+    compare(save.launchGuard, "")
+    reply(save, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(c.notifyOnEscalation, false, "back to the value last saved")
+    compare(c.flashText, "Notify on escalation could not be saved", "it replaces the flash showing")
+    compare(c.flashTimer.running, true)
   }
 
   // ---- through a RunStore wired the way App wires app.runControl
@@ -1111,5 +1161,149 @@ TestCase {
     compare(controlOf(store).confirmCancel(), true)
     compare(argv(controlOf(store).controlRunners[0].current), tc.ctlCmd + "cancel|b1|/home/u/b-work")
     compare(controlOf(store).cancelOpen, false)
+  }
+
+  // ---- the notify switch (S2 4.4)
+
+  // 8 and Review Focus 5
+  function test_the_global_switch_loads_on_each_opening_with_no_project() {
+    var idle = make(); if (!idle) return
+    verify(!controlOf(idle).settingsLoadRunner.current, "a closed panel loads nothing")
+    idle.project = tc.rootA
+    verify(!controlOf(idle).settingsLoadRunner.current, "a project switch launches no global load")
+
+    var store = make(); if (!store) return
+    store.active = true
+    var load = controlOf(store).settingsLoadRunner.current
+    verify(load, "opening the panel loads the switch, with no project and no registry")
+    compare(argv(load), tc.viewerCmd + "get-global-settings")
+    compare(load.command.length, 3)
+    compare(load.launchGuard, "")
+    reply(load, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(controlOf(store).notifyOnEscalation, true)
+    compare(controlOf(store).notifySaved, true)
+    store.project = tc.rootB
+    compare(controlOf(store).notifyOnEscalation, true, "a project switch leaves the switch alone")
+    compare(controlOf(store).notifySaved, true)
+    compare(controlOf(store).notifyTouched, false)
+    var seq = controlOf(store).settingsLoadRunner.seq
+    store.project = ""
+    compare(controlOf(store).settingsLoadRunner.seq, seq, "and launches no global load")
+    store.active = false
+    store.active = true
+    compare(controlOf(store).settingsLoadRunner.seq, seq + 1, "each opening loads once")
+    reply(controlOf(store).settingsLoadRunner.current, "Traceback: boom\n", 1)
+    compare(controlOf(store).notifyOnEscalation, false, "an unreadable reply leaves it off")
+    compare(controlOf(store).notifySaved, false)
+    store.active = false
+    store.active = true
+    reply(controlOf(store).settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: "yes" }) + "\n", 0)
+    compare(controlOf(store).notifyOnEscalation, false, "only a real true turns it on")
+    store.active = false
+    store.active = true
+    reply(controlOf(store).settingsLoadRunner.current, "{}\n", 0)
+    compare(controlOf(store).notifyOnEscalation, false)
+    store.active = false
+    store.active = true
+    var late = controlOf(store).settingsLoadRunner.current
+    store.active = false
+    reply(late, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(controlOf(store).notifyOnEscalation, true, "a reply after the panel closed still lands")
+    store.active = true
+    var older = controlOf(store).settingsLoadRunner.current
+    store.active = false
+    store.active = true
+    reply(older, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(controlOf(store).notifyOnEscalation, true, "an earlier opening's reply is dropped")
+    reply(controlOf(store).settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(controlOf(store).notifyOnEscalation, false, "the newest opening's reply lands")
+  }
+
+  // 13
+  function test_the_switch_saves_globally_and_a_failed_save_puts_it_back() {
+    var store = make(); if (!store) return
+    compare(controlOf(store).notifyOnEscalation, false)
+    compare(controlOf(store).notifySaved, false)
+    compare(controlOf(store).notifyTouched, false)
+    compare(store.notifyRunners.length, 0)
+    compare(controlOf(store).setNotifyOnEscalation(true), true, "no project and no registry: it still works")
+    compare(controlOf(store).notifyOnEscalation, true, "the switch flips at once")
+    compare(controlOf(store).notifyTouched, true)
+    var save = controlOf(store).settingsSaveRunner.current
+    verify(save, "a save was launched")
+    compare(save.command.length, 4)
+    compare(argv(save), tc.viewerCmd + 'set-global-settings|{"notifyOnEscalation":true}')
+    compare(save.launchGuard, "")
+    verify(!controlOf(store).settingsLoadRunner.current, "a closed panel loads nothing")
+    reply(save, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(controlOf(store).notifySaved, true)
+    compare(controlOf(store).flashText, "")
+    compare(controlOf(store).setNotifyOnEscalation(false), true)
+    compare(controlOf(store).notifyOnEscalation, false)
+    compare(argv(controlOf(store).settingsSaveRunner.current), tc.viewerCmd + 'set-global-settings|{"notifyOnEscalation":false}')
+    reply(controlOf(store).settingsSaveRunner.current, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(controlOf(store).notifyOnEscalation, true, "back to the value last saved")
+    compare(controlOf(store).notifySaved, true)
+    compare(controlOf(store).flashText, "Notify on escalation could not be saved")
+    controlOf(store).flash("")
+    controlOf(store).setNotifyOnEscalation(false)
+    reply(controlOf(store).settingsSaveRunner.current, "garbage\n", 1)
+    compare(controlOf(store).notifyOnEscalation, true, "an unreadable reply is a failure too")
+    compare(controlOf(store).flashText, "Notify on escalation could not be saved")
+  }
+
+  // 10
+  function test_a_save_reply_survives_a_project_switch() {
+    var store = makeWithProject(rootA); if (!store) return
+    controlOf(store).setNotifyOnEscalation(true)
+    var save = controlOf(store).settingsSaveRunner.current
+    store.project = rootB
+    compare(controlOf(store).notifyOnEscalation, true, "the switch is viewer-wide")
+    compare(controlOf(store).notifyTouched, true)
+    reply(save, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(controlOf(store).notifyOnEscalation, false, "rolled back to the value last saved")
+    compare(controlOf(store).notifySaved, false)
+    compare(controlOf(store).flashText, "Notify on escalation could not be saved")
+    controlOf(store).flash("")
+    controlOf(store).setNotifyOnEscalation(true)
+    var second = controlOf(store).settingsSaveRunner.current
+    store.project = ""
+    reply(second, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(controlOf(store).notifySaved, true, "an ok reply after a switch is applied")
+    compare(controlOf(store).notifyOnEscalation, true)
+  }
+
+  // 11
+  function test_a_save_in_flight_survives_a_reopening() {
+    var store = make(); if (!store) return
+    store.active = true
+    reply(controlOf(store).settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    controlOf(store).setNotifyOnEscalation(true)
+    var save = controlOf(store).settingsSaveRunner.current
+    store.active = false
+    store.active = true
+    compare(controlOf(store).notifyTouched, true, "a save is in flight: the touch stays")
+    reply(controlOf(store).settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(controlOf(store).notifyOnEscalation, true, "the new load cannot undo the user's choice")
+    reply(save, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(controlOf(store).notifySaved, true, "the save reply settles notifySaved")
+    store.active = false
+    store.active = true
+    compare(controlOf(store).notifyTouched, false, "no save in flight: the next opening reads again")
+    reply(controlOf(store).settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(controlOf(store).notifyOnEscalation, false)
+    compare(controlOf(store).notifySaved, false)
+  }
+
+  // 14
+  function test_a_load_reply_after_the_user_toggled_is_ignored() {
+    var store = makeWithProject(rootA); if (!store) return
+    store.active = true
+    var load = controlOf(store).settingsLoadRunner.current
+    compare(argv(load), tc.viewerCmd + "get-global-settings")
+    controlOf(store).setNotifyOnEscalation(true)
+    reply(load, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(controlOf(store).notifyOnEscalation, true)
+    compare(controlOf(store).notifyTouched, true)
   }
 }

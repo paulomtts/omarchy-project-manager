@@ -16,7 +16,10 @@ import "../domain/runs.js" as Runs
 // run list are handed to it from outside -- it never reaches for another
 // store. App composes it as `app.runControl`, calls settleAfterSnapshot() on
 // each ok snapshotReplied of the run store, and routes refreshRequested
-// there. A project switch changes nothing here.
+// there. The "Notify on escalation" switch is viewer-wide: each opening reads
+// it (get-global-settings) and setNotifyOnEscalation writes it
+// (set-global-settings); a failed save puts it back and flashes. A project
+// switch changes nothing here.
 Scope {
   id: control
 
@@ -42,10 +45,20 @@ Scope {
   property string cancelError: ""
   // The footer flash: why a run key was refused. flashTimer clears it.
   property string flashText: ""
+  // "Notify on escalation", viewer-wide and off until read: the switch's
+  // value, the last value read from or written to viewer-state.py's global
+  // settings, and whether the user changed it since this opening's load was
+  // launched (a late load reply then changes nothing). A project switch
+  // never changes them.
+  property bool notifyOnEscalation: false
+  property bool notifySaved: false
+  property bool notifyTouched: false
 
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
+  readonly property alias settingsLoadRunner: settingsLoadRunner
+  readonly property alias settingsSaveRunner: settingsSaveRunner
 
   // Starts a pause, resume or cancel of one run in `runs`, of any project, and
   // returns whether it started: only when refusalOf(action, runId) is "".
@@ -297,6 +310,50 @@ Scope {
     return true
   }
 
+  // ---- the notify switch (S2 4.4)
+
+  // Each opening (`active` turning true) reads the switch: notifyTouched is
+  // cleared first unless a save is in flight. Closing launches nothing.
+  onActiveChanged: {
+    if (!control.active) return
+    if (!settingsSaveRunner.busy) control.notifyTouched = false
+    settingsLoadRunner.run(["get-global-settings"])
+  }
+
+  // The switch changed: shown at once, written to the global settings in the
+  // background. Always works, with or without a project, and returns true.
+  function setNotifyOnEscalation(on) {
+    var value = !!on
+    control.notifyOnEscalation = value
+    control.notifyTouched = true
+    settingsSaveRunner.sent = value
+    settingsSaveRunner.run(["set-global-settings", JSON.stringify({ notifyOnEscalation: value })])
+    return true
+  }
+
+  // get-global-settings: only a real true turns the switch on; an unreadable
+  // reply leaves it off. Too late once the user changed the switch in this
+  // opening.
+  function applyGlobalSettings(stdout, exitCode) {
+    if (control.notifyTouched) return
+    var settings = Results.parseEnvelope(stdout)
+    var on = settings !== null && settings.notifyOnEscalation === true
+    control.notifyOnEscalation = on
+    control.notifySaved = on
+  }
+
+  // set-global-settings: {"ok": true} means `sent` is stored; anything else puts
+  // the switch back to what is stored and says so.
+  function notifySaveReplied(stdout, exitCode, sent) {
+    var reply = Results.parseEnvelope(stdout)
+    if (reply !== null && reply.ok === true) {
+      control.notifySaved = sent
+      return
+    }
+    control.notifyOnEscalation = control.notifySaved
+    control.flash("Notify on escalation could not be saved")
+  }
+
   // Only while the panel is open and a control request is pending: closing the
   // panel keeps `pending` but leaves no timer running.
   Timer {
@@ -315,6 +372,25 @@ Scope {
     interval: 3000
     repeat: false
     onTriggered: control.flashText = ""
+  }
+
+  // get-global-settings, once per opening; latest wins. No guard: the switch
+  // is viewer-wide, and a reply that lands after the panel closed is still
+  // applied.
+  HelperRunner {
+    id: settingsLoadRunner
+    script: control.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { control.applyGlobalSettings(stdout, exitCode) }
+  }
+
+  // set-global-settings on a change of the switch; latest wins. No guard: a
+  // project switch never drops its reply. `sent` is the value the latest
+  // launch writes.
+  HelperRunner {
+    id: settingsSaveRunner
+    property bool sent: false
+    script: control.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { control.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
   }
 
   // The control requests' own state; kept apart so consumers cannot write it.
