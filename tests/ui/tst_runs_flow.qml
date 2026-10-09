@@ -51,8 +51,8 @@ TestCase {
     }
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
     p.app.runs.runs = sampleRuns()
     return p
   }
@@ -340,19 +340,19 @@ TestCase {
     compare(pause.enabled, true)
     mouseClick(pause)
     compare(p.app.nav.viewMode, "runs", "the button did not open the run")
-    compare(p.app.runs.pending["run-0000000000a1"], "pause")
+    compare(p.app.runControl.pending["run-0000000000a1"], "pause")
     compare(pause.text, "Pause requested…")
     compare(pause.enabled, false)
-    compare(p.app.runs.controlRunners.length, 1)
+    compare(p.app.runControl.controlRunners.length, 1)
 
-    reply(p.app.runs.controlRunners[0].current,
+    reply(p.app.runControl.controlRunners[0].current,
           JSON.stringify({ ok: true, data: { run_id: "run-0000000000a1", command: "pause", requested_at: "t1" } }) + "\n", 0)
-    compare(p.app.runs.pending["run-0000000000a1"], "pause", "acknowledged, still pending until a snapshot")
+    compare(p.app.runControl.pending["run-0000000000a1"], "pause", "acknowledged, still pending until a snapshot")
     var snap = p.app.runs.snapshotRunner.current
     verify(snap, "the ok reply fetched the runs again")
     reply(snap, snapOk([snapEntry("run-0000000000a1", "stopped", null, "alpha"),
                         snapEntry("run-0000000000b2", "escalated", null, "beta")]), 0)
-    compare(p.app.runs.pending["run-0000000000a1"], undefined, "parked: the request settled")
+    compare(p.app.runControl.pending["run-0000000000a1"], undefined, "parked: the request settled")
     wait(50)
 
     var resume = controlOf(p, "Resume")
@@ -362,9 +362,9 @@ TestCase {
 
     wait(450)
     mouseClick(resume)
-    compare(p.app.runs.pending["run-0000000000a1"], "resume")
-    compare(p.app.runs.controlRunners.length, 1)
-    reply(p.app.runs.controlRunners[0].current,
+    compare(p.app.runControl.pending["run-0000000000a1"], "resume")
+    compare(p.app.runControl.controlRunners.length, 1)
+    reply(p.app.runControl.controlRunners[0].current,
           JSON.stringify({ ok: false, error: { type: "NotAcceptingError", message: "run is in integrate" } }) + "\n", 0)
     var error = controlOf(p, "Error")
     compare(error.visible, true)
@@ -395,7 +395,7 @@ TestCase {
     var modal = cancelModal(p)
     verify(modal, "the run cancel dialog")
     compare(modal.visible, true)
-    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(p.app.runControl.cancelRunId, "run-0000000000a1")
     compare(p.app.nav.viewMode, "runs", "the click did not open the run")
     compare(p.focusItem.objectName, "runCancelField")
     var field = inModal(p, "runCancelField")
@@ -408,18 +408,18 @@ TestCase {
     compare(modal.detail, "alpha")
 
     field.text = "cancle"
-    compare(p.app.runs.cancelText, "cancle")
+    compare(p.app.runControl.cancelText, "cancle")
     compare(accept.enabled, false)
     keyClick(Qt.Key_Return)
-    compare(p.app.runs.controlRunners.length, 0)
+    compare(p.app.runControl.controlRunners.length, 0)
     compare(modal.visible, true)
 
     field.text = "cancel"
     compare(accept.enabled, true)
     wait(450)
     mouseClick(accept)
-    compare(p.app.runs.pending["run-0000000000a1"], "cancel")
-    compare(p.app.runs.controlRunners.length, 1)
+    compare(p.app.runControl.pending["run-0000000000a1"], "cancel")
+    compare(p.app.runControl.controlRunners.length, 1)
     compare(modal.visible, false)
     wait(50)
     compare(p.focusItem.objectName, "searchField")
@@ -436,25 +436,25 @@ TestCase {
     field.forceActiveFocus()
     compare(p.app.nav.cursorIndex, 0)
     keyClick("c")
-    compare(p.app.runs.cancelOpen, true)
-    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(p.app.runControl.cancelOpen, true)
+    compare(p.app.runControl.cancelRunId, "run-0000000000a1")
     compare(field.text, "", "the handled letter was not typed")
     compare(p.app.nav.searchQuery, "")
     wait(50)
     compare(p.focusItem.objectName, "runCancelField")
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runControl.cancelOpen, false)
     compare(p.app.nav.viewMode, "runs")
-    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
     compare(p.opened, true, "the panel stays open")
     wait(50)
     verify(field.activeFocus, "the focus is back in the search field")
     keyClick("C", Qt.ShiftModifier)
     compare(field.text, "C", "Shift+C types")
-    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runControl.cancelOpen, false)
     keyClick("p")
     compare(field.text, "Cp", "with search text a bare letter types too")
-    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
   }
 
   // 18
@@ -473,10 +473,10 @@ TestCase {
     var reason = "Integrate is running; it cannot be paused or cancelled"
     compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), true)
     compare(H.find(p, "runsFooter").text, reason)
-    compare(p.app.runs.controlRunners.length, 0)
-    p.app.runs.flash("")
+    compare(p.app.runControl.controlRunners.length, 0)
+    p.app.runControl.flash("")
     compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), true)
-    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runControl.cancelOpen, false)
     compare(cancelModal(p).visible, false)
     compare(H.find(p, "runsFooter").text, reason)
 
@@ -485,15 +485,15 @@ TestCase {
     var detail = H.find(p, "runDetailControls")
     compare(H.find(detail, "runControlPause").enabled, false)
     compare(H.find(detail, "runControlCancel").enabled, false)
-    p.app.runs.flash("")
+    p.app.runControl.flash("")
     compare(H.find(p, "runDetailFlash").visible, false)
     compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), true)
     compare(H.find(p, "runDetailFlash").visible, true)
     compare(H.find(p, "runDetailFlash").text, reason)
     compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), true)
-    compare(p.app.runs.cancelOpen, false)
-    compare(p.app.runs.controlRunners.length, 0)
-    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(p.app.runControl.cancelOpen, false)
+    compare(p.app.runControl.controlRunners.length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
   }
 
   // 19 (and Review Focus 5)
@@ -511,17 +511,17 @@ TestCase {
     mouseClick(cancel)
     wait(50)
     compare(cancelModal(p).visible, true)
-    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(p.app.runControl.cancelRunId, "run-0000000000a1")
     compare(p.focusItem.objectName, "runCancelField")
     inModal(p, "runCancelField").text = "cancel"
     compare(inModal(p, "confirmAccept").enabled, true)
     wait(450)
     mouseClick(inModal(p, "confirmCancel"))
-    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runControl.cancelOpen, false)
     compare(cancelModal(p).visible, false)
     compare(p.app.nav.viewMode, "entry", "the card is still open")
     compare(p.app.board.selectedCardId, "alpha")
-    compare(p.app.runs.controlRunners.length, 0)
+    compare(p.app.runControl.controlRunners.length, 0)
     wait(50)
     compare(p.focusItem.objectName, "keyCatcher")
 
@@ -547,9 +547,9 @@ TestCase {
     var p = noProject ? makeNoProject() : make(); if (!p) return null
     p.navigator.showSection(view)
     feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha"), snapEntry("run-0000000000b2", "started", true, "beta")])
-    compare(p.app.runs.toasts.length, 0, "the baseline raises nothing")
+    compare(p.app.runAlerts.toasts.length, 0, "the baseline raises nothing")
     feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runAlerts.toasts.length, 1)
     wait(50)
     return p
   }
@@ -590,9 +590,9 @@ TestCase {
     var aEntries = [snapEntry("run-0000000000a1", "started", true, "alpha"),
                     snapEntry("run-0000000000b2", "escalated", null, "beta")]
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "started", true, "zeta")])
-    compare(p.app.runs.toasts.length, 1, "beta's first entry only arms it")
+    compare(p.app.runAlerts.toasts.length, 1, "beta's first entry only arms it")
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
-    compare(p.app.runs.toasts.length, 2)
+    compare(p.app.runAlerts.toasts.length, 2)
     wait(50)
     compare(H.find(p, "runToastLine1").text, "zeta escalated")
     compare(H.find(p, "runToastProject1").text, "beta")
@@ -624,15 +624,15 @@ TestCase {
     verify(before !== null && before.root_path === "/home/u/a", "pA is open")
     var aEntries = [snapEntry("run-0000000000a1", "started", true, "alpha")]
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "started", true, "zeta")])
-    compare(p.app.runs.toasts.length, 0, "the baseline raises nothing")
+    compare(p.app.runAlerts.toasts.length, 0, "the baseline raises nothing")
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
-    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runAlerts.toasts.length, 1)
     wait(50)
     compare(H.find(p, "runToastProject0").text, "beta")
     mouseClick(H.find(p, "runToastOpen0"))
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-0000000000f6")
-    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    compare(p.app.runAlerts.toasts.length, 0, "Open dismisses its toast")
     verify(p.app.projects.selectedProject === before, "the same project object")
     p.shortcuts.closeRequested()
     compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
@@ -654,7 +654,7 @@ TestCase {
     mouseClick(H.find(p, "runToastOpen0"))
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-0000000000b2")
-    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    compare(p.app.runAlerts.toasts.length, 0, "Open dismisses its toast")
     p.shortcuts.closeRequested()
     compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
     compare(p.opened, true)
@@ -667,7 +667,7 @@ TestCase {
     field.forceActiveFocus()
     compare(field.text, "")
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.toasts.length, 0)
+    compare(p.app.runAlerts.toasts.length, 0)
     compare(p.opened, true, "the panel stays open")
     compare(p.app.nav.viewMode, "runs")
   }
@@ -676,11 +676,11 @@ TestCase {
   function test_dismiss_removes_only_that_toast() {
     var p = withToast("runs"); if (!p) return
     feed(p, [snapEntry("run-0000000000a1", "started", false, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.toasts.length, 2)
+    compare(p.app.runAlerts.toasts.length, 2)
     wait(50)
     mouseClick(H.find(p, "runToastDismiss0"))
-    compare(p.app.runs.toasts.length, 1)
-    compare(p.app.runs.toasts[0].id, "run-0000000000a1")
+    compare(p.app.runAlerts.toasts.length, 1)
+    compare(p.app.runAlerts.toasts[0].id, "run-0000000000a1")
     wait(50)
     compare(H.find(p, "runToastLine0").text, "alpha died")
   }
@@ -688,31 +688,31 @@ TestCase {
   // 29
   function test_with_the_setting_on_an_escalation_also_notifies() {
     var p = make(); if (!p) return
-    compare(p.app.runs.setNotifyOnEscalation(true), true)
-    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(p.app.runs.notifySaved, true)
+    compare(p.app.runControl.setNotifyOnEscalation(true), true)
+    reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(p.app.runControl.notifySaved, true)
     feed(p, [snapEntry("run-0000000000b2", "started", true, "beta")])
     feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.notifyRunners.length, 1)
-    var cmd = p.app.runs.notifyRunners[0].current.command
+    compare(p.app.runAlerts.notifyRunners.length, 1)
+    var cmd = p.app.runAlerts.notifyRunners[0].current.command
     compare(cmd[1], p.pluginDir + "core/backend/runs/notify.py")
     compare(cmd[cmd.length - 2], "beta")
     compare(cmd[cmd.length - 1], "escalated")
-    p.app.runs.setNotifyOnEscalation(false)
-    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    p.app.runControl.setNotifyOnEscalation(false)
+    reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
     feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta"), snapEntry("run-0000000000c3", "escalated", null, "gamma")])
-    compare(p.app.runs.toasts.length, 2)
-    compare(p.app.runs.notifyRunners.length, 1, "off: no new launch")
+    compare(p.app.runAlerts.toasts.length, 2)
+    compare(p.app.runAlerts.notifyRunners.length, 1, "off: no new launch")
   }
 
   // 30
   function test_open_on_a_toast_whose_run_left_the_snapshot_flashes_why() {
     var p = withToast("board"); if (!p) return
     feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha")])
-    compare(p.app.runs.toasts.length, 1, "the toast outlives its run's row")
+    compare(p.app.runAlerts.toasts.length, 1, "the toast outlives its run's row")
     wait(50)
     mouseClick(H.find(p, "runToastOpen0"))
-    compare(p.app.runs.toasts.length, 0)
+    compare(p.app.runAlerts.toasts.length, 0)
     compare(p.app.nav.viewMode, "runs")
     compare(p.app.runs.selectedRunId, "")
     compare(H.find(p, "runsFooter").text, "This run is no longer in the snapshot")
@@ -791,7 +791,7 @@ TestCase {
     mouseClick(H.find(p, "runToastOpen0"))
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-0000000000b2")
-    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    compare(p.app.runAlerts.toasts.length, 0, "Open dismisses its toast")
     compare(p.app.projects.selectedProject, null, "Open opens no project")
     wait(50)
     compare(H.find(p, "runDetailView").visible, true)
@@ -801,13 +801,13 @@ TestCase {
     compare(H.find(p, "runsView").visible, true)
     // alpha dies, then leaves the snapshot: its toast outlives its row.
     feed(p, [snapEntry("run-0000000000a1", "started", false, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runAlerts.toasts.length, 1)
     feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runAlerts.toasts.length, 1)
     p.app.nav.viewMode = "board"
     wait(50)
     mouseClick(H.find(p, "runToastOpen0"))
-    compare(p.app.runs.toasts.length, 0)
+    compare(p.app.runAlerts.toasts.length, 0)
     compare(p.app.nav.viewMode, "runs")
     compare(p.app.runs.selectedRunId, "")
     wait(50)
@@ -821,11 +821,11 @@ TestCase {
     p.navigator.showSection("runs")
     wait(50)
     compare(H.find(p, "runsNotifyRow").visible, true)
-    var was = p.app.runs.notifyOnEscalation
+    var was = p.app.runControl.notifyOnEscalation
     H.find(p, "runsNotifyToggle").toggled()
-    compare(p.app.runs.notifyOnEscalation, !was)
-    compare(p.app.runs.settingsSaveRunner.sent, !was, "the set-global-settings request carries the new value")
-    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(p.app.runControl.notifyOnEscalation, !was)
+    compare(p.app.runControl.settingsSaveRunner.sent, !was, "the set-global-settings request carries the new value")
+    reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
   }
 
   // F8
@@ -857,8 +857,8 @@ TestCase {
       p.app.extras.exportProc.running = false
       p.app.extras.exportProc.launchGuard = "stale"
     }
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
     compare(p.app.projects.selectedProject.root_path, "/home/u/a")
     compare(p.app.nav.viewMode, "board")
     compare(labels(p.navigator.crumbs), "Board")
@@ -878,7 +878,7 @@ TestCase {
     compare(String(button.tooltipText), "Open a project to dispatch")
     mouseClick(button)
     compare(p.dispatchOpen, false, "a click opens nothing")
-    compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.runDispatch.dispatchState, "idle")
     p.app.runs.amStatus = "missing"
     compare(button.enabled, false)
     compare(String(button.tooltipText), "Open a project to dispatch", "no project wins over am missing")
@@ -905,8 +905,8 @@ TestCase {
       p.app.extras.exportProc.running = false
       p.app.extras.exportProc.launchGuard = "stale"
     }
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
   }
 
   function ctrl6(p) {

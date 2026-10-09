@@ -78,15 +78,6 @@ MOVED = {
     "checkDispatch": "runDispatch",
 }
 
-# Callers still on the RunStore shims; each migrating task removes its own paths, the last removes the set.
-UNMIGRATED = {
-    "ui/Panel.qml",
-    "tests/ui/tst_runs_flow.qml",
-    "tests/ui/tst_dispatch_flow.qml",
-    "tests/ui/tst_board_flow.qml",
-    "tests/ui/tst_runs_real_data.qml",
-}
-
 MOVED_RE = re.compile(r"\.runs\.(" + "|".join(sorted(MOVED, key=len, reverse=True)) + r")\b")
 CONNECTIONS_RE = re.compile(r"\bConnections\s*\{")
 TARGET_RE = re.compile(r"^\s*target:\s*([\w.]+)\s*$", re.M)
@@ -100,11 +91,6 @@ def rel(path):
 
 def caller_files(*dirs, suffixes=(".qml", ".js")):
     return sorted(p for top in dirs for p in (ROOT / top).rglob("*") if p.suffix in suffixes)
-
-
-def caller_params():
-    return [pytest.param(p, id=rel(p), marks=pytest.mark.xfail(strict=True, reason="still on the RunStore shims"))
-            if rel(p) in UNMIGRATED else pytest.param(p, id=rel(p)) for p in caller_files(*CALLER_DIRS)]
 
 
 def moved_hits(text):
@@ -161,13 +147,12 @@ def test_the_moved_set_is_not_empty_and_has_no_staying_member():
         MOVED["runSettings"], MOVED["runSettingsRunner"]}
 
 
-@pytest.mark.parametrize("path", caller_params())
+@pytest.mark.parametrize("path", caller_files(*CALLER_DIRS), ids=rel)
 def test_no_ui_file_reaches_a_moved_member_through_runs(path):
     hits = [f"{rel(path)}:{n} {member} -> {MOVED[member]}" for n, member in moved_hits(path.read_text())]
     assert hits == []
 
 
-@pytest.mark.xfail(strict=True, reason="Panel still connects to the RunStore shims")
 def test_no_ui_connections_on_runs_handles_a_moved_signal():
     found = [f"{rel(p)}: {h}" for p in caller_files("ui", suffixes=(".qml",))
              for block in connections_blocks(p.read_text()) for h in moved_handlers(block)]
