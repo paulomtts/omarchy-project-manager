@@ -23,6 +23,7 @@ TestCase {
 
   Component { id: paneC; UI.EventsPane { width: 600 } }
 
+  SignalSpy { id: filterSpy; signalName: "filterRequested" }
   SignalSpy { id: attemptSpy; signalName: "attemptRequested" }
 
   // A pane in testTheme unless props names a theme (null included). Props are
@@ -33,6 +34,8 @@ TestCase {
     if (!("theme" in p)) p.theme = testTheme
     var pane = createTemporaryObject(paneC, tc)
     for (var key in p) pane[key] = p[key]
+    filterSpy.target = pane
+    filterSpy.clear()
     attemptSpy.target = pane
     attemptSpy.clear()
     wait(30)
@@ -180,5 +183,65 @@ TestCase {
       mouseClick(rowOf(pane, s))
       compare(attemptSpy.count, 0, "row " + s + " emits nothing")
     }
+  }
+
+  // ---- filter chips --------------------------------------------------------
+
+  function mixedRows() {
+    return [
+      eventRow(1, { level: "run", label: "run started", status: "started", card: "", phase: "", attempt: 0 }),
+      eventRow(2, { level: "story", label: "Story", status: "escalated", card: "", phase: "", attempt: 0 }),
+      eventRow(3, { level: "phase", status: "done", attempt: 0 }),
+      eventRow(4, { level: "attempt", status: "done" }),
+      eventRow(5, { level: "attempt", status: "failed" })
+    ]
+  }
+
+  function seqsOf(pane) { return pane.shownRows.map(function (r) { return r.seq }) }
+
+  function test_filter_chips_mark_the_active_filter() {
+    var ids = ["All", "Phases", "Failures"]
+    for (var i = 0; i < ids.length; i++) {
+      var pane = make({ rows: mixedRows(), filter: ids[i] })
+      for (var j = 0; j < ids.length; j++) {
+        var chip = H.find(pane, "eventsFilterChip" + ids[j])
+        verify(chip, ids[j] + " chip exists")
+        compare(chip.text, ids[j], "a chip shows its label and no count")
+        compare(chip.active, i === j, "filter " + ids[i] + ": chip " + ids[j])
+      }
+    }
+    var chips = make({ rows: [] })
+    verify(H.find(chips, "eventsFilterChipAll").x < H.find(chips, "eventsFilterChipPhases").x, "All, then Phases")
+    verify(H.find(chips, "eventsFilterChipPhases").x < H.find(chips, "eventsFilterChipFailures").x, "then Failures")
+    var odd = make({ rows: mixedRows(), filter: "Bogus" })
+    for (var k = 0; k < ids.length; k++)
+      compare(H.find(odd, "eventsFilterChip" + ids[k]).active, false, "an unknown filter marks no chip")
+    compare(listOf(odd).count, 5, "an unknown filter shows every row")
+  }
+
+  function test_a_chip_click_requests_its_filter_without_changing_it() {
+    var pane = make({ rows: mixedRows() })
+    mouseClick(H.find(pane, "eventsFilterChipFailures"))
+    compare(filterSpy.count, 1)
+    compare(filterSpy.signalArguments[0][0], "Failures")
+    compare(pane.filter, "All", "the pane never assigns its filter")
+    compare(listOf(pane).count, 5, "the rows shown are unchanged")
+    mouseClick(H.find(pane, "eventsFilterChipAll"))
+    compare(filterSpy.count, 2, "the active chip emits too")
+    compare(filterSpy.signalArguments[1][0], "All")
+  }
+
+  function test_the_pane_applies_the_filter() {
+    var pane = make({ rows: mixedRows() })
+    compare(seqsOf(pane), [1, 2, 3, 4, 5])
+    pane.filter = "Phases"
+    wait(30)
+    compare(seqsOf(pane), [3, 4, 5])
+    compare(listOf(pane).count, 3)
+    verify(!rowOf(pane, 1), "the run row is not drawn under Phases")
+    pane.filter = "Failures"
+    wait(30)
+    compare(seqsOf(pane), [2, 5], "a failure at any level")
+    compare(listOf(pane).count, 2)
   }
 }

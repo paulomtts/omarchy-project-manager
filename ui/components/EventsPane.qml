@@ -23,10 +23,12 @@ Item {
   // The owner's Theme, or none: `palette` then falls back to the pane's own.
   property var theme: null
   property var rows: []
+  property string filter: "All"
 
   readonly property var palette: pane.theme || paneTheme
-  readonly property var shownRows: RunEvents.filterRows(pane.rows, "All")
+  readonly property var shownRows: RunEvents.filterRows(pane.rows, pane.filter)
 
+  signal filterRequested(string filter)
   signal attemptRequested(string card, string phase, int attempt)
 
   // row[key] when row is an object and that field is a string, else "".
@@ -58,6 +60,16 @@ Item {
     id: column
     width: pane.width
     spacing: Style.space(6)
+
+    ChipRow {
+      width: parent.width
+      theme: pane.palette
+      chipPrefix: "eventsFilterChip"
+      active: pane.filter
+      model: [{ id: "All", label: "All" }, { id: "Phases", label: "Phases" },
+              { id: "Failures", label: "Failures" }]
+      onChosen: function(id) { pane.filterRequested(id) }
+    }
 
     ListView {
       id: list
