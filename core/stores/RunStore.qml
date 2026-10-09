@@ -1912,6 +1912,7 @@ Scope {
     guard: store.dispatchRoot
     onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
   }
+
   // viewer-state.py get-run-settings for dispatchRoot, once per opening, only
   // while dispatchRoot is not `project`; latest wins. Guarded by
   // dispatchRoot: a reply for a root the dispatch has left is dropped.
@@ -1921,7 +1922,6 @@ Scope {
     guard: store.dispatchRoot
     onFinished: function(stdout, exitCode) { store.dispatchSettingsReplied(stdout) }
   }
-
 
   // A burst of changed lines is taken in one go (triggerNudges).
   Timer {
