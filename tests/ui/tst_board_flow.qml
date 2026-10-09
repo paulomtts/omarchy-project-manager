@@ -149,6 +149,7 @@ TestCase {
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
     p.app.runs.settingsLoadRunner.cancel()
+    p.app.runs.runSettingsRunner.cancel()
     p.app.runs.runSettings = { verify: ["uv run pytest"] }
     p.app.board.applyTreeData(dispatchRoots())
     wait(50)
