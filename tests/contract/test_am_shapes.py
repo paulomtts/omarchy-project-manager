@@ -14,10 +14,13 @@ present they fail, never skip, if am run lacks --story or brd or git is absent.
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -494,3 +497,54 @@ def test_logs_help_lists_the_follow_options(am):
     if missing:
         pytest.fail(f"the installed am logs has no {', '.join(missing)} option "
                     "(reinstall agent-manager: uv tool install --reinstall)")
+
+
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "am"
+RECORD_ENV = "AM_RECORD_FIXTURES"
+SCRATCH_HOME = "/home/user"
+
+
+def normalize(value, root):
+    """`value` with `root` replaced by /home/user in every string, keys untouched."""
+    if isinstance(value, str):
+        return value.replace(str(root), SCRATCH_HOME)
+    if isinstance(value, dict):
+        return {key: normalize(item, root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize(item, root) for item in value]
+    return value
+
+
+def test_normalize_rewrites_only_the_scratch_root():
+    root = "/tmp/pytest-of-u/pytest-7/test_x0"
+    value = {f"{root}/key": [f"{root}/data/a.log", {"text": f"see {root}/b"}],
+             "offset": 12, "status": "ok", "other": "/tmp/pytest-of-u/elsewhere"}
+    assert normalize(value, root) == {
+        f"{root}/key": ["/home/user/data/a.log", {"text": "see /home/user/b"}],
+        "offset": 12, "status": "ok", "other": "/tmp/pytest-of-u/elsewhere"}
+
+
+def recorded_fixture(name, text):
+    """The committed tests/fixtures/am/`name`. With AM_RECORD_FIXTURES=1, `text` is written
+    there first; with it unset, a missing file fails naming the file and the variable."""
+    path = FIXTURES / name
+    if os.environ.get(RECORD_ENV) == "1":
+        path.write_text(text, encoding="utf-8")
+    if not path.is_file():
+        pytest.fail(f"{path} is missing: record it with {RECORD_ENV}=1")
+    return path.read_text(encoding="utf-8")
+
+
+def test_recorded_fixture_fails_naming_the_file_and_the_variable(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys.modules[__name__], "FIXTURES", tmp_path)
+    monkeypatch.delenv(RECORD_ENV, raising=False)
+    with pytest.raises(pytest.fail.Exception,
+                       match=r"logs-follow-x\.jsonl is missing.*AM_RECORD_FIXTURES=1"):
+        recorded_fixture("logs-follow-x.jsonl", "{}\n")
+
+
+def test_recorded_fixture_writes_the_capture_when_recording(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys.modules[__name__], "FIXTURES", tmp_path)
+    monkeypatch.setenv(RECORD_ENV, "1")
+    assert recorded_fixture("logs-follow-x.jsonl", "{}\n") == "{}\n"
+    assert (tmp_path / "logs-follow-x.jsonl").read_text() == "{}\n"
