@@ -137,3 +137,24 @@ function foldEvents(rows, events, cap) {
   for (var j = dropped; j < seqs.length; j++) out.push(bySeq[String(seqs[j])])
   return { rows: out, dropped: dropped }
 }
+
+var _FAILURES = { failed: true, escalated: true, gate_failed: true, schema_invalid: true,
+                  harness_error: true }
+
+// The non-array object entries of rows matching filter, in input order, as a
+// new array. "Phases": level phase or attempt. "Failures": status (a string)
+// one of failed, escalated, gate_failed, schema_invalid, harness_error, at any
+// level. "All" and any other filter: every object entry. [] when rows is not
+// an array. No input is modified.
+function filterRows(rows, filter) {
+  if (!Array.isArray(rows)) return []
+  var out = []
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i]
+    if (!_isObject(row)) continue
+    if (filter === "Phases" && row.level !== "phase" && row.level !== "attempt") continue
+    if (filter === "Failures" && !(typeof row.status === "string" && _has(_FAILURES, row.status))) continue
+    out.push(row)
+  }
+  return out
+}

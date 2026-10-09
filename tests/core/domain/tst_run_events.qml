@@ -579,4 +579,105 @@ TestCase {
     compare(JSON.stringify(rows), rowsBefore)
     compare(JSON.stringify(evs), evsBefore)
   }
+
+  // synthetic: a copy of fixtureRows()[index] with its status edited.
+  function withStatus(index, status) {
+    var r = copyRow(fixtureRows()[index])
+    r.status = status
+    return r
+  }
+
+  function test_filter_all() {
+    var rows = fixtureRows()
+    var out = RE.filterRows(rows, "All")
+    compare(out.length, 59)
+    verify(out !== rows)
+    for (var i = 0; i < rows.length; i++) verify(out[i] === rows[i], "row " + i)
+  }
+
+  function test_filter_phases() {
+    var rows = fixtureRows()
+    var out = RE.filterRows(rows, "Phases")
+    compare(out.length, 42)
+    var expected = []
+    for (var i = 0; i < rows.length; i++)
+      if (rows[i].level === "phase" || rows[i].level === "attempt") expected.push(rows[i])
+    compare(expected.length, 42)
+    for (var j = 0; j < out.length; j++) {
+      verify(out[j] === expected[j], "row " + j)
+      verify(out[j].level === "phase" || out[j].level === "attempt", "row " + j)
+    }
+  }
+
+  function test_filter_failures() {
+    // synthetic: fixture rows with failure statuses, interleaved with non-failures
+    var failed = withStatus(17, "failed")
+    var runEsc = withStatus(0, "escalated")
+    var storyEsc = withStatus(1, "escalated")
+    var subtaskEsc = withStatus(2, "escalated")
+    var gate = withStatus(21, "gate_failed")
+    var schema = withStatus(21, "schema_invalid")
+    var harness = withStatus(21, "harness_error")
+    var rows = [withStatus(0, "stopped"), failed, withStatus(2, "cancelled"), runEsc,
+                withStatus(2, "canceled"), storyEsc, withStatus(1, "pending"), subtaskEsc,
+                withStatus(21, "ok"), gate, withStatus(0, "done"), schema,
+                withStatus(17, "started"), harness]
+    var expected = [failed, runEsc, storyEsc, subtaskEsc, gate, schema, harness]
+    var out = RE.filterRows(rows, "Failures")
+    compare(out.length, 7)
+    for (var i = 0; i < expected.length; i++) verify(out[i] === expected[i], "row " + i)
+    compare(RE.filterRows(fixtureRows(), "Failures").length, 0)
+  }
+
+  function test_filter_unknown() {
+    var rows = fixtureRows()
+    var filters = [undefined, null, "", "phases", "FAILURES", "bogus", 5]
+    for (var f = 0; f < filters.length; f++) {
+      var out = RE.filterRows(rows, filters[f])
+      compare(out.length, 59, String(filters[f]))
+      for (var i = 0; i < rows.length; i++) verify(out[i] === rows[i], String(filters[f]) + " row " + i)
+    }
+    compare(RE.filterRows(rows).length, 59)
+  }
+
+  function test_filter_bad_inputs() {
+    var notRows = [[null, "All"], [undefined, undefined], ["x", "Phases"], [5, "Failures"], [{}, "All"]]
+    for (var i = 0; i < notRows.length; i++) {
+      var out = RE.filterRows(notRows[i][0], notRows[i][1])
+      verify(Array.isArray(out), "case " + i)
+      compare(out.length, 0, "case " + i)
+    }
+    compare(RE.filterRows().length, 0)
+    var phase = fixtureRows()[17]
+    compare(phase.level, "phase")
+    // synthetic: entries that are not rows
+    var mixed = [null, 5, "x", [], phase]
+    var all = RE.filterRows(mixed, "All")
+    compare(all.length, 1)
+    verify(all[0] === phase)
+    var phases = RE.filterRows(mixed, "Phases")
+    compare(phases.length, 1)
+    verify(phases[0] === phase)
+    compare(RE.filterRows(mixed, "Failures").length, 0)
+    // synthetic: statuses naming inherited properties, and a non-string status
+    var odd = ["constructor", "toString", "__proto__", "hasOwnProperty", ["failed"], null, 5]
+    for (var j = 0; j < odd.length; j++)
+      compare(RE.filterRows([withStatus(21, odd[j])], "Failures").length, 0, String(odd[j]))
+  }
+
+  function test_filter_does_not_mutate() {
+    var rows = fixtureRows()
+    // synthetic: one failure row among the fixture rows
+    rows[21] = withStatus(21, "gate_failed")
+    var before = JSON.stringify(rows)
+    var filters = ["All", "Phases", "Failures"]
+    for (var f = 0; f < filters.length; f++) {
+      var out = RE.filterRows(rows, filters[f])
+      compare(JSON.stringify(rows), before, filters[f])
+      verify(out !== rows, filters[f])
+      out.push({ seq: 999 })
+      compare(rows.length, 59, filters[f])
+      compare(JSON.stringify(rows), before, filters[f])
+    }
+  }
 }
