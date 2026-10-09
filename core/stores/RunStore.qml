@@ -164,13 +164,18 @@ Scope {
   // notifyOnEscalation is never read.
   property var runSettings: ({})
 
-  // Dispatch (S3 3.1): starting an am run. The UI opens it for a target
-  // (openDispatch), edits the form (setDispatchField) and presses Start
-  // (dispatchStart); the store checks the form, previews it with
-  // dispatch-preview.py and starts it with start-run.py. `dispatchState` is
-  // idle | previewing | ready | refused | starting | started | failed. Every
-  // object here is replaced, never changed in place.
+  // Dispatch (S3 3.1): starting an am run for dispatchRoot. The UI opens it
+  // for a target (openDispatch for a card of the open project,
+  // dispatchOpenFor for the current dispatchRoot), edits the form
+  // (setDispatchField) and presses Start (dispatchStart); the store checks
+  // the form, previews it with dispatch-preview.py and starts it with
+  // start-run.py. `dispatchState` is idle | previewing | ready | refused |
+  // starting | started | failed. Every object here is replaced, never
+  // changed in place.
   property string dispatchState: "idle"
+  // The project root the dispatch is for; every dispatch launch carries it;
+  // "" while no dispatch has been opened since the last close or project switch.
+  property string dispatchRoot: ""
   property var dispatchTarget: null     // Runs.dispatchPlan of the opened target; null while idle
   property string dispatchTargetLabel: "" // Runs.dispatchLabel of the opened target; "" while idle
   property var dispatchForm: null       // {base, prefix, verify, parallelism, allowNoVerification}; null while idle
@@ -651,12 +656,14 @@ Scope {
   // controlRunners), the control error, the cancel dialog, the footer flash,
   // the alerts, the toasts and the notify switch belong to every registered
   // project and stay, and no snapshot is launched. Reset: the run settings
-  // (loaded for the new project on runSettingsRunner) and the dispatch.
+  // (loaded for the new project on runSettingsRunner), the dispatch and
+  // dispatchRoot ("").
   function projectSwitched() {
     store.runSettings = {}
     // The dispatch is the old project's, even mid-start: a start already
     // launched still runs, and its reply is no longer this dispatch's.
     store.resetDispatch()
+    store.dispatchRoot = ""
     runSettingsRunner.guard = store.project
     if (store.project !== "") runSettingsRunner.run(["get-run-settings", store.project])
   }
@@ -1466,17 +1473,26 @@ Scope {
     store.dispatchMessage = ""
   }
 
-  // Opens the dispatch for a brd card (as Board.indexTree() leaves it) or
-  // "board", with its {id: card} map, and returns whether it may be started.
-  // Refused (false, nothing changes) without a project or while a start is in
-  // flight. Every opening sets dispatchTargetLabel and records cardMap and
-  // cardMap's entry for the target's milestone (Runs.dispatchMilestone), or
-  // null. A target dispatchPlan does not offer is `refused` at once; any
-  // other starts from dispatchDefaults with this project's runSettings and
-  // the Runs snapshot, and looks up the default branch before anything is
-  // checked.
+  // The card entry: opens the dispatch for the open project (dispatchRoot =
+  // project) and returns dispatchOpenFor's result. Refused (false, nothing
+  // changes) without a project or while a start is in flight.
   function openDispatch(card, cardMap) {
     if (store.project === "" || store.dispatchState === "starting") return false
+    store.dispatchRoot = store.project
+    return store.dispatchOpenFor(card, cardMap)
+  }
+
+  // Opens the dispatch for dispatchRoot on a brd card (as Board.indexTree()
+  // leaves it) or "board", with its {id: card} map, and returns whether it
+  // may be started. Refused (false, nothing changes) without a dispatchRoot
+  // or while a start is in flight. Every opening sets dispatchTargetLabel
+  // and records cardMap and cardMap's entry for the target's milestone
+  // (Runs.dispatchMilestone), or null. A target dispatchPlan does not offer
+  // is `refused` at once and launches nothing; any other starts from
+  // dispatchDefaults with runSettings and the Runs snapshot, and looks up
+  // dispatchRoot's default branch before anything is checked.
+  function dispatchOpenFor(card, cardMap) {
+    if (store.dispatchRoot === "" || store.dispatchState === "starting") return false
     store.resetDispatch()
     var plan = Runs.dispatchPlan(card, cardMap)
     var milestone = Runs.dispatchMilestone(card, cardMap)
@@ -1496,15 +1512,17 @@ Scope {
                            allowNoVerification: d.allowNoVerification }
     store.dispatchState = "previewing"
     dispatchBook.defaultsPending = true
-    dispatchDefaultsRunner.run(["--defaults", store.project])
+    dispatchDefaultsRunner.run(["--defaults", store.dispatchRoot])
     return true
   }
 
-  // Back to idle. Refused while a start is in flight: its outcome must land in
-  // a dialog that still shows what was started.
+  // Back to idle, and dispatchRoot back to "". Refused (false, nothing
+  // changes) while a start is in flight: its outcome must land in a dialog
+  // that still shows what was started.
   function closeDispatch() {
     if (store.dispatchState === "starting") return false
     store.resetDispatch()
+    store.dispatchRoot = ""
     return true
   }
 
@@ -1591,10 +1609,10 @@ Scope {
       store.dispatchState = "ready"
       return
     }
-    dispatchPreviewRunner.run([store.project].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
+    dispatchPreviewRunner.run([store.dispatchRoot].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
   }
 
-  // The newest preview's reply for this project and these values (a form
+  // The newest preview's reply for this dispatchRoot and these values (a form
   // change cancels the runner). ok: ready with Runs.previewSummary for the
   // target's level, except a story with nothing left, refused as `Nothing
   // left to run` (Empty); am's refusal: its message verbatim, and for a
@@ -1816,20 +1834,21 @@ Scope {
     onFinished: function(stdout, exitCode) { store.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
   }
 
-  // dispatch-preview.py --defaults, once per opening. Guarded by the project:
-  // a reply for a project the user has left is dropped.
+  // dispatch-preview.py --defaults, once per opening. Guarded by
+  // dispatchRoot: a reply for a root the dispatch has left is dropped.
   HelperRunner {
     id: dispatchDefaultsRunner
     script: store.backendDir + "runs/dispatch-preview.py"
-    guard: store.project
+    guard: store.dispatchRoot
     onFinished: function(stdout, exitCode) { store.dispatchDefaultsReplied(stdout) }
   }
 
   // The dispatch preview; latest wins, and every form change cancels it.
+  // Guarded by dispatchRoot.
   HelperRunner {
     id: dispatchPreviewRunner
     script: store.backendDir + "runs/dispatch-preview.py"
-    guard: store.project
+    guard: store.dispatchRoot
     onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
   }
 

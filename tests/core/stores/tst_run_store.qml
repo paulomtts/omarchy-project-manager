@@ -5240,6 +5240,76 @@ TestCase {
     compare(back.dispatchTargetLabel, 'Milestone "M3 Document runs"')
   }
 
+  // ---- dispatch: dispatchRoot (2.1 RunStore dispatch)
+
+  // 2.1 RunStore dispatch test 1
+  function test_dispatch_root_starts_empty_and_card_entry_sets_project() {
+    var fresh = make(); if (!fresh) return
+    compare(fresh.dispatchRoot, "", "fresh")
+    var cards = dispatchCards()
+    compare(fresh.openDispatch(cards.m1, cards), false, "no project")
+    compare(fresh.dispatchRoot, "", "a refused card entry sets no root")
+
+    var store = dispatchStore(); if (!store) return
+    compare(store.dispatchRoot, "", "opening a project opens no dispatch")
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchRoot, tc.rootA, "a card entry dispatches for the open project")
+    compare(store.closeDispatch(), true)
+    compare(store.dispatchRoot, "", "closed")
+    checkDispatchIdle(store, "closed")
+    compare(store.openDispatch(cards.m1, cards), true)
+    store.project = tc.rootB
+    compare(store.dispatchRoot, "", "a project switch forgets the root")
+    checkDispatchIdle(store, "switched")
+
+    var starting = readyStore(); if (!starting) return
+    compare(starting.dispatchStart(), true)
+    compare(starting.closeDispatch(), false)
+    compare(starting.dispatchRoot, tc.rootA, "a refused close keeps the root")
+    compare(starting.openDispatch(cards.t1, cards), false)
+    compare(starting.dispatchRoot, tc.rootA, "a refused card entry keeps the root")
+  }
+
+  // 2.1 RunStore dispatch test 2
+  function test_dispatch_open_for_refuses_without_a_root_or_while_starting() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.dispatchOpenFor(cards.m1, cards), false, "no root")
+    checkDispatchIdle(store, "no root")
+    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
+
+    var starting = readyStore(); if (!starting) return
+    starting.dispatchStart()
+    compare(starting.dispatchOpenFor(cards.t1, cards), false, "starting")
+    compare(starting.dispatchState, "starting")
+    compare(starting.dispatchTarget.level, "milestone")
+    compare(starting.dispatchRoot, tc.rootA)
+  }
+
+  // 2.1 RunStore dispatch: the defaults lookup and a refused target for another root
+  function test_dispatch_open_for_launches_for_the_root() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.dispatchRoot = tc.rootB
+    compare(store.dispatchOpenFor(cards.m1, cards), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchRoot, tc.rootB, "the opening keeps the root")
+    compare(store.project, tc.rootA)
+    var lookup = store.dispatchDefaultsRunner.current
+    verify(lookup, "the default branch is looked up")
+    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/b")
+    compare(lookup.launchGuard, "/home/u/b")
+    compare(store.dispatchPreviewRunner.guard, "/home/u/b")
+
+    var refused = dispatchStore(); if (!refused) return
+    refused.dispatchRoot = tc.rootB
+    compare(refused.dispatchOpenFor(cards.d1, cards), false)
+    compare(refused.dispatchState, "refused")
+    compare(refused.dispatchErrorType, "Target")
+    compare(refused.dispatchRoot, tc.rootB)
+    verify(!refused.dispatchDefaultsRunner.current, "a refused target launches nothing")
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).
