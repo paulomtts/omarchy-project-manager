@@ -246,6 +246,11 @@ Panel {
     navi.openRun(runId, "runs")
   }
 
+  // The toolbar RunIndicator's counts: Runs.runFilterCounts over every
+  // registered project's runs, whatever project is open and whatever the
+  // Runs list's project filter, chip or search.
+  readonly property var runCounts: Runs.runFilterCounts(appStores.runs.runs)
+
   // ---- Dispatch (S3 4.2). Panel opens every dispatch: a refused plan does
   // not say which card it was for, and the dialog needs the card's title,
   // story and blockers, so the card is kept here. The Runs entry adds a row
@@ -541,6 +546,17 @@ Panel {
             tooltipText: !appStores.projects.selectedProject ? "Open a project to dispatch"
               : appStores.runs.amStatus === "missing" ? "am is not installed or not on PATH" : "Start an am run"
             onClicked: root.openRunsDispatch("board")
+          }
+
+          // The am run strip, last in the row, over every registered project's
+          // runs (runCounts), with or without an open project and in every view;
+          // it hides itself while no run is running, parked or needs attention.
+          UI.RunIndicator {
+            objectName: "runIndicator"
+            theme: panelTheme
+            running: root.runCounts.live
+            parked: root.runCounts.parked
+            attention: root.runCounts.attention
           }
         }
 
