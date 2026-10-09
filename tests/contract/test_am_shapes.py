@@ -25,6 +25,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import stub_claude
+
 pytestmark = pytest.mark.skipif(shutil.which("am") is None, reason="am is not installed here")
 
 AM_TIMEOUT = 30
@@ -636,3 +638,35 @@ def test_follow_stream_checker_fails_on_a_stream_with_no_chunk():
 def test_json_lines_names_a_line_that_is_not_a_json_object():
     with pytest.raises(pytest.fail.Exception, match=r"line 1 is not a JSON object: '\[1\]'"):
         json_lines('{"a": 1}\n[1]\n')
+
+
+STUB_CLAUDE = Path(__file__).resolve().parent / "stub_claude.py"
+
+
+def test_stub_claude_refuses_a_field_the_schema_lacks():
+    with pytest.raises(stub_claude.StubError, match="no field 'summary'.*'synopsis'"):
+        stub_claude.override({"synopsis": ""}, summary="x")
+
+
+def test_stub_claude_zero_payload_follows_refs_and_nullable_fields():
+    schema = {"$defs": {"V": {"properties": {"lint": {"type": "array"},
+                                              "typecheck": {"type": "string"}}}},
+              "properties": {"verification": {"$ref": "#/$defs/V"},
+                             "reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                             "refused": {"type": "boolean"}, "n": {"type": "integer"}}}
+    assert stub_claude.zero_payload(schema) == {
+        "verification": {"lint": [], "typecheck": ""}, "reason": None, "refused": False, "n": 0}
+
+
+def test_stub_claude_exits_1_naming_a_phase_it_has_no_behaviour_for(tmp_path):
+    result = tmp_path / "result.json"
+    brief = tmp_path / "prompt.txt"
+    brief.write_text("# phase: resolve\n# role: resolver\n\n## Result contract\n"
+                     "When you are done, write your result as valid JSON to exactly this path:\n\n"
+                     f"{result}\n\n```json\n{{\"properties\": {{}}}}\n```\n", encoding="utf-8")
+    proc = subprocess.run([sys.executable, str(STUB_CLAUDE), "-p",
+                           f"Read {brief} and follow the instructions in it exactly. Go."],
+                          cwd=tmp_path, capture_output=True, text=True, timeout=AM_TIMEOUT)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "stub claude: no behaviour for phase 'resolve'" in proc.stderr, proc.stderr
+    assert proc.stdout == "" and not result.exists()
