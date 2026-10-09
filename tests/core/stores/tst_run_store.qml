@@ -3630,6 +3630,24 @@ TestCase {
     compare(armedKeys(store), "")
     compare(ids(store.runs), "a1,b1", "the runs are still applied")
   }
+
+  // 6
+  function test_a_root_that_leaves_the_registry_loses_its_arming() {
+    var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
+    store.projectRoots = registry([tc.rootA])
+    compare(armedKeys(store), tc.rootA, "B left: its arming goes at once")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")])]), 0)
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    compare(armedKeys(store), tc.rootA, "coming back does not re-arm")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1")])]), 0)
+    compare(store.toasts.length, 0, "its next good entry only arms")
+    compare(armedKeys(store), bothRoots())
+    var armed = store.armedRoots
+    store.projectRoots = [{ root: tc.rootA, name: "renamed" }, rootEntry(tc.rootB)]
+    verify(store.armedRoots === armed, "no root went: the map is not replaced")
+    store.projectRoots = []
+    compare(armedKeys(store), "", "an empty registry arms nothing")
+  }
   // ---- alerts: the setting and the desktop notifications (S2 4.4)
 
   property string notifyCmd: "python3|/plugin/core/backend/runs/notify.py|"

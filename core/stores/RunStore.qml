@@ -723,19 +723,23 @@ Scope {
     return { runs: out, owner: owner }
   }
 
-  // The registry changed. First the roots no longer usable lose their runs
-  // and their errors, and `runs` is merged again in the new order with the
-  // new names; no alert is raised. Then every usable root is snapshotted.
+  // The registry changed. First the roots no longer usable lose their runs,
+  // their errors and their arming (armedRoots is replaced only when a root
+  // went), and `runs` is merged again in the new order with the new names;
+  // no alert is raised. Then every usable root is snapshotted.
   function registryChanged() {
     var usable = store.usableRoots()
     var errors = {}
+    var armed = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
       if (store.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
+      if (store.hasKey(store.armedRoots, root)) armed[root] = true
     }
     var byProject = store.taggedByProject(store.runsByProject, usable)
     store.runsByProject = byProject
     store.projectErrors = errors
+    if (Object.keys(armed).length !== Object.keys(store.armedRoots).length) store.armedRoots = armed
     store.runs = store.mergedRuns(byProject, usable).runs
     store.refresh()
   }
