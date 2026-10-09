@@ -2,8 +2,8 @@
 // App's composition of the run monitor's store: `app.runs` exists, and its
 // inputs come from App -- the backend dir, the registry's roots and names,
 // the selected project's ROOT PATH (never the project object), and App's
-// panel-open flag. The store's own behaviour is tested in tst_run_store.qml;
-// here only the wiring is.
+// panel-open flag -- and the couplings between the run monitor's concerns,
+// driven through App. The store's own behaviour is tested in tst_run_store.qml.
 import QtQuick
 import QtTest
 
@@ -101,8 +101,10 @@ TestCase {
   // run-control.py's ok reply.
   function ctlOk(data) { return JSON.stringify({ ok: true, data: data }) + "\n" }
 
+  // The argv of a snapshot of both registered roots.
   property string snapAll: "python3|/plugin/core/backend/runs/runs-snapshot-all.py|/home/u/my proj|/home/u/b"
 
+  // A process's argv, joined with "|".
   function argv(proc) { return proc.command.join("|") }
 
   // run-control.py's refusal.
@@ -110,6 +112,7 @@ TestCase {
     return JSON.stringify({ ok: false, error: { type: type, message: message } }) + "\n"
   }
 
+  // The argv prefix of a viewer-state.py command.
   property string viewerCmd: "python3|/plugin/core/backend/projects/viewer-state.py|"
 
   // get-run-settings with every key, as viewer-state.py prints it.
@@ -129,10 +132,12 @@ TestCase {
     }
   }
 
+  // The --defaults reply: the default branch `branch`, read from origin/HEAD.
   function defaultsOk(branch) {
     return JSON.stringify({ ok: true, data: { default_branch: branch, source: "origin/HEAD" } }) + "\n"
   }
 
+  // The dry-run preview's ok reply carrying `data`.
   function previewOk(data) { return JSON.stringify({ ok: true, data: data }) + "\n" }
 
   // `am run --milestone m1 --dry-run` data: 2 levels, 3 subtasks, 1 story already done.
@@ -151,6 +156,7 @@ TestCase {
     }
   }
 
+  // The dispatch start's ok reply: run `runId` started, with `message`.
   function startOk(runId, message) {
     return JSON.stringify({ ok: true, pid: 4242, log: "/home/u/.local/state/am-run.log", started_at: "2026-10-05T02:14:00Z",
                             run_id: runId, message: message }) + "\n"
@@ -170,6 +176,7 @@ TestCase {
     return app
   }
 
+  // The argv prefix of a notify.py command.
   property string notifyCmd: "python3|/plugin/core/backend/runs/notify.py|"
 
   function test_app_composes_a_run_store_with_no_project_and_closed() {
@@ -412,6 +419,7 @@ TestCase {
     compare(app.runs.flashText, "kept", "the flash stays")
     compare(app.runs.snapshotRunner.seq, seq, "no snapshot is launched")
   }
+
   function test_opening_the_panel_through_app_reads_the_notify_switch() {
     var app = make(); if (!app) return
     verify(!app.runs.settingsLoadRunner.current, "a closed panel reads nothing")
@@ -424,6 +432,7 @@ TestCase {
     reply(app.runs.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
     compare(app.runs.notifyOnEscalation, true)
   }
+
   function test_closing_the_panel_through_app_empties_toasts_disarms_and_closes_the_dispatch() {
     var app = openApp([runningIn("r1")], []); if (!app) return
     snapshot(app, listReply([escalatedIn("r1")], []))
@@ -436,6 +445,7 @@ TestCase {
     compare(app.runs.alertsArmed, false)
     compare(app.runs.dispatchState, "idle")
   }
+
   function test_an_escalation_through_app_notifies_only_with_the_switch_on() {
     var app = openApp([runningIn("r1"), runningIn("r2")], []); if (!app) return
     compare(app.runs.notifyOnEscalation, false)
@@ -449,6 +459,7 @@ TestCase {
     compare(app.runs.notifyRunners.length, 1, "one notification, for r2")
     compare(argv(app.runs.notifyRunners[0].current), tc.notifyCmd + "m-r2|escalated")
   }
+
   function test_a_project_leaving_the_registry_through_app_loses_its_arming() {
     var app = openApp([runningIn("a1")], [runningIn("b1", tc.pB.root_path)]); if (!app) return
     compare(Object.keys(app.runs.armedRoots).sort().join(","), [tc.pA.root_path, tc.pB.root_path].sort().join(","))
