@@ -33,6 +33,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 
 USAGE = "usage: runs-logs-follow.py REPO RUN CARD PHASE ATTEMPT [OFFSET]"
 
@@ -80,6 +81,62 @@ def spawn(argv):
                             errors="replace")
 
 
+class Seen:
+    """What the helper read from am's stdout and printed so far."""
+
+    def __init__(self):
+        self.lines = 0  # every stdout line am printed, skipped ones included
+        self.skipped = 0
+        self.printed = False
+        self.hello = False  # a hello was printed
+        self.refusal = False
+
+
+def collect(stream, parts):
+    """Reader thread: am's whole stderr, so a chatty am never blocks on a full pipe."""
+    parts.append(stream.read())
+
+
+def stop(proc):
+    """Terminate am if it is still running (kill it after 2 s), and reap it."""
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def stream(lines, seen):
+    """Print each of am's stdout `lines` that is a JSON object, recording in
+    `seen`. An object with an `ok` key read before any printed line is the
+    refusal: printed, and every later line ignored. Every other line that is not
+    a JSON object without an `ok` key is skipped and counted."""
+    for raw in lines:
+        seen.lines += 1
+        if seen.refusal:
+            continue
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            line = None
+        if not isinstance(line, dict) or ("ok" in line and seen.printed):
+            seen.skipped += 1
+            continue
+        if "ok" in line:
+            seen.refusal = True
+        elif line.get("event") == "logs":
+            seen.hello = True
+        say(line)
+        seen.printed = True
+
+
+def finish(code, seen, stderr):
+    """Print the last line, if any, for how am ended; return the helper's exit code."""
+    return 0
+
+
 def main(argv):
     parsed = parse_args(argv)
     if parsed is None:
@@ -88,8 +145,19 @@ def main(argv):
     if am is None:
         return failure("AmMissing", "am is not installed.")
     proc = spawn(command(am, *parsed))
-    proc.communicate()
-    return 0
+    err, seen = [], Seen()
+    err_reader = threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)
+    err_reader.start()
+    try:
+        stream(proc.stdout, seen)
+        code = proc.wait()
+        err_reader.join(timeout=2)
+    finally:
+        stop(proc)  # no-op once am has exited; terminates it on every other path
+        if seen.skipped:
+            sys.stderr.write("runs-logs-follow: skipped %d non-JSON lines\n" % seen.skipped)
+            sys.stderr.flush()
+    return finish(code, seen, "".join(err))
 
 
 if __name__ == "__main__":

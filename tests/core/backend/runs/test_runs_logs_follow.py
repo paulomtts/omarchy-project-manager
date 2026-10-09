@@ -322,3 +322,115 @@ def test_am_missing(world):
     code, lines, _, _ = run_helper(world, PATH=str(empty))
     assert code == 0
     assert lines == [error("AmMissing", "am is not installed.")]
+
+# --- passthrough --------------------------------------------------------------------
+
+@pytest.mark.parametrize("name, attempt", [("logs-follow-agent.jsonl", "1"),
+                                           ("logs-follow-step.jsonl", "0")],
+                         ids=["agent", "step"])
+def test_capture_passes_through(world, name, attempt):
+    captured = lines_of(name)
+    set_script(world, [step(line) for line in captured])
+    code, lines, err, out = run_helper(world, [REPO, RUN, CARD, PHASE, attempt])
+    assert code == 0
+    assert lines == captured
+    assert out == capture_text(name)  # compact, key order and values kept
+    assert "skipped" not in err
+
+
+def test_non_objects_skipped_and_counted(world):
+    hello, chunk, end = agent()
+    set_script(world, [raw("not json"), step(hello), raw("[1,2]"), step(chunk), raw('"s"'),
+                       raw("null"), step(end)])
+    code, lines, err, _ = run_helper(world)
+    assert code == 0
+    assert lines == [hello, chunk, end]
+    assert "runs-logs-follow: skipped 4 non-JSON lines" in err
+
+
+def test_unknown_objects_kept(world):
+    hello, chunk, end = agent()
+    extra = edited(chunk, later="synthetic")
+    note = {"event": "note", "detail": [1, {"x": None}]}  # synthetic: a kind this helper does not know
+    set_script(world, [step(hello), step(extra), step(note), step(end)])
+    code, lines, _, out = run_helper(world)
+    assert code == 0
+    assert lines == [hello, extra, note, end]
+    assert out[1] == compact(extra) and out[2] == compact(note)
+
+
+def test_non_ascii_text_passes_through(world):
+    hello, chunk, end = agent()
+    wide = edited(chunk, text="café ✓ — 日本\n")
+    set_script(world, [step(hello), raw(json.dumps(wide, separators=(",", ":"), ensure_ascii=False)),
+                       step(end)])
+    code, lines, err, _ = run_helper(world)
+    assert code == 0
+    assert lines == [hello, wide, end]
+    assert "skipped" not in err
+
+
+def test_long_chunk_passes_through_whole(world):
+    hello, chunk, end = agent()
+    big = edited(chunk, text="x" * 1_000_000 + "\n")
+    set_script(world, [step(hello), step(big), step(end)])
+    code, lines, _, _ = run_helper(world)
+    assert code == 0
+    assert lines == [hello, big, end]
+
+
+def test_each_line_flushed_while_am_runs(world):
+    hello, chunk, _ = agent()
+    set_script(world, [step(hello), step(chunk), pause(30)])
+    p = start_helper(world)
+    try:
+        assert read_lines(p, 2, within=5) == [hello, chunk]
+        p.send_signal(signal.SIGTERM)
+        p.wait(timeout=10)
+    finally:
+        reap(p)
+        kill_am(world)
+
+
+def test_am_exit_zero_without_end_line(world):
+    hello, chunk, _ = agent()
+    set_script(world, [step(hello), step(chunk)])
+    code, lines, _, _ = run_helper(world)
+    assert code == 0
+    assert lines == [hello, chunk]
+
+
+# --- refusal ------------------------------------------------------------------------
+
+def test_refusal_passes_through(world):
+    set_script(world, [step(refusal())], exit=3, stderr="am logs: refused\n")
+    code, lines, _, out = run_helper(world)
+    assert code == 0
+    assert lines == [refusal()]
+    assert out == capture_text("logs-follow-refusal.json")
+
+
+def test_refusal_is_the_only_line(world):
+    _, chunk, _ = agent()
+    set_script(world, [step(refusal()), step(chunk), raw("noise")], exit=3)
+    code, lines, err, _ = run_helper(world)
+    assert code == 0
+    assert lines == [refusal()]
+    assert "skipped" not in err  # later lines are ignored, not counted
+
+
+def test_refusal_after_a_skipped_line_is_still_the_refusal(world):
+    set_script(world, [raw("noise"), step(refusal())], exit=3)
+    code, lines, err, _ = run_helper(world)
+    assert code == 0
+    assert lines == [refusal()]
+    assert "skipped 1 non-JSON lines" in err
+
+
+def test_ok_object_after_a_printed_line_is_skipped(world):
+    hello, chunk, end = agent()
+    set_script(world, [step(hello), step(refusal()), step(chunk), step(end)])
+    code, lines, err, _ = run_helper(world)
+    assert code == 0
+    assert lines == [hello, chunk, end]
+    assert "runs-logs-follow: skipped 1 non-JSON lines" in err
