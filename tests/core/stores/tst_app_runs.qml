@@ -4,8 +4,10 @@
 // the selected project's ROOT PATH (never the project object), and App's
 // panel-open flag -- and the couplings between the run monitor's concerns,
 // driven through App, including `app.runAlerts`, which App feeds with the run
-// store's snapshotReplied. The stores' own behaviour is tested in
-// tst_run_store.qml and tst_run_alerts_store.qml.
+// store's snapshotReplied, and `app.runControl`, whose requests App settles on
+// each ok snapshotReplied and whose refreshRequested App routes to the run
+// store. The stores' own behaviour is tested in tst_run_store.qml,
+// tst_run_alerts_store.qml and tst_run_control_store.qml.
 import QtQuick
 import QtTest
 
@@ -530,5 +532,112 @@ TestCase {
     app.panelOpen = false
     compare(app.runAlerts.toasts.length, 0)
     compare(app.runAlerts.alertsArmed, false)
+  }
+
+  // ---- app.runControl (split-runstore 3.1)
+
+  // A1
+  function test_app_composes_run_control_wired_to_the_run_store() {
+    var app = makeBare(); if (!app) return
+    verify(app.runControl, "App composes the control store")
+    verify(app.runs.controlStore === app.runControl, "the run store's shim handle")
+    compare(app.runControl.backendDir, "/plugin/core/backend/")
+    app.backendDir = "/other/"
+    compare(app.runControl.backendDir, "/other/", "backendDir follows App")
+    compare(app.runControl.active, false)
+    app.panelOpen = true
+    compare(app.runControl.active, true, "active follows panelOpen")
+    app.panelOpen = false
+    compare(app.runControl.active, false)
+    compare(app.runControl.project, "", "no project selected yet")
+    app.projects.applyStoredState('{"last_project": null}', 0)
+    app.projects.applyProjectsList([pA, pB])
+    compare(app.runControl.project, pA.root_path, "the selected project's root path")
+    reply(app.runs.snapshotRunner.current, listReply([runningIn("r1")], []), 0)
+    compare(app.runControl.runs.length, 1)
+    verify(app.runControl.runs === app.runs.runs, "the run store's merged list")
+  }
+
+  // A2
+  function test_a_snapshot_through_app_settles_on_run_control() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runControl.control("pause", "r1"), true)
+    compare(app.runControl.pending.r1, "pause")
+    verify(app.runs.pending === app.runControl.pending, "the run store's shim reads the same map")
+    reply(app.runControl.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
+    compare(app.runControl.controlRunners.length, 0)
+    compare(app.runControl.pending.r1, "pause", "am has it; a snapshot settles it")
+    reply(app.runs.snapshotRunner.current,
+          listReply([runEntry("r1", "started", true, tc.pA.root_path, [{ command: "pause", requested_at: "t1", handled_at: null }])], []), 0)
+    compare(app.runControl.pending.r1, "pause", "not handled yet")
+    snapshot(app, listReply([runEntry("r1", "started", true, tc.pA.root_path, [{ command: "pause", requested_at: "t1", handled_at: "t1h" }])], []))
+    compare(app.runControl.pending.r1, undefined, "the handled request is settled")
+    verify(app.runs.pending === app.runControl.pending)
+  }
+
+  // A3
+  function test_a_control_reply_through_app_snapshots_every_root_from_run_control() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runControl.control("pause", "r1"), true)
+    var seq = app.runs.snapshotRunner.seq
+    reply(app.runControl.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
+    compare(app.runs.snapshotRunner.seq, seq + 1, "one snapshot")
+    compare(argv(app.runs.snapshotRunner.current), tc.snapAll, "of every registered root")
+  }
+
+  // A4
+  function test_a_refresh_request_for_some_roots_snapshots_only_those() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runs.snapshotRunner.busy, false)
+    var seq = app.runs.snapshotRunner.seq
+    app.runControl.refreshRequested([tc.pB.root_path])
+    compare(app.runs.snapshotRunner.seq, seq + 1)
+    compare(argv(app.runs.snapshotRunner.current), "python3|/plugin/core/backend/runs/runs-snapshot-all.py|/home/u/b", "pB alone")
+  }
+
+  // A5
+  function test_only_an_ok_snapshot_through_app_settles() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runControl.control("pause", "r1"), true)
+    reply(app.runControl.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
+    var fail = { type: "AmFailed", message: "boom" }
+    reply(app.runs.snapshotRunner.current,
+          JSON.stringify({ ok: true, projects: [{ root: tc.pA.root_path, ok: false, error: fail },
+                                                { root: tc.pB.root_path, ok: false, error: fail }],
+                           data_dir: "/home/u/.local/share" }) + "\n", 0)
+    compare(app.runs.amStatus, "error")
+    compare(app.runControl.pending.r1, "pause", "a failed reply settles nothing")
+    snapshot(app, missingReply())
+    compare(app.runs.amStatus, "missing")
+    compare(app.runControl.pending.r1, "pause", "an AmMissing reply settles nothing")
+    snapshot(app, listReply([], []))
+    compare(app.runControl.pending.r1, undefined, "the next ok reply shows the run gone and settles it")
+  }
+
+  // A6 (Review Focus: the "all" route)
+  function test_a_control_reply_with_no_project_registered_launches_no_snapshot() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runControl.control("pause", "r1"), true)
+    app.projects.applyProjectsList([])
+    compare(app.runs.runs.length, 0, "the emptied registry emptied the lists")
+    var seq = app.runs.snapshotRunner.seq
+    reply(app.runControl.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", requested_at: "t1" }), 0)
+    compare(app.runControl.controlRunners.length, 0)
+    compare(app.runs.snapshotRunner.seq, seq, "refresh() with no usable root launches nothing")
+    compare(app.runs.runs.length, 0)
+  }
+
+  // A7 (Review Focus: a failed root before an ok root)
+  function test_a_reply_with_a_failed_root_before_an_ok_root_settles() {
+    var app = openApp([runningIn("r1")], [runningIn("b1", tc.pB.root_path)]); if (!app) return
+    compare(app.runControl.control("pause", "b1"), true)
+    reply(app.runControl.controlRunners[0].current, ctlOk({ run_id: "b1", command: "pause", requested_at: "t1" }), 0)
+    var handled = runEntry("b1", "started", true, tc.pB.root_path, [{ command: "pause", requested_at: "t1", handled_at: "t1h" }])
+    reply(app.runs.snapshotRunner.current,
+          JSON.stringify({ ok: true, projects: [{ root: tc.pA.root_path, ok: false, error: { type: "AmFailed", message: "boom" } },
+                                                { root: tc.pB.root_path, ok: true, runs: [handled] }],
+                           data_dir: "/home/u/.local/share" }) + "\n", 0)
+    compare(app.runs.amStatus, "ok")
+    compare(app.runControl.pending.b1, undefined, "settled on pB's ok emission")
   }
 }

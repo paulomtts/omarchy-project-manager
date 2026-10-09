@@ -103,7 +103,8 @@ QtObject {
   // The run store never imports the project or board store: App hands it the
   // registry's roots and names in registry order, the selected project's root
   // path (never the project object), the panel-open flag that starts and
-  // stops its watch, and the alerts store its shims read (alertsStore).
+  // stops its watch, and the stores its shims read (controlStore,
+  // alertsStore).
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
     projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
@@ -111,6 +112,7 @@ QtObject {
     active: app.panelOpen
     searchQuery: app.nav.searchQuery
     alertsStore: app.runAlerts
+    controlStore: app.runControl
     onRunFilterToggled: {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
@@ -120,7 +122,23 @@ QtObject {
       app.nav.scrollOnCursor = false
     }
     onSnapshotReplied: function(root, outcome, previousRuns, runs) {
+      if (outcome === "ok") app.runControl.settleAfterSnapshot()
       app.runAlerts.snapshotReplied(root, outcome, previousRuns, runs)
+    }
+  }
+
+  // The run controls never import the run store: App hands them the backend
+  // directory, the open project's root, the panel-open flag and the run list,
+  // settles their requests on each ok snapshot reply and routes their
+  // refreshRequested to the run store.
+  readonly property RunControlStore runControl: RunControlStore {
+    backendDir: app.backendDir
+    project: app.runs.project
+    active: app.panelOpen
+    runs: app.runs.runs
+    onRefreshRequested: function(roots) {
+      if (roots === "all") app.runs.refresh()
+      else app.runs.requestSnapshot(roots)
     }
   }
 
