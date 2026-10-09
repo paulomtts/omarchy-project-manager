@@ -136,13 +136,17 @@ Scope {
   // The footer flash: why a run key was refused. flashTimer clears it.
   property string flashText: ""
 
-  // Alerts (S2 4.4): a toast for every run that newly needs a human while the
-  // panel is open. `alertsArmed` says the current `runs` may be compared
-  // against: the first good snapshot after an opening, a store change or an
-  // am-missing spell only arms, so history is never replayed. `toasts` is
-  // {key, id, title, state, reason, expiresMs}, oldest first, at most 3, and
-  // is replaced, never changed in place.
-  property bool alertsArmed: false
+  // Alerts (S2 4.4): a toast for every run of any registered project that
+  // newly needs a human while the panel is open. `armedRoots` is {root: true}
+  // of every usable root whose runs may be compared against, and is replaced,
+  // never changed in place: a root's first good entry after an opening, a
+  // store change, an am-missing spell or its return to the registry only arms
+  // it, so history is never replayed. `alertsArmed`: some root is armed.
+  // `toasts` is {key, id, title, state, reason, project, expiresMs}, oldest
+  // first, at most 3, and is replaced, never changed in place; `project` is
+  // the name of the run's project.
+  property var armedRoots: ({})
+  readonly property bool alertsArmed: Object.keys(store.armedRoots).length > 0
   property var toasts: []
   property int toastMs: 8000
   // "Notify on escalation", per project and off by default: the switch's
@@ -346,10 +350,10 @@ Scope {
   }
 
   // The panel opened: fetch now; the first good snapshot starts the watch and
-  // arms the alerts, and the stale clock counts from now.
+  // arms every root that answers in it, and the stale clock counts from now.
   function startLive() {
     store.watchTried = false
-    store.alertsArmed = false
+    store.armedRoots = {}
     store.restartStale()
     store.refresh()
   }
@@ -370,7 +374,7 @@ Scope {
     staleTimer.stop()
     store.stale = false
     store.watchWarning = ""
-    store.alertsArmed = false
+    store.armedRoots = {}
     store.toasts = []
     // A start in flight refuses and lands normally.
     store.closeDispatch()
@@ -578,7 +582,7 @@ Scope {
     debounceTimer.stop()
     store.runs = []
     store.runsByProject = {}
-    store.alertsArmed = false
+    store.armedRoots = {}
   }
 
   // A store id seen in a hello. A non-empty string is recorded as storeId;
@@ -903,7 +907,7 @@ Scope {
   // unless none of the roots it was launched for (`launched`) is usable any
   // more, when it changes nothing. Every
   // matched entry AmMissing: the runs, runsByProject, projectErrors and the
-  // coverage are emptied and amStatus is "missing", disarming the alerts.
+  // coverage are emptied and amStatus is "missing", and every root is disarmed.
   // Otherwise an ok entry replaces its root's runs and clears its error
   // (entries that are not objects are skipped); a failed one keeps its
   // root's runs ([] when it had none) and records Runs.errorText of its
@@ -911,8 +915,11 @@ Scope {
   // and asOfSeq is 0 and appliedSeq {id: 0} for every run in it. With an
   // entry ok, everything after a good snapshot follows, and while active a
   // running watch whose roots are no longer the usable "/" roots is started
-  // again. With none, amStatus is "error" with the first failed entry's
-  // sentence, and the alerts and `stale` stay as they are.
+  // again, the alerts of every armed root with an ok entry are raised
+  // (alertsOf) and every root with an ok entry is armed. With none, amStatus
+  // is "error" with the first failed entry's sentence, and armedRoots and
+  // `stale` stay as they are. A failed entry, a root with no entry and a
+  // closed panel never change armedRoots.
   function applyProjects(entries, exitCode, launched) {
     var usable = store.usableRoots()
     var names = {}
@@ -951,20 +958,23 @@ Scope {
       store.asOfSeq = 0
       store.amStatus = "missing"
       store.lastError = Runs.errorText(matched[0].error)
-      // Comparing the next good snapshot against [] would alert every
-      // escalated run again.
-      store.alertsArmed = false
+      // Every root is disarmed: comparing its next good entry against []
+      // would alert every escalated run again.
+      store.armedRoots = {}
       return
     }
+    var prev = store.runsByProject
     var byProject = store.copyMap(store.runsByProject)
     var errors = store.copyMap(store.projectErrors)
     var anyOk = false
+    var okRoots = {}
     var firstError = ""
     for (var k = 0; k < matched.length; k++) {
       var entry = matched[k]
       var root = entry.root
       if (entry.ok === true) {
         anyOk = true
+        okRoots[root] = true
         var list = Array.isArray(entry.runs) ? entry.runs : []
         var out = []
         for (var r = 0; r < list.length; r++) {
@@ -986,7 +996,7 @@ Scope {
     var ids = Object.keys(merged.owner)
     for (var d = 0; d < ids.length; d++) applied[ids[d]] = 0
     // Compared before the runs are replaced; raised below only while open.
-    var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, merged.runs)
+    var alerts = store.active ? store.alertsOf(prev, byProject, merged.owner, okRoots, usable) : []
     store.runsByProject = byProject
     store.projectErrors = errors
     store.asOfSeq = 0
@@ -1016,8 +1026,36 @@ Scope {
         store.startWatch()
       }
       store.raiseAlerts(alerts)
-      store.alertsArmed = true
+      var armed = store.copyMap(store.armedRoots)
+      for (var ok in okRoots) armed[ok] = true
+      store.armedRoots = armed
     }
+  }
+
+  // One list reply's alerts, in registry order, then each root's order: for
+  // every armed root in okRoots, Runs.newAlerts of its runs before the reply
+  // (prev; [] when it had none) against the runs of byProject it owns in the
+  // merged list (owner), each with `project`, the name Runs.withProject gives
+  // that root. A run id is raised at most once.
+  function alertsOf(prev, byProject, owner, okRoots, usable) {
+    var out = []
+    var raised = {}
+    for (var i = 0; i < usable.length; i++) {
+      var root = usable[i].root
+      if (!store.hasKey(okRoots, root) || !store.hasKey(store.armedRoots, root)) continue
+      var mine = byProject[root].filter(function(run) {
+        return run !== null && typeof run === "object" && store.hasKey(owner, run.id) && owner[run.id] === root
+      })
+      var name = Runs.withProject({}, root, usable[i].name).project.name
+      var found = Runs.newAlerts(store.hasKey(prev, root) ? prev[root] : [], mine)
+      for (var j = 0; j < found.length; j++) {
+        if (store.hasKey(raised, found[j].id)) continue
+        raised[found[j].id] = true
+        found[j].project = name
+        out.push(found[j])
+      }
+    }
+    return out
   }
 
   // ---- run controls (S2 4.1)
@@ -1310,7 +1348,7 @@ Scope {
       toastState.nextKey += 1
       var next = store.toasts.filter(function(t) { return t.id !== a.id })
       next.push({ key: toastState.nextKey, id: a.id, title: a.title, state: a.state, reason: a.reason,
-                  expiresMs: Date.now() + store.toastMs })
+                  project: typeof a.project === "string" ? a.project : "", expiresMs: Date.now() + store.toastMs })
       while (next.length > 3) next.shift()
       store.toasts = next
       if (store.notifyOnEscalation) store.notify(a)

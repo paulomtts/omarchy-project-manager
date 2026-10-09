@@ -3479,6 +3479,157 @@ TestCase {
     compare(toastIds(store), "a,b", "the next snapshot compares as before")
   }
 
+  // ---- alerts across projects (3.4)
+
+  // The armed roots of `store`, sorted, comma-joined.
+  function armedKeys(store) { return Object.keys(store.armedRoots).sort().join(",") }
+  function bothRoots() { return [tc.rootA, tc.rootB].sort().join(",") }
+
+  // The next list reply of `store`: a snapshot of every root, answered with `projects`.
+  function answer(store, projects) {
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply(projects), 0)
+  }
+
+  // An active store with A and B registered and no project open, whose first
+  // reply listed `aRuns` under A and `bRuns` under B: both are armed, nothing raised.
+  function armedTwo(aRuns, bRuns) {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return null
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, aRuns), okEntry(tc.rootB, bRuns)]), 0)
+    compare(armedKeys(store), bothRoots(), "the first reply arms both")
+    compare(store.alertsArmed, true)
+    compare(store.toasts.length, 0, "and raises nothing")
+    return store
+  }
+
+  // 1
+  function test_an_escalation_in_another_project_raises_one_toast_with_its_project() {
+    var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
+    compare(store.project, "")
+    store.notifyOnEscalation = true
+    answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1")])])
+    compare(toastIds(store), "b1")
+    compare(store.toasts[0].project, "beta")
+    compare(store.toasts[0].title, "m-b1")
+    compare(store.toasts[0].state, "escalated")
+    compare(store.notifyRunners.length, 1, "one notification")
+    compare(argv(store.notifyRunners[0].current), tc.notifyCmd + "m-b1|escalated", "its text does not change")
+  }
+
+  // 2
+  function test_a_project_that_first_fails_or_joins_later_only_arms_on_its_first_good_entry() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]),
+                                                  failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
+    compare(armedKeys(store), tc.rootA, "only A answered")
+    answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1"), dead("b2")])])
+    compare(store.toasts.length, 0, "B's first good entry only arms")
+    compare(armedKeys(store), bothRoots())
+    answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1"), dead("b2"), escalated("b3")])])
+    compare(toastIds(store), "b3", "the entry after that compares normally")
+    compare(store.toasts[0].project, "beta")
+    store.projectRoots = registry([tc.rootA, tc.rootB, tc.rootC])
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]),
+                                                  okEntry(tc.rootB, [escalated("b1"), dead("b2"), escalated("b3")]),
+                                                  okEntry(tc.rootC, [escalated("c1")])]), 0)
+    compare(toastIds(store), "b3", "a project added later: its first entry raises nothing")
+    compare(armedKeys(store), [tc.rootA, tc.rootB, tc.rootC].sort().join(","), "and arms it")
+  }
+
+  // 3
+  function test_a_failing_project_raises_nothing_and_stays_armed() {
+    var store = armedTwo([running("a1")], [running("b1"), escalated("b2")]); if (!store) return
+    answer(store, [okEntry(tc.rootA, [running("a1")]), failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")])
+    compare(store.toasts.length, 0, "a failed entry raises nothing")
+    compare(ids(store.runsByProject[tc.rootB]), "b1,b2", "B keeps its runs")
+    compare(armedKeys(store), bothRoots(), "and stays armed")
+    answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1"), escalated("b2")])])
+    compare(toastIds(store), "b1", "the recovery compares against the kept runs: b2 is not replayed")
+    compare(store.toasts[0].project, "beta")
+  }
+
+  // 4
+  function test_an_am_missing_spell_disarms_every_project() {
+    var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
+    answer(store, [failEntry(tc.rootA, "AmMissing", "am is not installed."), failEntry(tc.rootB, "AmMissing", "am is not installed.")])
+    compare(armedKeys(store), "")
+    compare(store.alertsArmed, false)
+    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [escalated("b1")])])
+    compare(store.toasts.length, 0, "the next good reply only arms")
+    compare(armedKeys(store), bothRoots())
+    answer(store, [okEntry(tc.rootA, [escalated("a1")]), failEntry(tc.rootB, "AmMissing", "am is not installed.")])
+    compare(store.amStatus, "ok", "AmMissing beside an ok entry is no spell")
+    compare(ids(store.runsByProject[tc.rootB]), "b1", "B keeps its runs")
+    compare(armedKeys(store), bothRoots(), "and its armed state")
+    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [escalated("b1"), dead("b2")])])
+    compare(toastIds(store), "b2")
+  }
+
+  // 5 and Review Focus 4
+  function test_a_run_listed_under_two_roots_alerts_once_under_the_first() {
+    var store = armedTwo([running("x")], [running("x")]); if (!store) return
+    store.notifyOnEscalation = true
+    // B's entry first: the registry's order decides, not the reply's.
+    answer(store, [okEntry(tc.rootB, [escalated("x")]), okEntry(tc.rootA, [escalated("x")])])
+    compare(toastIds(store), "x")
+    compare(store.toasts[0].project, "alpha")
+    compare(store.notifyRunners.length, 1, "one notification")
+    store.projectRoots = registry([tc.rootB, tc.rootA])
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [escalated("x")]), okEntry(tc.rootB, [escalated("x")])]), 0)
+    compare(store.runs[0].project.root, tc.rootB, "B owns x now")
+    compare(store.toasts.length, 1, "a new owner replays nothing")
+    compare(store.notifyRunners.length, 1)
+  }
+
+  // Review Focus 1, 2 and 3
+  function test_a_partial_or_failed_reply_leaves_the_other_roots_arming_alone() {
+    // synthetic: a run without an id under B.
+    var store = armedTwo([running("a1")], [running("b1"), entry("", "started", true)]); if (!store) return
+    var armed = store.armedRoots
+    store.refresh()
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "Usage", message: "usage" } }) + "\n", 2)
+    verify(store.armedRoots === armed, "a whole-call failure leaves the arming alone")
+    store.refresh()
+    reply(store.snapshotRunner.current, "garbage\n", 1)
+    verify(store.armedRoots === armed, "so does garbage")
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [escalated("b1"), entry("", "escalated", false)])]), 0)
+    compare(toastIds(store), "b1", "a run without an id never alerts")
+    compare(store.toasts[0].project, "beta")
+    compare(armedKeys(store), bothRoots(), "A, with no entry, stays armed")
+    compare(ids(store.runsByProject[tc.rootA]), "a1")
+  }
+
+  // 7
+  function test_a_project_switch_keeps_the_toasts_and_every_projects_arming() {
+    var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
+    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [running("b1")])])
+    compare(toastIds(store), "a1")
+    compare(store.toasts[0].project, "alpha")
+    var toasts = store.toasts
+    var armed = store.armedRoots
+    var targets = [tc.rootA, ""]
+    for (var i = 0; i < targets.length; i++) {
+      var label = "project " + JSON.stringify(targets[i])
+      store.project = targets[i]
+      verify(store.toasts === toasts, label + ": the toasts")
+      verify(store.armedRoots === armed, label + ": the arming")
+    }
+    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [escalated("b1")])])
+    compare(toastIds(store), "a1,b1", "the next escalation still alerts")
+    compare(store.toasts[1].project, "beta")
+  }
+
+  // the closed panel (spec §2)
+  function test_a_reply_while_the_panel_is_closed_raises_nothing_and_arms_nothing() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [running("b1")])]), 0)
+    compare(armedKeys(store), "", "a closed panel never arms")
+    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [escalated("b1")])])
+    compare(store.toasts.length, 0)
+    compare(armedKeys(store), "")
+    compare(ids(store.runs), "a1,b1", "the runs are still applied")
+  }
   // ---- alerts: the setting and the desktop notifications (S2 4.4)
 
   property string notifyCmd: "python3|/plugin/core/backend/runs/notify.py|"

@@ -11,7 +11,7 @@ import "../theme" as T
 // Dismiss.
 //
 // Presentation only, like RunControls: it imports no store. The owner passes
-// RunStore.toasts ({key, id, title, state, reason, expiresMs}, oldest first)
+// RunStore.toasts ({key, id, title, state, reason, project, expiresMs}, oldest first)
 // and handles openRequested(key, runId) and dismissRequested(key); Open does
 // not dismiss by itself. A bad entry still renders and still offers Dismiss
 // (key -1). With no toasts it is hidden and 0 tall.
