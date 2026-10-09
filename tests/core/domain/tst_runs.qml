@@ -4556,6 +4556,84 @@ TestCase {
 
   // ---- RR 1.2: why it stopped -------------------------------------------------------------
 
+  readonly property string stopEscCard: "10e26d57-374c-48d3-bc45-09389b42cfac"
+  readonly property string stopEscStory: "bf8154fc-e65c-46f5-b6e8-92b616a6e62b"
+  readonly property string stopEscStoryTitle: "Story B: blocked by story A"
+  readonly property string stopEscMilestone: "f18d342f-4887-4cd8-a86e-dd2755237c2c"
+  readonly property string stopEscPending: "460aaaa9-0520-40f7-aaa5-f162afab8bc0"
+  readonly property string stopReviewDetail: "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-10e26d57"
+  readonly property string stopStartedCard: "2280a6ab-9c40-434b-9729-63fd1f373754"
+  readonly property string stopStartedStory: "7a7effb4-6ec5-4596-bcf1-be24546d4ac1"
+  readonly property string stopStartedMilestone: "e795ad19-c81f-43ec-bdda-ef61ab5f860b"
+  readonly property string stopHeartbeat: "2026-10-08T14:38:28.740774+00:00"
+  readonly property string stopHeadlineDead: "The run's process died"
+  readonly property string stopHeadlineParked: "Paused at a phase boundary"
+  readonly property string stopHeadlineCancelled: "Cancelled. A cancelled run cannot be resumed, only relaunched; cards keep their status"
+
+  // The report stopReport gives when nothing is named, with `over`'s keys replacing the defaults.
+  function stopWant(over) {
+    var want = { state: "", headline: "", cardId: "", storyId: "", storyTitle: "", phase: "", detail: "",
+                 heartbeatAt: "", attempt: null, parked: [], relaunch: null }
+    var keys = Object.keys(over)
+    for (var i = 0; i < keys.length; i++) want[keys[i]] = over[keys[i]]
+    return want
+  }
+
+  // a and b, null or flat objects, have the same keys and the same values.
+  function compareFlat(a, b, label) {
+    if (b === null) { compare(a, null, label); return }
+    verify(a !== null && typeof a === "object", label + ": an object")
+    compare(Object.keys(a).sort().join(","), Object.keys(b).sort().join(","), label + ": keys")
+    var keys = Object.keys(b)
+    for (var i = 0; i < keys.length; i++) compare(a[keys[i]], b[keys[i]], label + ": " + keys[i])
+  }
+
+  // A stopReport result equals `want` (a stopWant): exactly the eleven keys, every value.
+  function checkReport(rep, want, label) {
+    verify(rep !== null && typeof rep === "object", label + ": a report")
+    compare(Object.keys(rep).sort().join(","),
+            "attempt,cardId,detail,headline,heartbeatAt,parked,phase,relaunch,state,storyId,storyTitle", label + ": keys")
+    var keys = ["state", "headline", "cardId", "storyId", "storyTitle", "phase", "detail", "heartbeatAt"]
+    for (var i = 0; i < keys.length; i++) compare(rep[keys[i]], want[keys[i]], label + ": " + keys[i])
+    compareFlat(rep.attempt, want.attempt, label + ": attempt")
+    compare(Array.isArray(rep.parked), true, label + ": parked is an array")
+    compare(JSON.stringify(rep.parked), JSON.stringify(want.parked), label + ": parked")
+    compareFlat(rep.relaunch, want.relaunch, label + ": relaunch")
+  }
+
+  // The recorded escalated run's relaunch target.
+  function stopEscRelaunch() { return { level: "milestone", cardId: stopEscMilestone, prefix: "m3", base: "main" } }
+
+  // The recorded started run's relaunch target.
+  function stopStartedRelaunch() { return { level: "milestone", cardId: stopStartedMilestone, prefix: "dsp", base: "main" } }
+
+  // The report on the recorded escalated run, with `over`'s keys replacing it.
+  function stopEscWant(over) {
+    var want = stopWant({ state: "escalated", headline: "Escalated at review", cardId: stopEscCard, storyId: stopEscStory,
+                          storyTitle: stopEscStoryTitle, phase: "review", detail: stopReviewDetail,
+                          attempt: { card_id: stopEscCard, phase: "review", attempt: 1 }, relaunch: stopEscRelaunch() })
+    var keys = Object.keys(over)
+    for (var i = 0; i < keys.length; i++) want[keys[i]] = over[keys[i]]
+    return want
+  }
+
+  // amRun("status-started.json") with its lease no longer live: a dead run.
+  function deadStartedRaw() {
+    var raw = amRun("status-started.json")
+    raw.status.control.lease.live = false
+    return raw
+  }
+
+  // The report on deadStartedRaw(), with `over`'s keys replacing it.
+  function stopDeadWant(over) {
+    var want = stopWant({ state: "dead", headline: stopHeadlineDead, cardId: stopStartedCard, storyId: stopStartedStory,
+                          storyTitle: "Dispatch backend", phase: "explore", heartbeatAt: stopHeartbeat,
+                          attempt: { card_id: stopStartedCard, phase: "explore", attempt: 1 }, relaunch: stopStartedRelaunch() })
+    var keys = Object.keys(over)
+    for (var i = 0; i < keys.length; i++) want[keys[i]] = over[keys[i]]
+    return want
+  }
+
   function test_normalize_card_and_story_ids() {
     var recorded = Runs.normalizeRun(amRun("status-escalated.json"))
     compare(recorded.card_id, "", "recorded escalated: card_id null")
@@ -4594,5 +4672,299 @@ TestCase {
     r = Runs.normalizeRun({ row: { card_id: 7 }, status: { run: { story_id: 8 } } })
     compare(r.card_id, "7", "number card_id is text")
     compare(r.story_id, "8", "number story_id is text")
+  }
+
+  function test_stopReport_escalated_recorded() {
+    checkReport(Runs.stopReport(Runs.normalizeRun(amRun("status-escalated.json"))), stopEscWant({}), "recorded escalated")
+  }
+
+  function test_stopReport_escalated_detail_from_attempt() {
+    // synthetic: the review phase's detail removed, its attempt given one
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].detail = null
+    raw.status.stories[1].subtasks[0].phases[11].attempts[0].detail = "  from the attempt \n"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({ detail: "from the attempt" }), "detail from the attempt")
+  }
+
+  function test_stopReport_escalated_failed_step() {
+    // synthetic: review done, a failed deterministic verify step appended
+    var raw = amRun("status-escalated.json")
+    var subtask = raw.status.stories[1].subtasks[0]
+    subtask.phases[11].status = "done"
+    subtask.phases.push({ name: "verify", kind: "deterministic", status: "failed",
+                          detail: "VerifyError: 2 tests failed", attempts: [] })
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ headline: "Escalated at verify", phase: "verify", detail: "VerifyError: 2 tests failed",
+                              attempt: { card_id: stopEscCard, phase: "verify", attempt: 0 } }), "failed step, attempt 0")
+  }
+
+  function test_stopReport_escalated_phase_from_row() {
+    // synthetic: the failed review phase set done; its gate_failed row remains
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].status = "done"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({}), "phase from the row")
+  }
+
+  function test_stopReport_synthetic_story() {
+    // synthetic: the done-integrate capture made escalated, its integrate story escalated
+    var raw = amRun("status-done-integrate.json")
+    raw.status.run.status = "escalated"
+    raw.status.stories[2].status = "escalated"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "escalated", headline: "Escalated at Integrate", storyId: "integrate", storyTitle: "Integrate",
+                           relaunch: { level: "milestone", cardId: "f7f73454-b9c5-464a-b8d4-659dd5b353af", prefix: "m3", base: "main" } }),
+                "integrate story")
+  }
+
+  function test_stopReport_synthetic_base_row() {
+    // synthetic: an escalated run, every subtask done, whose rows end with a failed base merge
+    var raw = amRun("status-escalated-integrate.json")
+    raw.status.rows.push({ story: "bases", subtask: "base-s1", phase: "merge", attempt: null, state: "failed" })
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "escalated", headline: "Escalated at Base s1", storyId: "base-s1", storyTitle: "Base s1",
+                           phase: "merge",
+                           relaunch: { level: "milestone", cardId: "76043cd6-2077-47d4-afbb-c0ab60e62416", prefix: "m4", base: "main" } }),
+                "base row")
+  }
+
+  function test_stopReport_escalated_nothing_named() {
+    checkReport(Runs.stopReport(Runs.normalizeRun(amRun("status-escalated-integrate.json"))),
+                stopWant({ state: "escalated", headline: "Escalated",
+                           relaunch: { level: "milestone", cardId: "76043cd6-2077-47d4-afbb-c0ab60e62416", prefix: "m4", base: "main" } }),
+                "recorded escalated integrate")
+  }
+
+  function test_stopReport_dead() {
+    var dead = Runs.normalizeRun(deadStartedRaw())
+    compare(Runs.runState(dead), "dead", "fixture")
+    checkReport(Runs.stopReport(dead), stopDeadWant({}), "dead, lease not live")
+
+    // synthetic: no lease at all
+    var raw = amRun("status-started.json")
+    delete raw.status.control.lease
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopDeadWant({ heartbeatAt: "" }), "dead, no lease")
+  }
+
+  function test_stopReport_dead_nothing_in_flight() {
+    // synthetic: the dead capture's in-flight explore phase set done
+    var raw = deadStartedRaw()
+    raw.status.stories[1].subtasks[1].phases[1].status = "done"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopDeadWant({ cardId: "", storyId: "", storyTitle: "", phase: "", attempt: null }), "dead, nothing in flight")
+  }
+
+  function test_stopReport_parked() {
+    // synthetic: the started capture stopped, its in-flight subtask stopped
+    var raw = amRun("status-started.json")
+    raw.status.run.status = "stopped"
+    raw.status.stories[1].subtasks[1].status = "stopped"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "parked", headline: stopHeadlineParked, parked: [stopStartedCard], relaunch: stopStartedRelaunch() }),
+                "parked")
+  }
+
+  function test_stopReport_cancelled_both_spellings() {
+    var spellings = ["cancelled", "canceled"]
+    for (var i = 0; i < spellings.length; i++) {
+      // synthetic: the started capture cancelled, its in-flight subtask stopped
+      var raw = amRun("status-started.json")
+      raw.status.run.status = spellings[i]
+      raw.status.stories[1].subtasks[1].status = "stopped"
+      checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                  stopWant({ state: "cancelled", headline: stopHeadlineCancelled, parked: [stopStartedCard], relaunch: stopStartedRelaunch() }),
+                  spellings[i])
+    }
+  }
+
+  function test_stopReport_escalated_lists_parked() {
+    // synthetic: the escalated capture's pending subtask stopped
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[2].subtasks[0].status = "stopped"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({ parked: [stopEscPending] }), "escalated lists parked")
+  }
+
+  function test_stopReport_task_run() {
+    // synthetic: the escalated capture as a task run of its escalated card
+    var raw = amRun("status-escalated.json")
+    raw.row.workflow = "task"
+    raw.row.card_id = stopEscCard
+    var task = { level: "card", cardId: stopEscCard, prefix: "m3", base: "main" }
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({ relaunch: task }), "task run")
+
+    // synthetic: padded workflow and card id
+    var padded = amRun("status-escalated.json")
+    padded.row.workflow = "  task "
+    padded.row.card_id = "  " + stopEscCard + "\n"
+    compareFlat(Runs.stopReport(Runs.normalizeRun(padded)).relaunch, task, "padded task run")
+
+    // synthetic: a task run that names no card
+    var noCard = amRun("status-escalated.json")
+    noCard.row.workflow = "task"
+    compare(Runs.stopReport(Runs.normalizeRun(noCard)).relaunch, null, "task run without a card")
+
+    // synthetic: workflow is case-sensitive: "Task" is a milestone run
+    var upper = amRun("status-escalated.json")
+    upper.row.workflow = "Task"
+    upper.row.card_id = stopEscCard
+    compareFlat(Runs.stopReport(Runs.normalizeRun(upper)).relaunch, stopEscRelaunch(), "Task is not task")
+  }
+
+  function test_stopReport_story_run() {
+    // synthetic: the escalated capture as a story run of its escalated story
+    var raw = amRun("status-escalated.json")
+    raw.row.workflow = "story"
+    raw.row.story_id = stopEscStory
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ relaunch: { level: "story", cardId: stopEscStory, prefix: "m3", base: "main" } }), "story run")
+
+    // synthetic: a story run that names no story
+    var noStory = amRun("status-escalated.json")
+    noStory.row.workflow = "story"
+    compare(Runs.stopReport(Runs.normalizeRun(noStory)).relaunch, null, "story run without a story")
+
+    // synthetic: a story run whose story is bookkeeping
+    var bases = amRun("status-escalated.json")
+    bases.row.workflow = "story"
+    bases.row.story_id = "bases"
+    compare(Runs.stopReport(Runs.normalizeRun(bases)).relaunch, null, "story run of bases")
+  }
+
+  function test_stopReport_milestone_run_without_milestone() {
+    var ids = ["", "integrate", "base-x"]
+    for (var i = 0; i < ids.length; i++) {
+      // synthetic: the milestone id blanked or made bookkeeping on both sides
+      var raw = amRun("status-escalated.json")
+      raw.row.milestone_id = ids[i]
+      raw.status.run.milestone_id = ids[i]
+      compare(Runs.stopReport(Runs.normalizeRun(raw)).relaunch, null, "milestone_id \"" + ids[i] + "\"")
+    }
+  }
+
+  function test_stopReport_null_unless_stopped() {
+    compare(Runs.stopReport(Runs.normalizeRun(amRun("status-started.json"))), null, "running")
+    compare(Runs.stopReport(Runs.normalizeRun(amRun("status-done.json"))), null, "done")
+    var statuses = ["", "bogus", " stopped", "Escalated"]
+    for (var i = 0; i < statuses.length; i++) {
+      // synthetic: run statuses that are unknown to runState
+      var raw = amRun("status-escalated.json")
+      raw.status.run.status = statuses[i]
+      compare(Runs.stopReport(Runs.normalizeRun(raw)), null, "status \"" + statuses[i] + "\"")
+    }
+  }
+
+  function test_stopReport_garbage() {
+    var notRuns = [undefined, null, 0, "escalated", true, [], {}]
+    for (var i = 0; i < notRuns.length; i++) compare(Runs.stopReport(notRuns[i]), null, "not a run " + i)
+
+    // synthetic: stopped runs with nothing readable
+    checkReport(Runs.stopReport({ status: "escalated" }), stopWant({ state: "escalated", headline: "Escalated" }), "bare escalated")
+    checkReport(Runs.stopReport({ status: "stopped", tree: "x" }), stopWant({ state: "parked", headline: stopHeadlineParked }), "tree not an object")
+    checkReport(Runs.stopReport({ status: "escalated",
+                                  tree: { subtasks: [null, { phases: "x" }, { card_id: 5 }], stories: [null] }, rows: [null, 3] }),
+                stopWant({ state: "escalated", headline: "Escalated" }), "broken tree and rows")
+    checkReport(Runs.stopReport({ status: "started", lease: "x" }), stopWant({ state: "dead", headline: stopHeadlineDead }), "lease not an object")
+    checkReport(Runs.stopReport({ status: "escalated", tree: { subtasks: "x" } }), stopWant({ state: "escalated", headline: "Escalated" }), "subtasks not an array")
+
+    // synthetic: a real escalated subtask with broken phases, attempts, rows, title and ids
+    var broken = { status: "escalated", workflow: 5, milestone_id: 7,
+                   tree: { stories: [null, { card_id: "s1", title: 5 }],
+                           subtasks: [{ card_id: "t1", story_id: "s1", status: "escalated",
+                                        phases: [null, 3, { name: "review", status: "failed", attempts: "x" }] }] },
+                   rows: [null, 3, { card_id: "t1", phase: "review", attempt: "x", status: "failed" }] }
+    checkReport(Runs.stopReport(broken),
+                stopWant({ state: "escalated", headline: "Escalated at review", cardId: "t1", storyId: "s1", phase: "review",
+                           attempt: { card_id: "t1", phase: "review", attempt: 0 } }), "broken escalated subtask")
+
+    // synthetic: a dead run with a numeric heartbeat and odd attempts
+    var deadOdd = { status: "started", lease: { live: false, heartbeat_at: 42 },
+                    tree: { subtasks: [{ card_id: "t1", phases: [{ name: "plan", status: "started", attempts: [null, "x", { n: 2 }] }] }] } }
+    checkReport(Runs.stopReport(deadOdd),
+                stopWant({ state: "dead", headline: stopHeadlineDead, cardId: "t1", phase: "plan", heartbeatAt: "42",
+                           attempt: { card_id: "t1", phase: "plan", attempt: 2 } }), "dead, odd attempts")
+  }
+
+  function test_stopReport_fresh_and_untouched() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    // synthetic: a stopped subtask so parked is not empty
+    run.tree.subtasks[3].status = "stopped"
+    var before = JSON.stringify(run)
+    var a = Runs.stopReport(run)
+    var b = Runs.stopReport(run)
+    compare(JSON.stringify(run), before, "the run is unchanged")
+    verify(a !== b, "a new report per call")
+    verify(a.attempt !== b.attempt, "a new attempt per call")
+    verify(a.parked !== b.parked, "a new parked list per call")
+    verify(a.relaunch !== b.relaunch, "a new relaunch per call")
+    a.headline = "x"
+    a.attempt.phase = "x"
+    a.parked.push("x")
+    a.relaunch.cardId = "x"
+    compare(JSON.stringify(run), before, "mutating a report leaves the run unchanged")
+    checkReport(Runs.stopReport(run), stopEscWant({ parked: [stopEscPending] }), "after mutating an earlier report")
+  }
+
+  function test_stopReport_other_cards_row() {
+    // synthetic: review set done, and the last (gate_failed review) row moved to another card
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].status = "done"
+    raw.status.rows[raw.status.rows.length - 1].subtask = stopEscPending
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ headline: "Escalated", phase: "", detail: "", attempt: null }), "another card's failed row")
+  }
+
+  function test_stopReport_row_attempt_newer() {
+    // synthetic: review set done, its gate_failed row a second attempt the tree has not recorded
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].status = "done"
+    raw.status.rows[raw.status.rows.length - 1].attempt = 2
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ attempt: { card_id: stopEscCard, phase: "review", attempt: 2 } }), "row attempt wins")
+  }
+
+  function test_stopReport_escalated_order() {
+    // synthetic: an earlier subtask's explore phase failed; the later escalated subtask still wins
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[0].subtasks[0].phases[1].status = "failed"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({}), "escalated status wins")
+
+    // synthetic: with no escalated subtask, the first subtask with a failed phase is named
+    raw.status.stories[1].subtasks[0].status = "started"
+    var cardA = "f6ac3b15-77df-4921-a9c0-0b442db53bb5"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ headline: "Escalated at explore", cardId: cardA, storyId: "c16cfbe3-ca4f-4f27-8bdb-f595620296c6",
+                              storyTitle: "Story A: the first level", phase: "explore", detail: "",
+                              attempt: { card_id: cardA, phase: "explore", attempt: 1 } }), "first failed phase in tree order")
+  }
+
+  function test_stopReport_synthetic_precedence() {
+    var relaunch = { level: "milestone", cardId: "f7f73454-b9c5-464a-b8d4-659dd5b353af", prefix: "m3", base: "main" }
+    // synthetic: escalated, but the integrate story is done and a synthetic row is ok
+    var raw = amRun("status-done-integrate.json")
+    raw.status.run.status = "escalated"
+    raw.status.rows.push({ story: "bases", subtask: "base-s1", phase: "merge", attempt: null, state: "ok" })
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "escalated", headline: "Escalated", relaunch: relaunch }), "done story and ok row are not named")
+
+    // synthetic: a failed synthetic row wins over an escalated synthetic story
+    raw.status.stories[2].status = "escalated"
+    raw.status.rows.push({ story: "bases", subtask: "base-s1", phase: "merge", attempt: null, state: "failed" })
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "escalated", headline: "Escalated at Base s1", storyId: "base-s1", storyTitle: "Base s1",
+                           phase: "merge", relaunch: relaunch }), "row wins over story")
+  }
+
+  function test_stopReport_story_title_edges() {
+    // synthetic: a padded story title
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].title = "  " + stopEscStoryTitle + " \n"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({}), "padded title")
+
+    var ids = ["constructor", "__proto__", "toString"]
+    for (var i = 0; i < ids.length; i++) {
+      // synthetic: the escalated subtask's story id set to a name no story has
+      var run = Runs.normalizeRun(amRun("status-escalated.json"))
+      run.tree.subtasks[2].story_id = ids[i]
+      checkReport(Runs.stopReport(run), stopEscWant({ storyId: ids[i], storyTitle: "" }), "story id " + ids[i])
+    }
   }
 }

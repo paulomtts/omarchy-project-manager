@@ -959,6 +959,221 @@ function offersRelaunch(error) {
 }
 
 
+// ---- Why it stopped (RR 1.2) -------------------------------------------------------------
+//
+// What Run detail says about a stopped run: its state, one headline, the card,
+// story and phase it names, the attempt the output pane opens, the parked cards
+// and the relaunch target. Reads only the normalised run, never brd status.
+// Pure and never throwing, like the rest of this file.
+
+var _HEADLINE_ESCALATED = "Escalated"
+var _HEADLINE_DEAD = "The run's process died"
+var _HEADLINE_PARKED = "Paused at a phase boundary"
+var _HEADLINE_CANCELLED = "Cancelled. A cancelled run cannot be resumed, only relaunched; cards keep their status"
+
+// The run's real subtasks: the objects in tree.subtasks with a real card id, in tree order.
+function _realSubtasksOf(run) {
+  var subtasks = _subtasksOf(run)
+  var out = []
+  for (var i = 0; i < subtasks.length; i++) {
+    if (_isObject(subtasks[i]) && _isCardId(subtasks[i].card_id)) out.push(subtasks[i])
+  }
+  return out
+}
+
+// The trimmed title of the tree story whose card_id is storyId; "" when storyId
+// is "", no story has it or its title is not a string.
+function _storyTitleOf(run, storyId) {
+  if (storyId === "") return ""
+  var story = _findByCardId(_treeOf(run).stories, storyId)
+  return story !== null && typeof story.title === "string" ? story.title.trim() : ""
+}
+
+// A fresh subject that names nothing.
+function _noSubject() {
+  return { cardId: "", storyId: "", storyTitle: "", phase: "", detail: "", attempt: null }
+}
+
+// A fresh subject for a real subtask at `phase` ("" for none): attempt is
+// {card_id, phase, attempt} when phase is not "", else null.
+function _subtaskSubject(run, subtask, phase, detail, attempt) {
+  var storyId = _stringOr(subtask.story_id)
+  return {
+    cardId: subtask.card_id,
+    storyId: storyId,
+    storyTitle: _storyTitleOf(run, storyId),
+    phase: phase,
+    detail: detail,
+    attempt: phase !== "" ? { card_id: subtask.card_id, phase: phase, attempt: attempt } : null
+  }
+}
+
+// Does the subtask have a phase object whose status is `failed`?
+function _hasFailedPhase(subtask) {
+  var phases = _arrayOr(subtask.phases)
+  for (var i = 0; i < phases.length; i++) {
+    if (_isObject(phases[i]) && phases[i].status === "failed") return true
+  }
+  return false
+}
+
+// The subtask's first phase whose status is `failed` and whose name is a
+// non-empty string, or null.
+function _failedPhaseOf(subtask) {
+  var phases = _arrayOr(subtask.phases)
+  for (var i = 0; i < phases.length; i++) {
+    var p = phases[i]
+    if (_isObject(p) && p.status === "failed" && typeof p.name === "string" && p.name !== "") return p
+  }
+  return null
+}
+
+// The first real subtask whose status is `escalated`, else the first with a
+// failed phase, else null.
+function _escalatedSubtaskOf(subtasks) {
+  for (var i = 0; i < subtasks.length; i++) {
+    if (subtasks[i].status === "escalated") return subtasks[i]
+  }
+  for (var j = 0; j < subtasks.length; j++) {
+    if (_hasFailedPhase(subtasks[j])) return subtasks[j]
+  }
+  return null
+}
+
+// The last row of cardId whose status is in _FAILURE_STATUSES and whose phase
+// is a non-empty string, or null.
+function _lastFailedRowOf(run, cardId) {
+  var rows = _isObject(run) ? _arrayOr(run.rows) : []
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var row = rows[i]
+    if (_isObject(row) && row.card_id === cardId && _FAILURE_STATUSES.indexOf(row.status) >= 0 &&
+        _stringOr(row.phase) !== "") return row
+  }
+  return null
+}
+
+// A phase's trimmed detail, else the first non-empty trimmed detail of its
+// attempts from the last back; "" when there is none or phase is not an object.
+function _phaseDetailOf(phase) {
+  if (!_isObject(phase)) return ""
+  var detail = _textOf(phase.detail)
+  var attempts = _arrayOr(phase.attempts)
+  for (var k = attempts.length - 1; detail === "" && k >= 0; k--) {
+    if (_isObject(attempts[k])) detail = _textOf(attempts[k].detail)
+  }
+  return detail
+}
+
+// The synthetic node an escalated run stopped at: {id, phase} of the last row
+// whose card_id is synthetic and whose status is in _FAILURE_STATUSES, else
+// {id, phase: ""} of the first tree story whose card_id is synthetic and whose
+// status is in _FAILURE_STATUSES; null when neither.
+function _escalatedNodeOf(run) {
+  var rows = _isObject(run) ? _arrayOr(run.rows) : []
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var row = rows[i]
+    if (_isObject(row) && _isSynthetic(row.card_id) && _FAILURE_STATUSES.indexOf(row.status) >= 0) {
+      return { id: row.card_id, phase: _stringOr(row.phase) }
+    }
+  }
+  var stories = _arrayOr(_treeOf(run).stories)
+  for (var j = 0; j < stories.length; j++) {
+    var s = stories[j]
+    if (_isObject(s) && _isSynthetic(s.card_id) && _FAILURE_STATUSES.indexOf(s.status) >= 0) return { id: s.card_id, phase: "" }
+  }
+  return null
+}
+
+// What an escalated run names: its escalated subtask at the failed phase (from
+// the tree, else from the subtask's last failed row), else a synthetic node by
+// its runTree label, else nothing.
+function _escalatedSubject(run, subtasks) {
+  var subtask = _escalatedSubtaskOf(subtasks)
+  if (subtask !== null) {
+    var failed = _failedPhaseOf(subtask)
+    var row = failed === null ? _lastFailedRowOf(run, subtask.card_id) : null
+    var phase = failed !== null ? failed.name : row !== null ? row.phase : ""
+    var inTree = failed !== null ? failed : _findPhase(subtask, phase)
+    var attempt = Math.max(_newestAttempt(inTree), row !== null ? _attemptNumber(row) : 0)
+    return _subtaskSubject(run, subtask, phase, _phaseDetailOf(inTree), attempt)
+  }
+  var node = _escalatedNodeOf(run)
+  if (node === null) return _noSubject()
+  return { cardId: "", storyId: node.id, storyTitle: _syntheticLabel(node.id), phase: node.phase, detail: "", attempt: null }
+}
+
+// What a dead run names: the first real subtask with a `started` phase whose
+// name is a non-empty string, at that phase's newest attempt (0 when it has
+// none); else nothing.
+function _inFlightSubject(run, subtasks) {
+  for (var i = 0; i < subtasks.length; i++) {
+    var phases = _arrayOr(subtasks[i].phases)
+    for (var j = 0; j < phases.length; j++) {
+      var p = phases[j]
+      if (_isObject(p) && p.status === "started" && typeof p.name === "string" && p.name !== "") {
+        return _subtaskSubject(run, subtasks[i], p.name, "", _newestAttempt(p))
+      }
+    }
+  }
+  return _noSubject()
+}
+
+// The card_id of every real subtask whose status is `stopped`, in tree order.
+function _parkedCardsOf(subtasks) {
+  var out = []
+  for (var i = 0; i < subtasks.length; i++) {
+    if (subtasks[i].status === "stopped") out.push(subtasks[i].card_id)
+  }
+  return out
+}
+
+// What Relaunch starts again, a fresh {level, cardId, prefix, base}: workflow
+// (trimmed, case-sensitive) `task` is the run's card_id, `story` its story_id,
+// anything else its milestone_id. null when that id is not a string or,
+// trimmed, not a real card id.
+function _relaunchOf(run) {
+  var workflow = _textOf(run.workflow)
+  var level = workflow === "task" ? "card" : workflow === "story" ? "story" : "milestone"
+  var id = level === "card" ? run.card_id : level === "story" ? run.story_id : run.milestone_id
+  if (typeof id !== "string" || !_isCardId(id.trim())) return null
+  return { level: level, cardId: id.trim(), prefix: _textOf(run.branch_prefix), base: _textOf(run.base_branch) }
+}
+
+// Why a run stopped: null unless runState(run) is escalated, parked, dead or
+// cancelled; else a fresh {state, headline, cardId, storyId, storyTitle, phase,
+// detail, heartbeatAt, attempt, parked, relaunch}. Escalated names its
+// escalated subtask, else a synthetic node; dead names its in-flight phase and
+// the lease's heartbeat_at; parked and cancelled name no card. parked and
+// relaunch are given for every state. Never mutates the run.
+function stopReport(run) {
+  var state = runState(run)
+  if (state !== "escalated" && state !== "parked" && state !== "dead" && state !== "cancelled") return null
+  var subtasks = _realSubtasksOf(run)
+  var subject = state === "escalated" ? _escalatedSubject(run, subtasks)
+              : state === "dead" ? _inFlightSubject(run, subtasks) : _noSubject()
+  var headline
+  if (state === "escalated") {
+    var at = subject.cardId !== "" ? subject.phase : subject.storyTitle
+    headline = at !== "" ? _HEADLINE_ESCALATED + " at " + at : _HEADLINE_ESCALATED
+  } else {
+    headline = state === "dead" ? _HEADLINE_DEAD : state === "parked" ? _HEADLINE_PARKED : _HEADLINE_CANCELLED
+  }
+  return {
+    state: state,
+    headline: headline,
+    cardId: subject.cardId,
+    storyId: subject.storyId,
+    storyTitle: subject.storyTitle,
+    phase: subject.phase,
+    detail: subject.detail,
+    heartbeatAt: state === "dead" && _isObject(run.lease) ? _textOf(run.lease.heartbeat_at) : "",
+    attempt: subject.attempt,
+    parked: _parkedCardsOf(subtasks),
+    relaunch: _relaunchOf(run)
+  }
+}
+
+
 // ---- Run alerts (S2 1.2) -----------------------------------------------------------------
 //
 // Which runs newly need a human between two snapshots, for the toast and the
