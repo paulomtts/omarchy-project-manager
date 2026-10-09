@@ -60,10 +60,24 @@ def tree(root):
     return failure("BrdBadOutput", "brd tree returned unexpected output")
 
 
+def probe(roots):
+    projects = []
+    for root in roots:
+        if not os.path.isdir(root):
+            projects.append({"root": root, "ok": False, "reason": "not a directory"})
+        elif not os.path.exists(os.path.join(root, ".brd")):
+            projects.append({"root": root, "ok": False, "reason": "no .brd marker"})
+        else:
+            projects.append({"root": root, "ok": True})
+    return {"ok": True, "projects": projects}
+
+
 def main(argv):
     args = argv[1:]
     try:
-        if len(args) == 1 and not args[0].startswith("-"):
+        if args and args[0] == "--probe":
+            payload = probe(args[1:])
+        elif len(args) == 1 and not args[0].startswith("-"):
             payload = tree(args[0])
         else:
             payload = failure("HelperError", USAGE)

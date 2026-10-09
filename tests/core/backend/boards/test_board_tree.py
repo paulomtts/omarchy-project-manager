@@ -221,3 +221,56 @@ def test_an_unexpected_exception_is_a_helpererror_line(box):
     assert out["error"]["type"] == "HelperError"
     assert isinstance(out["error"]["message"], str) and out["error"]["message"]
     assert calls(box) == []
+
+
+def test_probe_reports_each_root_in_argv_order(box):
+    ok = str(box["project"])
+    missing = str(box["tmp"] / "nope")
+    a_file = box["tmp"] / "a file"
+    a_file.write_text("x")
+    bare = box["tmp"] / "bare"
+    bare.mkdir()
+    marker_file = box["tmp"] / "marker file"
+    marker_file.mkdir()
+    (marker_file / ".brd").write_text("")
+    code, out = run(box, "--probe", ok, missing, str(a_file), str(bare), str(marker_file), ok)
+    assert code == 0
+    assert out == {"ok": True, "projects": [
+        {"root": ok, "ok": True},
+        {"root": missing, "ok": False, "reason": "not a directory"},
+        {"root": str(a_file), "ok": False, "reason": "not a directory"},
+        {"root": str(bare), "ok": False, "reason": "no .brd marker"},
+        {"root": str(marker_file), "ok": True},
+        {"root": ok, "ok": True},
+    ]}
+
+
+def test_probe_never_runs_brd(box):
+    roots = [str(box["project"]), str(box["tmp"] / "nope"), str(box["empty"])]
+    code, out = run(box, "--probe", *roots)
+    assert code == 0
+    assert out["ok"] is True
+    assert calls(box) == []
+    code, out = run(box, "--probe", *roots, extra_env={"PATH": str(box["empty"])})
+    assert code == 0
+    assert out["ok"] is True
+    assert [p["ok"] for p in out["projects"]] == [True, False, False]
+
+
+def test_probe_with_no_roots_is_an_empty_list(box):
+    code, out = run(box, "--probe")
+    assert code == 0
+    assert out == {"ok": True, "projects": []}
+
+
+def test_probe_takes_a_dash_leading_root_verbatim(box):
+    code, out = run(box, "--probe", "-x")
+    assert code == 0
+    assert out == {"ok": True, "projects": [{"root": "-x", "ok": False, "reason": "not a directory"}]}
+
+
+def test_probe_echoes_a_non_normalized_root_verbatim(box):
+    root = str(box["project"]) + "/"
+    code, out = run(box, "--probe", root)
+    assert code == 0
+    assert out == {"ok": True, "projects": [{"root": root, "ok": True}]}
