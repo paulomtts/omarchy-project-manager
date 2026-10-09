@@ -1,7 +1,8 @@
 // tests/core/stores/tst_run_control_store.qml
 // The run controls store: control requests and their settling, the resume
 // verify read, the still-waiting clock, the control error, the cancel
-// confirmation, the footer flash and the notify switch. Built alone and
+// confirmation, the footer flash, the notify switch and the run settings
+// load and save. Built alone and
 // driven through its `runs` and `active` inputs and settleAfterSnapshot();
 // and, through a RunStore wired to it the way App wires them, a real
 // snapshot reply settling a real request and each opening reading the switch.
@@ -308,6 +309,206 @@ TestCase {
     compare(c.notifyOnEscalation, false, "back to the value last saved")
     compare(c.flashText, "Notify on escalation could not be saved", "it replaces the flash showing")
     compare(c.flashTimer.running, true)
+  }
+
+  // ---- run settings (split-runstore 4.2)
+
+  // get-run-settings with every key, as viewer-state.py prints it.
+  function dispatchSettings() {
+    return JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false, notifyOnEscalation: false,
+                            prefixHistory: ["old"], parallelism: 4, confirmDispatch: true }) + "\n"
+  }
+
+  // C-S1
+  function test_run_settings_start_empty() {
+    var c = makeControl(); if (!c) return
+    compare(Object.keys(c.runSettings).length, 0)
+    compare(c.runSettingsRunners.length, 0)
+    compare(c.runSettingsLoadRunner, null)
+    verify(c.runSettingsOf("/x") === c.runSettingsOf("/y"), "one shared empty object")
+    compare(Object.keys(c.runSettingsOf("/x")).length, 0)
+  }
+
+  // C-S2
+  function test_a_load_launches_get_run_settings_and_replaces_the_map() {
+    var c = makeControl(); if (!c) return
+    var before = c.runSettings
+    c.loadRunSettings(tc.rootA)
+    compare(c.runSettingsRunners.length, 1)
+    var runner = c.runSettingsRunners[0]
+    verify(c.runSettingsLoadRunner === runner)
+    var proc = runner.current
+    compare(argv(proc), tc.viewerCmd + "get-run-settings|/home/u/my proj")
+    compare(proc.command.length, 4)
+    compare(proc.launchGuard, "")
+    reply(proc, JSON.stringify({ verify: [], allowNoVerification: false, notifyOnEscalation: true }) + "\n", 0)
+    compare(c.runSettingsOf(tc.rootA).notifyOnEscalation, true, "the object is kept as it was read")
+    compare(c.notifyOnEscalation, false, "a stored per-project value is never the switch")
+    compare(c.notifySaved, false)
+    verify(c.runSettings !== before, "the map is replaced")
+    compare(c.runSettingsRunners.length, 0)
+    compare(c.runSettingsLoadRunner, null)
+  }
+
+  // C-S3 and Review Focus 3
+  function test_a_load_reads_empty_until_its_reply_and_unreadable_is_empty() {
+    var c = makeControl(); if (!c) return
+    c.loadRunSettings(tc.rootA)
+    reply(c.runSettingsLoadRunner.current, dispatchSettings(), 0)
+    var old = c.runSettingsOf(tc.rootA)
+    compare(old.parallelism, 4)
+    c.loadRunSettings(tc.rootA)
+    compare(Object.keys(c.runSettingsOf(tc.rootA)).length, 0, "empty until the reply")
+    compare(old.parallelism, 4, "the old entry is not changed in place")
+    reply(c.runSettingsLoadRunner.current, "Traceback: boom\n", 1)
+    verify(Object.keys(c.runSettings).indexOf(tc.rootA) >= 0, "an unreadable reply still sets the entry")
+    compare(Object.keys(c.runSettingsOf(tc.rootA)).length, 0, "an unreadable reply is {}")
+  }
+
+  // C-S4
+  function test_two_loads_in_flight_both_apply() {
+    var c = makeControl(); if (!c) return
+    c.loadRunSettings(tc.rootA)
+    var loadA = c.runSettingsLoadRunner
+    c.loadRunSettings(tc.rootB)
+    var loadB = c.runSettingsLoadRunner
+    verify(loadA !== loadB, "one runner per request")
+    compare(c.runSettingsRunners.length, 2)
+    compare(loadA.current.running, true, "a newer load stops no older one")
+    compare(loadB.current.running, true)
+    reply(loadB.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
+    compare(c.runSettingsLoadRunner, null, "the newest load replied")
+    reply(loadA.current, dispatchSettings(), 0)
+    compare(c.runSettingsOf(tc.rootA).parallelism, 4)
+    compare(c.runSettingsOf(tc.rootB).parallelism, 9)
+    compare(c.runSettingsRunners.length, 0)
+
+    c.loadRunSettings(tc.rootA)
+    var first = c.runSettingsLoadRunner
+    c.loadRunSettings(tc.rootA)
+    var second = c.runSettingsLoadRunner
+    reply(second.current, JSON.stringify({ parallelism: 2 }) + "\n", 0)
+    reply(first.current, JSON.stringify({ parallelism: 3 }) + "\n", 0)
+    compare(c.runSettingsOf(tc.rootA).parallelism, 3, "for one root the reply that arrives last wins")
+  }
+
+  // C-S5 and Review Focus 4
+  function test_a_load_stops_no_notify_or_resume_read() {
+    var c = makeControl(); if (!c) return
+    c.active = true
+    var notifyLoad = c.settingsLoadRunner.current
+    verify(notifyLoad, "the opening reads the notify switch")
+    c.runs = [held(dead("r2"), tc.rootA)]
+    compare(c.control("resume", "r2"), true)
+    var resume = c.controlRunners[0]
+    var resumeRead = resume.current
+    compare(argv(resumeRead), tc.settingsCmd)
+    c.loadRunSettings(tc.rootB)
+    c.saveRunSettings(tc.rootB, { parallelism: 2 })
+    compare(c.runSettingsRunners.length, 2)
+    var load = c.runSettingsRunners[0]
+    var save = c.runSettingsRunners[1]
+    compare(notifyLoad.running, true, "the notify read")
+    compare(resumeRead.running, true, "the resume's settings step")
+    compare(load.current.running, true, "the load")
+    compare(save.current.running, true, "the save")
+    reply(notifyLoad, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(c.notifyOnEscalation, true)
+    reply(resumeRead, settingsReply(["make test"], false), 0)
+    compare(argv(resume.current), tc.ctlCmd + "resume|r2|/home/u/my proj|--verify|make test", "the resume went on to run-control")
+    reply(load.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
+    compare(c.runSettingsOf(tc.rootB).parallelism, 9)
+    var failed = createTemporaryObject(spyC, tc, { target: c, signalName: "runSettingsSaveFailed" })
+    reply(save.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(failed.count, 0)
+    compare(c.runSettingsRunners.length, 0)
+  }
+
+  // C-S6
+  function test_a_load_or_save_with_no_root_launches_nothing() {
+    var c = makeControl(); if (!c) return
+    var before = c.runSettings
+    c.loadRunSettings("")
+    c.saveRunSettings("", { a: 1 })
+    c.saveRunSettings(tc.rootA, null)
+    c.saveRunSettings(tc.rootA, "x")
+    compare(c.runSettingsRunners.length, 0)
+    verify(c.runSettings === before, "nothing changes")
+  }
+
+  // C-S7
+  function test_a_save_merges_at_once_then_launches_set_run_settings() {
+    var c = makeControl(); if (!c) return
+    c.loadRunSettings(tc.rootA)
+    reply(c.runSettingsLoadRunner.current,
+          JSON.stringify({ prefixByMilestone: { m9: "x" }, confirmDispatch: true, parallelism: 4 }) + "\n", 0)
+    var old = c.runSettingsOf(tc.rootA)
+    var patch = { verify: ["make test"], parallelism: 2, prefixByMilestone: { m1: "p" } }
+    c.saveRunSettings(tc.rootA, patch)
+    var now = c.runSettingsOf(tc.rootA)
+    compare(now.parallelism, 2)
+    compare(now.confirmDispatch, true, "a key the patch does not write is kept")
+    compare(now.verify.join(","), "make test")
+    compare(Object.keys(now.prefixByMilestone).join(","), "m9,m1", "merged per milestone id")
+    compare(old.parallelism, 4, "the old entry is not changed in place")
+    compare(Object.keys(old.prefixByMilestone).join(","), "m9")
+    compare(c.runSettingsRunners.length, 1)
+    var save = c.runSettingsRunners[0]
+    compare(c.runSettingsLoadRunner, null, "a save is not a load")
+    compare(argv(save.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + JSON.stringify(patch))
+    compare(save.current.command.length, 5)
+    compare(save.current.launchGuard, "")
+    var failed = createTemporaryObject(spyC, tc, { target: c, signalName: "runSettingsSaveFailed" })
+    var map = c.runSettings
+    reply(save.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(failed.count, 0)
+    verify(c.runSettings === map, "an ok reply changes nothing more")
+    compare(c.runSettingsRunners.length, 0)
+
+    var stored = [["a"], "s", null]
+    for (var i = 0; i < stored.length; i++) {
+      var other = makeControl(); if (!other) return
+      other.loadRunSettings(tc.rootA)
+      reply(other.runSettingsLoadRunner.current, JSON.stringify({ prefixByMilestone: stored[i] }) + "\n", 0)
+      other.saveRunSettings(tc.rootA, { prefixByMilestone: { m1: "p" } })
+      compare(Object.keys(other.runSettingsOf(tc.rootA).prefixByMilestone).join(","), "m1", "stored " + i)
+    }
+  }
+
+  // C-S8
+  function test_a_failed_save_is_reported_once_and_keeps_the_merge() {
+    var c = makeControl(); if (!c) return
+    var failed = createTemporaryObject(spyC, tc, { target: c, signalName: "runSettingsSaveFailed" })
+    var patch = { parallelism: 2, prefixHistory: ["m3", "old"], verify: ["make test"] }
+    c.saveRunSettings(tc.rootA, patch)
+    var map = c.runSettings
+    compare(c.runSettingsOf(tc.rootA).parallelism, 2, "merged at once")
+    reply(c.runSettingsRunners[0].current, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
+    compare(failed.count, 1)
+    compare(failed.signalArguments[0][0], tc.rootA)
+    compare(JSON.stringify(failed.signalArguments[0][1]), JSON.stringify(patch), "the patch that save sent")
+    verify(c.runSettings === map, "the merge is not undone")
+    compare(c.runSettingsOf(tc.rootA).parallelism, 2)
+    compare(c.flashText, "", "the store itself flashes nothing")
+    c.saveRunSettings(tc.rootA, { parallelism: 3 })
+    reply(c.runSettingsRunners[0].current, "garbage\n", 1)
+    compare(failed.count, 2, "an unreadable reply is a failure too")
+    compare(c.runSettingsRunners.length, 0)
+  }
+
+  // C-S9
+  function test_apply_run_settings_replaces_one_root() {
+    var c = makeControl(); if (!c) return
+    var w = { parallelism: 7 }
+    var before = c.runSettings
+    c.applyRunSettings(tc.rootA, w)
+    verify(c.runSettingsOf(tc.rootA) === w, "the same object, not a copy")
+    verify(c.runSettings !== before, "a new map")
+    c.applyRunSettings(tc.rootA, "x")
+    compare(Object.keys(c.runSettingsOf(tc.rootA)).length, 0, "not an object: {}")
+    var map = c.runSettings
+    c.applyRunSettings("", w)
+    verify(c.runSettings === map, "root \"\" changes nothing")
   }
 
   // ---- through a RunStore wired the way App wires app.runControl
