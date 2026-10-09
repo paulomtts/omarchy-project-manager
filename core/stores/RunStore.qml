@@ -1234,9 +1234,10 @@ Scope {
 
   // The run settings' reply for a milestone resume. A stored verify set (a
   // non-empty list of strings) goes to run-control as --verify pairs in its
-  // order; otherwise the stored opt-out as --allow-no-verification; with
-  // neither, or no readable reply, run-control is never launched and the
-  // request ends with a sentence -- no re-snapshot, nothing was asked of am.
+  // order; otherwise the stored opt-out as --allow-no-verification. With
+  // neither, the request is settled and the Resume dialog opens for the run;
+  // with no readable reply, the request ends with a sentence. In both,
+  // run-control is never launched and there is no re-snapshot.
   function resumeWithSettings(runner, stdout, exitCode) {
     var settings = store.parseEnvelope(stdout)
     if (settings === null) {
@@ -1256,8 +1257,10 @@ Scope {
     } else if (settings.allowNoVerification === true) {
       store.launchControl(runner, ["--allow-no-verification"])
     } else {
-      store.failControl(runner.runId, "Resume needs verify commands: none are stored for this project, and running without verification was not chosen.")
+      var runId = runner.runId
+      store.settle(runId)
       store.dropRunner(runner)
+      store.resumeOpenFor(runId)
     }
   }
 
@@ -1363,6 +1366,39 @@ Scope {
     }
     store.closeCancel()
     return true
+  }
+
+  // ---- resume dialog
+
+  // The Resume dialog: a milestone resume with no stored verify set asks for
+  // the commands here. `resumeRunId` is the run it asks about ("" = closed),
+  // `resumeVerify` the commands as typed (blanks allowed),
+  // `resumeAllowNoVerification` the opt-out, and `resumeError` why the last
+  // confirm was refused.
+  property string resumeRunId: ""
+  property var resumeVerify: []
+  property bool resumeAllowNoVerification: false
+  property string resumeError: ""
+
+  // Opens the dialog for runId with empty fields, replacing any open one, and
+  // returns true. Returns false and changes nothing when runId is not a
+  // non-empty string, its run is not in the snapshot, or it is a task run.
+  function resumeOpenFor(runId) {
+    if (typeof runId !== "string" || runId === "") return false
+    var run = store.runById(runId)
+    if (run === null || run.workflow === "task") return false
+    store.resumeVerify = []
+    store.resumeAllowNoVerification = false
+    store.resumeError = ""
+    store.resumeRunId = runId
+    return true
+  }
+
+  function resumeClose() {
+    store.resumeRunId = ""
+    store.resumeVerify = []
+    store.resumeAllowNoVerification = false
+    store.resumeError = ""
   }
 
   // ---- alerts (S2 4.4)

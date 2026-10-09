@@ -3121,7 +3121,6 @@ TestCase {
   }
 
   property string settingsCmd: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/my proj"
-  property string noVerifySentence: "Resume needs verify commands: none are stored for this project, and running without verification was not chosen."
 
   // viewer-state.py get-run-settings: one bare object, not an envelope.
   function settingsReply(verify, allow) {
@@ -3164,8 +3163,9 @@ TestCase {
     compare(runner.seq, 1, "run-control was never launched")
     compare(store.controlRunners.length, 0)
     compare(Object.keys(store.pending).length, 0)
-    compare(store.lastControlError, tc.noVerifySentence)
-    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.resumeRunId, "r1", "the Resume dialog asks for the commands")
     compare(store.snapshotRunner.seq, seq, "nothing was asked of am, so no snapshot")
   }
 
@@ -3202,7 +3202,8 @@ TestCase {
     var runner = store.controlRunners[0]
     reply(runner.current, settingsReply(["a", 5], false), 0)
     compare(runner.seq, 1, "run-control was never launched")
-    compare(store.lastControlError, tc.noVerifySentence)
+    compare(store.resumeRunId, "r1", "the dialog opens instead")
+    compare(store.lastControlError, "")
     store.control("resume", "r2")
     reply(store.controlRunners[0].current, settingsReply(["a", 5], true), 0)
     compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r2|/home/u/my proj|--allow-no-verification")
@@ -3477,6 +3478,116 @@ TestCase {
     compare(store.cancelError, "This run is no longer in the snapshot")
     compare(store.cancelOpen, true)
     compare(store.controlRunners.length, 1, "no cancel was ever launched")
+  }
+
+  // ---- resume dialog (2.3)
+
+  // Project A listing `entries`, with the Resume dialog opened for `id` by a
+  // milestone resume that found nothing stored.
+  function resumeDialogStore(entries, id) {
+    var store = ctlStore(entries); if (!store) return null
+    compare(store.control("resume", id), true)
+    reply(store.controlRunners[store.controlRunners.length - 1].current, settingsReply([], false), 0)
+    compare(store.resumeRunId, id, "the dialog is open")
+    return store
+  }
+
+  // 1
+  function test_resume_dialog_defaults() {
+    var store = make(); if (!store) return
+    compare(store.resumeRunId, "")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+    compare(store.resumeError, "")
+  }
+
+  // 2
+  function test_nothing_stored_opens_the_dialog_and_leaves_nothing_pending() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    var seq = store.snapshotRunner.seq
+    reply(store.controlRunners[0].current, settingsReply([], false), 0)
+    compare(store.resumeRunId, "r1")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+    compare(store.resumeError, "")
+    compare(Object.keys(store.pending).length, 0)
+    compare(Object.keys(store.stillWaiting).length, 0)
+    compare(store.refusalOf("resume", "r1"), "", "no request is left pending, so the confirm can go")
+    compare(store.controlRunners.length, 0)
+    compare(store.snapshotRunner.seq, seq, "no snapshot")
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "")
+  }
+
+  // 3
+  function test_garbled_settings_open_no_dialog() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    reply(store.controlRunners[0].current, "oops\n", 2)
+    compare(store.resumeRunId, "")
+    compare(store.lastControlError, "The run settings gave no usable result (exit 2).")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlErrorType, "")
+  }
+
+  // 4
+  function test_a_task_run_never_opens_the_dialog() {
+    var store = ctlStore([ctlEntry("r1", "started", false, "task")]); if (!store) return
+    compare(store.control("resume", "r1"), true)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r1|/home/u/my proj")
+    compare(store.resumeRunId, "")
+    var other = ctlStore([ctlEntry("r1", "started", false, "task")]); if (!other) return
+    compare(other.resumeOpenFor("r1"), false, "not even when called directly")
+    compare(other.resumeRunId, "")
+  }
+
+  // 5 (and Review Focus 5)
+  function test_open_for_resets_the_fields_and_refuses_unknown_runs() {
+    var store = ctlStore([dead("r1"), dead("r2")]); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeAllowNoVerification = true
+    store.resumeError = "old"
+    compare(store.resumeOpenFor("r1"), true)
+    compare(store.resumeRunId, "r1")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+    compare(store.resumeError, "")
+    store.resumeVerify = ["b"]
+    store.resumeAllowNoVerification = true
+    var refused = ["", "nope", 5]
+    for (var i = 0; i < refused.length; i++) {
+      compare(store.resumeOpenFor(refused[i]), false, "refused: " + refused[i])
+      compare(store.resumeRunId, "r1", "unchanged after " + refused[i])
+      compare(JSON.stringify(store.resumeVerify), '["b"]')
+      compare(store.resumeAllowNoVerification, true)
+    }
+    compare(store.resumeOpenFor("r2"), true, "another run replaces the dialog")
+    compare(store.resumeRunId, "r2")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+
+    store.resumeVerify = ["c"]
+    store.control("resume", "r1")
+    reply(store.controlRunners[0].current, settingsReply([], false), 0)
+    compare(store.resumeRunId, "r1", "a resume that finds nothing stored replaces the open dialog")
+    compare(store.resumeVerify.length, 0)
+  }
+
+  // 6
+  function test_close_clears_every_field() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeAllowNoVerification = true
+    store.resumeError = "old"
+    store.resumeClose()
+    compare(store.resumeRunId, "")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+    compare(store.resumeError, "")
+    store.resumeClose()
+    compare(store.resumeRunId, "", "closing a closed dialog is harmless")
   }
 
   // ---- alerts: the toasts (S2 4.4)
