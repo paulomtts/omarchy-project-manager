@@ -857,16 +857,16 @@ Scope {
     store.logsStatus = ""
   }
 
-  // The selected run's default attempt, when it has one.
+  // The selected run's default attempt or step, when it has one.
   function openDefaultAttempt() {
     var d = Runs.defaultAttempt(store.runById(store.selectedRunId))
-    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt)
+    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt, d.step === true)
   }
 
-  // After every applied snapshot: a selected run with no attempt yet gets its
-  // default once one exists; otherwise the selected attempt is fetched again
-  // only when its status moved since its fetch was launched. Nothing else
-  // fetches logs on its own.
+  // After every applied snapshot: a selected run with no selection yet gets
+  // its default once one exists; otherwise the selection is fetched again
+  // only when its status (a step's phase status, an attempt's own) moved since
+  // its fetch was launched. Nothing else fetches logs on its own.
   function logsAfterSnapshot() {
     if (store.selectedRunId === "") return
     var sel = store.selectedAttempt
@@ -874,7 +874,7 @@ Scope {
       store.openDefaultAttempt()
       return
     }
-    var status = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    var status = store.selectionStatus(store.runById(store.selectedRunId), sel)
     if (status !== store.logsStatus) store.fetchLogs()
   }
 

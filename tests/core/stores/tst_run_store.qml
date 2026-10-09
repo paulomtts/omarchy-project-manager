@@ -2890,6 +2890,75 @@ TestCase {
     compare(store.selectedAttempt, null)
   }
 
+  function test_the_default_opens_a_started_step() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([stepEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    compare(JSON.stringify(store.selectedAttempt),
+            JSON.stringify({ card_id: tc.openCard, phase: "worktree", attempt: 0, step: true }))
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+    compare(store.logsStatus, "started")
+  }
+
+  // Review Focus 4.
+  function test_a_run_opened_before_its_first_phase_picks_a_started_step() {
+    var store = makeWithProject(rootA); if (!store) return
+    // synthetic: the run before any phase exists; shape kept
+    var bare = treeEntry("r1", "started")
+    var stories = bare.status.stories
+    for (var i = 0; i < stories.length; i++) {
+      for (var j = 0; j < stories[i].subtasks.length; j++) stories[i].subtasks[j].phases = []
+    }
+    bare.status.rows = []
+    reply(store.snapshotRunner.current, okReply([bare]), 0)
+    store.selectedRunId = "r1"
+    compare(store.selectedAttempt, null)
+    verify(!store.logsRunner.current)
+    snapshot(store, [stepEntry("r1", "started")])
+    compare(JSON.stringify(store.selectedAttempt),
+            JSON.stringify({ card_id: tc.openCard, phase: "worktree", attempt: 0, step: true }))
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+  }
+
+  function test_a_snapshot_that_changes_the_steps_status_fetches_once() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([stepEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsStatus, "started")
+    var seq = store.logsRunner.seq
+    snapshot(store, [stepEntry("r1", "started")])
+    compare(store.logsRunner.seq, seq, "an unchanged step status fetches nothing")
+    snapshot(store, [stepEntry("r1", "done")])
+    compare(store.logsRunner.seq, seq + 1, "started -> done fetches the step again")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+    compare(store.logsStatus, "done")
+    snapshot(store, [stepEntry("r1", "done")])
+    compare(store.logsRunner.seq, seq + 1, "only once")
+  }
+
+  // Review Focus 3.
+  function test_a_step_whose_phase_disappears_refetches_once() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([stepEntry("r1", "done")]), 0)
+    store.selectedRunId = "r1"
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    compare(store.logsStatus, "done")
+    var seq = store.logsRunner.seq
+    // synthetic: openCard's worktree phase gone from the snapshot
+    var gone = stepEntry("r1", "done")
+    gone.status.stories[1].subtasks[1].phases.splice(0, 1)
+    snapshot(store, [gone])
+    compare(store.logsRunner.seq, seq + 1, "the status moved to \"\"")
+    compare(store.logsStatus, "")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+    var again = stepEntry("r1", "done")
+    again.status.stories[1].subtasks[1].phases.splice(0, 1)
+    snapshot(store, [again])
+    compare(store.logsRunner.seq, seq + 1, "then nothing")
+  }
+
   // ---- run controls (S2 4.1)
 
   property string ctlCmd: "python3|/plugin/core/backend/runs/run-control.py|"
