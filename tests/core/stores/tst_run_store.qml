@@ -6323,4 +6323,54 @@ TestCase {
                              logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
     compare(after, before, "a good reply")
   }
+
+  // 5
+  function test_titles_come_from_the_project_then_the_run_tree_then_the_short_id() {
+    var store = opened(); if (!store) return
+    var domain = "9f0f68fc-f231-4ef2-b646-00a7af925ea2"   // tree title "Dispatch domain"
+    var backend = "7a7effb4-6ec5-4596-bcf1-be24546d4ac1"  // tree title "Dispatch backend"
+    var stranger = "11111111-2222-3333-4444-5555deadbeef" // in neither map
+    var t = {}
+    t[tc.openCard] = "Open subtask"
+    t[backend] = "Board story"
+    store.titles = t
+    var events = [
+      { seq: 1, event: "story_upsert", story: domain, payload: { status: "pending" } },
+      { seq: 2, event: "story_upsert", story: backend, payload: { status: "started" } },
+      { seq: 3, event: "subtask_upsert", story: backend, card: tc.openCard, payload: { status: "started" } },
+      { seq: 4, event: "phase_upsert", story: backend, card: stranger, phase: "explore",
+        payload: { name: "explore", status: "started" } }
+    ]
+    reply(store.eventsRunner.current, eventsReply(events, 4, 4), 0)
+    compare(store.events.map(function(r) { return r.label }).join("|"),
+            "Dispatch domain|Board story|Open subtask|…deadbeef explore")
+    compare(JSON.stringify(store.titles), JSON.stringify(t), "titles is never modified")
+    store.titles = {}
+    compare(store.events[0].label, "Dispatch domain", "held rows are not relabelled")
+    compare(store.events[1].label, "Board story")
+  }
+
+  // Review Focus 5
+  function test_titles_that_are_not_text_fall_back_to_the_short_id() {
+    var store = make(); if (!store) return
+    // synthetic: titles App never hands over.
+    store.titles = null
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: 7 }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: "" }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: "Card one" }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events.length, 1)
+    compare(store.events[0].label, "Card one explore.1", "the reply's row replaces the held one")
+  }
 }

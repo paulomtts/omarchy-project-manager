@@ -893,6 +893,30 @@ Scope {
     eventsRunner.run([store.selectedRunId, "--tail", "200"])
   }
 
+  // The labels for an events reply, a fresh object: every own key of
+  // `titles` holding a non-empty string, then, for each story of the
+  // selected run's tree with a string card_id and a non-empty string title,
+  // that title where `titles` has none. `titles` is never modified.
+  function eventTitles() {
+    var out = {}
+    var own = store.titles
+    if (own !== null && typeof own === "object" && !Array.isArray(own)) {
+      for (var key in own) {
+        if (store.hasKey(own, key) && typeof own[key] === "string" && own[key] !== "") out[key] = own[key]
+      }
+    }
+    var run = store.runById(store.selectedRunId)
+    var tree = run !== null && typeof run === "object" && run.tree !== null && typeof run.tree === "object" ? run.tree : {}
+    var stories = Array.isArray(tree.stories) ? tree.stories : []
+    for (var i = 0; i < stories.length; i++) {
+      var s = stories[i]
+      if (s === null || typeof s !== "object") continue
+      if (typeof s.card_id !== "string" || typeof s.title !== "string" || s.title === "") continue
+      if (!store.hasKey(out, s.card_id)) out[s.card_id] = s.title
+    }
+    return out
+  }
+
   // One events reply, applied only while `launchedGuard` is still the
   // selected run. ok true with an events array: foldReply. ok false: error
   // with Runs.errorText. Anything else: error, "no usable result". A failure
@@ -910,15 +934,16 @@ Scope {
     else store.eventsError = "The events snapshot gave no usable result (exit " + exitCode + ")."
   }
 
-  // A good reply. Its events become RunEvents.eventRow rows at the local UTC
-  // offset (null rows skipped) folded into the held rows, at most 500.
+  // A good reply. Its events become RunEvents.eventRow rows, labelled from
+  // eventTitles() at the local UTC offset (null rows skipped), folded into
+  // the held rows, at most 500.
   // eventsDropped: (total - received) less the held rows below the reply's
   // lowest seq, at least 0, plus the rows the cap removed; total is the
   // reply's when an integer >= received, else received. eventsCursor: the
   // highest of itself, a non-negative integer last_seq and the held rows' seqs.
   function foldReply(envelope) {
     var list = envelope.events
-    var titles = store.titles
+    var titles = store.eventTitles()
     var offset = -new Date().getTimezoneOffset()
     var fresh = []
     var lowest = null
