@@ -2,6 +2,7 @@ import QtQml
 import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
+import "../domain/runEvents.js" as RunEvents
 
 // The am run monitor's data. One list snapshot covers every registered
 // project: runs-snapshot-all.py with each usable root of `projectRoots`, in
@@ -890,6 +891,61 @@ Scope {
     store.eventsStatus = "loading"
     eventsRunner.guard = store.selectedRunId
     eventsRunner.run([store.selectedRunId, "--tail", "200"])
+  }
+
+  // One events reply, applied only while `launchedGuard` is still the
+  // selected run. ok true with an events array: foldReply. ok false: error
+  // with Runs.errorText. Anything else: error, "no usable result". A failure
+  // keeps events, eventsDropped and eventsCursor. Never touches any other
+  // state.
+  function applyEvents(stdout, exitCode, launchedGuard) {
+    if (launchedGuard !== store.selectedRunId) return
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true && Array.isArray(envelope.events)) {
+      store.foldReply(envelope)
+      return
+    }
+    store.eventsStatus = "error"
+    if (envelope !== null && envelope.ok === false) store.eventsError = Runs.errorText(envelope)
+    else store.eventsError = "The events snapshot gave no usable result (exit " + exitCode + ")."
+  }
+
+  // A good reply. Its events become RunEvents.eventRow rows at the local UTC
+  // offset (null rows skipped) folded into the held rows, at most 500.
+  // eventsDropped: (total - received) less the held rows below the reply's
+  // lowest seq, at least 0, plus the rows the cap removed; total is the
+  // reply's when an integer >= received, else received. eventsCursor: the
+  // highest of itself, a non-negative integer last_seq and the held rows' seqs.
+  function foldReply(envelope) {
+    var list = envelope.events
+    var titles = store.titles
+    var offset = -new Date().getTimezoneOffset()
+    var fresh = []
+    var lowest = null
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i]
+      if (e !== null && typeof e === "object" && typeof e.seq === "number" && isFinite(e.seq)
+          && (lowest === null || e.seq < lowest)) lowest = e.seq
+      var row = RunEvents.eventRow(e, titles, offset)
+      if (row !== null) fresh.push(row)
+    }
+    var held = store.events
+    var priorBelow = 0
+    for (var h = 0; h < held.length; h++) {
+      if (lowest !== null && held[h].seq < lowest) priorBelow += 1
+    }
+    var fold = RunEvents.foldEvents(held, fresh, 500)
+    var received = list.length
+    var total = Number.isInteger(envelope.total) && envelope.total >= received ? envelope.total : received
+    var cursor = store.eventsCursor
+    if (store.isSeq(envelope.last_seq) && envelope.last_seq > cursor) cursor = envelope.last_seq
+    var rows = fold.rows
+    if (rows.length > 0 && rows[rows.length - 1].seq > cursor) cursor = rows[rows.length - 1].seq
+    store.events = rows
+    store.eventsDropped = Math.max(0, total - received - priorBelow) + fold.dropped
+    store.eventsCursor = cursor
+    store.eventsStatus = "ok"
+    store.eventsError = ""
   }
 
   // One logs reply. ok:true replaces the text with its last 200 lines; any
@@ -1836,10 +1892,12 @@ Scope {
   }
 
   // The selected run's events helper. Guard: the run id a fetch was launched
-  // for, never the open project. A newer fetch wins over an older one.
+  // for, never the open project. A newer fetch wins over an older one, and a
+  // reply is applied only while its run is still the selected one.
   HelperRunner {
     id: eventsRunner
     script: store.backendDir + "runs/runs-events.py"
+    onFinished: function(stdout, exitCode, launchedGuard) { store.applyEvents(stdout, exitCode, launchedGuard) }
   }
 
   // get-global-settings, once per opening (startLive); latest wins. No guard:

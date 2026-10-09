@@ -7,6 +7,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../../core/domain/runEvents.js" as RunEvents
 import "../../helpers/amFixtures.js" as F
 
 TestCase {
@@ -6044,5 +6045,282 @@ TestCase {
     compare(store.eventsDropped, 7)
     compare(store.eventsCursor, 9)
     compare(store.eventsError, "AmMissing: am is not on PATH.", "the error stays until the reply")
+  }
+
+  // runs-events.py's good line: {"ok": true, "events", "last_seq", "total"}.
+  function eventsReply(events, lastSeq, total) {
+    return JSON.stringify({ ok: true, events: events, last_seq: lastSeq, total: total }) + "\n"
+  }
+
+  // `n` attempt_upsert journal events of card c1's explore attempt 1, seq
+  // first .. first + n - 1.
+  function attemptEvents(first, n) {
+    var out = []
+    for (var i = 0; i < n; i++) {
+      out.push({ seq: first + i, gseq: 1000 + first + i, ts: "2026-10-08T14:38:07Z", run_id: "r1",
+                 event: "attempt_upsert", story: "s1", card: "c1", phase: "explore", attempt: 1,
+                 payload: { status: "ok", duration: 1.5 } })
+    }
+    return out
+  }
+
+  function seqs(rows) { return rows.map(function(r) { return r.seq }).join(",") }
+
+  // r1 selected and its reply applied: events 8..10 of 10 (last_seq 10), so
+  // three rows, eventsDropped 7, eventsCursor 10.
+  function heldStore() {
+    var store = make(); if (!store) return null
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    return store
+  }
+
+  // 4
+  function test_a_good_reply_holds_one_row_per_upsert_event() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var list = F.load("watch-events.json").data.events
+    reply(store.eventsRunner.current, eventsReply(list, 60, 475), 0)
+    var want = list.filter(function(e) { return /_upsert$/.test(e.event) })
+                   .map(function(e) { return e.seq }).join(",")
+    compare(seqs(store.events), want, "only the *_upsert events, ascending seq")
+    compare(store.events.length, 59)
+    compare(JSON.stringify(store.events[0]),
+            JSON.stringify(RunEvents.eventRow(list[1], {}, -new Date().getTimezoneOffset())),
+            "a row is RunEvents.eventRow at the local offset")
+    compare(store.eventsCursor, 60, "last_seq")
+    compare(store.eventsDropped, 415, "475 - 60: the events the tail left out")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(store.eventsRunner.busy, false)
+  }
+
+  // 6
+  function test_one_reply_over_the_cap_keeps_the_newest_500() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 600), 600, 1000), 0)
+    compare(store.events.length, 500)
+    compare(store.events[0].seq, 101, "the lowest seqs were dropped")
+    compare(store.events[499].seq, 600)
+    compare(store.eventsDropped, 500, "1000 - 600 + 100")
+    compare(store.eventsCursor, 600)
+  }
+
+  // 7
+  function test_a_failure_keeps_the_rows() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    compare(seqs(store.events), "8,9,10")
+    store.refreshEvents()
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+    compare(store.eventsStatus, "loading")
+    compare(JSON.stringify(store.events), held, "the rows stay while refreshing")
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsStatus, "error")
+    compare(store.eventsError, "UnknownRunError: no run r1")
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current, "not json\n", 1)
+    compare(store.eventsStatus, "error")
+    compare(store.eventsError, "The events snapshot gave no usable result (exit 1).")
+    compare(JSON.stringify(store.events), held)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "Usage", message: "runs-events.py RUN [--since SEQ] [--tail N]" } }) + "\n", 2)
+    compare(store.eventsError, "Usage: runs-events.py RUN [--since SEQ] [--tail N]")
+    compare(JSON.stringify(store.events), held)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "", "a good reply clears the error")
+  }
+
+  // Review Focus 1
+  function test_a_refresh_folds_into_the_held_rows() {
+    var store = heldStore(); if (!store) return
+    store.refreshEvents()
+    var fresh = attemptEvents(9, 4)
+    fresh[0].payload.status = "failed"
+    reply(store.eventsRunner.current, eventsReply(fresh, 12, 12), 0)
+    compare(seqs(store.events), "8,9,10,11,12", "one row per seq")
+    compare(store.events[1].status, "failed", "the reply's row wins")
+    compare(store.eventsDropped, 7, "events 1..7: the held seq 8 fills part of the gap")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsStatus, "ok")
+  }
+
+  // Review Focus 2
+  function test_an_ok_reply_without_an_events_list_is_unusable() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    // synthetic: lines runs-events.py never prints.
+    var bad = [JSON.stringify({ ok: true }), JSON.stringify({ ok: true, events: { seq: 1 } }),
+               JSON.stringify({ ok: "yes", events: [] }), "[1, 2]", "", "   \n\n"]
+    for (var i = 0; i < bad.length; i++) {
+      store.refreshEvents()
+      reply(store.eventsRunner.current, bad[i] + "\n", 0)
+      compare(store.eventsStatus, "error", bad[i])
+      compare(store.eventsError, "The events snapshot gave no usable result (exit 0).", bad[i])
+      compare(JSON.stringify(store.events), held, bad[i])
+      compare(store.eventsDropped, 7, bad[i])
+      compare(store.eventsCursor, 10, bad[i])
+    }
+    // synthetic: junk and unknown kinds among the events are skipped.
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          eventsReply([null, 5, "x", [], { seq: 11, event: "lease_acquired", payload: {} }, attemptEvents(11, 1)[0]], 11, 11), 0)
+    compare(store.eventsStatus, "ok")
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.eventsCursor, 11)
+  }
+
+  // Review Focus 3
+  function test_a_bad_total_or_last_seq_falls_back() {
+    // synthetic: totals runs-events.py never prints count the events received.
+    var totals = [undefined, null, "10", 2, 2.5, -1]
+    for (var i = 0; i < totals.length; i++) {
+      var store = make(); if (!store) return
+      store.selectedRunId = "r1"
+      reply(store.eventsRunner.current,
+            JSON.stringify({ ok: true, events: attemptEvents(8, 3), last_seq: 10, total: totals[i] }) + "\n", 0)
+      compare(store.eventsStatus, "ok", String(totals[i]))
+      compare(store.eventsDropped, 0, String(totals[i]))
+    }
+    // synthetic: a last_seq that is not a non-negative integer is ignored.
+    var lasts = [undefined, null, "12", -1, 12.5, 3]
+    for (var j = 0; j < lasts.length; j++) {
+      var other = make(); if (!other) return
+      other.selectedRunId = "r1"
+      reply(other.eventsRunner.current,
+            JSON.stringify({ ok: true, events: attemptEvents(8, 3), last_seq: lasts[j], total: 3 }) + "\n", 0)
+      compare(other.eventsCursor, 10, "the highest held seq: " + String(lasts[j]))
+    }
+    var ahead = make(); if (!ahead) return
+    ahead.selectedRunId = "r1"
+    reply(ahead.eventsRunner.current, eventsReply(attemptEvents(8, 3), 12, 3), 0)
+    compare(ahead.eventsCursor, 12, "last_seq above the rows")
+  }
+
+  // 3
+  function test_switching_after_a_good_reply_starts_over() {
+    var store = heldStore(); if (!store) return
+    store.eventsFilter = "Failures"
+    store.refreshEvents()
+    var inFlight = store.eventsRunner.current
+    store.selectedRunId = "r2"
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "loading")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r2|--tail|200")
+    compare(inFlight.running, false, "r1's fetch was stopped")
+    compare(store.eventsFilter, "Failures")
+  }
+
+  // 8
+  function test_a_reply_for_a_run_no_longer_selected_is_dropped() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var p1 = store.eventsRunner.current
+    store.selectedRunId = "r2"
+    var p2 = store.eventsRunner.current
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "loading", "r1's reply changes nothing")
+    compare(store.events.length, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsDropped, 0)
+    compare(store.eventsRunner.busy, true, "r2's fetch is still in flight")
+    // The run-id check on its own, past the runner's latest-wins.
+    store.applyEvents(eventsReply(attemptEvents(1, 3), 3, 3), 0, "r1")
+    compare(store.eventsStatus, "loading")
+    compare(store.events.length, 0)
+    reply(p2, eventsReply(attemptEvents(5, 2), 6, 6), 0)
+    compare(seqs(store.events), "5,6", "r2's reply lands")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 9 (the late reply) and Review Focus 4
+  function test_a_reply_after_leaving_or_reselecting_is_dropped() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var p1 = store.eventsRunner.current
+    store.selectedRunId = ""
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "idle", "a late reply after leaving changes nothing")
+    compare(store.events.length, 0)
+    compare(store.eventsCursor, 0)
+    store.selectedRunId = "r1"
+    var p2 = store.eventsRunner.current
+    verify(p2 !== p1)
+    store.selectedRunId = ""
+    store.selectedRunId = "r1"
+    var p3 = store.eventsRunner.current
+    reply(p2, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "loading", "the same run's superseded fetch changes nothing")
+    compare(store.events.length, 0)
+    reply(p3, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(seqs(store.events), "1,2,3")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 10
+  function test_a_project_switch_leaves_the_events_alone() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    store.project = tc.rootA
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    var held = JSON.stringify(store.events)
+    var seq = store.eventsRunner.seq
+    store.project = tc.rootB
+    store.projectRoots = registry([tc.rootB])
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(store.eventsRunner.seq, seq, "nothing is launched")
+
+    store.refreshEvents()
+    var proc = store.eventsRunner.current
+    store.project = tc.rootA
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    compare(proc.running, true, "the fetch in flight is not stopped")
+    verify(store.eventsRunner.current === proc)
+    reply(proc, eventsReply(attemptEvents(11, 1), 11, 11), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply lands")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 11
+  function test_an_events_reply_touches_nothing_else() {
+    var store = opened(); if (!store) return
+    var before = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                  selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                                  logsLoading: store.logsLoading, logsError: store.logsError,
+                                  logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "AmMissing", message: "am is not on PATH." } }) + "\n", 0)
+    compare(store.eventsError, "AmMissing: am is not on PATH.")
+    var after = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                 selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                                 logsLoading: store.logsLoading, logsError: store.logsError,
+                                 logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    compare(after, before, "an error reply")
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 2), 2, 2), 0)
+    compare(store.eventsStatus, "ok")
+    after = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                             selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                             logsLoading: store.logsLoading, logsError: store.logsError,
+                             logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    compare(after, before, "a good reply")
   }
 }
