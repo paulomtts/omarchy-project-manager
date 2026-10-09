@@ -548,3 +548,91 @@ def test_recorded_fixture_writes_the_capture_when_recording(monkeypatch, tmp_pat
     monkeypatch.setenv(RECORD_ENV, "1")
     assert recorded_fixture("logs-follow-x.jsonl", "{}\n") == "{}\n"
     assert (tmp_path / "logs-follow-x.jsonl").read_text() == "{}\n"
+
+
+LOGS_HELLO_KEYS = {"event", "offset", "path", "schema"}
+CHUNK_KEYS = {"offset", "text"}
+END_KEYS = {"event", "status"}
+END_STATUSES = {"ok", "schema_invalid", "gate_failed", "harness_error"}
+
+
+def json_lines(stdout):
+    """Each stdout line of am parsed as one JSON object; fails naming a line that is not."""
+    lines = []
+    for index, raw in enumerate(stdout.splitlines()):
+        try:
+            line = json.loads(raw)
+        except json.JSONDecodeError:
+            pytest.fail(f"line {index} is not JSON: {raw!r}")
+        if not isinstance(line, dict):
+            pytest.fail(f"line {index} is not a JSON object: {raw!r}")
+        lines.append(line)
+    return lines
+
+
+def follow_stream_text(lines, path_prefix, path_suffix):
+    """The joined chunk text of one whole `am logs --follow` stream.
+
+    The stream is a hello `{event: "logs", offset, path, schema}` whose path starts with
+    `path_prefix` and ends with `path_suffix`, one or more contiguous `{offset, text}`
+    chunks from the hello's offset, and an `{event: "end", status}` line. No line has an
+    `ok` key. A line that breaks this fails naming its index and its keys.
+    """
+    def drift(index, why):
+        pytest.fail(f"line {index} {why}: keys {sorted(lines[index])} in {lines[index]!r}")
+
+    if len(lines) < 3:
+        pytest.fail(f"a stream is a hello, one or more chunks and an end; got {lines!r}")
+    for index, line in enumerate(lines):
+        if "ok" in line:
+            drift(index, "has an ok key")
+    hello, chunks, end = lines[0], lines[1:-1], lines[-1]
+    if set(hello) != LOGS_HELLO_KEYS or hello["event"] != "logs":
+        drift(0, "is not a logs hello")
+    if type(hello["offset"]) is not int or hello["schema"] not in (1, 2):
+        drift(0, "has a bad offset or schema")
+    path = hello["path"]
+    if not (isinstance(path, str) and path.startswith(path_prefix) and path.endswith(path_suffix)):
+        drift(0, f"has a path outside {path_prefix}...{path_suffix}")
+    offset = hello["offset"]
+    for index, chunk in enumerate(chunks, start=1):
+        if set(chunk) != CHUNK_KEYS or not isinstance(chunk["text"], str):
+            drift(index, "is not a chunk")
+        if type(chunk["offset"]) is not int or chunk["offset"] != offset:
+            drift(index, f"does not start at byte {offset}")
+        offset += len(chunk["text"].encode("utf-8"))
+    if set(end) != END_KEYS or end["event"] != "end" or end["status"] not in END_STATUSES:
+        drift(len(lines) - 1, "is not an end line")
+    return "".join(chunk["text"] for chunk in chunks)
+
+
+STREAM = [{"event": "logs", "offset": 0, "path": "/d/runs/r/c/review.1/stdout.log", "schema": 1},
+          {"offset": 0, "text": "é\n"}, {"offset": 3, "text": "b\n"},
+          {"event": "end", "status": "ok"}]
+
+
+def test_follow_stream_text_joins_contiguous_chunks_counting_utf8_bytes():
+    assert follow_stream_text(STREAM, "/d/runs/", "/c/review.1/stdout.log") == "é\nb\n"
+
+
+@pytest.mark.parametrize("index, line, message", [
+    (0, {**STREAM[0], "am": "0.2.0"}, r"line 0 is not a logs hello: keys \['am', 'event'"),
+    (2, {"offset": 4, "text": "b\n"}, r"line 2 does not start at byte 3: keys \['offset', 'text'\]"),
+    (3, {"event": "end"}, r"line 3 is not an end line: keys \['event'\]"),
+    (3, {"event": "end", "status": "ok", "ok": True},
+     r"line 3 has an ok key: keys \['event', 'ok', 'status'\]"),
+])
+def test_follow_stream_checker_names_the_line_that_drifted(index, line, message):
+    drifted = [*STREAM[:index], line, *STREAM[index + 1:]]
+    with pytest.raises(pytest.fail.Exception, match=message):
+        follow_stream_text(drifted, "/d/runs/", "/c/review.1/stdout.log")
+
+
+def test_follow_stream_checker_fails_on_a_stream_with_no_chunk():
+    with pytest.raises(pytest.fail.Exception, match="one or more chunks"):
+        follow_stream_text([STREAM[0], STREAM[-1]], "/d/runs/", "/c/review.1/stdout.log")
+
+
+def test_json_lines_names_a_line_that_is_not_a_json_object():
+    with pytest.raises(pytest.fail.Exception, match=r"line 1 is not a JSON object: '\[1\]'"):
+        json_lines('{"a": 1}\n[1]\n')
