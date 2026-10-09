@@ -1178,6 +1178,41 @@ function dispatchLabel(card, cardMap) {
   return "\"" + title + "\""
 }
 
+// The dispatch dialog's step-2 rows for one project's brd tree:
+// { key, level, card, label, depth }. roots: brd tree's top-level cards after
+// Board.indexTree; cardMap: its {id: card} map, passed to dispatchPlan and
+// dispatchLabel and not read otherwise.
+// Row 0 is always { key: "board", level: "board", card: "board", label:
+// "Whole board", depth: 0 }. Then the forest depth-first, pre-order, roots and
+// children in array order (non-array roots or children count as none). A node
+// that is not a plain object gives no row and no children; a node object
+// reached again is skipped with its subtree. A node gives a row when
+// dispatchPlan offers it at level milestone or story, or at level subtask with
+// status exactly "todo", and no earlier row has its id. Children are walked
+// whether or not their parent gives a row.
+// key "card:" + id; level the plan's level; card the node itself; label
+// dispatchLabel(card, cardMap); depth the card's depth.
+// Returns new rows in a new array. Never mutates, never throws.
+function dispatchTargets(roots, cardMap) {
+  var rows = [{ key: "board", level: dispatchPlan("board").level, card: "board", label: dispatchLabel("board"), depth: 0 }]
+  var visited = []
+  var ids = []
+  var stack = _arrayOr(roots).slice().reverse()
+  while (stack.length > 0) {
+    var card = stack.pop()
+    if (!_isObject(card) || visited.indexOf(card) >= 0) continue
+    visited.push(card)
+    var children = _arrayOr(card.children)
+    for (var i = children.length - 1; i >= 0; i--) stack.push(children[i])
+    var plan = dispatchPlan(card, cardMap)
+    if (!plan.offered || (plan.level === "subtask" && card.status !== "todo")) continue
+    if (ids.indexOf(card.id) >= 0) continue
+    ids.push(card.id)
+    rows.push({ key: "card:" + card.id, level: plan.level, card: card, label: dispatchLabel(card, cardMap), depth: card.depth })
+  }
+  return rows
+}
+
 // The branch-prefix stem of a milestone title: lower-case [a-z0-9] tokens; a
 // first token like "m3" (letters then digits) is the stem, else the first three
 // tokens joined by "-", cut to 24 characters, without a trailing "-".
