@@ -3,7 +3,9 @@
 // inputs come from App -- the backend dir, the registry's roots and names,
 // the selected project's ROOT PATH (never the project object), and App's
 // panel-open flag -- and the couplings between the run monitor's concerns,
-// driven through App. The store's own behaviour is tested in tst_run_store.qml.
+// driven through App, including `app.runAlerts`, which App feeds with the run
+// store's snapshotReplied. The stores' own behaviour is tested in
+// tst_run_store.qml and tst_run_alerts_store.qml.
 import QtQuick
 import QtTest
 
@@ -471,5 +473,62 @@ TestCase {
     compare(app.runs.toasts.length, 1, "pB's first entry back only re-arms it")
     compare(app.runs.toasts[0].id, "a1", "pA stayed armed")
     compare(Object.keys(app.runs.armedRoots).length, 2)
+  }
+
+  // ---- app.runAlerts (split-runstore 2.2)
+
+  // A1
+  function test_app_composes_run_alerts_wired_to_the_run_store() {
+    var app = makeBare(); if (!app) return
+    verify(app.runAlerts, "App composes the alerts store")
+    verify(app.runs.alertsStore === app.runAlerts, "the run store's shim handle")
+    compare(app.runAlerts.backendDir, "/plugin/core/backend/")
+    app.backendDir = "/other/"
+    compare(app.runAlerts.backendDir, "/other/", "backendDir follows App")
+    compare(app.runAlerts.active, false)
+    app.panelOpen = true
+    compare(app.runAlerts.active, true, "active follows panelOpen")
+    app.panelOpen = false
+    compare(app.runAlerts.active, false)
+    compare(app.runAlerts.notifyOnEscalation, false)
+    app.runs.notifyOnEscalation = true
+    compare(app.runAlerts.notifyOnEscalation, true, "the switch follows the run store's")
+    app.projects.applyStoredState('{"last_project": null}', 0)
+    app.projects.applyProjectsList([pA, pB])
+    compare(app.runAlerts.projectRoots.length, 2)
+    verify(app.runAlerts.projectRoots === app.runs.projectRoots, "the run store's registry")
+  }
+
+  // A2
+  function test_a_snapshot_through_app_toasts_on_run_alerts() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runAlerts.toasts.length, 0, "the first snapshots only arm")
+    compare(app.runAlerts.alertsArmed, true)
+    snapshot(app, listReply([escalatedIn("r1")], []))
+    compare(app.runAlerts.toasts.length, 1)
+    compare(app.runAlerts.toasts[0].id, "r1")
+    compare(app.runAlerts.toasts[0].project, "alpha")
+    verify(app.runs.toasts === app.runAlerts.toasts, "the run store's shim reads the same list")
+  }
+
+  // A3
+  function test_am_missing_through_app_disarms_run_alerts() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runAlerts.alertsArmed, true)
+    snapshot(app, missingReply())
+    compare(app.runAlerts.alertsArmed, false)
+    snapshot(app, listReply([escalatedIn("r1")], []))
+    compare(app.runAlerts.toasts.length, 0, "the first good snapshot after am came back only arms")
+    compare(app.runAlerts.alertsArmed, true)
+  }
+
+  // A4
+  function test_closing_the_panel_through_app_empties_run_alerts() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    snapshot(app, listReply([escalatedIn("r1")], []))
+    compare(app.runAlerts.toasts.length, 1)
+    app.panelOpen = false
+    compare(app.runAlerts.toasts.length, 0)
+    compare(app.runAlerts.alertsArmed, false)
   }
 }

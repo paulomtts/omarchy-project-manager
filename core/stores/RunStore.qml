@@ -139,19 +139,19 @@ Scope {
   // The footer flash: why a run key was refused. flashTimer clears it.
   property string flashText: ""
 
-  // Alerts (S2 4.4): a toast for every run of any registered project that
-  // newly needs a human while the panel is open. `armedRoots` is {root: true}
-  // of every usable root whose runs may be compared against, and is replaced,
-  // never changed in place: a root's first good entry after an opening, a
-  // store change, an am-missing spell or its return to the registry only arms
-  // it, so history is never replayed. `alertsArmed`: some root is armed.
-  // `toasts` is {key, id, title, state, reason, project, expiresMs}, oldest
-  // first, at most 3, and is replaced, never changed in place; `project` is
-  // the name of the run's project.
-  property var armedRoots: ({})
-  readonly property bool alertsArmed: Object.keys(store.armedRoots).length > 0
-  property var toasts: []
-  property int toastMs: 8000
+  // Moved to RunAlertsStore; removed by the last story
+  property var alertsStore: null
+  readonly property var armedRoots: store.alertsStore ? store.alertsStore.armedRoots : ({})
+  readonly property bool alertsArmed: store.alertsStore ? store.alertsStore.alertsArmed : false
+  readonly property var toasts: store.alertsStore ? store.alertsStore.toasts : []
+  readonly property int toastMs: store.alertsStore ? store.alertsStore.toastMs : 0
+  readonly property var toastTimer: store.alertsStore ? store.alertsStore.toastTimer : null
+  readonly property var notifyRunners: store.alertsStore ? store.alertsStore.notifyRunners : []
+  function raiseAlerts(alerts) { return store.alertsStore ? store.alertsStore.raiseAlerts(alerts) : undefined }
+  function expireToasts(nowMs) { return store.alertsStore ? store.alertsStore.expireToasts(nowMs) : undefined }
+  function dismissToast(key) { return store.alertsStore ? store.alertsStore.dismissToast(key) : undefined }
+  function dismissAllToasts() { return store.alertsStore ? store.alertsStore.dismissAllToasts() : undefined }
+  function notify(alert) { return store.alertsStore ? store.alertsStore.notify(alert) : undefined }
   // "Notify on escalation", viewer-wide and off until read: the switch's
   // value, the last value read from or written to viewer-state.py's global
   // settings, and whether the user changed it since this opening's load was
@@ -216,11 +216,9 @@ Scope {
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
-  readonly property alias toastTimer: toastTimer
   readonly property alias settingsLoadRunner: settingsLoadRunner
   readonly property alias settingsSaveRunner: settingsSaveRunner
   readonly property alias runSettingsRunner: runSettingsRunner
-  readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
   readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
   readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
   readonly property alias dispatchDebounceTimer: dispatchDebounceTimer
@@ -364,19 +362,17 @@ Scope {
 
   // The panel opened: fetch now and read the notify switch (get-global-settings;
   // notifyTouched is cleared first unless a save is in flight); the first good
-  // snapshot starts the watch and arms every root that answers in it, and the
-  // stale clock counts from now.
+  // snapshot starts the watch, and the stale clock counts from now.
   function startLive() {
     store.watchTried = false
-    store.armedRoots = {}
     if (!settingsSaveRunner.busy) store.notifyTouched = false
     settingsLoadRunner.run(["get-global-settings"])
     store.restartStale()
     store.refresh()
   }
 
-  // The panel closed: no process and no timer is left running, and no toast
-  // or dispatch outlives the opening (a start in flight runs to its end). The
+  // The panel closed: no process and no timer is left running, and no
+  // dispatch outlives the opening (a start in flight runs to its end). The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
   // and is applied. The project filter is back to All projects, with no
   // projectFilterToggled. The runs, the selection, the chip and amStatus stay
@@ -391,8 +387,6 @@ Scope {
     staleTimer.stop()
     store.stale = false
     store.watchWarning = ""
-    store.armedRoots = {}
-    store.toasts = []
     // A start in flight refuses and lands normally.
     store.closeDispatch()
   }
@@ -590,10 +584,9 @@ Scope {
   }
 
   // The live state of the store last seen is forgotten: the cursor, the
-  // nudges and their debounce, the runs and every root's list of them, and
-  // the alerts (the next list snapshot only arms). Then snapshotReplied(root,
-  // "missing", previousRuns, []) for every usable root, in registry order.
-  // Selection, logs, controls and dispatch stay.
+  // nudges and their debounce, the runs and every root's list of them. Then
+  // snapshotReplied(root, "missing", previousRuns, []) for every usable root,
+  // in registry order. Selection, logs, controls and dispatch stay.
   function forgetLive() {
     var prev = store.runsByProject
     store.watchCursor = 0
@@ -601,7 +594,6 @@ Scope {
     debounceTimer.stop()
     store.runs = []
     store.runsByProject = {}
-    store.armedRoots = {}
     var usable = store.usableRoots()
     var outcomes = {}
     for (var i = 0; i < usable.length; i++) outcomes[usable[i].root] = "missing"
@@ -663,9 +655,9 @@ Scope {
 
   // Another project was opened, or none. The run list, the selection, the
   // logs, the watch, the coverage, the requests (pending, stillWaiting,
-  // controlRunners), the control error, the cancel dialog, the footer flash,
-  // the alerts, the toasts and the notify switch belong to every registered
-  // project and stay, and no snapshot is launched. Reset: the run settings
+  // controlRunners), the control error, the cancel dialog, the footer flash
+  // and the notify switch belong to every registered project and stay, and
+  // no snapshot is launched. Reset: the run settings
   // (loaded for the new project on runSettingsRunner) and the dispatch.
   function projectSwitched() {
     store.runSettings = {}
@@ -739,23 +731,20 @@ Scope {
     return { runs: out, owner: owner }
   }
 
-  // The registry changed. First the roots no longer usable lose their runs,
-  // their errors and their arming (armedRoots is replaced only when a root
-  // went), and `runs` is merged again in the new order with the new names;
-  // no alert is raised. Then every usable root is snapshotted.
+  // The registry changed. First the roots no longer usable lose their runs
+  // and their errors, and `runs` is merged again in the new order with the
+  // new names; no snapshotReplied is emitted. Then every usable root is
+  // snapshotted.
   function registryChanged() {
     var usable = store.usableRoots()
     var errors = {}
-    var armed = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
       if (Runs.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
-      if (Runs.hasKey(store.armedRoots, root)) armed[root] = true
     }
     var byProject = store.taggedByProject(store.runsByProject, usable)
     store.runsByProject = byProject
     store.projectErrors = errors
-    if (Object.keys(armed).length !== Object.keys(store.armedRoots).length) store.armedRoots = armed
     store.runs = store.mergedRuns(byProject, usable).runs
     store.refresh()
   }
@@ -912,25 +901,21 @@ Scope {
   // roots by exact root: the first entry of a root counts, any other entry is
   // ignored. No matched entry at all is a reply with no usable result --
   // unless none of the roots it was launched for (`launched`) is usable any
-  // more, when it changes nothing. Every
+  // more, when it changes nothing; neither emits snapshotReplied. Every
   // matched entry AmMissing: the runs, runsByProject, projectErrors and the
-  // coverage are emptied and amStatus is "missing", and every root is disarmed.
-  // Otherwise an ok entry replaces its root's runs and clears its error
-  // (entries that are not objects are skipped); a failed one keeps its
-  // root's runs ([] when it had none) and records Runs.errorText of its
-  // error; a usable root with no entry keeps both. `runs` is merged again,
-  // and asOfSeq is 0 and appliedSeq {id: 0} for every run in it. With an
-  // entry ok, everything after a good snapshot follows, and while active a
-  // running watch whose roots are no longer the usable "/" roots is started
-  // again, the alerts of every armed root with an ok entry are raised
-  // (alertsOf) and every root with an ok entry is armed. With none, amStatus
-  // is "error" with the first failed entry's sentence, and armedRoots and
-  // `stale` stay as they are. A failed entry, a root with no entry and a
-  // closed panel never change armedRoots. Last, once the state is applied,
-  // each root with a matched entry gets snapshotReplied in registry order
-  // (emitReplied): "missing" for each in an AmMissing reply, else "ok" for an
-  // ok entry, with the runs the merged list attributes to it (ownedRuns), and
-  // "failed" for any other, with [].
+  // coverage are emptied and amStatus is "missing". Otherwise an ok entry
+  // replaces its root's runs and clears its error (entries that are not
+  // objects are skipped); a failed one keeps its root's runs ([] when it had
+  // none) and records Runs.errorText of its error; a usable root with no
+  // entry keeps both. `runs` is merged again, and asOfSeq is 0 and appliedSeq
+  // {id: 0} for every run in it. With an entry ok, everything after a good
+  // snapshot follows, and while active a running watch whose roots are no
+  // longer the usable "/" roots is started again. With none, amStatus is
+  // "error" with the first failed entry's sentence, and `stale` stays as it
+  // is. Last, once the state is applied, each root with a matched entry gets
+  // snapshotReplied in registry order (emitReplied): "missing" for each in an
+  // AmMissing reply, else "ok" for an ok entry, with the runs the merged list
+  // attributes to it (ownedRuns), and "failed" for any other, with [].
   function applyProjects(entries, exitCode, launched) {
     var usable = store.usableRoots()
     var names = {}
@@ -971,9 +956,6 @@ Scope {
       store.asOfSeq = 0
       store.amStatus = "missing"
       store.lastError = Runs.errorText(matched[0].error)
-      // Every root is disarmed: comparing its next good entry against []
-      // would alert every escalated run again.
-      store.armedRoots = {}
       for (var mr = 0; mr < matched.length; mr++) outcomes[matched[mr].root] = "missing"
       store.emitReplied(usable, outcomes, prev, {})
       return
@@ -1013,8 +995,6 @@ Scope {
     for (var d = 0; d < ids.length; d++) applied[ids[d]] = 0
     var after = {}
     for (var o in okRoots) after[o] = store.ownedRuns(byProject[o], merged.owner, o)
-    // Compared before the runs are replaced; raised below only while open.
-    var alerts = store.active ? store.alertsOf(prev, byProject, merged.owner, okRoots, usable) : []
     store.runsByProject = byProject
     store.projectErrors = errors
     store.asOfSeq = 0
@@ -1044,38 +1024,8 @@ Scope {
         store.stopWatch()
         store.startWatch()
       }
-      store.raiseAlerts(alerts)
-      var armed = Runs.copyMap(store.armedRoots)
-      for (var ok in okRoots) armed[ok] = true
-      store.armedRoots = armed
     }
     store.emitReplied(usable, outcomes, prev, after)
-  }
-
-  // One list reply's alerts, in registry order, then each root's order: for
-  // every armed root in okRoots, Runs.newAlerts of its runs before the reply
-  // (prev; [] when it had none) against the runs of byProject it owns in the
-  // merged list (owner), each with `project`, the name Runs.withProject gives
-  // that root. A run id is raised at most once.
-  function alertsOf(prev, byProject, owner, okRoots, usable) {
-    var out = []
-    var raised = {}
-    for (var i = 0; i < usable.length; i++) {
-      var root = usable[i].root
-      if (!Runs.hasKey(okRoots, root) || !Runs.hasKey(store.armedRoots, root)) continue
-      var mine = byProject[root].filter(function(run) {
-        return run !== null && typeof run === "object" && Runs.hasKey(owner, run.id) && owner[run.id] === root
-      })
-      var name = Runs.withProject({}, root, usable[i].name).project.name
-      var found = Runs.newAlerts(Runs.hasKey(prev, root) ? prev[root] : [], mine)
-      for (var j = 0; j < found.length; j++) {
-        if (Runs.hasKey(raised, found[j].id)) continue
-        raised[found[j].id] = true
-        found[j].project = name
-        out.push(found[j])
-      }
-    }
-    return out
   }
 
   // snapshotReplied for each root of `usable` that `outcomes` ({root:
@@ -1352,54 +1302,7 @@ Scope {
     return true
   }
 
-  // ---- alerts (S2 4.4)
-
-  // One toast per alert, newest last: a run's older toast goes first, then the
-  // oldest beyond three. With the setting on, each alert also notifies.
-  // Called from applySnapshot only while active.
-  function raiseAlerts(alerts) {
-    var list = Array.isArray(alerts) ? alerts : []
-    for (var i = 0; i < list.length; i++) {
-      var a = list[i]
-      toastState.nextKey += 1
-      var next = store.toasts.filter(function(t) { return t.id !== a.id })
-      next.push({ key: toastState.nextKey, id: a.id, title: a.title, state: a.state, reason: a.reason,
-                  project: typeof a.project === "string" ? a.project : "", expiresMs: Date.now() + store.toastMs })
-      while (next.length > 3) next.shift()
-      store.toasts = next
-      if (store.notifyOnEscalation) store.notify(a)
-    }
-  }
-
-  // Drops every toast whose time is up at nowMs (the timer passes Date.now()).
-  function expireToasts(nowMs) {
-    var next = store.toasts.filter(function(t) { return t.expiresMs > nowMs })
-    if (next.length !== store.toasts.length) store.toasts = next
-  }
-
-  // The toast with this key goes; an unknown key changes nothing.
-  function dismissToast(key) {
-    var next = store.toasts.filter(function(t) { return t.key !== key })
-    if (next.length !== store.toasts.length) store.toasts = next
-  }
-
-  function dismissAllToasts() {
-    if (store.toasts.length > 0) store.toasts = []
-  }
-
-  // One notify.py launch for an alert, on a runner of its own so two never
-  // stop each other. The reply is not read: a failed or skipped notification
-  // changes nothing here.
-  function notify(alert) {
-    var runner = notifyC.createObject(store)
-    notifyState.runners = notifyState.runners.concat([runner])
-    runner.run([String(alert.title), String(alert.reason)])
-  }
-
-  function dropNotifyRunner(runner) {
-    notifyState.runners = notifyState.runners.filter(function(r) { return r !== runner })
-    runner.destroy()
-  }
+  // ---- the notify switch (S2 4.4)
 
   // The switch changed: shown at once, written to the global settings in the
   // background. Always works, with or without a project, and returns true.
@@ -1902,16 +1805,6 @@ Scope {
     onTriggered: store.flashText = ""
   }
 
-  // Only while the panel is open and a toast shows: no timer while idle.
-  Timer {
-    id: toastTimer
-    objectName: "toastTimer"
-    interval: 250
-    repeat: true
-    running: store.active && store.toasts.length > 0
-    onTriggered: store.expireToasts(Date.now())
-  }
-
   // only while a change waits to be checked.
   Timer {
     id: dispatchDebounceTimer
@@ -1950,18 +1843,6 @@ Scope {
     property int nextToken: 0
   }
 
-  // The toast keys only grow, so a stale Dismiss never removes a newer toast.
-  QtObject {
-    id: toastState
-    property int nextKey: 0
-  }
-
-  // The notify.py runners in flight; kept apart so consumers cannot write it.
-  QtObject {
-    id: notifyState
-    property var runners: []
-  }
-
   // The dispatch's own bookkeeping; kept apart so consumers cannot write it.
   // `startRunner` is the runner that put the store into `starting`, forgotten
   // by an idle reset (and so by a project switch); `baseTouched` says the user
@@ -1994,19 +1875,6 @@ Scope {
       property string projectRoot: ""     // the run's project.root then; "" when it had none
       property bool settingsStep: false   // reading the run settings; run-control comes next
       onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
-    }
-  }
-
-  // One HelperRunner per notification. Guard "": a project switch does not
-  // stop a notification already launched. It goes when its process exits.
-  Component {
-    id: notifyC
-
-    HelperRunner {
-      id: nr
-      script: store.backendDir + "runs/notify.py"
-      guard: ""
-      onFinished: store.dropNotifyRunner(nr)
     }
   }
 
