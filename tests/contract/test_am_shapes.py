@@ -783,3 +783,31 @@ def test_logs_follow_of_a_step_prints_hello_chunks_and_end(am, finished_run):
     assert lines[-1]["status"] == "ok", lines[-1]
     assert_stream_matches_fixture(normalize(lines, finished_run.root),
                                   "logs-follow-step.jsonl", "verify")
+
+
+def masked_card(refusal):
+    """`refusal` with the card id in its error message replaced by <CARD>."""
+    message = re.sub(r"card '[^']*'", "card '<CARD>'", refusal["error"]["message"])
+    return {**refusal, "error": {**refusal["error"], "message": message}}
+
+
+def test_masked_card_replaces_only_the_card_id_in_the_message():
+    message = "phase 'worktree' of card 'c-1' has no recorded attempt yet"
+    refusal = {"ok": False, "error": {"type": "UnknownAttemptError", "message": message}}
+    assert masked_card(refusal) == {"ok": False, "error": {
+        "type": "UnknownAttemptError",
+        "message": "phase 'worktree' of card '<CARD>' has no recorded attempt yet"}}
+
+
+def test_logs_follow_of_a_step_without_a_log_is_one_refusal(am, finished_run):
+    proc = follow(am, finished_run, finished_run.card, "--phase", "worktree")
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    [refusal] = json_lines(proc.stdout)
+    assert set(refusal) == {"ok", "error"} and refusal["ok"] is False, refusal
+    assert set(refusal["error"]) == {"type", "message"}, refusal
+    assert refusal["error"]["type"] == "UnknownAttemptError", refusal
+    assert "'worktree'" in refusal["error"]["message"], refusal
+    assert "has no recorded attempt yet" in refusal["error"]["message"], refusal
+    capture = normalize(refusal, finished_run.root)
+    fixture = json.loads(recorded_fixture("logs-follow-refusal.json", jsonl([capture])))
+    assert masked_card(fixture) == masked_card(capture), (fixture, capture)
