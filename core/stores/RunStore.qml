@@ -67,10 +67,11 @@ Scope {
   // The chip changed: a different list, so the cursor goes home (App's job).
   signal runFilterToggled()
   // The Runs screen's project filter: "" is All projects, else a filterable
-  // root (isFilterable). Set by toggleProjectFilter; never persisted.
+  // root (isFilterable). Set by toggleProjectFilter; back to "" when it stops
+  // being filterable (keepProjectFilter). Never persisted.
   property string projectFilter: ""
   // The project filter's list changed under the cursor: emitted once per
-  // toggleProjectFilter call.
+  // toggleProjectFilter call and once per fallback to All.
   signal projectFilterToggled()
   // The runs past the chip, the search and the project filter, grouped by
   // project in display order (Runs.groupByProject).
@@ -326,6 +327,17 @@ Scope {
     }
     return false
   }
+
+  // `runs` changed (a reply, a registry change, emptying, starting over): a
+  // project filter that is no longer filterable becomes "" and
+  // projectFilterToggled is emitted once; otherwise nothing happens.
+  function keepProjectFilter() {
+    if (store.projectFilter === "" || store.isFilterable(store.projectFilter)) return
+    store.projectFilter = ""
+    store.projectFilterToggled()
+  }
+
+  onRunsChanged: store.keepProjectFilter()
 
   onActiveChanged: {
     if (store.active) store.startLive()

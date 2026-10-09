@@ -2260,6 +2260,106 @@ TestCase {
     compare(ids(store.filteredRuns), "b-esc1")
   }
 
+  // 6 and Review Focus 3, 4
+  function test_the_registry_dropping_the_filtered_root_falls_back_to_all() {
+    var store = projectsStore(false); if (!store) return
+    store.toggleProjectFilter(tc.rootB)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "projectFilterToggled" })
+    store.projectRoots = registry([tc.rootA, tc.rootC, tc.rootD])
+    compare(store.projectFilter, "", "synchronous, by the time the assignment returns")
+    compare(spy.count, 1)
+    compare(ids(store.filteredRuns), "c-live1,c-park1,a-park1,a-park2", "every remaining project")
+    store.projectRoots = registry([tc.rootA, tc.rootB, tc.rootC, tc.rootD])
+    reply(store.snapshotRunner.current, allReply(projectEntries()), 0)
+    compare(store.projectFilter, "", "the project coming back does not bring its filter back")
+    compare(ids(store.filteredRuns), "b-esc1,b-park1,c-live1,c-park1,a-park1,a-park2")
+    compare(spy.count, 1)
+
+    var emptied = projectsStore(false); if (!emptied) return
+    emptied.toggleProjectFilter(tc.rootB)
+    var spy2 = createTemporaryObject(spyC, tc, { target: emptied, signalName: "projectFilterToggled" })
+    emptied.projectRoots = []
+    compare(emptied.projectFilter, "", "an empty registry empties runs")
+    compare(spy2.count, 1)
+    compare(emptied.filteredRuns.length, 0)
+  }
+
+  // 7 and Review Focus 2
+  function test_a_reply_that_leaves_the_project_without_runs_falls_back_to_all() {
+    var store = projectsStore(false); if (!store) return
+    store.toggleProjectFilter(tc.rootB)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "projectFilterToggled" })
+    store.refresh()
+    var entries = projectEntries()
+    entries[1] = okEntry(tc.rootB, [])
+    reply(store.snapshotRunner.current, allReply(entries), 0)
+    compare(store.projectFilter, "")
+    compare(spy.count, 1)
+    compare(ids(store.filteredRuns), "c-live1,c-park1,a-park1,a-park2")
+
+    var missing = projectsStore(false); if (!missing) return
+    missing.toggleProjectFilter(tc.rootB)
+    var spy2 = createTemporaryObject(spyC, tc, { target: missing, signalName: "projectFilterToggled" })
+    missing.refresh()
+    reply(missing.snapshotRunner.current, allReply([tc.rootA, tc.rootB, tc.rootC, tc.rootD].map(function(r) {
+      return tc.failEntry(r, "AmMissing", "am is not installed or not on PATH.")
+    })), 0)
+    compare(missing.amStatus, "missing")
+    compare(missing.projectFilter, "", "am missing empties runs")
+    compare(spy2.count, 1)
+  }
+
+  // 7 (failed entry) and Review Focus 5
+  function test_a_failed_entry_or_envelope_keeps_the_project_filter() {
+    var store = projectsStore(false); if (!store) return
+    store.toggleProjectFilter(tc.rootB)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "projectFilterToggled" })
+    store.refresh()
+    var entries = projectEntries()
+    entries[1] = failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")
+    reply(store.snapshotRunner.current, allReply(entries), 0)
+    compare(store.projectErrors[tc.rootB], "AmTimeout: am did not answer within 60 s.")
+    compare(store.projectFilter, tc.rootB, "a failed entry keeps B's runs")
+    compare(ids(store.filteredRuns), "b-esc1,b-park1")
+    store.refresh()
+    reply(store.snapshotRunner.current,
+          JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }) + "\n", 1)
+    compare(store.amStatus, "error")
+    compare(store.projectFilter, tc.rootB, "a failed envelope keeps every run")
+    compare(spy.count, 0)
+  }
+
+  // 8
+  function test_no_fallback_while_the_filter_still_holds() {
+    var store = projectsStore(false); if (!store) return
+    store.toggleProjectFilter(tc.rootB)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "projectFilterToggled" })
+    store.refresh()
+    var entries = projectEntries()
+    entries[0] = okEntry(tc.rootA, [entry("a-park3", "stopped", false, tc.rootA)])
+    reply(store.snapshotRunner.current, allReply(entries), 0)
+    compare(ids(store.runs), "a-park3,b-esc1,b-park1,c-live1,c-park1", "A's runs changed")
+    compare(store.projectFilter, tc.rootB)
+    store.projectRoots = registry([tc.rootB, tc.rootA, tc.rootC])
+    compare(store.projectFilter, tc.rootB, "a registry change that keeps B")
+    compare(ids(store.filteredRuns), "b-esc1,b-park1")
+    compare(spy.count, 0)
+  }
+
+  // Review Focus 1
+  function test_starting_over_resets_the_project_filter() {
+    var store = projectsStore(true); if (!store) return
+    store.toggleProjectFilter(tc.rootB)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "projectFilterToggled" })
+    store.resetCursor()
+    compare(store.runs.length, 0)
+    compare(store.projectFilter, "", "the old store's choice is not kept")
+    compare(spy.count, 1)
+    reply(store.snapshotRunner.current, allReply(projectEntries()), 0)
+    compare(store.projectFilter, "")
+    compare(spy.count, 1)
+  }
+
   // ---- attempt logs (5.2)
 
   // A snapshot entry of the started capture: runs.json's first `am runs` row
