@@ -11,8 +11,8 @@ import "../domain/runs.js" as Runs
 // whose latest entry failed; `runs` every root's runs merged in registry
 // order, a run id listed once, under the first root that lists it. A project
 // switch leaves the run list alone: `project`, the open project, decides only
-// the run settings and the dispatch; the run controls and the attempt logs
-// act on each run's own repo_dir and project root. Plus the selected run, the
+// the run settings and the dispatch; the attempt logs act on each run's own
+// project root. Plus the selected run, the
 // attempt the Run detail pane shows and that
 // attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
 // asked at all. One list snapshot is in flight at a time, plus at most one
