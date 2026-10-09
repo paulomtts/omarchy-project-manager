@@ -26,10 +26,13 @@ Item {
   property string filter: "All"
   property int dropped: 0
   property string status: "idle"
+  property string errorText: "Events unreadable."
+  property string errorMessage: ""
 
   readonly property var palette: pane.theme || paneTheme
   readonly property var shownRows: RunEvents.filterRows(pane.rows, pane.filter)
   readonly property int _heldCount: RunEvents.filterRows(pane.rows, "All").length
+  property bool _errorExpanded: false
 
   signal filterRequested(string filter)
   signal attemptRequested(string card, string phase, int attempt)
@@ -58,6 +61,7 @@ Item {
   }
 
   implicitHeight: column.implicitHeight
+  onStatusChanged: if (pane.status !== "error") pane._errorExpanded = false
 
   Column {
     id: column
@@ -72,6 +76,44 @@ Item {
       model: [{ id: "All", label: "All" }, { id: "Phases", label: "Phases" },
               { id: "Failures", label: "Failures" }]
       onChosen: function(id) { pane.filterRequested(id) }
+    }
+
+    Column {
+      objectName: "eventsError"
+      visible: pane.status === "error"
+      width: parent.width
+      spacing: Style.space(4)
+
+      Row {
+        spacing: Style.space(8)
+
+        ThemedText {
+          objectName: "eventsErrorText"
+          theme: pane.palette
+          textFormat: Text.PlainText
+          text: pane.errorText
+          color: pane._tint(true, "urgent")
+        }
+
+        ActionButton {
+          objectName: "eventsErrorToggle"
+          theme: pane.palette
+          visible: pane.errorMessage !== ""
+          text: pane._errorExpanded ? "Hide" : "Details"
+          onClicked: pane._errorExpanded = !pane._errorExpanded
+        }
+      }
+
+      ThemedText {
+        objectName: "eventsErrorMessage"
+        width: parent.width
+        theme: pane.palette
+        variant: "dim"
+        visible: pane._errorExpanded && pane.errorMessage !== ""
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        text: pane.errorMessage
+      }
     }
 
     ThemedText {
@@ -89,7 +131,7 @@ Item {
       loading: pane.status === "loading" && pane.shownRows.length === 0
       loadingText: "Loading events…"
       error: ""
-      empty: pane.shownRows.length === 0
+      empty: pane.shownRows.length === 0 && (pane._heldCount > 0 || pane.status !== "error")
       filtered: pane._heldCount > 0
       emptyText: "No events yet."
       filteredText: "No events match the filter."

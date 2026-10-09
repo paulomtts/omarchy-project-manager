@@ -300,4 +300,62 @@ TestCase {
     compare(listOf(held).visible, true)
     compare(listOf(held).count, 5)
   }
+
+  // ---- error state ---------------------------------------------------------
+
+  function test_error_state_shows_the_headline_and_keeps_the_rows() {
+    var pane = make({ rows: mixedRows(), status: "error" })
+    var block = H.find(pane, "eventsError")
+    compare(block.visible, true)
+    compare(H.find(pane, "eventsErrorText").text, "Events unreadable.")
+    verify(Qt.colorEqual(H.find(pane, "eventsErrorText").color, testTheme.urgent))
+    compare(listOf(pane).visible, true, "the rows held stay")
+    compare(listOf(pane).count, 5)
+    verify(block.y < listOf(pane).y, "the error sits above the rows")
+    pane.errorText = "events unreadable"
+    compare(H.find(pane, "eventsErrorText").text, "events unreadable")
+
+    var states = ["idle", "loading", "ok"]
+    for (var i = 0; i < states.length; i++) {
+      pane.status = states[i]
+      compare(H.find(pane, "eventsError").visible, false, "no error block while " + states[i])
+    }
+
+    var bare = make({ rows: [], status: "error" })
+    compare(H.find(bare, "eventsError").visible, true)
+    compare(statusOf(bare).visible, false, "an error with no rows does not say No events yet.")
+
+    var narrowed = make({ rows: [eventRow(1, { status: "done" })], filter: "Failures", status: "error" })
+    compare(H.find(narrowed, "eventsError").visible, true)
+    compare(statusOf(narrowed).text, "No events match the filter.", "rows held but filtered out")
+  }
+
+  function test_the_raw_message_is_one_click_away() {
+    var pane = make({ rows: mixedRows(), status: "error", errorMessage: "am events: exit 3: bad journal" })
+    var toggle = H.find(pane, "eventsErrorToggle")
+    var message = H.find(pane, "eventsErrorMessage")
+    compare(toggle.visible, true)
+    compare(toggle.text, "Details")
+    compare(message.visible, false, "hidden at first")
+    mouseClick(toggle)
+    compare(message.visible, true)
+    compare(message.text, "am events: exit 3: bad journal")
+    compare(message.textFormat, Text.PlainText)
+    compare(message.wrapMode, Text.WordWrap)
+    compare(toggle.text, "Hide")
+    mouseClick(toggle)
+    compare(message.visible, false)
+    compare(toggle.text, "Details")
+
+    mouseClick(toggle)
+    compare(message.visible, true)
+    pane.status = "ok"
+    pane.status = "error"
+    compare(message.visible, false, "the next error starts collapsed")
+    compare(toggle.text, "Details")
+
+    var quiet = make({ rows: [], status: "error", errorMessage: "" })
+    compare(H.find(quiet, "eventsErrorToggle").visible, false, "no message, no toggle")
+    compare(H.find(quiet, "eventsErrorMessage").visible, false)
+  }
 }
