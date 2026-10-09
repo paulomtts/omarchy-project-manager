@@ -2,6 +2,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/logStream.js" as LS
+import "../../helpers/amFixtures.js" as F
 
 TestCase {
   name: "DomainLogStream"
@@ -19,6 +20,18 @@ TestCase {
       kinds.push(r.kind)
     }
     return { buffer: buffer, kinds: kinds }
+  }
+
+  // Every non-empty line of tests/fixtures/am/<name>, JSON-parsed.
+  function jsonLines(name) {
+    var xhr = new XMLHttpRequest()
+    xhr.open("GET", Qt.resolvedUrl("../../fixtures/am/" + name), false)
+    xhr.send()
+    var rows = xhr.responseText.split("\n")
+    var out = []
+    for (var i = 0; i < rows.length; i++)
+      if (rows[i] !== "") out.push(JSON.parse(rows[i]))
+    return out
   }
 
   // ---- sanitize ---------------------------------------------------------------------------
@@ -298,5 +311,108 @@ TestCase {
     compare(LS.bufferText(b), "x\nhi")
     var bad = [null, undefined, 42, "a", {}, { lines: "a" }]
     for (var i = 0; i < bad.length; i++) compare(LS.bufferText(bad[i]), "", String(bad[i]))
+  }
+
+  // ---- offsets ----------------------------------------------------------------------------
+
+  function test_fold_ignores_a_duplicate_chunk() {
+    var b = LS.foldLine(LS.emptyBuffer(1000), chunk(0, "abcdefghi\n")).buffer
+    compare(b.nextOffset, 10)
+    var dup = LS.foldLine(b, chunk(4, "efghi\n"))
+    compare(dup.kind, "ignored")
+    compare(dup.buffer, b)
+    var next = LS.foldLine(b, chunk(10, "j\n"))
+    compare(next.kind, "chunk")
+    compare(next.buffer.lines, ["abcdefghi", "j"])
+  }
+
+  function test_fold_gap_adds_a_marker_line() {
+    var b = LS.foldLine(LS.emptyBuffer(1000), chunk(0, "abcdefghi\n")).buffer
+    var r = LS.foldLine(b, chunk(25, "z\n"))
+    compare(r.kind, "chunk")
+    compare(r.buffer.lines, ["abcdefghi", "[… 15 bytes not shown]", "z"])
+    compare(r.buffer.gapBytes, 15)
+    compare(r.buffer.nextOffset, 27)
+    var again = LS.foldLine(r.buffer, chunk(30, "w\n"))
+    compare(again.buffer.lines.slice(-2), ["[… 3 bytes not shown]", "w"])
+    compare(again.buffer.gapBytes, 18)
+  }
+
+  function test_fold_gap_commits_the_held_partial_first() {
+    var r = foldAll(LS.emptyBuffer(1000), [chunk(0, "ab"), chunk(9, "cd\n")])
+    compare(r.buffer.lines, ["ab", "[… 7 bytes not shown]", "cd"])
+    compare(r.buffer.partial, "")
+  }
+
+  function test_fold_gap_from_an_empty_buffer() {
+    var r = LS.foldLine(LS.emptyBuffer(1000), chunk(500, "x\n"))
+    compare(r.buffer.lines, ["[… 500 bytes not shown]", "x"])
+    compare(r.buffer.gapBytes, 500)
+  }
+
+  function test_fold_gap_marker_counts_toward_the_cap() {
+    var r = LS.foldLine(LS.emptyBuffer(2), chunk(10, "a\nb\n"))
+    compare(r.buffer.lines, ["a", "b"])
+    compare(r.buffer.dropped, 1)
+    compare(r.buffer.gapBytes, 10)
+  }
+
+  function test_fold_resume_after_hello() {
+    var r = foldAll(LS.emptyBuffer(1000), [{ event: "logs", offset: 40, path: "p", schema: 1 }, chunk(40, "ok\n")])
+    compare(r.kinds, ["hello", "chunk"])
+    compare(r.buffer.lines, ["ok"])
+    compare(r.buffer.gapBytes, 0)
+    compare(r.buffer.nextOffset, 43)
+  }
+
+  function test_fold_slack_after_fffd_accepts_the_exact_next_offset() {
+    var b = LS.foldLine(LS.emptyBuffer(1000), chunk(0, "a�\n")).buffer
+    compare(b.nextOffset, 5)
+    compare(b.slack, 2)
+    var r = LS.foldLine(b, chunk(3, "b\n"))
+    compare(r.kind, "chunk")
+    compare(r.buffer.lines, ["a�", "b"])
+    compare(r.buffer.gapBytes, 0)
+    compare(r.buffer.nextOffset, 5)
+    compare(r.buffer.slack, 0)
+    var early = LS.foldLine(b, chunk(2, "b\n"))
+    compare(early.kind, "ignored")
+    compare(early.buffer, b)
+  }
+
+  function test_fold_resent_chunk_with_fffd_is_a_duplicate() {
+    var b = LS.foldLine(LS.emptyBuffer(1000), chunk(0, "a�\n")).buffer
+    var r = LS.foldLine(b, chunk(0, "a�\n"))
+    compare(r.kind, "ignored")
+    compare(r.buffer.lines, ["a�"])
+  }
+
+  function test_fold_multibyte_text_moves_next_offset_by_bytes() {
+    var r = LS.foldLine(LS.emptyBuffer(1000), chunk(0, "héllo €𝄞\n"))
+    compare(r.buffer.nextOffset, 15)
+  }
+
+  // ---- fixtures, end to end ---------------------------------------------------------------
+
+  function test_fixture_step_stream() {
+    var r = foldAll(LS.emptyBuffer(1000), jsonLines("logs-follow-step.jsonl"))
+    compare(r.kinds, ["hello", "chunk", "end"])
+    compare(LS.bufferText(r.buffer), "==> verify-ok (exit 0)\nverified")
+    compare(r.buffer.nextOffset, 32)
+    compare(r.buffer.dropped, 0)
+    compare(r.buffer.gapBytes, 0)
+  }
+
+  function test_fixture_agent_stream() {
+    var r = foldAll(LS.emptyBuffer(1000), jsonLines("logs-follow-agent.jsonl"))
+    compare(r.kinds, ["hello", "chunk", "end"])
+    compare(LS.bufferText(r.buffer), "stub claude ok phase=review")
+    compare(r.buffer.nextOffset, 28)
+  }
+
+  function test_fixture_refusal() {
+    var r = LS.foldLine(LS.emptyBuffer(1000), F.load("logs-follow-refusal.json"))
+    compare(r.kind, "refusal")
+    compare(r.buffer, LS.emptyBuffer(1000))
   }
 }

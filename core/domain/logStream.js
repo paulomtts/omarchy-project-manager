@@ -144,7 +144,16 @@ function _cap(b) {
 
 // b (already a copy) with the chunk {offset, text} folded in.
 function _foldChunk(b, offset, text) {
-  var raw = b.partial + text
+  if (offset < b.nextOffset - b.slack) return { buffer: b, kind: "ignored" }
+  var raw = b.partial
+  if (offset > b.nextOffset) {
+    var gap = offset - b.nextOffset
+    b.gapBytes += gap
+    if (raw !== "") b.lines.push(_displayLine(raw))
+    raw = ""
+    b.lines.push("[" + _ELLIPSIS + " " + gap + " bytes not shown]")
+  }
+  raw += text
   var last = raw.lastIndexOf("\n")
   if (last >= 0) {
     var done = raw.slice(0, last).split("\n")
@@ -157,14 +166,16 @@ function _foldChunk(b, offset, text) {
   }
   b.partial = raw
   b.nextOffset = offset + utf8Length(text)
+  b.slack = 2 * (text.split("\uFFFD").length - 1)
   _cap(b)
   return { buffer: b, kind: "chunk" }
 }
 
 // {buffer, kind}: line folded into a new copy of buffer. kind is "refusal"
 // (own ok === false), "hello" (event "logs"), "end" (event "end"), "chunk"
-// ({offset, text}) or "ignored". A hello sets nextOffset to its offset on an
-// empty buffer only. Only hello and chunk change the buffer.
+// ({offset, text} at or after nextOffset - slack) or "ignored". A hello sets
+// nextOffset to its offset on an empty buffer only; a chunk past nextOffset
+// first appends "[… N bytes not shown]". Only hello and chunk change the buffer.
 function foldLine(buffer, line) {
   var b = _read(buffer)
   if (!_isObject(line)) return { buffer: b, kind: "ignored" }
