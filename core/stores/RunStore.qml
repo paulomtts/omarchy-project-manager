@@ -2003,9 +2003,17 @@ Scope {
 
   // From the target step back to the project step: dispatchRoot "" and the
   // target data cleared; the probe, its rows and the failures stay and
-  // nothing is relaunched. Refused (false, nothing changes) at any other
-  // step.
+  // nothing is relaunched. From the form back to the target step: the
+  // dispatch reset (resetDispatch), dispatchRoot, the rows, the card map and
+  // dispatchTargetKey kept, nothing relaunched; refused while starting.
+  // Refused (false, nothing changes) at any other step.
   function dispatchBack() {
+    if (store.dispatchStep === "form") {
+      if (store.dispatchState === "starting") return false
+      store.resetDispatch()
+      store.dispatchStep = "target"
+      return true
+    }
     if (store.dispatchStep !== "target") return false
     store.dispatchClearTarget()
     store.dispatchStep = "project"
@@ -2032,16 +2040,20 @@ Scope {
     store.dispatchProjectFailures = {}
   }
 
-  // The registry changed: at the target step, a dispatchRoot that is no
-  // longer a usable root (trailing "/" removed) goes back to the project
-  // step with dispatchRoot "" and the target data cleared. Any other step
-  // is left alone.
+  // The registry changed: at the target step, and at the form unless a
+  // start is in flight, a dispatchRoot that is no longer a usable root
+  // (trailing "/" removed) goes back to the project step with dispatchRoot
+  // "" and the target data cleared; at the form the dispatch is reset too.
+  // Any other step, and the form while starting, is left alone.
   function dispatchRegistryChanged() {
-    if (store.dispatchStep !== "target") return
+    var step = store.dispatchStep
+    if (step !== "target" && step !== "form") return
+    if (step === "form" && store.dispatchState === "starting") return
     var rows = Runs.dispatchProjects(store.usableRoots(), null, "")
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].root === store.dispatchRoot) return
     }
+    if (step === "form") store.resetDispatch()
     store.dispatchClearTarget()
     store.dispatchStep = "project"
     store.dispatchRoot = ""

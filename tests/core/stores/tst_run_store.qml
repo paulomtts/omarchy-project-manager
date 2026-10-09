@@ -5819,8 +5819,8 @@ TestCase {
     form.dispatchOpenFromRuns()
     form.dispatchProjectPick(tc.rootB)
     form.dispatchStep = "form"
-    compare(form.dispatchBack(), false, "Back from the form is 2.3's")
-    compare(form.dispatchStep, "form")
+    compare(form.dispatchBack(), true, "Back from the form returns to the target step")
+    compare(form.dispatchStep, "target")
     compare(form.dispatchRoot, tc.rootB)
   }
   // 2.2 test 10
@@ -5925,8 +5925,8 @@ TestCase {
 
     store.dispatchStep = "form"
     store.projectRoots = registry([tc.rootB])
-    compare(store.dispatchStep, "form", "the form's registry rule is 2.3's")
-    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchStep, "project", "the picked root left the form: back to step 1")
+    compare(store.dispatchRoot, "")
   }
 
   // 2.2 test 9
@@ -6322,6 +6322,77 @@ TestCase {
     compare(store.snapshotRunner.seq, seq + 1, "one snapshot is asked for")
     compare(argv(store.snapshotRunner.current), tc.snapCmd + "|/home/u/b", "of B only")
     compare(store.dispatchStep, "form")
+  }
+
+  // 2.3 test 9
+  function test_dispatch_back_from_form_keeps_the_picked_row() {
+    var store = targetStore(tc.rootB); if (!store) return
+    var rows = store.dispatchTargetRows
+    var map = store.dispatchTargetCardMap
+    var treeSeq = store.dispatchTargetRunner.seq
+    compare(store.dispatchTargetPick("card:m1"), true)
+    var defaults = store.dispatchDefaultsRunner.current
+    var settings = store.dispatchSettingsRunner.current
+    compare(store.dispatchBack(), true)
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchRoot, tc.rootB)
+    compare(store.dispatchTargetKey, "card:m1", "the picked row is kept")
+    verify(store.dispatchTargetRows === rows, "the rows are kept")
+    verify(store.dispatchTargetCardMap === map, "the card map is kept")
+    compare(store.dispatchTargetLoading, false)
+    compare(store.dispatchTargetRunner.seq, treeSeq, "the tree is not read again")
+    checkDispatchFieldsIdle(store, "Back from the form")
+    reply(defaults, defaultsOk("main"), 0)
+    reply(settings, bSettings(), 0)
+    compare(store.dispatchState, "idle", "the form's lookups are dropped")
+    compare(store.dispatchForm, null)
+    compare(store.dispatchTargetPick("card:s1"), true)
+    compare(store.dispatchTarget.level, "story")
+    compare(store.dispatchTargetKey, "card:s1")
+
+    var starting = targetStore(tc.rootB); if (!starting) return
+    compare(starting.dispatchTargetPick("card:t1"), true)
+    reply(starting.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(starting.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(starting.dispatchStart(), true)
+    compare(starting.dispatchBack(), false, "no Back while starting")
+    compare(starting.dispatchStep, "form")
+    compare(starting.dispatchState, "starting")
+    compare(starting.dispatchTargetKey, "card:t1")
+  }
+
+  // 2.3 test 10
+  function test_dispatch_registry_change_at_form() {
+    var store = targetStore(tc.rootB); if (!store) return
+    compare(store.dispatchTargetPick("card:m1"), true)
+    var defaults = store.dispatchDefaultsRunner.current
+    store.projectRoots = registry([tc.rootB, tc.rootA])
+    compare(store.dispatchStep, "form", "a reorder keeps the form")
+    compare(store.dispatchRoot, tc.rootB)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchTargetKey, "card:m1")
+    store.projectRoots = registry([tc.rootA])
+    compare(store.dispatchStep, "project", "the picked root left: back to step 1")
+    compare(store.dispatchRoot, "")
+    checkDispatchFieldsIdle(store, "dropped at the form")
+    checkTargetCleared(store, "dropped at the form")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:", "B's row is gone")
+    reply(defaults, defaultsOk("main"), 0)
+    compare(store.dispatchState, "idle", "the form's lookup is dropped")
+
+    var starting = targetStore(tc.rootB); if (!starting) return
+    compare(starting.dispatchTargetPick("card:t1"), true)
+    reply(starting.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(starting.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(starting.dispatchStart(), true)
+    var runner = starting.dispatchStartRunners[0]
+    starting.projectRoots = registry([tc.rootA])
+    compare(starting.dispatchStep, "form", "a start in flight keeps the form")
+    compare(starting.dispatchState, "starting")
+    compare(starting.dispatchRoot, tc.rootB)
+    compare(starting.dispatchTargetKey, "card:t1")
+    reply(runner.current, startOk("r9", ""), 0)
+    compare(starting.dispatchState, "started", "the start completes for its root")
   }
 
   // ---- list snapshots
