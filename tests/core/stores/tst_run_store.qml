@@ -3935,8 +3935,18 @@ TestCase {
     return store
   }
 
-  // Every dispatch field at its "none" value.
+  // Every dispatch field at its "none" value, no step and no target data.
   function checkDispatchIdle(store, label) {
+    checkDispatchFieldsIdle(store, label)
+    compare(store.dispatchStep, "", label + ": step")
+    compare(store.dispatchTargetRows.length, 0, label + ": target rows")
+    compare(store.dispatchTargetCardMap, null, label + ": target card map")
+    compare(store.dispatchTargetLoading, false, label + ": target loading")
+    compare(store.dispatchTargetKey, "", label + ": target key")
+  }
+
+  // S3's dispatch fields at their "none" values.
+  function checkDispatchFieldsIdle(store, label) {
     compare(store.dispatchState, "idle", label + ": state")
     compare(store.dispatchTarget, null, label + ": target")
     compare(store.dispatchForm, null, label + ": form")
@@ -3951,7 +3961,6 @@ TestCase {
     compare(store.dispatchLogTail, "", label + ": log tail")
     compare(store.dispatchExitCode, null, label + ": exit code")
     compare(store.dispatchTargetLabel, "", label + ": target label")
-    compare(store.dispatchStep, "", label + ": step")
   }
 
   // 1 (dispatchStart() from idle is checked in Task 5's test 21)
@@ -5953,6 +5962,145 @@ TestCase {
     reply(proc, probeReply([{ root: tc.rootA, ok: false, reason: "no .brd marker" }]), 0)
     compare(rowsText(inFlight.dispatchProjectRows),
             "/home/u/b:beta:open:on: / /home/u/my proj:alpha::off:no .brd marker", "a probe across a switch still applies")
+  }
+
+  // ---- dispatch: the target step (2.3)
+
+  // board-tree.py ROOT's argv up to the root.
+  property string treeCmd: "python3|/plugin/core/backend/boards/board-tree.py"
+
+  // board-tree.py ROOT's reply line: {"ok": true, "data": data}.
+  function treeReply(data) {
+    return JSON.stringify({ ok: true, data: data }) + "\n"
+  }
+
+  // board-tree.py ROOT's failure line: {"ok": false, "error": {type, message}}.
+  function treeFail(message) {
+    return JSON.stringify({ ok: false, error: { type: "BrdFailed", message: message } }) + "\n"
+  }
+
+  // A fresh brd tree as brd prints it (children, no depth or parentId):
+  // milestone m1 holding story s1, which holds subtask t1 (todo) and
+  // subtask t2 (done); then the done milestone d1.
+  function treeData() {
+    return [
+      { id: "m1", title: "M3 Document runs", status: "todo", children: [
+        { id: "s1", title: "Dispatch store", status: "todo", children: [
+          { id: "t1", title: "RunStore dispatch", status: "todo", children: [] },
+          { id: "t2", title: "Docs", status: "done", children: [] }] }] },
+      { id: "d1", title: "M2 Monitor runs", status: "done", children: [] }
+    ]
+  }
+
+  // The target rows' keys, ","-joined.
+  function targetKeys(rows) {
+    return rows.map(function(r) { return r.key }).join(",")
+  }
+
+  // runsStore() opened from Runs, A and B probed ok, and `root` picked: its
+  // tree read is in flight.
+  function pickedStore(root) {
+    var store = runsStore(); if (!store) return null
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
+    store.dispatchProjectPick(root)
+    return store
+  }
+
+  // pickedStore(root) with treeData() read: the target rows are up.
+  function targetStore(root) {
+    var store = pickedStore(root); if (!store) return null
+    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
+    return store
+  }
+
+  // The target data at its cleared values.
+  function checkTargetCleared(store, label) {
+    compare(store.dispatchTargetRows.length, 0, label + ": target rows")
+    compare(store.dispatchTargetCardMap, null, label + ": target card map")
+    compare(store.dispatchTargetLoading, false, label + ": target loading")
+    compare(store.dispatchTargetKey, "", label + ": target key")
+  }
+
+  // 2.3 test 1
+  function test_dispatch_target_pick_launches_the_tree_read() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
+    verify(!store.dispatchTargetRunner.current, "no tree read before a pick")
+    compare(store.dispatchTargetLoading, false)
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    var proc = store.dispatchTargetRunner.current
+    verify(proc, "the pick reads B's tree")
+    compare(argv(proc), tc.treeCmd + "|/home/u/b")
+    compare(proc.command.length, 3, "no --probe")
+    compare(proc.launchGuard, tc.rootB, "guarded by the picked root")
+    compare(store.dispatchTargetLoading, true)
+    compare(store.dispatchTargetRows.length, 0, "no rows until the reply")
+    compare(store.dispatchTargetCardMap, null)
+    compare(store.dispatchTargetKey, "")
+    compare(store.dispatchState, "idle")
+    verify(!store.dispatchDefaultsRunner.current, "no defaults lookup")
+    verify(!store.dispatchSettingsRunner.current, "no settings read")
+    verify(!store.dispatchPreviewRunner.current, "no preview")
+    var seq = store.dispatchTargetRunner.seq
+    compare(store.dispatchProjectPick(tc.rootA), false, "no pick at the target step")
+    compare(store.dispatchTargetRunner.seq, seq, "a refused pick launches nothing")
+    verify(store.dispatchTargetRunner.current === proc)
+    compare(store.dispatchRoot, tc.rootB)
+
+    var off = runsStore(); if (!off) return
+    off.dispatchOpenFromRuns()
+    reply(off.dispatchProjectRunner.current, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    var offSeq = off.dispatchTargetRunner.seq
+    compare(off.dispatchProjectPick(tc.rootB), false, "a disabled row")
+    compare(off.dispatchTargetRunner.seq, offSeq, "a disabled row launches nothing")
+    verify(!off.dispatchTargetRunner.current)
+    compare(off.dispatchTargetLoading, false)
+  }
+
+  // 2.3 test 2
+  function test_dispatch_target_rows_from_the_tree() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
+    compare(store.dispatchTargetLoading, false)
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchRoot, tc.rootB)
+    compare(store.dispatchState, "idle")
+    var rows = store.dispatchTargetRows
+    compare(targetKeys(rows), "board,card:m1,card:s1,card:t1", "the board row, then the offered cards in tree order")
+    compare(rows[0].card, "board")
+    compare(rows[0].level, "board")
+    compare(rows[0].label, "Whole board")
+    compare(rows[1].level, "milestone")
+    compare(rows[1].label, "Milestone \"M3 Document runs\"")
+    compare(rows[3].level, "subtask")
+    compare(rows[3].depth, 2)
+    var map = store.dispatchTargetCardMap
+    compare(map.t1.parentId, "s1", "indexed with Board.indexTree")
+    compare(map.t1.depth, 2)
+    compare(Object.keys(map).sort().join(","), "d1,m1,s1,t1,t2", "the map holds every card")
+    verify(rows[3].card === map.t1, "the row's card is the map's card")
+
+    var empty = pickedStore(tc.rootB); if (!empty) return
+    reply(empty.dispatchTargetRunner.current, treeReply([]), 0)
+    compare(targetKeys(empty.dispatchTargetRows), "board", "a tree with no offered card gives the board row only")
+    compare(Object.keys(empty.dispatchTargetCardMap).length, 0)
+    compare(empty.dispatchStep, "target")
+  }
+
+  // 2.3 test 8
+  function test_dispatch_target_read_survives_a_project_switch() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    var proc = store.dispatchTargetRunner.current
+    store.project = tc.rootC
+    compare(store.dispatchStep, "target", "the step is kept")
+    compare(store.dispatchRoot, tc.rootB, "the root is kept")
+    compare(store.dispatchTargetLoading, true, "the read is still in flight")
+    verify(store.dispatchTargetRunner.current === proc, "and not relaunched")
+    reply(proc, treeReply(treeData()), 0)
+    compare(store.dispatchTargetLoading, false)
+    compare(targetKeys(store.dispatchTargetRows), "board,card:m1,card:s1,card:t1", "the reply applies")
   }
 
   // ---- list snapshots

@@ -2,6 +2,7 @@ import QtQml
 import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
+import "../domain/board.js" as Board
 
 // The am run monitor's data. One list snapshot covers every registered
 // project: runs-snapshot-all.py with each usable root of `projectRoots`, in
@@ -1873,6 +1874,19 @@ Scope {
   readonly property var dispatchProjectRows: store.dispatchStep !== ""
     ? Runs.dispatchProjects(store.usableRoots(), store.dispatchProjectProbe, store.project) : []
   readonly property alias dispatchProjectRunner: dispatchProjectRunner
+  // The picked root's brd tree as Board.indexTree's {id: card} map: set by a
+  // good tree read for dispatchRoot and kept at the target and form steps;
+  // else null.
+  property var dispatchTargetCardMap: null
+  // The target step's rows, Runs.dispatchTargets over that tree: set and
+  // kept with dispatchTargetCardMap; else [].
+  property var dispatchTargetRows: []
+  // A tree read is in flight: from its launch until its reply or a cancel.
+  readonly property bool dispatchTargetLoading: dispatchTargetRunner.busy
+  // The key of the row dispatchTargetPick took; kept by Back from the form,
+  // "" whenever the target data is cleared.
+  property string dispatchTargetKey: ""
+  readonly property alias dispatchTargetRunner: dispatchTargetRunner
 
   // Opens the dispatch from Runs at the project step with no root and probes
   // every usable root, in registry order. Refused (false, nothing changes)
@@ -1901,8 +1915,10 @@ Scope {
   }
 
   // Takes the project step's enabled row for `root`: dispatchRoot is the
-  // row's root and the step is target; nothing is launched. Refused (false,
-  // nothing changes) at any other step and for a root with no enabled row.
+  // row's root, the step is target, the target data is cleared and the
+  // root's tree is read (board-tree.py ROOT); no defaults, settings or
+  // preview is launched. Refused (false, nothing changes) at any other step
+  // and for a root with no enabled row.
   function dispatchProjectPick(root) {
     if (store.dispatchStep !== "project") return false
     var rows = store.dispatchProjectRows
@@ -1910,9 +1926,27 @@ Scope {
       if (rows[i].root !== root || rows[i].enabled !== true) continue
       store.dispatchRoot = rows[i].root
       store.dispatchStep = "target"
+      store.dispatchClearTarget()
+      dispatchTargetRunner.run([store.dispatchRoot])
       return true
     }
     return false
+  }
+
+  // The tree read's reply, applied only at the target step. {ok: true,
+  // data: [...]} that Board.indexTree walks gives dispatchTargetCardMap and
+  // dispatchTargetRows. The exit code is not read.
+  function dispatchTargetReplied(stdout) {
+    if (store.dispatchStep !== "target") return
+    var envelope = store.parseEnvelope(stdout)
+    var data = envelope !== null && envelope.ok === true && Array.isArray(envelope.data) ? envelope.data : null
+    var cardMap = null
+    if (data !== null) {
+      try { cardMap = Board.indexTree(data).cardMap } catch (e) { cardMap = null }
+    }
+    if (cardMap === null) return
+    store.dispatchTargetCardMap = cardMap
+    store.dispatchTargetRows = Runs.dispatchTargets(data, cardMap)
   }
 
   // From the target step back to the project step, dispatchRoot "". The
@@ -1923,6 +1957,15 @@ Scope {
     store.dispatchStep = "project"
     store.dispatchRoot = ""
     return true
+  }
+
+  // The target data cleared: the tree read cancelled, dispatchTargetCardMap
+  // null, dispatchTargetRows [] and dispatchTargetKey "".
+  function dispatchClearTarget() {
+    dispatchTargetRunner.cancel()
+    store.dispatchTargetCardMap = null
+    store.dispatchTargetRows = []
+    store.dispatchTargetKey = ""
   }
 
   // The steps cleared: the probe cancelled, dispatchStep "" and
@@ -1952,6 +1995,16 @@ Scope {
     id: dispatchProjectRunner
     script: store.backendDir + "boards/board-tree.py"
     onFinished: function(stdout, exitCode) { store.dispatchProjectReplied(stdout) }
+  }
+
+  // board-tree.py ROOT for the target step; latest wins. Guarded by
+  // dispatchRoot: a reply whose launch root is no longer dispatchRoot is
+  // dropped. Back, any step clear and the registry fallback cancel it.
+  HelperRunner {
+    id: dispatchTargetRunner
+    script: store.backendDir + "boards/board-tree.py"
+    guard: store.dispatchRoot
+    onFinished: function(stdout, exitCode) { store.dispatchTargetReplied(stdout) }
   }
 
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is
