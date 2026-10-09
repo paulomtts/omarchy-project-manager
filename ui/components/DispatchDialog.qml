@@ -63,6 +63,7 @@ Item {
   // anything not array-like reads as [].
   property var projectRows: []
   readonly property bool atProject: dialog.step === "project"
+  readonly property bool hasEnabledProject: dialog.nextEnabledProject(0, 1) >= 0
 
   readonly property Item focusItem: dialog.form ? baseField : cancelButton
   readonly property bool canStart: dialog.dispatchState === "ready"
@@ -236,6 +237,33 @@ Item {
     }
   }
 
+
+  // The project rows: a list, or the array-like a list arrives as through
+  // createObject; anything else (null, an object, a string) reads as [].
+  function projectList() {
+    var rows = dialog.projectRows
+    if (!rows || typeof rows !== "object" || typeof rows.length !== "number") return []
+    return Array.prototype.slice.call(rows)
+  }
+
+  // A row's text field; a missing row or a non-string value reads as "".
+  function projectText(row, key) {
+    return row && typeof row[key] === "string" ? row[key] : ""
+  }
+
+  // Only a row whose enabled is exactly true takes the cursor or a pick.
+  function rowEnabled(row) {
+    return !!row && row.enabled === true
+  }
+
+  // The first enabled row from `from` on, stepping by `by` (1 or -1); -1 for none.
+  function nextEnabledProject(from, by) {
+    var rows = dialog.projectList()
+    for (var i = from; i >= 0 && i < rows.length; i += by)
+      if (dialog.rowEnabled(rows[i])) return i
+    return -1
+  }
+
   UI.ModalCard {
     id: modal
     anchors.fill: parent
@@ -253,6 +281,81 @@ Item {
       theme: dialog.theme
       text: dialog.atProject ? "Dispatch · 1 Project" : "Dispatch"
       font.bold: true
+    }
+
+    // The project step's rows, in the owner's order.
+    Flickable {
+      id: projectFlick
+      objectName: "dispatchProjectList"
+      visible: dialog.atProject
+      width: parent.width
+      height: Math.min(projectColumn.implicitHeight, Style.space(240))
+      contentHeight: projectColumn.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+
+      Column {
+        id: projectColumn
+        width: projectFlick.width
+        spacing: Style.space(2)
+
+        Repeater {
+          id: projectRepeater
+          model: dialog.atProject ? dialog.projectList() : []
+
+          UI.ListRow {
+            id: projectRow
+            required property var modelData
+            required index
+            readonly property bool usable: dialog.rowEnabled(projectRow.modelData)
+            objectName: "dispatchProjectRow" + projectRow.index
+            width: projectColumn.width
+            theme: dialog.theme
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              UI.ThemedText {
+                objectName: "dispatchProjectName" + projectRow.index
+                theme: dialog.theme
+                width: Math.max(0, parent.width - (openMark.visible ? openMark.width + parent.spacing : 0))
+                text: dialog.projectText(projectRow.modelData, "name")
+                color: projectRow.usable ? dialog.foregroundColor : dialog.dimColor
+                elide: Text.ElideRight
+              }
+
+              UI.ThemedText {
+                id: openMark
+                objectName: "dispatchProjectOpen" + projectRow.index
+                variant: "caption"
+                theme: dialog.theme
+                visible: !!projectRow.modelData && projectRow.modelData.open === true
+                text: "open"
+              }
+            }
+
+            UI.ThemedText {
+              objectName: "dispatchProjectReason" + projectRow.index
+              variant: "caption"
+              theme: dialog.theme
+              visible: !projectRow.usable
+              width: parent.width
+              text: dialog.projectText(projectRow.modelData, "reason")
+              wrapMode: Text.WordWrap
+            }
+          }
+        }
+      }
+    }
+
+    UI.ThemedText {
+      objectName: "dispatchProjectEmpty"
+      theme: dialog.theme
+      visible: dialog.atProject && !dialog.hasEnabledProject
+      width: parent.width
+      text: dialog.projectList().length === 0 ? "No projects registered" : "No project's board can be read"
+      wrapMode: Text.WordWrap
     }
 
     UI.ThemedText {

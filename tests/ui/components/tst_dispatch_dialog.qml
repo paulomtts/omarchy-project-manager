@@ -956,6 +956,13 @@ TestCase {
 
   // ---- the project step -------------------------------------------------
 
+  // A colour stored in a `color` property is rounded to 8 bits per channel, so
+  // it differs from the theme's float colour by up to 1/255.
+  function sameColour(a, b) {
+    return Math.abs(a.r - b.r) < 1 / 255 && Math.abs(a.g - b.g) < 1 / 255
+      && Math.abs(a.b - b.b) < 1 / 255 && Math.abs(a.a - b.a) < 1 / 255
+  }
+
   // RunStore's dispatchProjectRows: the open project first, then by name; one
   // board unreadable.
   function fixtureRows() {
@@ -1037,5 +1044,132 @@ TestCase {
     d.step = "target"
     compare(heading.text, "Dispatch")
     compare(picks.count, 0)
+  }
+
+  // 1
+  function test_the_project_step_lists_each_project_with_its_marks() {
+    var d = projectStep()
+    var rows = tc.fixtureRows()
+    verify(H.find(d, "dispatchProjectList").visible, "the list")
+    for (var i = 0; i < rows.length; i++) {
+      verify(H.find(d, "dispatchProjectRow" + i), "row " + i)
+      compare(H.find(d, "dispatchProjectName" + i).text, rows[i].name)
+      compare(H.find(d, "dispatchProjectOpen" + i).visible, i === 0, "open mark on row " + i)
+      compare(H.find(d, "dispatchProjectReason" + i).visible, i === 3, "reason on row " + i)
+    }
+    compare(H.find(d, "dispatchProjectRow4"), null)
+    compare(H.find(d, "dispatchProjectOpen0").text, "open")
+    compare(H.find(d, "dispatchProjectReason3").text, "board unreachable: no .brd")
+    verify(!H.find(d, "dispatchProjectEmpty").visible, "no empty line")
+  }
+
+  // 2
+  function test_a_disabled_rows_name_is_dimmed() {
+    var d = projectStep()
+    verify(tc.sameColour(H.find(d, "dispatchProjectName3").color, d.theme.dim), "name colour")
+    verify(tc.sameColour(H.find(d, "dispatchProjectName0").color, d.theme.foreground), "name colour")
+    verify(tc.sameColour(H.find(d, "dispatchProjectName2").color, d.theme.foreground), "name colour")
+  }
+
+  // 3
+  function test_the_list_and_the_empty_line_show_only_at_the_project_step_data() {
+    return [{ tag: "none", step: "" }, { tag: "target", step: "target" }, { tag: "other", step: "whatever" }]
+  }
+
+  function test_the_list_and_the_empty_line_show_only_at_the_project_step(data) {
+    var full = make({ step: data.step, projectRows: tc.fixtureRows() })
+    verify(!H.find(full, "dispatchProjectList").visible, "no list")
+    compare(H.find(full, "dispatchProjectRow0"), null)
+    var empty = make({ step: data.step, projectRows: [] })
+    verify(!H.find(empty, "dispatchProjectEmpty").visible, "no empty line")
+  }
+
+  // 10
+  function test_an_empty_or_malformed_registry_says_no_projects_data() {
+    return [
+      { tag: "empty", rows: [] },
+      { tag: "null", rows: null },
+      { tag: "undefined", rows: undefined },
+      { tag: "object", rows: {} },
+      { tag: "string", rows: "x" }
+    ]
+  }
+
+  function test_an_empty_or_malformed_registry_says_no_projects(data) {
+    var d = projectStep({ projectRows: data.rows })
+    var empty = H.find(d, "dispatchProjectEmpty")
+    verify(empty.visible, "the empty line")
+    compare(empty.text, "No projects registered")
+    compare(H.find(d, "dispatchProjectRow0"), null)
+    verify(H.find(d, "dispatchCancel").visible, "Cancel")
+    verify(!H.find(d, "dispatchStart").visible, "no Start")
+  }
+
+  // 11
+  function test_every_board_unreachable_lists_the_rows_with_their_reasons() {
+    var rows = tc.fixtureRows()
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].enabled = false
+      rows[i].reason = "board unreachable: " + rows[i].name
+    }
+    var d = projectStep({ projectRows: rows })
+    var empty = H.find(d, "dispatchProjectEmpty")
+    verify(empty.visible, "the empty line")
+    compare(empty.text, "No project's board can be read")
+    for (var j = 0; j < rows.length; j++) {
+      verify(H.find(d, "dispatchProjectRow" + j), "row " + j)
+      var reason = H.find(d, "dispatchProjectReason" + j)
+      verify(reason.visible, "reason " + j)
+      compare(reason.text, "board unreachable: " + rows[j].name)
+      verify(tc.sameColour(H.find(d, "dispatchProjectName" + j).color, d.theme.dim), "name colour")
+    }
+    verify(H.find(d, "dispatchCancel").visible, "Cancel")
+    verify(!H.find(d, "dispatchStart").visible, "no Start")
+  }
+
+  // Review Focus 3
+  function test_a_malformed_row_reads_as_empty_and_disabled() {
+    var d = projectStep({ projectRows: [
+      { root: "/r/a", name: null, open: "yes", enabled: true },
+      { root: "/r/b", name: "b", enabled: "yes", reason: 7 },
+      null
+    ] })
+    compare(H.find(d, "dispatchProjectName0").text, "")
+    verify(!H.find(d, "dispatchProjectOpen0").visible, "open only when exactly true")
+    verify(!H.find(d, "dispatchProjectReason0").visible, "row 0 is enabled")
+    compare(H.find(d, "dispatchProjectName1").text, "b")
+    verify(H.find(d, "dispatchProjectReason1").visible, "enabled that is not true is disabled")
+    compare(H.find(d, "dispatchProjectReason1").text, "")
+    verify(tc.sameColour(H.find(d, "dispatchProjectName1").color, d.theme.dim), "name colour")
+    verify(H.find(d, "dispatchProjectRow2"), "a null row is still a row")
+    compare(H.find(d, "dispatchProjectName2").text, "")
+    verify(!H.find(d, "dispatchProjectEmpty").visible, "row 0 is enabled")
+  }
+
+  // Review Focus 4
+  function test_a_long_project_name_elides_on_one_line() {
+    var long = new Array(30).join("a-very-long-project-name-")
+    var d = projectStep({ projectRows: [{ root: "/r/l", name: long, open: true, enabled: true, reason: "" }] })
+    var name = H.find(d, "dispatchProjectName0")
+    compare(name.text, long)
+    compare(name.elide, Text.ElideRight)
+    verify(name.truncated, "the name is cut, not wrapped")
+    compare(name.lineCount, 1)
+    verify(H.find(d, "dispatchProjectOpen0").visible, "the open mark stays")
+  }
+
+  // 17
+  function test_nulling_every_object_prop_at_the_project_step_and_destroying_is_quiet() {
+    var d = projectStep()
+    d.theme = null
+    d.target = null
+    d.form = null
+    d.preview = null
+    d.projectRows = null
+    wait(0)
+    compare(H.find(d, "dispatchProjectEmpty").text, "No projects registered")
+    compare(picks.count, 0)
+    d.destroy()
+    wait(0)
   }
 }
