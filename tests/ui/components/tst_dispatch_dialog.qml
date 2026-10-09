@@ -19,6 +19,7 @@ TestCase {
   SignalSpy { id: cancels; signalName: "cancelRequested" }
   SignalSpy { id: chosen; signalName: "targetChosen" }
   SignalSpy { id: offers; signalName: "suggestionRequested" }
+  SignalSpy { id: picks; signalName: "projectChosen" }
 
   function milestoneForm(over) {
     return Object.assign({ base: "main", prefix: "m3", verify: ["uv run pytest"], parallelism: 4,
@@ -38,7 +39,8 @@ TestCase {
   function make(over) {
     var d = createTemporaryObject(dialogC, tc, milestone(over))
     edits.target = d; starts.target = d; cancels.target = d; chosen.target = d; offers.target = d
-    edits.clear(); starts.clear(); cancels.clear(); chosen.clear(); offers.clear()
+    picks.target = d
+    edits.clear(); starts.clear(); cancels.clear(); chosen.clear(); offers.clear(); picks.clear()
     d.shown = true
     wait(30)
     return d
@@ -950,5 +952,90 @@ TestCase {
     click(H.find(d, "dispatchStart"))
     compare(starts.count, 1)
     compare(d.armed, false)
+  }
+
+  // ---- the project step -------------------------------------------------
+
+  // RunStore's dispatchProjectRows: the open project first, then by name; one
+  // board unreadable.
+  function fixtureRows() {
+    return [
+      { root: "/home/u/Code/omarchy-project-manager", name: "omarchy-project-manager", open: true,
+        enabled: true, reason: "" },
+      { root: "/home/u/Code/agent-manager", name: "agent-manager", open: false, enabled: true, reason: "" },
+      { root: "/home/u/Code/ori", name: "ori", open: false, enabled: true, reason: "" },
+      { root: "/home/u/Code/py-ai-toolkit", name: "py-ai-toolkit", open: false, enabled: false,
+        reason: "board unreachable: no .brd" }
+    ]
+  }
+
+  // A disabled row first, and one between two enabled rows.
+  function disabledFirstRows() {
+    return [
+      { root: "/r/a", name: "a", open: false, enabled: false, reason: "board unreachable: no .brd" },
+      { root: "/r/b", name: "b", open: false, enabled: true, reason: "" },
+      { root: "/r/c", name: "c", open: false, enabled: false, reason: "board unreachable: tree read failed" },
+      { root: "/r/d", name: "d", open: false, enabled: true, reason: "" }
+    ]
+  }
+
+  // The dialog at the project step over fixtureRows(); `over` replaces any prop.
+  function projectStep(over) {
+    return make(Object.assign({ step: "project", projectRows: tc.fixtureRows() }, over || {}))
+  }
+
+  // 3: each part shows at the form step, hides at the project step, and comes
+  // back when the step leaves.
+  function test_the_project_step_hides_the_form_steps_parts_data() {
+    var refused = storyRefusal()
+    var failed = { dispatchState: "failed", error: "am exited before the run appeared", exitCode: 2,
+                   logPath: "/tmp/x.log", logTail: "Traceback" }
+    var sub = { target: { level: "subtask", offered: true }, targetTitle: "Do it", preview: null,
+                storyTitle: "Control store", blockedText: "Blocked by 3.1 RunStore dispatch (done)" }
+    return [
+      { tag: "target", name: "dispatchTarget", over: {} },
+      { tag: "target-choices", name: "dispatchTargetChoices",
+        over: { targetChoices: tc.boardChoices, targetChoice: "board" } },
+      { tag: "form", name: "dispatchForm", over: {} },
+      { tag: "preview-heading", name: "dispatchPreviewHeading", over: {} },
+      { tag: "refusal", name: "dispatchRefusal", over: refused },
+      { tag: "suggest", name: "dispatchSuggest", over: refused },
+      { tag: "exit-code", name: "dispatchExitCode", over: failed },
+      { tag: "log-path", name: "dispatchLogPath", over: failed },
+      { tag: "log-tail", name: "dispatchLogTail", over: failed },
+      { tag: "subtask-note", name: "dispatchSubtaskNote", over: sub },
+      { tag: "story", name: "dispatchStory", over: sub },
+      { tag: "blocked", name: "dispatchBlocked", over: sub },
+      { tag: "checking", name: "dispatchChecking", over: { dispatchState: "previewing", preview: null } },
+      { tag: "summary", name: "dispatchSummary", over: {} },
+      { tag: "integrate", name: "dispatchIntegrate", over: {} },
+      { tag: "warning", name: "dispatchWarning", over: {} },
+      { tag: "confirm-note", name: "dispatchConfirmNote", over: subtask(), arm: true },
+      { tag: "start", name: "dispatchStart", over: {} }
+    ]
+  }
+
+  function test_the_project_step_hides_the_form_steps_parts(data) {
+    var d = make(data.over)
+    if (data.arm) click(H.find(d, "dispatchStart"))
+    verify(H.find(d, data.name).visible, "shown at the form step")
+    d.step = "project"
+    verify(!H.find(d, data.name).visible, "hidden at the project step")
+    d.step = ""
+    verify(H.find(d, data.name).visible, "shown again once the step leaves")
+  }
+
+  // 3
+  function test_the_project_step_heads_the_card_and_keeps_only_cancel() {
+    var d = projectStep()
+    var heading = H.find(d, "dispatchHeading")
+    compare(heading.text, "Dispatch · 1 Project")
+    verify(H.find(d, "dispatchCancel").visible, "Cancel")
+    verify(!H.find(d, "dispatchStart").visible, "no Start")
+    d.step = ""
+    compare(heading.text, "Dispatch")
+    d.step = "target"
+    compare(heading.text, "Dispatch")
+    compare(picks.count, 0)
   }
 }

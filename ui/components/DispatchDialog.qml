@@ -12,6 +12,8 @@ import "../theme" as T
 // owner may pass a ready target label (targetLabel), a row of targets
 // (targetChosen), a blocked story's milestone, whose action emits
 // suggestionRequested(), and a Start that takes two clicks (confirmFirst).
+// At step "project" it lists the projects instead (projectRows), with Cancel
+// only; the owner maps projectChosen onto dispatchProjectPick.
 Item {
   id: dialog
   objectName: "dispatchDialog"
@@ -53,6 +55,14 @@ Item {
   // so ready alone is not an explicit confirm).
   property bool confirmFirst: false
   readonly property bool armed: arming.armed
+  // RunStore's dispatchStep. "project" shows the project list in place of the
+  // target line, the form, the preview, the warning and Start; any other value
+  // shows those.
+  property string step: ""
+  // RunStore's dispatchProjectRows, [{root, name, open, enabled, reason}];
+  // anything not array-like reads as [].
+  property var projectRows: []
+  readonly property bool atProject: dialog.step === "project"
 
   readonly property Item focusItem: dialog.form ? baseField : cancelButton
   readonly property bool canStart: dialog.dispatchState === "ready"
@@ -66,7 +76,7 @@ Item {
   readonly property int verifyRows: Math.max(1, dialog.storedVerify().length)
   readonly property bool hasChoices: !!dialog.targetChoices && typeof dialog.targetChoices.length === "number"
     && dialog.targetChoices.length > 0
-  readonly property bool canOffer: dialog.dispatchState === "refused" && !!dialog.suggestion
+  readonly property bool canOffer: !dialog.atProject && dialog.dispatchState === "refused" && !!dialog.suggestion
     && typeof dialog.suggestion.id === "string" && dialog.suggestion.id !== ""
 
   // Every object prop is read guarded: a refused target has no form, and
@@ -88,15 +98,17 @@ Item {
     return dialog.targetTitle !== "" ? quoted : "No card"
   }
 
-  // The preview area shows exactly one of these, checked in this order.
-  readonly property bool showRefusal: dialog.dispatchState === "refused" || dialog.dispatchState === "failed"
-  readonly property bool showSubtask: !dialog.showRefusal && dialog.targetLevel === "subtask"
-  readonly property bool showChecking: !dialog.showRefusal && !dialog.showSubtask
+  // The preview area shows exactly one of these, checked in this order; the
+  // project step shows none.
+  readonly property bool showRefusal: !dialog.atProject
+    && (dialog.dispatchState === "refused" || dialog.dispatchState === "failed")
+  readonly property bool showSubtask: !dialog.atProject && !dialog.showRefusal && dialog.targetLevel === "subtask"
+  readonly property bool showChecking: !dialog.atProject && !dialog.showRefusal && !dialog.showSubtask
     && dialog.dispatchState === "previewing"
-  readonly property bool showSummary: !dialog.showRefusal && !dialog.showSubtask
+  readonly property bool showSummary: !dialog.atProject && !dialog.showRefusal && !dialog.showSubtask
     && ["ready", "starting", "started"].indexOf(dialog.dispatchState) >= 0
   // A failed launch adds its exit code, log path and tail under the sentence.
-  readonly property bool showLaunch: dialog.dispatchState === "failed"
+  readonly property bool showLaunch: dialog.showRefusal && dialog.dispatchState === "failed"
   readonly property string integrateText: dialog.preview && typeof dialog.preview.integrate === "string"
     ? dialog.preview.integrate : ""
   readonly property string summaryText: {
@@ -116,6 +128,7 @@ Item {
   signal cancelRequested()
   signal targetChosen(string id)
   signal suggestionRequested()
+  signal projectChosen(string root)
 
   visible: shown
   // Any change to what Start would start drops the first click.
@@ -238,13 +251,14 @@ Item {
       objectName: "dispatchHeading"
       variant: "heading"
       theme: dialog.theme
-      text: "Dispatch"
+      text: dialog.atProject ? "Dispatch · 1 Project" : "Dispatch"
       font.bold: true
     }
 
     UI.ThemedText {
       objectName: "dispatchTarget"
       theme: dialog.theme
+      visible: !dialog.atProject
       width: parent.width
       text: "Target   " + dialog.targetText
       elide: Text.ElideRight
@@ -254,7 +268,7 @@ Item {
     UI.ChipRow {
       objectName: "dispatchTargetChoices"
       width: parent.width
-      visible: dialog.hasChoices
+      visible: dialog.hasChoices && !dialog.atProject
       chipPrefix: "dispatchTargetChoice"
       theme: dialog.theme
       model: dialog.hasChoices ? dialog.targetChoices : []
@@ -265,7 +279,7 @@ Item {
 
     Column {
       objectName: "dispatchForm"
-      visible: !!dialog.form
+      visible: !!dialog.form && !dialog.atProject
       width: parent.width
       spacing: Style.space(8)
 
@@ -413,6 +427,7 @@ Item {
       objectName: "dispatchPreviewHeading"
       variant: "caption"
       theme: dialog.theme
+      visible: !dialog.atProject
       text: dialog.targetLevel === "board" || dialog.targetLevel === "milestone"
         ? "Preview  (am run --dry-run)" : "Preview"
     }
@@ -525,11 +540,13 @@ Item {
       elide: Text.ElideRight
     }
 
-    // The cost warning shows in every state, a refused target's included.
+    // The cost warning shows in every state, a refused target's included; the
+    // project step has none.
     UI.ThemedText {
       objectName: "dispatchWarning"
       variant: "small"
       theme: dialog.theme
+      visible: !dialog.atProject
       width: parent.width
       text: dialog.targetLevel === "board"
         ? "⚠ This starts agents on every open milestone and spends tokens."
@@ -542,7 +559,7 @@ Item {
       objectName: "dispatchConfirmNote"
       variant: "caption"
       theme: dialog.theme
-      visible: arming.armed
+      visible: arming.armed && !dialog.atProject
       width: parent.width
       text: "Click Confirm start to start this subtask."
       wrapMode: Text.WordWrap
@@ -562,6 +579,7 @@ Item {
 
       UI.ActionButton {
         objectName: "dispatchStart"
+        visible: !dialog.atProject
         iconText: "▶"
         text: dialog.busy ? "Starting…" : arming.armed ? "Confirm start" : "Start run"
         enabled: dialog.canStart
