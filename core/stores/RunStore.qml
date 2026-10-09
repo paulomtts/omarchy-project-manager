@@ -32,7 +32,10 @@ import "../domain/runs.js" as Runs
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch, dispatchOpenFor .. dispatchStart) previews a run
 // for dispatchRoot with dispatch-preview.py and starts it with start-run.py,
-// one HelperRunner per Start.
+// one HelperRunner per Start. It also opens from Runs with no root
+// (dispatchOpenFromRuns): a probe of every usable root (board-tree.py
+// --probe) gives the project step's rows, and dispatchProjectPick sets
+// dispatchRoot. A dispatch opened from Runs survives a project switch.
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
 // as `app.runs` and binds `active` to the panel being open.
@@ -175,7 +178,8 @@ Scope {
   // changed in place.
   property string dispatchState: "idle"
   // The project root the dispatch is for; every dispatch launch carries it;
-  // "" while no dispatch has been opened since the last close or project switch.
+  // "" while no dispatch has been opened since the last close or project
+  // switch, and at the Runs dialog's project step.
   property string dispatchRoot: ""
   // dispatchRoot's get-run-settings object as the dispatch read it, while
   // dispatchRoot is not `project`: {} until its reply, when the reply is
@@ -662,14 +666,17 @@ Scope {
   // controlRunners), the control error, the cancel dialog, the footer flash,
   // the alerts, the toasts and the notify switch belong to every registered
   // project and stay, and no snapshot is launched. Reset: the run settings
-  // (loaded for the new project on runSettingsRunner), the dispatch and
-  // dispatchRoot ("").
+  // (loaded for the new project on runSettingsRunner) and, when dispatchStep
+  // is "", the dispatch and dispatchRoot (""). A dispatch opened from Runs
+  // keeps its step, root, probe and state.
   function projectSwitched() {
     store.runSettings = {}
-    // The dispatch is the old project's, even mid-start: a start already
+    // A card dispatch is the old project's, even mid-start: a start already
     // launched still runs, and its reply is no longer this dispatch's.
-    store.resetDispatch()
-    store.dispatchRoot = ""
+    if (store.dispatchStep === "") {
+      store.resetDispatch()
+      store.dispatchRoot = ""
+    }
     runSettingsRunner.guard = store.project
     if (store.project !== "") runSettingsRunner.run(["get-run-settings", store.project])
   }

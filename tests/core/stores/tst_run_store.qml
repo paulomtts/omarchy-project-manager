@@ -5919,6 +5919,41 @@ TestCase {
     compare(store.dispatchRoot, tc.rootA)
   }
 
+  // 2.2 test 9
+  function test_dispatch_open_project_switch_leaves_a_runs_dialog_alone() {
+    var store = make(); if (!store) return
+    store.projectRoots = registry([tc.rootA, tc.rootB, tc.rootC])
+    store.project = tc.rootA
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current,
+          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }, { root: tc.rootC, ok: true }]), 0)
+    var probe = store.dispatchProjectProbe
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    store.project = tc.rootC
+    compare(store.dispatchStep, "target", "the step is kept")
+    compare(store.dispatchRoot, tc.rootB, "the root is kept")
+    verify(store.dispatchProjectProbe === probe, "the probe is kept")
+    compare(store.dispatchState, "idle")
+    compare(Object.keys(store.runSettings).length, 0, "the run settings are the new project's")
+    compare(argv(store.runSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/c")
+    compare(store.dispatchBack(), true)
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/c:proj:open:on: / /home/u/my proj:alpha::on: / /home/u/b:beta::on:", "the open mark follows")
+    store.project = ""
+    compare(store.dispatchStep, "project", "closing the project keeps the step")
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha::on: / /home/u/b:beta::on: / /home/u/c:proj::on:", "no row open")
+
+    var inFlight = runsStore(); if (!inFlight) return
+    inFlight.dispatchOpenFromRuns()
+    var proc = inFlight.dispatchProjectRunner.current
+    inFlight.project = tc.rootB
+    reply(proc, probeReply([{ root: tc.rootA, ok: false, reason: "no .brd marker" }]), 0)
+    compare(rowsText(inFlight.dispatchProjectRows),
+            "/home/u/b:beta:open:on: / /home/u/my proj:alpha::off:no .brd marker", "a probe across a switch still applies")
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).
