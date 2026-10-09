@@ -19,7 +19,10 @@ import "../domain/runs.js" as Runs
 // there. The "Notify on escalation" switch is viewer-wide: each opening reads
 // it (get-global-settings) and setNotifyOnEscalation writes it
 // (set-global-settings); a failed save puts it back and flashes. A project
-// switch changes nothing here.
+// switch changes nothing here. Each project's run settings (`runSettings`,
+// {root: settings}): loadRunSettings reads them and saveRunSettings merges
+// and writes a patch, each on a runner of its own; a failed save is
+// announced (runSettingsSaveFailed).
 Scope {
   id: control
 
@@ -53,12 +56,20 @@ Scope {
   property bool notifyOnEscalation: false
   property bool notifySaved: false
   property bool notifyTouched: false
+  // Each project's run settings, {root: settings}: the root's last
+  // get-run-settings object as read, with the saves since merged in.
+  // Replaced, never changed in place.
+  property var runSettings: ({})
+  // A save's reply was not {"ok": true}: `patch` is what that save sent.
+  signal runSettingsSaveFailed(var root, var patch)
 
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
   readonly property alias settingsLoadRunner: settingsLoadRunner
   readonly property alias settingsSaveRunner: settingsSaveRunner
+  readonly property alias runSettingsRunners: runSettingsState.runners     // in-flight run settings loads and saves, oldest first
+  readonly property alias runSettingsLoadRunner: runSettingsState.lastLoad // the newest load until it replies; else null
 
   // Starts a pause, resume or cancel of one run in `runs`, of any project, and
   // returns whether it started: only when refusalOf(action, runId) is "".
@@ -354,6 +365,90 @@ Scope {
     control.flash("Notify on escalation could not be saved")
   }
 
+  // ---- run settings (split-runstore 4.2)
+
+  // root's run settings: its entry in runSettings, else one shared empty
+  // object, the same on every call, which the store never writes.
+  function runSettingsOf(root) {
+    return Runs.hasKey(control.runSettings, root) ? control.runSettings[root] : runSettingsState.empty
+  }
+
+  // root's entry becomes `settings` as given (not a copy) in a new map;
+  // anything that is not a non-null object gives {}. Root "" changes nothing.
+  function applyRunSettings(root, settings) {
+    if (typeof root !== "string" || root === "") return
+    var map = Runs.copyMap(control.runSettings)
+    map[root] = settings !== null && typeof settings === "object" ? settings : {}
+    control.runSettings = map
+  }
+
+  // viewer-state.py get-run-settings ROOT on a runner of its own: root's
+  // entry is dropped until the reply, which is kept whole for root whatever
+  // project is open ({} when unreadable; it never touches the notify
+  // switch). Root "" launches nothing.
+  function loadRunSettings(root) {
+    if (typeof root !== "string" || root === "") return
+    var map = Runs.copyMap(control.runSettings)
+    delete map[root]
+    control.runSettings = map
+    runSettingsState.lastLoad = control.launchRunSettings({ root: root }, ["get-run-settings", root])
+  }
+
+  // patch is merged over root's entry at once (each key replaces, except
+  // prefixByMilestone, merged per milestone id), then viewer-state.py
+  // set-run-settings ROOT JSON(patch) runs on a runner of its own. A reply
+  // other than {"ok": true} emits runSettingsSaveFailed(root, patch) and
+  // undoes nothing. Root "" or a patch that is not a non-null object
+  // launches nothing.
+  function saveRunSettings(root, patch) {
+    if (typeof root !== "string" || root === "" || patch === null || typeof patch !== "object") return
+    var merged = Runs.copyMap(control.runSettingsOf(root))
+    for (var key in patch) {
+      merged[key] = key === "prefixByMilestone" ? control.mergedPrefixes(merged.prefixByMilestone, patch[key]) : patch[key]
+    }
+    control.applyRunSettings(root, merged)
+    var json = JSON.stringify(patch)
+    control.launchRunSettings({ root: root, json: json, saving: true }, ["set-run-settings", root, json])
+  }
+
+  // A fresh {milestone id: prefix} map: stored's own entries when stored is
+  // an object that is not an array, then entry's, which override them, as
+  // set-run-settings merges prefixByMilestone.
+  function mergedPrefixes(stored, entry) {
+    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? Runs.copyMap(stored) : {}
+    for (var id in entry) merged[id] = entry[id]
+    return merged
+  }
+
+  // A new runSettingsC runner with `props`, added to runSettingsRunners and
+  // launched with `args`; returns it.
+  function launchRunSettings(props, args) {
+    var runner = runSettingsC.createObject(control, props)
+    runSettingsState.runners = runSettingsState.runners.concat([runner])
+    runner.run(args)
+    return runner
+  }
+
+  // A load's reply is kept for its root; a save's reply other than
+  // {"ok": true} is announced. Either way the runner goes.
+  function runSettingsReplied(runner, stdout) {
+    if (runner.saving) {
+      var reply = Results.parseEnvelope(stdout)
+      if (!(reply !== null && reply.ok === true)) control.runSettingsSaveFailed(runner.root, JSON.parse(runner.json))
+    } else {
+      control.applyRunSettings(runner.root, Results.parseEnvelope(stdout))
+    }
+    control.dropRunSettingsRunner(runner)
+  }
+
+  // A run settings runner's request is over: it leaves runSettingsRunners
+  // (and runSettingsLoadRunner) and is destroyed.
+  function dropRunSettingsRunner(runner) {
+    runSettingsState.runners = runSettingsState.runners.filter(function(r) { return r !== runner })
+    if (runSettingsState.lastLoad === runner) runSettingsState.lastLoad = null
+    runner.destroy()
+  }
+
   // Only while the panel is open and a control request is pending: closing the
   // panel keeps `pending` but leaves no timer running.
   Timer {
@@ -420,6 +515,32 @@ Scope {
       property string projectRoot: ""     // the run's project.root then; "" when it had none
       property bool settingsStep: false   // reading the run settings; run-control comes next
       onFinished: function(stdout, exitCode) { control.controlReplied(cr, stdout, exitCode) }
+    }
+  }
+
+  // The run settings requests' own state; kept apart so consumers cannot
+  // write it. `lastLoad` is the newest load until it replies; `empty` is
+  // runSettingsOf's shared empty object.
+  QtObject {
+    id: runSettingsState
+    property var runners: []
+    property var lastLoad: null
+    property var empty: ({})
+  }
+
+  // One HelperRunner per run settings request, so loads and saves never stop
+  // each other, the notify switch's runners or a resume's settings step. No
+  // guard: a reply is applied whatever project is open.
+  Component {
+    id: runSettingsC
+
+    HelperRunner {
+      id: rr
+      property string root: ""      // the project the request is for
+      property string json: ""      // a save's patch as set-run-settings takes it; "" for a load
+      property bool saving: false   // set-run-settings, not get-run-settings
+      script: control.backendDir + "projects/viewer-state.py"
+      onFinished: function(stdout, exitCode) { control.runSettingsReplied(rr, stdout) }
     }
   }
 }

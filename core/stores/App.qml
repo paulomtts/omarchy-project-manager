@@ -104,7 +104,7 @@ QtObject {
   // registry's roots and names in registry order, the selected project's root
   // path (never the project object), the panel-open flag that starts and
   // stops its watch, and the stores its shims read (controlStore,
-  // alertsStore).
+  // alertsStore, dispatchStore).
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
     projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
@@ -113,6 +113,7 @@ QtObject {
     searchQuery: app.nav.searchQuery
     alertsStore: app.runAlerts
     controlStore: app.runControl
+    dispatchStore: app.runDispatch
     onRunFilterToggled: {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
@@ -129,8 +130,9 @@ QtObject {
 
   // The run controls never import the run store: App hands them the backend
   // directory, the open project's root, the panel-open flag and the run list,
-  // settles their requests on each ok snapshot reply and routes their
-  // refreshRequested to the run store.
+  // settles their requests on each ok snapshot reply, routes their
+  // refreshRequested to the run store and their runSettingsSaveFailed to the
+  // dispatch's dispatchSaveFailed.
   readonly property RunControlStore runControl: RunControlStore {
     backendDir: app.backendDir
     project: app.runs.project
@@ -140,6 +142,7 @@ QtObject {
       if (roots === "all") app.runs.refresh()
       else app.runs.requestSnapshot(roots)
     }
+    onRunSettingsSaveFailed: function(root, patch) { app.runDispatch.dispatchSaveFailed(root, patch) }
   }
 
   // The run alerts never import the run store: App hands them the backend
@@ -151,6 +154,27 @@ QtObject {
     active: app.panelOpen
     notifyOnEscalation: app.runControl.notifyOnEscalation
     projectRoots: app.runs.projectRoots
+  }
+
+  // The dispatch never imports the run store or run control: App hands it the
+  // backend directory, the open project's root, the panel-open flag, the run
+  // list and the open project's run settings from run control, routes its
+  // refreshRequested to the run store, its noticeRequested to run control's
+  // flash, and its runSettingsWanted and runSettingsSaveRequested to run
+  // control's loadRunSettings and saveRunSettings.
+  readonly property RunDispatchStore runDispatch: RunDispatchStore {
+    backendDir: app.backendDir
+    project: app.runs.project
+    active: app.panelOpen
+    runs: app.runs.runs
+    runSettings: app.runControl.runSettingsOf(app.runs.project)
+    onRefreshRequested: function(roots) {
+      if (roots === "all") app.runs.refresh()
+      else app.runs.requestSnapshot(roots)
+    }
+    onNoticeRequested: function(text) { app.runControl.flash(text) }
+    onRunSettingsWanted: function(root) { app.runControl.loadRunSettings(root) }
+    onRunSettingsSaveRequested: function(root, patch) { app.runControl.saveRunSettings(root, patch) }
   }
 
   readonly property GraphStore graph: GraphStore {
