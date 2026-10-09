@@ -599,6 +599,46 @@ TestCase {
     compare(H.find(p, "runToastProject0").text, "alpha", "the older toast keeps its project")
   }
 
+  // 4.5 (10), a pin
+  function test_the_sidebar_count_covers_every_registered_project() {
+    var p = make(); if (!p) return
+    registerB(p)
+    p.app.runs.runs = [runIn("run-0000000000b2", "escalated", null, "beta-ms", "/home/u/a", "alpha"),
+                       runIn("run-0000000000f6", "started", false, "zeta", "/home/u/b", "beta")]
+    wait(50)
+    var count = H.find(p, "navCountRuns")
+    verify(count, "the Runs count")
+    compare(String(count.text), "‼2", "alpha's escalated run and beta's dead one")
+    p.app.projects.selectedProject = null
+    wait(50)
+    compare(p.app.runs.runs.length, 2, "closing the project leaves the runs alone")
+    compare(String(count.text), "‼2", "with no project open")
+    compare(count.visible, true)
+  }
+
+  // 4.5 (12), a pin
+  function test_toast_open_on_another_projects_run_keeps_the_open_project() {
+    var p = make(); if (!p) return
+    registerB(p)
+    var before = p.app.projects.selectedProject
+    verify(before !== null && before.root_path === "/home/u/a", "pA is open")
+    var aEntries = [snapEntry("run-0000000000a1", "started", true, "alpha")]
+    feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "started", true, "zeta")])
+    compare(p.app.runs.toasts.length, 0, "the baseline raises nothing")
+    feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
+    compare(p.app.runs.toasts.length, 1)
+    wait(50)
+    compare(H.find(p, "runToastProject0").text, "beta")
+    mouseClick(H.find(p, "runToastOpen0"))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000f6")
+    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    verify(p.app.projects.selectedProject === before, "the same project object")
+    p.shortcuts.closeRequested()
+    compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
+    verify(p.app.projects.selectedProject === before)
+  }
+
   // 26 (parent line 160: toast Open navigates)
   function test_toast_open_navigates_to_the_run_and_back_goes_to_the_runs_list() {
     var p = withToast("board"); if (!p) return
