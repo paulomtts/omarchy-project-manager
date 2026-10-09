@@ -771,3 +771,15 @@ def test_logs_follow_of_an_agent_attempt_prints_hello_chunks_and_end(am, finishe
     assert lines[-1]["status"] == "ok", lines[-1]
     assert_stream_matches_fixture(normalize(lines, finished_run.root),
                                   "logs-follow-agent.jsonl", "review")
+
+
+def test_logs_follow_of_a_step_prints_hello_chunks_and_end(am, finished_run):
+    proc = follow(am, finished_run, finished_run.card, "--phase", "verify")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = json_lines(proc.stdout)
+    text = follow_stream_text(lines, f"{am.data}/agent-manager/runs/",
+                              f"/{finished_run.card}/verify.1/stdout.log")
+    assert text == "==> verify-ok (exit 0)\nverified\n", lines
+    assert lines[-1]["status"] == "ok", lines[-1]
+    assert_stream_matches_fixture(normalize(lines, finished_run.root),
+                                  "logs-follow-step.jsonl", "verify")
