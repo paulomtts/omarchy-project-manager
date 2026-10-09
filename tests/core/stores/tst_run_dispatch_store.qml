@@ -987,8 +987,8 @@ TestCase {
     compare(store.runSettings.allowNoVerification, false)
     compare(store.runSettings.confirmDispatch, true, "keys the start does not write are kept")
     reply(save, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.dispatchStartRunners.length, 0, "the runner goes after the write")
-    compare(controlOf(store).runSettingsRunners.length, 0, "and so does the save's")
+    compare(store.dispatchStartRunners.length, 0, "the start runner is already gone")
+    compare(controlOf(store).runSettingsRunners.length, 0, "the save's runner goes after the write")
     compare(controlOf(store).flashText, "")
     compare(store.dispatchState, "started")
   }
