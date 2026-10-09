@@ -3950,6 +3950,7 @@ TestCase {
     compare(store.dispatchLog, "", label + ": log")
     compare(store.dispatchLogTail, "", label + ": log tail")
     compare(store.dispatchExitCode, null, label + ": exit code")
+    compare(store.dispatchTargetLabel, "", label + ": target label")
     compare(store.dispatchStep, "", label + ": step")
   }
 
