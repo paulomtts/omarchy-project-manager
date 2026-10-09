@@ -140,6 +140,15 @@ TestCase {
     compare(r.buffer, { lines: [], partial: "", dropped: 0, nextOffset: 120, gapBytes: 0, slack: 0, maxLines: 1000 })
   }
 
+  function test_fold_hello_with_a_bad_offset_keeps_next_offset() {
+    var bad = [undefined, "40", -1, 1.5, NaN, Infinity, null]
+    for (var i = 0; i < bad.length; i++) {
+      var r = LS.foldLine(LS.emptyBuffer(1000), { event: "logs", offset: bad[i], path: "x", schema: 1 })
+      compare(r.kind, "hello", String(bad[i]))
+      compare(r.buffer, LS.emptyBuffer(1000), String(bad[i]))
+    }
+  }
+
   function test_fold_hello_on_a_used_buffer_keeps_next_offset() {
     var used = LS.foldLine(LS.emptyBuffer(1000), chunk(0, "a\n")).buffer
     var r = LS.foldLine(used, { event: "logs", offset: 77, path: "x", schema: 1 })
