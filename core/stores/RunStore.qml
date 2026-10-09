@@ -1887,6 +1887,26 @@ Scope {
     runner.destroy()
   }
 
+  // ---- relaunch
+
+  // Opens the dispatch for card as openDispatch does and returns its result;
+  // when it opens, relaunch.prefix and relaunch.base (Runs.stopReport's
+  // relaunch), each when a non-blank string, are set trimmed over the
+  // defaults, and a base set so is kept over the default branch. Refused
+  // (false, nothing changes) when card or relaunch is not an object.
+  function relaunchOpenFor(card, cardMap, relaunch) {
+    var isObject = function(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+    if (!isObject(card) || !isObject(relaunch)) return false
+    if (!store.openDispatch(card, cardMap)) return false
+    if (typeof relaunch.prefix === "string" && relaunch.prefix.trim() !== "")
+      store.dispatchForm = store.withField(store.dispatchForm, "prefix", relaunch.prefix.trim())
+    if (typeof relaunch.base === "string" && relaunch.base.trim() !== "") {
+      store.dispatchForm = store.withField(store.dispatchForm, "base", relaunch.base.trim())
+      dispatchBook.baseTouched = true
+    }
+    return true
+  }
+
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is
   // matched to the registry by root, whatever project is open. Only
   // refresh() with no usable root and resetCursor() stop it.

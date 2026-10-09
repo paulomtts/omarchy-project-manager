@@ -6460,4 +6460,182 @@ TestCase {
     reply(store.snapshotRunner.current, capturedList(), 0)
     compare(store.runs.length, 2)
   }
+
+  // ---- relaunch
+
+  // Runs.stopReport's relaunch for m1 with a recorded prefix and base; extra's
+  // keys are set over it.
+  function relaunchOf(extra) {
+    var r = { level: "milestone", cardId: "m1", prefix: "relaunch/m1", base: "release" }
+    for (var key in extra) r[key] = extra[key]
+    return r
+  }
+
+  property string relaunchArgs: "/home/u/my proj|milestone|m1|--base-branch|release|--branch-prefix|relaunch/m1|--max-concurrent|4|--verify|uv run pytest"
+
+  function test_relaunch_overrides_prefix_and_base() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf()), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchTarget.level, "milestone")
+    compare(store.dispatchTargetLabel, Runs.dispatchLabel(cards.m1, cards))
+    compare(store.dispatchForm.prefix, "relaunch/m1")
+    compare(store.dispatchForm.base, "release")
+    compare(store.dispatchError, "")
+    compare(store.dispatchDebounceTimer.running, false, "no check is scheduled before the defaults reply")
+    verify(!store.dispatchPreviewRunner.current, "no preview before the defaults reply")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchForm.base, "release", "the default branch does not replace the recorded base")
+    compare(store.dispatchForm.prefix, "relaunch/m1")
+  }
+
+  function test_relaunch_takes_verify_and_parallelism_from_the_settings() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    var r = relaunchOf({ verify: ["make lint"], parallelism: 9, allowNoVerification: true })
+    compare(store.relaunchOpenFor(cards.m1, cards, r), true)
+    var form = store.dispatchForm
+    compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify")
+    compare(form.verify.length, 1)
+    compare(form.verify[0], "uv run pytest")
+    compare(form.parallelism, 4)
+    compare(form.allowNoVerification, false)
+  }
+
+  function test_relaunch_dispatches_from_the_open_project() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
+    compare(store.project, rootA)
+    var lookup = store.dispatchDefaultsRunner.current
+    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/my proj")
+    reply(lookup, defaultsOk("main"), 0)
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc, "the preview is launched")
+    compare(proc.command[2], "/home/u/my proj", "the first argument after the script is the open project")
+    compare(proc.launchGuard, "/home/u/my proj")
+  }
+
+  function test_relaunch_preview_and_start_carry_the_recorded_values() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.relaunchArgs)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchStart(), true)
+    compare(argv(store.dispatchStartRunners[0].current), tc.startCmd + tc.relaunchArgs)
+  }
+
+  function test_relaunch_without_a_card_or_relaunch_is_refused() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    var noCards = [null, undefined, [], "m1"]
+    for (var i = 0; i < noCards.length; i++) {
+      compare(store.relaunchOpenFor(noCards[i], cards, relaunchOf()), false, "card " + i)
+      checkDispatchIdle(store, "card " + i)
+    }
+    var noRelaunch = [null, undefined, []]
+    for (var j = 0; j < noRelaunch.length; j++) {
+      compare(store.relaunchOpenFor(cards.m1, cards, noRelaunch[j]), false, "relaunch " + j)
+      checkDispatchIdle(store, "relaunch " + j)
+    }
+    verify(!store.dispatchDefaultsRunner.current, "no defaults lookup")
+
+    compare(store.openDispatch(cards.m1, cards), true)
+    var target = store.dispatchTarget
+    var form = store.dispatchForm
+    var lookup = store.dispatchDefaultsRunner.current
+    compare(store.relaunchOpenFor(null, cards, relaunchOf()), false)
+    compare(store.dispatchState, "previewing", "the open dispatch stays open")
+    verify(store.dispatchTarget === target, "same target")
+    verify(store.dispatchForm === form, "same form")
+    compare(store.dispatchForm.prefix, "old")
+    verify(store.dispatchDefaultsRunner.current === lookup, "the same lookup")
+    compare(lookup.running, true, "still in flight")
+
+    compare(store.relaunchOpenFor(cards.d1, cards, relaunchOf({ cardId: "d1" })), false)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchErrorType, "Target")
+    compare(store.dispatchError, "The card is done")
+    compare(store.dispatchForm, null, "nothing overridden")
+  }
+
+  function test_relaunch_blank_values_keep_the_defaults() {
+    var variants = [{ prefix: "", base: "  " }, { prefix: 7, base: null }, { prefix: undefined, base: undefined }]
+    for (var i = 0; i < variants.length; i++) {
+      var store = dispatchStore(); if (!store) return
+      var cards = dispatchCards()
+      compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf(variants[i])), true, "variant " + i)
+      compare(store.dispatchForm.prefix, "old", "variant " + i + ": dispatchDefaults' prefix")
+      compare(store.dispatchForm.base, "", "variant " + i + ": no base until the lookup replies")
+      reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+      compare(store.dispatchForm.base, "main", "variant " + i + ": the default branch fills base")
+      compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs, "variant " + i)
+    }
+  }
+
+  function test_relaunch_values_are_trimmed() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf({ prefix: "  relaunch/m1 ", base: " release\n" })), true)
+    compare(store.dispatchForm.prefix, "relaunch/m1")
+    compare(store.dispatchForm.base, "release")
+  }
+
+  // Review Focus 1.
+  function test_relaunch_is_refused_without_a_project_or_while_starting() {
+    var bare = make(); if (!bare) return
+    var cards = dispatchCards()
+    compare(bare.relaunchOpenFor(cards.m1, cards, relaunchOf()), false)
+    checkDispatchIdle(bare, "no project")
+    verify(!bare.dispatchDefaultsRunner.current, "no defaults lookup")
+
+    var store = readyStore(); if (!store) return
+    compare(store.dispatchStart(), true)
+    var form = store.dispatchForm
+    compare(store.relaunchOpenFor(cards.s1, cards, relaunchOf({ level: "story", cardId: "s1" })), false)
+    compare(store.dispatchState, "starting")
+    compare(store.dispatchTarget.level, "milestone", "the start's target stays")
+    verify(store.dispatchForm === form, "the start's form stays")
+    compare(store.dispatchForm.prefix, "old")
+    compare(store.dispatchStartRunners.length, 1)
+  }
+
+  // Review Focus 2.
+  function test_relaunch_keeps_the_recorded_base_when_the_defaults_lookup_fails() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
+    reply(store.dispatchDefaultsRunner.current, "Traceback: boom\n", 1)
+    compare(store.dispatchForm.base, "release")
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.relaunchArgs)
+  }
+
+  // Review Focus 3.
+  function test_relaunch_of_a_subtask_is_ready_with_the_recorded_values() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.relaunchOpenFor(cards.t1, cards, relaunchOf({ level: "subtask", cardId: "t1", prefix: "relaunch/t1" })), true)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchTarget.level, "subtask")
+    compare(store.dispatchForm.prefix, "relaunch/t1")
+    compare(store.dispatchForm.base, "release")
+    verify(!store.dispatchPreviewRunner.current, "a subtask has no preview")
+  }
+
+  // Review Focus 4.
+  function test_an_opening_after_a_relaunch_takes_the_default_branch_again() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchForm.prefix, "old")
+    compare(store.dispatchForm.base, "")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchForm.base, "main", "the relaunch's base override is not inherited")
+  }
 }
