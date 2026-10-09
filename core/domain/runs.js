@@ -8,10 +8,11 @@
 //   raw = {
 //     row:    one `am runs` entry without its `status`:
 //             { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
-//               milestone_id, card_id, lease, progress, project: { id, repo_dir } }
+//               milestone_id, card_id, story_id, lease, progress, project: { id, repo_dir } }
 //     status: `am status` data, may be absent:
 //             { as_of_seq, store_id,
-//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at },
+//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
+//                      card_id, story_id },
 //               stories: [{ card_id, title, level, status, tip_branch,
 //                           subtasks: [{ card_id, branch, base_branch, status, worktree_path,
 //                                        phases: [{ name, kind, status, started_at, ended_at, detail,
@@ -23,7 +24,8 @@
 //   }
 // Output scalars: id, repo_dir, started_at, base_branch, branch_prefix and
 // workflow are the row's, else the am status run's; status and milestone_id are
-// the am status run's, else the row's. `lease` keeps pid, host, heartbeat_at,
+// the am status run's, else the row's; card_id and story_id are the row's, else
+// the am status run's. `lease` keeps pid, host, heartbeat_at,
 // accepting and live. `requests` are am's control requests in the order made;
 // handled_at "" means the run has not acted on it yet.
 // `project` is the row's { id, repo_dir }: id a finite number else null,
@@ -133,6 +135,8 @@ function normalizeRun(raw) {
     base_branch: firstText(row.base_branch, run.base_branch),
     branch_prefix: firstText(row.branch_prefix, run.branch_prefix),
     workflow: firstText(row.workflow, run.workflow),
+    card_id: firstText(row.card_id, run.card_id),
+    story_id: firstText(row.story_id, run.story_id),
     lease: lease,
     project: project,
     requests: requests,

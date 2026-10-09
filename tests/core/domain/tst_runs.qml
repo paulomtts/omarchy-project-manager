@@ -31,7 +31,7 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,tree,workflow", label)
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,card_id,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,story_id,tree,workflow", label)
     compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
@@ -39,6 +39,8 @@ TestCase {
     compare(r.status, "", label)
     compare(r.base_branch, "", label)
     compare(r.branch_prefix, "", label)
+    compare(r.card_id, "", label)
+    compare(r.story_id, "", label)
     compare(r.lease, null, label)
     compare(r.project, null, label)
     compare(Array.isArray(r.rows), true, label)
@@ -229,7 +231,7 @@ TestCase {
 
   function test_normalize_scalars_from_fixture() {
     var r = Runs.normalizeRun(amRun("status-started.json"))
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,tree,workflow")
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,card_id,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,story_id,tree,workflow")
     compare(r.id, "20261008T143823Z-e795ad19")
     compare(r.repo_dir, "/home/user/Code/omarchy-project-manager")
     compare(r.milestone_id, "e795ad19-c81f-43ec-bdda-ef61ab5f860b", "only the am runs row carries it")
@@ -237,6 +239,8 @@ TestCase {
     compare(r.workflow, "milestone")
     compare(r.base_branch, "main")
     compare(r.branch_prefix, "dsp")
+    compare(r.card_id, "", "a milestone run names no card")
+    compare(r.story_id, "", "a milestone run names no story")
     compare(r.started_at, "2026-10-08 14:38:23.739155+00:00")
     compare(Object.keys(r.lease).sort().join(","), "accepting,heartbeat_at,host,live,pid", "acquired_at is not kept")
     compare(r.lease.pid, 1991)
@@ -567,11 +571,13 @@ TestCase {
 
     var fixture = amRun("status-started.json")
     var keys = Object.keys(plain)
-    var rowKeys = ["story_id", "card_id", "progress"]
+    var rowKeys = ["progress"]
     for (var i = 0; i < rowKeys.length; i++) {
       verify(hasOwn(fixture.row, rowKeys[i]), "the capture's row carries " + rowKeys[i])
       compare(keys.indexOf(rowKeys[i]), -1, "row " + rowKeys[i] + " is not kept")
     }
+    verify(hasOwn(fixture.row, "story_id") && hasOwn(fixture.row, "card_id"), "the capture's row carries story_id and card_id")
+    verify(keys.indexOf("story_id") >= 0 && keys.indexOf("card_id") >= 0, "row story_id and card_id are kept (RR 1.2)")
     var statusKeys = ["warnings", "integrity"]
     for (var j = 0; j < statusKeys.length; j++) {
       verify(hasOwn(fixture.status, statusKeys[j]), "the capture's am status carries " + statusKeys[j])
@@ -4546,5 +4552,47 @@ TestCase {
     var single = Runs.displayOrder([g1])
     verify(single !== g1.runs, "a new array for a single group")
     compare(single.length, 2, "its runs")
+  }
+
+  // ---- RR 1.2: why it stopped -------------------------------------------------------------
+
+  function test_normalize_card_and_story_ids() {
+    var recorded = Runs.normalizeRun(amRun("status-escalated.json"))
+    compare(recorded.card_id, "", "recorded escalated: card_id null")
+    compare(recorded.story_id, "", "recorded escalated: story_id null")
+
+    // synthetic: the row names a card and a story
+    var fromRow = amRun("status-started.json")
+    fromRow.row.card_id = "c-1"
+    fromRow.row.story_id = "s-1"
+    var r = Runs.normalizeRun(fromRow)
+    compare(r.card_id, "c-1", "row card_id")
+    compare(r.story_id, "s-1", "row story_id")
+
+    // synthetic: only am status's run names them
+    var fromStatus = amRun("status-started.json")
+    fromStatus.status.run.card_id = "c-2"
+    fromStatus.status.run.story_id = "s-2"
+    r = Runs.normalizeRun(fromStatus)
+    compare(r.card_id, "c-2", "status run card_id")
+    compare(r.story_id, "s-2", "status run story_id")
+
+    // synthetic: both name them; the row wins
+    var both = amRun("status-started.json")
+    both.row.card_id = "c-1"
+    both.row.story_id = "s-1"
+    both.status.run.card_id = "c-2"
+    both.status.run.story_id = "s-2"
+    r = Runs.normalizeRun(both)
+    compare(r.card_id, "c-1", "row wins card_id")
+    compare(r.story_id, "s-1", "row wins story_id")
+
+    // synthetic: null on both sides, and numbers
+    r = Runs.normalizeRun({ row: { card_id: null, story_id: null }, status: { run: { card_id: null, story_id: null } } })
+    compare(r.card_id, "", "null card_id")
+    compare(r.story_id, "", "null story_id")
+    r = Runs.normalizeRun({ row: { card_id: 7 }, status: { run: { story_id: 8 } } })
+    compare(r.card_id, "7", "number card_id is text")
+    compare(r.story_id, "8", "number story_id is text")
   }
 }
