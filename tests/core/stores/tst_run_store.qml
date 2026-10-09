@@ -5843,6 +5843,50 @@ TestCase {
     compare(store.dispatchRoot, "/home/u/b")
   }
 
+  // 2.2 test 7
+  function test_dispatch_close_and_card_entry_clear_the_steps() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    var late = store.dispatchProjectRunner.current
+    compare(store.closeDispatch(), true)
+    compare(store.dispatchStep, "")
+    compare(store.dispatchProjectProbe, null)
+    compare(store.dispatchProjectRows.length, 0)
+    checkDispatchIdle(store, "closed")
+    reply(late, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    compare(store.dispatchProjectProbe, null, "a reply after the close is dropped")
+    compare(store.dispatchStep, "")
+    store.dispatchProjectReplied(probeReply([{ root: tc.rootB, ok: true }]))
+    compare(store.dispatchProjectProbe, null, "a reply is applied only while a step is open")
+
+    var cards = dispatchCards()
+    store.dispatchOpenFromRuns()
+    var lateCard = store.dispatchProjectRunner.current
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchStep, "", "a card entry clears the steps")
+    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchProjectRows.length, 0)
+    reply(lateCard, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    compare(store.dispatchProjectProbe, null, "a reply after a card entry is dropped")
+
+    var panel = make(); if (!panel) return
+    panel.active = true
+    panel.projectRoots = registry([tc.rootA, tc.rootB])
+    panel.dispatchOpenFromRuns()
+    compare(panel.dispatchProjectPick(tc.rootB), true)
+    panel.active = false
+    compare(panel.dispatchStep, "", "closing the panel clears the steps")
+    compare(panel.dispatchRoot, "")
+
+    var starting = readyStore(); if (!starting) return
+    compare(starting.dispatchStart(), true)
+    starting.dispatchStep = "form"
+    compare(starting.closeDispatch(), false)
+    compare(starting.dispatchStep, "form", "a refused close keeps the step")
+    compare(starting.openDispatch(cards.m1, cards), false)
+    compare(starting.dispatchStep, "form", "a refused card entry keeps the step")
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).

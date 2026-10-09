@@ -1484,11 +1484,13 @@ Scope {
     store.dispatchMessage = ""
   }
 
-  // The card entry: opens the dispatch for the open project (dispatchRoot =
-  // project) and returns dispatchOpenFor's result. Refused (false, nothing
-  // changes) without a project or while a start is in flight.
+  // The card entry: clears the steps (a card entry has no step), opens the
+  // dispatch for the open project (dispatchRoot = project) and returns
+  // dispatchOpenFor's result. Refused (false, nothing changes) without a
+  // project or while a start is in flight.
   function openDispatch(card, cardMap) {
     if (store.project === "" || store.dispatchState === "starting") return false
+    store.dispatchClearSteps()
     store.dispatchRoot = store.project
     return store.dispatchOpenFor(card, cardMap)
   }
@@ -1546,13 +1548,15 @@ Scope {
     return true
   }
 
-  // Back to idle, and dispatchRoot back to "". Refused (false, nothing
-  // changes) while a start is in flight: its outcome must land in a dialog
-  // that still shows what was started.
+  // Back to idle, dispatchRoot back to "" and the steps cleared
+  // (dispatchClearSteps). Refused (false, nothing changes) while a start is
+  // in flight: its outcome must land in a dialog that still shows what was
+  // started.
   function closeDispatch() {
     if (store.dispatchState === "starting") return false
     store.resetDispatch()
     store.dispatchRoot = ""
+    store.dispatchClearSteps()
     return true
   }
 
@@ -1912,8 +1916,16 @@ Scope {
     return true
   }
 
+  // The steps cleared: the probe cancelled, dispatchStep "" and
+  // dispatchProjectProbe null.
+  function dispatchClearSteps() {
+    dispatchProjectRunner.cancel()
+    store.dispatchStep = ""
+    store.dispatchProjectProbe = null
+  }
+
   // board-tree.py --probe ROOT... for the project step; latest wins. No
-  // guard: the probe depends on no root.
+  // guard: the probe depends on no root. dispatchClearSteps() cancels it.
   HelperRunner {
     id: dispatchProjectRunner
     script: store.backendDir + "boards/board-tree.py"
