@@ -948,6 +948,58 @@ TestCase {
     compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB + "|" + tc.rootC, "B and C only")
   }
 
+  // 7 and Review Focus 1
+  function test_nudges_and_liveness_during_a_snapshot_give_one_follow_up() {
+    var store = activeRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    var first = allReply([okEntry(tc.rootA, [entry("a1", "started", true)]), okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                          okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])])
+    reply(store.snapshotRunner.current, first, 0)
+    store.refresh()
+    var inFlight = store.snapshotRunner.current
+    var seq = store.snapshotRunner.seq
+    nudge(store, ["b1", 5])
+    fire(store.debounceTimer)
+    nudge(store, ["c1", 6])
+    fire(store.debounceTimer)
+    store.livenessTimer.triggered()
+    verify(store.snapshotRunner.current === inFlight, "the snapshot in flight is kept")
+    compare(inFlight.running, true)
+    compare(store.snapshotRunner.seq, seq)
+    compare(store.pendingSnapshot.join("|"), [tc.rootB, tc.rootC, tc.rootA].join("|"), "one pending request")
+    reply(inFlight, first, 0)
+    compare(store.snapshotRunner.seq, seq + 1, "one follow-up")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB + "|" + tc.rootC,
+            "the union, in registry order")
+    reply(store.snapshotRunner.current, first, 0)
+    compare(store.snapshotRunner.seq, seq + 1, "nothing more")
+  }
+
+  // 10
+  function test_a_liveness_tick_refreshes_only_the_roots_with_a_running_run() {
+    var store = activeRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "started", true)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                                                  okEntry(tc.rootC, [entry("c1", "started", false, tc.rootC)])]), 0)
+    compare(store.livenessTimer.running, true)
+    var seq = store.snapshotRunner.seq
+    store.livenessTimer.triggered()
+    compare(store.snapshotRunner.seq, seq + 1)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA, "A alone: C's run is dead, B's done")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "started", true)])]), 0)
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "started", true)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                                                  okEntry(tc.rootC, [entry("c1", "started", true, tc.rootC)])]), 0)
+    store.livenessTimer.triggered()
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootC, "A and C")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])]), 0)
+    compare(store.livenessTimer.running, false, "no running run: the timer is off")
+    var idle = store.snapshotRunner.seq
+    store.livenessTimer.triggered()
+    compare(store.snapshotRunner.seq, idle, "a forced tick launches nothing")
+  }
+
   // 11
   function test_stale_follows_any_good_reply_full_or_partial() {
     var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
@@ -1507,6 +1559,7 @@ TestCase {
     var seq = store.snapshotRunner.seq
     store.livenessTimer.triggered()
     compare(store.snapshotRunner.seq, seq + 1, "each tick fetches a snapshot")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA, "of the root with the running run")
   }
 
   // ---- deactivation

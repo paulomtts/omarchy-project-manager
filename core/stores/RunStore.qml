@@ -431,6 +431,23 @@ Scope {
     return false
   }
 
+  // The liveness tick: a snapshot of the usable roots whose runsByProject
+  // list holds a running run, in registry order; none, nothing.
+  function refreshLive() {
+    var usable = store.usableRoots()
+    var roots = []
+    for (var i = 0; i < usable.length; i++) {
+      var list = store.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
+      for (var j = 0; j < list.length; j++) {
+        if (Runs.runState(list[j]) === "running") {
+          roots.push(usable[i].root)
+          break
+        }
+      }
+    }
+    if (roots.length > 0) store.requestSnapshot(roots)
+  }
+
   // Starts over: the snapshot in flight (the old store's) is stopped and the
   // pending request dropped, the coverage (appliedSeq, asOfSeq) and the live
   // state (forgetLive) are forgotten, and one list snapshot of every root is
@@ -1659,13 +1676,14 @@ Scope {
   }
 
   // Only while the panel is open and a run is running: no timer while idle.
+  // Each tick snapshots the roots with a running run (refreshLive).
   Timer {
     id: livenessTimer
     objectName: "livenessTimer"
     interval: 10000
     repeat: true
     running: store.active && store.hasRunningRun
-    onTriggered: store.refresh()
+    onTriggered: store.refreshLive()
   }
 
   // Fires 30 s after the last good snapshot (or the activation) while open.
