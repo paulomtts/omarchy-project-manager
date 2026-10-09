@@ -21,7 +21,7 @@ TestCase {
   function run(id, status, live, milestone) {
     return { id: id, repo_dir: "/home/u/a", milestone_id: milestone, status: status, started_at: "",
              lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
-             rows: [], tree: { stories: [], subtasks: [] } }
+             rows: [], tree: { stories: [], subtasks: [] }, project: { root: "/home/u/a", name: "alpha" } }
   }
 
   function make() {
@@ -241,7 +241,7 @@ TestCase {
     compare(H.find(p, "runsView").visible, true)
   }
 
-  function test_a_project_switch_on_the_run_view_leaves_it_and_drops_the_late_logs() {
+  function test_a_project_switch_on_the_run_view_leaves_it_and_the_late_logs_land() {
     var p = openDetail(); if (!p) return
     var proc = p.app.runs.logsRunner.current
     p.app.projects.applyProjectsList([{ root_path: "/home/u/b", name: "beta" }])
@@ -250,7 +250,8 @@ TestCase {
     compare(H.find(p, "runDetailView").visible, false)
     proc.outText = logsOk("late\n")
     proc.exited(0)
-    compare(p.app.runs.logsText, "", "the old project's late reply changes nothing")
+    compare(p.app.runs.logsText, "late", "the late reply is applied")
+    compare(p.app.runs.logsLoading, false)
   }
 
   // ---- run controls (S2 4.2): pause -> requested -> parked, then a refused resume

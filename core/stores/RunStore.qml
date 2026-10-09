@@ -10,8 +10,9 @@ import "../domain/runs.js" as Runs
 // whose latest entry failed; `runs` every root's runs merged in registry
 // order, a run id listed once, under the first root that lists it. A project
 // switch leaves the run list alone: `project`, the open project, decides only
-// the run settings, the dispatch, the run controls and the attempt logs'
-// root. Plus the selected run, the attempt the Run detail pane shows and that
+// the run settings and the dispatch; the run controls and the attempt logs
+// act on each run's own repo_dir and project root. Plus the selected run, the
+// attempt the Run detail pane shows and that
 // attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
 // asked at all. One list snapshot is in flight at a time, plus at most one
 // pending request (requestSnapshot): a request never stops the snapshot in
@@ -766,10 +767,10 @@ Scope {
 
   // Shows (and fetches) one attempt of the selected run. Another attempt than
   // the one shown starts from an empty pane -- its predecessor's text is never
-  // shown under its heading. Nothing happens without a project, a selected run
-  // or a real attempt (a non-empty card and phase, a number above 0).
+  // shown under its heading. Nothing happens without a selected run or a real
+  // attempt (a non-empty card and phase, a number above 0).
   function selectAttempt(cardId, phase, attempt) {
-    if (store.project === "" || store.selectedRunId === "") return
+    if (store.selectedRunId === "") return
     if (typeof cardId !== "string" || cardId === "" || typeof phase !== "string" || phase === "") return
     if (typeof attempt !== "number" || !isFinite(attempt) || attempt <= 0) return
     var old = store.selectedAttempt
@@ -788,15 +789,19 @@ Scope {
     store.fetchLogs()
   }
 
-  // One runs-logs.py launch for the current project and selection, the
+  // One runs-logs.py launch for the selected attempt, the selected run's
   // project root first, remembering the status it was launched for (a
-  // snapshot that changes it fetches again).
+  // snapshot that changes it fetches again). Nothing launches for a run not
+  // in the snapshot or one with no project root.
   function fetchLogs() {
     var sel = store.selectedAttempt
-    if (store.project === "" || store.selectedRunId === "" || !sel) return
-    store.logsStatus = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    if (store.selectedRunId === "" || !sel) return
+    var run = store.runById(store.selectedRunId)
+    var root = store.runRoot(run)
+    if (root === "") return
+    store.logsStatus = Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
     store.logsLoading = true
-    logsRunner.run([store.project, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
+    logsRunner.run([root, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
   }
 
   // No selection and no logs; a fetch in flight is stopped and its reply dropped.
@@ -840,8 +845,8 @@ Scope {
 
   // One logs reply. ok:true replaces the text with its last 200 lines; any
   // failure keeps the text and only says why. Never touches amStatus, runs or
-  // lastError: those belong to the snapshot. A reply for a project the user
-  // has left, or for an older fetch, never gets here (the runner's guards).
+  // lastError: those belong to the snapshot. A reply for an older fetch never
+  // gets here (the runner's latest-wins).
   function applyLogs(stdout, exitCode) {
     store.logsLoading = false
     var envelope = store.parseEnvelope(stdout)
@@ -1771,14 +1776,12 @@ Scope {
     onFinished: function(stdout, exitCode) { store.snapshotEnded(stdout, exitCode) }
   }
 
-  // The attempt-logs helper. Guarded by the project, so a reply for a project
-  // the user has left is dropped; a newer fetch (another attempt, a Refresh)
-  // wins over an older one. Whenever the runner goes idle, dropped reply or
-  // not, no fetch is loading; the shown text, error and time stay.
+  // The attempt-logs helper. No guard: a reply is applied whatever project is
+  // open. A newer fetch (another attempt, a Refresh) wins over an older one.
+  // Whenever the runner goes idle, no fetch is loading.
   HelperRunner {
     id: logsRunner
     script: store.backendDir + "runs/runs-logs.py"
-    guard: store.project
     onBusyChanged: if (!logsRunner.busy) store.logsLoading = false
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
   }

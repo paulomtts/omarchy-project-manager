@@ -2447,7 +2447,7 @@ TestCase {
     var proc = store.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
     compare(argv(proc), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
-    compare(proc.launchGuard, "/home/u/my proj", "guarded by the project")
+    compare(proc.launchGuard, "", "no guard")
     compare(store.selectedAttempt.card_id, tc.openCard)
     compare(store.selectedAttempt.phase, "explore")
     compare(store.selectedAttempt.attempt, 1)
@@ -2468,10 +2468,10 @@ TestCase {
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|1")
   }
 
-  function test_no_logs_launch_without_project_run_or_selection() {
+  function test_no_logs_launch_without_a_run_or_a_selection() {
     var bare = make(); if (!bare) return
     bare.selectAttempt(tc.doneCard, "spec", 1)
-    verify(!bare.logsRunner.current, "no project")
+    verify(!bare.logsRunner.current, "no run selected")
     compare(bare.selectedAttempt, null)
     bare.refreshLogs()
     verify(!bare.logsRunner.current)
@@ -2686,8 +2686,9 @@ TestCase {
   }
 
   // The logs launch: python3, the script, then the project root and the
-  // attempt, five arguments; the root is the open project's, one element.
-  function test_logs_argv_leads_with_the_current_project_root() {
+  // attempt, five arguments; the root is the selected run's project.root, one
+  // element.
+  function test_logs_argv_leads_with_the_runs_project_root() {
     var store = opened(); if (!store) return
     var procA = store.logsRunner.current
     compare(argv(procA), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/my proj|r1|" + tc.openCard + "|explore|1")
@@ -2695,9 +2696,9 @@ TestCase {
     compare(procA.command[2], "/home/u/my proj", "the root with a space is one argument")
   }
 
-  // The root reaches the runner byte-for-byte.
+  // The run's project.root reaches the runner byte-for-byte.
   function test_logs_argv_keeps_an_odd_root_verbatim() {
-    var odd = "/home/u/o'dd; $x/"
+    var odd = "/home/u/o'dd; $x"
     var store = makeWithProject(odd); if (!store) return
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started", odd)]), 0)
     store.selectedRunId = "r1"
@@ -5610,23 +5611,55 @@ TestCase {
     compare(store.cancelOpen, false)
   }
 
-  // 12 (the logs half)
-  function test_a_logs_fetch_in_flight_at_a_switch_ends_and_keeps_the_text() {
+  // 8
+  function test_logs_of_another_projects_run_load_with_no_project_open() {
+    var store = crossStore("", [], [treeEntry("rb", "started", rootB)]); if (!store) return
+    store.selectedRunId = "rb"
+    var proc = store.logsRunner.current
+    verify(proc, "the default attempt's logs were asked for")
+    compare(argv(proc), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b|rb|" + tc.openCard + "|explore|1")
+    compare(proc.launchGuard, "")
+    reply(proc, logsReply("x\n"), 0)
+    compare(store.logsText, "x")
+  }
+
+  // 9
+  function test_a_logs_reply_after_a_project_switch_lands() {
     var store = opened(); if (!store) return
     reply(store.logsRunner.current, logsReply("kept\n"), 0)
-    var fetched = store.logsFetchedMs
     store.refreshLogs()
     var pending = store.logsRunner.current
     compare(store.logsLoading, true)
     store.project = rootB
     compare(store.logsLoading, true, "still in flight")
     reply(pending, logsReply("late\n"), 0)
-    compare(store.logsLoading, false, "the dropped reply ends the fetch")
-    compare(store.logsText, "kept", "the shown text stays")
+    compare(store.logsText, "late", "the reply is applied")
+    compare(store.logsLoading, false)
     compare(store.logsError, "")
-    compare(store.logsFetchedMs, fetched)
     compare(store.selectedRunId, "r1")
-    verify(store.selectedAttempt !== null)
+  }
+
+  // 10
+  function test_no_logs_for_a_selected_run_without_a_project_root() {
+    var store = make(); if (!store) return
+    store.runs = [held(treeEntry("r1", "started"))]
+    compare(store.runs[0].project.root, undefined, "normalizeRun's project has no root")
+    store.selectedRunId = "r1"
+    verify(store.selectedAttempt !== null, "the default attempt is selected")
+    verify(!store.logsRunner.current, "no logs launch")
+    compare(store.logsLoading, false)
+  }
+
+  // Review Focus 3.
+  function test_a_selected_run_that_leaves_the_snapshot_launches_no_logs() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("kept\n"), 0)
+    var seq = store.logsRunner.seq
+    snapshot(store, [])
+    compare(store.runById("r1"), null)
+    compare(store.logsRunner.seq, seq, "no launch for a run not in the snapshot")
+    compare(store.logsLoading, false)
+    compare(store.logsText, "kept")
   }
 
   // ---- cursor reset
