@@ -1870,9 +1870,10 @@ Scope {
   // whenever the steps are cleared.
   property var dispatchProjectProbe: null
   // The project step's rows: Runs.dispatchProjects over the usable roots,
-  // the probe and the open project while a step is open, else [].
+  // the probe entries (dispatchProbeEntries) and the open project while a
+  // step is open, else [].
   readonly property var dispatchProjectRows: store.dispatchStep !== ""
-    ? Runs.dispatchProjects(store.usableRoots(), store.dispatchProjectProbe, store.project) : []
+    ? Runs.dispatchProjects(store.usableRoots(), store.dispatchProbeEntries(), store.project) : []
   readonly property alias dispatchProjectRunner: dispatchProjectRunner
   // The picked root's brd tree as Board.indexTree's {id: card} map: set by a
   // good tree read for dispatchRoot and kept at the target and form steps;
@@ -1887,18 +1888,33 @@ Scope {
   // "" whenever the target data is cleared.
   property string dispatchTargetKey: ""
   readonly property alias dispatchTargetRunner: dispatchTargetRunner
+  // {root: message} for each root whose tree read failed since the dialog
+  // was opened from Runs, the root as dispatchRoot held it. Its row is
+  // disabled with the message as its reason, whatever the probe says.
+  property var dispatchProjectFailures: ({})
 
-  // Opens the dispatch from Runs at the project step with no root and probes
-  // every usable root, in registry order. Refused (false, nothing changes)
-  // while a start is in flight; else true, from any state or step: a second
-  // call starts the step over. With no usable root nothing is launched and
-  // the rows are [].
+  // The probe entries the project rows read: {root, ok: false, reason} for
+  // each dispatchProjectFailures root, then the probe's own entries; the
+  // first entry for a root wins.
+  function dispatchProbeEntries() {
+    var failures = store.dispatchProjectFailures
+    var entries = Object.keys(failures).map(function(root) { return { root: root, ok: false, reason: failures[root] } })
+    var probe = store.dispatchProjectProbe
+    return probe !== null ? entries.concat(probe.projects) : entries
+  }
+
+  // Opens the dispatch from Runs at the project step with no root and no
+  // failures, and probes every usable root, in registry order. Refused
+  // (false, nothing changes) while a start is in flight; else true, from
+  // any state or step: a second call starts the step over. With no usable
+  // root nothing is launched and the rows are [].
   function dispatchOpenFromRuns() {
     if (store.dispatchState === "starting") return false
     store.resetDispatch()
     store.dispatchRoot = ""
     store.dispatchStep = "project"
     store.dispatchProjectProbe = null
+    store.dispatchProjectFailures = {}
     var roots = store.usableRoots().map(function(p) { return p.root })
     if (roots.length > 0) dispatchProjectRunner.run(["--probe"].concat(roots))
     else dispatchProjectRunner.cancel()
@@ -1935,7 +1951,10 @@ Scope {
 
   // The tree read's reply, applied only at the target step. {ok: true,
   // data: [...]} that Board.indexTree walks gives dispatchTargetCardMap and
-  // dispatchTargetRows. The exit code is not read.
+  // dispatchTargetRows. Anything else records dispatchRoot in
+  // dispatchProjectFailures with error.message trimmed (else "The board
+  // could not be read"), clears the target data and goes back to the
+  // project step with dispatchRoot "". The exit code is not read.
   function dispatchTargetReplied(stdout) {
     if (store.dispatchStep !== "target") return
     var envelope = store.parseEnvelope(stdout)
@@ -1944,9 +1963,19 @@ Scope {
     if (data !== null) {
       try { cardMap = Board.indexTree(data).cardMap } catch (e) { cardMap = null }
     }
-    if (cardMap === null) return
-    store.dispatchTargetCardMap = cardMap
-    store.dispatchTargetRows = Runs.dispatchTargets(data, cardMap)
+    if (cardMap !== null) {
+      store.dispatchTargetCardMap = cardMap
+      store.dispatchTargetRows = Runs.dispatchTargets(data, cardMap)
+      return
+    }
+    var err = envelope !== null && envelope.ok !== true ? envelope.error : null
+    var message = err !== null && typeof err === "object" && typeof err.message === "string" ? err.message.trim() : ""
+    var failures = store.copyMap(store.dispatchProjectFailures)
+    failures[store.dispatchRoot] = message !== "" ? message : "The board could not be read"
+    store.dispatchProjectFailures = failures
+    store.dispatchClearTarget()
+    store.dispatchStep = "project"
+    store.dispatchRoot = ""
   }
 
   // From the target step back to the project step, dispatchRoot "". The
@@ -1968,12 +1997,13 @@ Scope {
     store.dispatchTargetKey = ""
   }
 
-  // The steps cleared: the probe cancelled, dispatchStep "" and
-  // dispatchProjectProbe null.
+  // The steps cleared: the probe cancelled, dispatchStep "",
+  // dispatchProjectProbe null and dispatchProjectFailures {}.
   function dispatchClearSteps() {
     dispatchProjectRunner.cancel()
     store.dispatchStep = ""
     store.dispatchProjectProbe = null
+    store.dispatchProjectFailures = {}
   }
 
   // The registry changed: at the target step, a dispatchRoot that is no

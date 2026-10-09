@@ -6103,6 +6103,51 @@ TestCase {
     compare(targetKeys(store.dispatchTargetRows), "board,card:m1,card:s1,card:t1", "the reply applies")
   }
 
+  // 2.3 test 5
+  function test_dispatch_target_failure_disables_the_row() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    var probeSeq = store.dispatchProjectRunner.seq
+    reply(store.dispatchTargetRunner.current, treeFail(" ProjectNotFoundError: no project "), 0)
+    compare(store.dispatchStep, "project")
+    compare(store.dispatchRoot, "")
+    compare(store.dispatchState, "idle")
+    checkTargetCleared(store, "failed")
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:ProjectNotFoundError: no project",
+            "B is off with the helper's message, A unchanged")
+    compare(store.dispatchProjectFailures[tc.rootB], "ProjectNotFoundError: no project")
+    compare(store.dispatchProjectRunner.seq, probeSeq, "the probe is not relaunched")
+    var seq = store.dispatchTargetRunner.seq
+    compare(store.dispatchProjectPick(tc.rootB), false, "a failed row ignores a pick")
+    compare(store.dispatchTargetRunner.seq, seq, "nothing launched")
+    compare(store.dispatchStep, "project")
+    store.dispatchProjectReplied(probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]))
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:ProjectNotFoundError: no project",
+            "a later probe saying B is ok does not lift the failure")
+
+    var unreadable = ["Traceback: boom\n", JSON.stringify({ ok: true }) + "\n", treeReply([null]), treeFail("   ")]
+    for (var i = 0; i < unreadable.length; i++) {
+      var bad = pickedStore(tc.rootB); if (!bad) return
+      reply(bad.dispatchTargetRunner.current, unreadable[i], i === 0 ? 1 : 0)
+      compare(bad.dispatchStep, "project", "case " + i + ": back to step 1")
+      compare(bad.dispatchRoot, "", "case " + i + ": no root")
+      checkTargetCleared(bad, "case " + i)
+      compare(rowsText(bad.dispatchProjectRows),
+              "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:The board could not be read", "case " + i)
+    }
+
+    compare(store.dispatchOpenFromRuns(), true)
+    compare(Object.keys(store.dispatchProjectFailures).length, 0, "a reopening forgets the failures")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:", "B is judged afresh")
+    compare(store.dispatchProjectPick(tc.rootB), true)
+
+    var closed = pickedStore(tc.rootB); if (!closed) return
+    reply(closed.dispatchTargetRunner.current, treeFail("gone"), 0)
+    compare(closed.closeDispatch(), true)
+    compare(Object.keys(closed.dispatchProjectFailures).length, 0, "a close forgets the failures")
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).
