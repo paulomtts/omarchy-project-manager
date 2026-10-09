@@ -102,12 +102,23 @@ QtObject {
 
   // The run store never imports the project or board store: App hands it the
   // registry's roots and names in registry order, the selected project's root
-  // path (never the project object) and the panel-open flag that starts and
-  // stops its watch.
+  // path (never the project object), the open project's card id -> title map
+  // (titles, from the board's cardMap) and the panel-open flag that starts
+  // and stops its watch.
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
     projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
     project: app.projects.selectedProject ? app.projects.selectedProject.root_path : ""
+    titles: {
+      var map = app.board.cardMap || {}
+      var out = {}
+      var ids = Object.keys(map)
+      for (var i = 0; i < ids.length; i++) {
+        var card = map[ids[i]]
+        if (card && typeof card.title === "string") out[ids[i]] = card.title
+      }
+      return out
+    }
     active: app.panelOpen
     searchQuery: app.nav.searchQuery
     onRunFilterToggled: {
