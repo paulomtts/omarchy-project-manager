@@ -74,6 +74,9 @@ Item {
   property var targetRows: []
   // RunStore's dispatchTargetLoading: the tree is still being read.
   property bool targetLoading: false
+  // RunStore's dispatchTargetKey: the row the cursor lands on when the target
+  // step is entered.
+  property string targetKey: ""
   readonly property bool atProject: dialog.step === "project"
   readonly property bool atTarget: dialog.step === "target"
   // The form step's parts show at every step but the two pickers.
@@ -84,10 +87,15 @@ Item {
   // The target rows the list shows; see shownTargets().
   readonly property var shownTargetRows: dialog.shownTargets()
 
-  readonly property Item focusItem: dialog.atProject ? projectKeys : dialog.form ? baseField : cancelButton
+  readonly property Item focusItem: dialog.atProject ? projectKeys
+    : dialog.atTarget ? targetFilter
+    : dialog.form ? baseField : cancelButton
   // The project step's cursor: a row index in projectRows, never a disabled
   // row; -1 with no enabled row and at every other step.
   readonly property int projectCursor: projectCursorState.index
+  // The target step's cursor: an index in the shown target rows; -1 with no
+  // shown row, while loading and at every other step.
+  readonly property int targetCursor: targetCursorState.index
   readonly property bool canStart: dialog.dispatchState === "ready"
   readonly property bool busy: dialog.dispatchState === "starting"
   // The store takes edits in these states (setDispatchField); never while a
@@ -153,17 +161,21 @@ Item {
   signal suggestionRequested()
   signal projectChosen(string root)
   signal backRequested()
+  signal targetPicked(string key)
 
   visible: shown
   // Any change to what Start would start drops the first click.
-  onShownChanged: { arming.armed = false; dialog.syncFields(); dialog.resetProjectCursor() }
+  onShownChanged: { arming.armed = false; dialog.syncFields(); dialog.resetProjectCursor(); dialog.resetTargetCursor() }
   onFormChanged: { arming.armed = false; dialog.syncFields() }
   onDispatchStateChanged: arming.armed = false
   onTargetChanged: arming.armed = false
   onConfirmFirstChanged: arming.armed = false
-  onStepChanged: dialog.resetProjectCursor()
+  onStepChanged: { dialog.resetProjectCursor(); dialog.resetTargetCursor() }
   onProjectRowsChanged: dialog.followProjectCursor()
-  Component.onCompleted: { dialog.syncFields(); dialog.resetProjectCursor() }
+  onTargetRowsChanged: dialog.followTargetCursor()
+  onTargetLoadingChanged: dialog.followTargetCursor()
+  onTargetKeyChanged: dialog.jumpToTargetKey()
+  Component.onCompleted: { dialog.syncFields(); dialog.resetProjectCursor(); dialog.resetTargetCursor() }
 
   QtObject {
     id: arming
@@ -175,6 +187,14 @@ Item {
     id: projectCursorState
     property int index: -1
     property string root: ""
+  }
+
+  // The target cursor's row and its key, so new rows or a new filter keep it
+  // on the same target.
+  QtObject {
+    id: targetCursorState
+    property int index: -1
+    property string key: ""
   }
 
   // A click on Start: from ready only; with confirmFirst the first click arms
@@ -405,13 +425,87 @@ Item {
   // The valid rows whose title or short id holds the filter text, in
   // targetRows order; none while loading and at every other step.
   function shownTargets() {
-    if (!dialog.atTarget || dialog.targetLoading) return []
+    if (dialog.step !== "target" || dialog.targetLoading) return []
     var query = targetFilter.text
     return dialog.targetList().filter(function(row) {
       return dialog.validTarget(row)
         && (TextQuery.matchesQuery(dialog.targetTitleOf(row), query)
             || TextQuery.matchesQuery(dialog.targetShortId(row), query))
     })
+  }
+
+  // The index of the shown row whose key is `key`; -1 for none.
+  function shownTargetIndex(rows, key) {
+    for (var i = 0; i < rows.length; i++)
+      if (rows[i].key === key) return i
+    return -1
+  }
+
+  // The cursor onto a shown row, or off with -1; any other index is off.
+  function setTargetCursor(index) {
+    var rows = dialog.shownTargets()
+    if (index < 0 || index >= rows.length) index = -1
+    targetCursorState.index = index
+    targetCursorState.key = index === -1 ? "" : rows[index].key
+  }
+
+  // targetKey's shown row, else shown row 0, else -1.
+  function landingTarget() {
+    var rows = dialog.shownTargets()
+    var at = dialog.targetKey === "" ? -1 : dialog.shownTargetIndex(rows, dialog.targetKey)
+    return at >= 0 ? at : rows.length > 0 ? 0 : -1
+  }
+
+  // Entering the target step clears the filter and lands the cursor; any
+  // other step has no cursor.
+  function resetTargetCursor() {
+    if (dialog.step === "target") targetFilter.text = ""
+    dialog.setTargetCursor(dialog.step === "target" ? dialog.landingTarget() : -1)
+  }
+
+  // New rows, loading or filter text keep the cursor on its key while that
+  // row is shown; else it lands as on entry.
+  function followTargetCursor() {
+    var at = targetCursorState.key === "" ? -1
+      : dialog.shownTargetIndex(dialog.shownTargets(), targetCursorState.key)
+    dialog.setTargetCursor(at >= 0 ? at : dialog.landingTarget())
+  }
+
+  // A new targetKey moves the cursor onto its row when that row is shown.
+  function jumpToTargetKey() {
+    if (dialog.step !== "target") return
+    var at = dialog.shownTargetIndex(dialog.shownTargets(), dialog.targetKey)
+    if (at >= 0) dialog.setTargetCursor(at)
+  }
+
+  // Down (1) / Up (-1): the next shown row that way; the cursor stays at
+  // either end.
+  function moveTargetCursor(by) {
+    if (targetCursorState.index === -1) return
+    var last = dialog.shownTargets().length - 1
+    dialog.setTargetCursor(Math.max(0, Math.min(last, targetCursorState.index + by)))
+  }
+
+  // A pick: at the target step and on a shown row only.
+  function pickTarget(index) {
+    var rows = dialog.shownTargets()
+    if (dialog.step !== "target" || index < 0 || index >= rows.length) return
+    dialog.setTargetCursor(index)
+    dialog.targetPicked(rows[index].key)
+  }
+
+  // On the filter: Down / Up move the cursor, Return / Enter pick its row,
+  // Backspace in an empty filter goes back, Escape cancels; any other key
+  // edits the filter.
+  function targetFieldKey(event) {
+    if (event.key === Qt.Key_Escape) dialog.cancel()
+    else if (dialog.step !== "target") return
+    else if (event.key === Qt.Key_Down) dialog.moveTargetCursor(1)
+    else if (event.key === Qt.Key_Up) dialog.moveTargetCursor(-1)
+    else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) dialog.pickTarget(targetCursorState.index)
+    else if (event.key === Qt.Key_Backspace && targetFilter.text === "") dialog.back()
+    else return
+    event.accepted = true
   }
 
   // The project step's keys: focusItem at that step.
@@ -530,6 +624,7 @@ Item {
       wrapMode: Text.WordWrap
     }
 
+    // The target step's keys: focusItem at that step.
     TextField {
       id: targetFilter
       objectName: "dispatchTargetFilter"
@@ -537,6 +632,8 @@ Item {
       width: parent.width
       foreground: dialog.foregroundColor
       placeholderText: "Filter by title or id…"
+      onTextChanged: dialog.followTargetCursor()
+      Keys.onPressed: function(event) { dialog.targetFieldKey(event) }
     }
 
     // The target step's rows, in the owner's order, narrowed by the filter.
@@ -919,6 +1016,7 @@ Item {
     objectName: "dispatchTargetRow" + targetRow.index
     width: targetFlick.width
     theme: dialog.theme
+    cursorIndex: dialog.targetCursor
 
     Row {
       id: targetLine

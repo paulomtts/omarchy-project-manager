@@ -21,6 +21,7 @@ TestCase {
   SignalSpy { id: offers; signalName: "suggestionRequested" }
   SignalSpy { id: picks; signalName: "projectChosen" }
   SignalSpy { id: backs; signalName: "backRequested" }
+  SignalSpy { id: targetPicks; signalName: "targetPicked" }
 
   function milestoneForm(over) {
     return Object.assign({ base: "main", prefix: "m3", verify: ["uv run pytest"], parallelism: 4,
@@ -40,9 +41,9 @@ TestCase {
   function make(over) {
     var d = createTemporaryObject(dialogC, tc, milestone(over))
     edits.target = d; starts.target = d; cancels.target = d; chosen.target = d; offers.target = d
-    picks.target = d; backs.target = d
+    picks.target = d; backs.target = d; targetPicks.target = d
     edits.clear(); starts.clear(); cancels.clear(); chosen.clear(); offers.clear(); picks.clear()
-    backs.clear()
+    backs.clear(); targetPicks.clear()
     d.shown = true
     wait(30)
     return d
@@ -1742,5 +1743,278 @@ TestCase {
     compare(edits.count, 0)
     d.destroy()
     wait(0)
+  }
+
+  // Types `text` into the item with the active focus, one key per character.
+  function typeText(text) {
+    for (var i = 0; i < text.length; i++) keyClick(text[i])
+  }
+
+  // 9
+  function test_the_cursor_starts_on_row_0_or_on_target_key() {
+    var d = targetStep()
+    compare(d.targetCursor, 0)
+    verify(H.find(d, "dispatchTargetRow0").hasCursor, "row 0 is highlighted")
+    var e = targetStep({ targetKey: "card:cccc3333-0000-4000-8000-000000000003" })
+    compare(e.targetCursor, 3)
+    verify(H.find(e, "dispatchTargetRow3").hasCursor)
+    var f = targetStep({ targetKey: "card:gone" })
+    compare(f.targetCursor, 0, "a key naming no row lands on row 0")
+    f.targetKey = "card:bbbb2222-0000-4000-8000-000000000002"
+    compare(f.targetCursor, 2, "a new targetKey moves the cursor onto its row")
+    f.targetKey = "card:gone"
+    compare(f.targetCursor, 2, "a key naming no row leaves it")
+    compare(make().targetCursor, -1, "no cursor at step \"\"")
+    compare(targetStep({ step: "project" }).targetCursor, -1, "none at the project step")
+    compare(targetStep({ step: "form" }).targetCursor, -1, "none at the form step")
+  }
+
+  // 10
+  function test_down_and_up_move_the_cursor_from_the_filter_and_stop_at_the_ends() {
+    var host = createTemporaryObject(hostC, tc)
+    var d = host.dialog
+    d.step = "target"
+    d.targetRows = tc.targetFixture()
+    d.shown = true
+    wait(30)
+    mouseMove(d, 1, 1)
+    d.focusItem.forceActiveFocus()
+    for (var i = 1; i <= 4; i++) {
+      keyClick(Qt.Key_Down)
+      compare(d.targetCursor, i)
+    }
+    keyClick(Qt.Key_Down)
+    compare(d.targetCursor, 4, "Down on the last row stays")
+    for (var k = 0; k < 5; k++) keyClick(Qt.Key_Up)
+    compare(d.targetCursor, 0, "Up on the first row stays")
+    compare(host.passed, 0, "Down and Up are accepted")
+    compare(H.find(d, "dispatchTargetFilter").text, "", "the filter text is unchanged")
+  }
+
+  // 11
+  function test_enter_picks_the_cursor_target_row_data() {
+    return [{ tag: "return", key: Qt.Key_Return }, { tag: "enter", key: Qt.Key_Enter }]
+  }
+
+  function test_enter_picks_the_cursor_target_row(data) {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(data.key)
+    compare(targetPicks.count, 1)
+    compare(targetPicks.signalArguments[0][0], "card:aaaa1111-0000-4000-8000-000000000001")
+    H.find(d, "dispatchTargetFilter").text = "dialog"
+    compare(d.targetCursor, 0)
+    keyClick(data.key)
+    compare(targetPicks.count, 2)
+    compare(targetPicks.signalArguments[1][0], "card:dddd4444-0000-4000-8000-000000000004",
+            "the shown row's key, not the unfiltered row 0")
+    compare(picks.count, 0, "no projectChosen at the target step")
+    compare(starts.count, 0)
+    compare(cancels.count, 0)
+  }
+
+  // 4, 5, 8: no cursor and no pick while loading, with no rows or no match.
+  function test_with_no_shown_row_there_is_no_cursor_and_enter_picks_nothing_data() {
+    return [
+      { tag: "loading", over: { targetLoading: true }, filter: "" },
+      { tag: "empty", over: { targetRows: [] }, filter: "" },
+      { tag: "null", over: { targetRows: null }, filter: "" },
+      { tag: "string", over: { targetRows: "x" }, filter: "" },
+      { tag: "no-match", over: {}, filter: "zzz" }
+    ]
+  }
+
+  function test_with_no_shown_row_there_is_no_cursor_and_enter_picks_nothing(data) {
+    var d = targetStep(data.over)
+    H.find(d, "dispatchTargetFilter").text = data.filter
+    compare(d.targetCursor, -1)
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(d.targetCursor, -1)
+    compare(targetPicks.count, 0)
+  }
+
+  // 4
+  function test_loading_ending_puts_the_cursor_on_row_0() {
+    var d = targetStep({ targetLoading: true })
+    compare(d.targetCursor, -1)
+    d.targetLoading = false
+    compare(d.targetCursor, 0)
+  }
+
+  // 8
+  function test_clearing_a_filter_that_matched_nothing_brings_the_cursor_back() {
+    var d = targetStep()
+    var filter = H.find(d, "dispatchTargetFilter")
+    filter.text = "zzz"
+    compare(d.targetCursor, -1)
+    filter.text = ""
+    compare(d.targetCursor, 0)
+  }
+
+  // 12
+  function test_the_filter_keeps_the_cursor_on_its_key() {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    for (var i = 0; i < 4; i++) keyClick(Qt.Key_Down)
+    compare(d.targetCursor, 4, "on 1.3 dialog rows")
+    typeText("rows")
+    compare(H.find(d, "dispatchTargetFilter").text, "rows")
+    compare(shownRowCount(d), 1)
+    compare(d.targetCursor, 0, "still on 1.3 dialog rows, now row 0")
+    H.find(d, "dispatchTargetFilter").text = "story"
+    compare(H.find(d, "dispatchTargetTitle0").text, "M4 Run story")
+    compare(d.targetCursor, 0, "its row is hidden: shown row 0")
+  }
+
+  // 14
+  function test_backspace_in_an_empty_filter_goes_back() {
+    var d = targetStep()
+    var filter = H.find(d, "dispatchTargetFilter")
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Backspace)
+    compare(backs.count, 1)
+    typeText("ab")
+    keyClick(Qt.Key_Backspace)
+    compare(filter.text, "a", "Backspace deletes one character")
+    compare(backs.count, 1, "and emits nothing")
+    keyClick(Qt.Key_Backspace)
+    compare(filter.text, "")
+    compare(backs.count, 1, "the last character is deleted, not a Back")
+    keyClick(Qt.Key_Backspace)
+    compare(backs.count, 2, "Backspace in the now-empty field goes back")
+    compare(cancels.count, 0)
+  }
+
+  // 4: Backspace in an empty filter still goes back while loading.
+  function test_backspace_goes_back_while_loading() {
+    var d = targetStep({ targetLoading: true })
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Backspace)
+    compare(backs.count, 1)
+  }
+
+  // 16
+  function test_escape_on_the_filter_cancels() {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 1)
+    compare(backs.count, 0)
+    compare(targetPicks.count, 0)
+  }
+
+  // 17
+  function test_the_target_step_focuses_its_filter() {
+    var d = targetStep()
+    compare(d.focusItem, H.find(d, "dispatchTargetFilter"))
+    d.step = "project"
+    compare(d.focusItem, H.find(d, "dispatchProjectKeys"))
+    d.step = ""
+    compare(d.focusItem, H.find(d, "dispatchBase"))
+    d.form = null
+    compare(d.focusItem, H.find(d, "dispatchCancel"))
+  }
+
+  // 18
+  function test_the_filter_is_cleared_on_re_entry() {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    typeText("zz")
+    compare(shownRowCount(d), 0)
+    d.step = "form"
+    d.step = "target"
+    compare(H.find(d, "dispatchTargetFilter").text, "")
+    compare(shownRowCount(d), 5)
+    compare(d.targetCursor, 0)
+    d.shown = false
+    H.find(d, "dispatchTargetFilter").text = "zz"
+    d.shown = true
+    compare(H.find(d, "dispatchTargetFilter").text, "", "showing the dialog at the step clears it too")
+  }
+
+  // 19
+  function test_back_from_the_form_keeps_the_picked_row() {
+    var d = targetStep({ step: "form", targetKey: "card:dddd4444-0000-4000-8000-000000000004" })
+    compare(d.targetCursor, -1)
+    d.step = "target"
+    compare(d.targetCursor, 4)
+    verify(H.find(d, "dispatchTargetRow4").hasCursor)
+  }
+
+  // 23
+  function test_signals_stay_in_their_step() {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    compare(targetPicks.count, 0, "no targetPicked at the project step")
+    compare(backs.count, 0)
+    var e = make()
+    e.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(targetPicks.count, 0, "no targetPicked at step \"\"")
+    var f = targetStep()
+    f.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    compare(targetPicks.count, 1)
+    compare(picks.count, 0, "no projectChosen at the target step")
+  }
+
+  // 24
+  function test_rows_arriving_keep_target_keys_row() {
+    var d = targetStep({ targetRows: [], targetLoading: true,
+                         targetKey: "card:cccc3333-0000-4000-8000-000000000003" })
+    compare(d.targetCursor, -1)
+    d.targetRows = tc.targetFixture()
+    compare(d.targetCursor, -1, "still loading")
+    d.targetLoading = false
+    compare(d.targetCursor, 3)
+  }
+
+  // Review Focus 3
+  function test_a_re_read_drops_the_cursor_until_the_rows_return() {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    compare(d.targetCursor, 2)
+    d.targetLoading = true
+    compare(d.targetCursor, -1)
+    keyClick(Qt.Key_Return)
+    compare(targetPicks.count, 0)
+    d.targetLoading = false
+    compare(d.targetCursor, 0, "no targetKey: row 0")
+    d.targetLoading = true
+    d.targetKey = "card:dddd4444-0000-4000-8000-000000000004"
+    compare(d.targetCursor, -1, "a key arriving while loading does not move it")
+    d.targetLoading = false
+    compare(d.targetCursor, 4)
+  }
+
+  // Review Focus 2
+  function test_keys_on_the_filter_after_leaving_the_target_step_do_nothing() {
+    var d = targetStep()
+    H.find(d, "dispatchTargetFilter").forceActiveFocus()
+    d.step = "form"
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Backspace)
+    compare(targetPicks.count, 0)
+    compare(backs.count, 0)
+    compare(d.targetCursor, -1)
+  }
+
+  // 25: a row without a card is still picked by its key.
+  function test_a_row_without_a_card_is_picked_by_its_key() {
+    var d = targetStep({ targetRows: [{ key: "card:nocard", level: "subtask", card: null, depth: 1 }] })
+    compare(d.targetCursor, 0)
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    compare(targetPicks.count, 1)
+    compare(targetPicks.signalArguments[0][0], "card:nocard")
   }
 }
