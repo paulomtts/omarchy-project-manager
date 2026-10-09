@@ -6784,4 +6784,69 @@ TestCase {
     compare(store.eventsRunner.seq, seq, "the follow-up queued before the closing is not launched")
     compare(store.eventsRunner.busy, false)
   }
+
+  // ---- Run detail's tab (4.3)
+
+  // 1
+  function test_the_detail_tab_starts_on_output() {
+    var store = make(); if (!store) return
+    compare(store.detailTab, "output")
+  }
+
+  // 2
+  function test_set_detail_tab_takes_output_and_events_only() {
+    var store = make(); if (!store) return
+    compare(store.setDetailTab("events"), true)
+    compare(store.detailTab, "events")
+    compare(store.setDetailTab("output"), true)
+    compare(store.detailTab, "output")
+    store.setDetailTab("events")
+    var bad = ["Events", "", undefined, "logs", null, 1]
+    for (var i = 0; i < bad.length; i++) {
+      compare(store.setDetailTab(bad[i]), false, String(bad[i]))
+      compare(store.detailTab, "events", "unchanged by " + String(bad[i]))
+    }
+  }
+
+  // 3
+  function test_toggle_detail_tab_alternates() {
+    var store = make(); if (!store) return
+    store.toggleDetailTab()
+    compare(store.detailTab, "events")
+    store.toggleDetailTab()
+    compare(store.detailTab, "output")
+  }
+
+  // 4
+  function test_a_selection_change_puts_the_tab_back_on_output() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    store.setDetailTab("events")
+    store.selectedRunId = "r2"
+    compare(store.detailTab, "output", "another run")
+    store.setDetailTab("events")
+    store.selectedRunId = ""
+    compare(store.detailTab, "output", "no run")
+  }
+
+  // 5
+  function test_nothing_else_moves_the_detail_tab() {
+    var store = opened(); if (!store) return
+    store.setDetailTab("events")
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "done")]), 0)
+    compare(store.selectedRunId, "r1", "the snapshot kept the selection")
+    compare(store.detailTab, "events", "a snapshot")
+    store.eventsFilter = "Failures"
+    compare(store.detailTab, "events", "the filter")
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    reply(store.logsRunner.current, logsReply("3 passed\n"), 0)
+    compare(store.detailTab, "events", "an attempt and its logs")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.detailTab, "events", "an events reply")
+    // synthetic: rows as a reply would leave them.
+    store.events = [{ seq: 4 }]
+    store.runsNudged(["r1"])
+    compare(store.detailTab, "events", "rows and a nudge")
+  }
 }
