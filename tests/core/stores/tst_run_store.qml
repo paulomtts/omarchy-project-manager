@@ -5771,4 +5771,21 @@ TestCase {
     compare(a.toasts.length, 0, "a forward reaches the alerts store")
     compare(spy.count, 2)
   }
+
+  function test_every_shim_function_forwards_to_the_alerts_store() {
+    var store = make(); if (!store) return
+    var a = alerts(store)
+    store.raiseAlerts([{ id: "r1", title: "m-r1", state: "escalated", reason: "escalated", project: "alpha" },
+                       { id: "r2", title: "m-r2", state: "dead", reason: "process died", project: "alpha" }])
+    compare(a.toasts.map(function(t) { return t.id }).join(","), "r1,r2", "raiseAlerts")
+    store.dismissToast(a.toasts[0].key)
+    compare(a.toasts.map(function(t) { return t.id }).join(","), "r2", "dismissToast")
+    store.expireToasts(a.toasts[0].expiresMs)
+    compare(a.toasts.length, 0, "expireToasts")
+    store.notify({ title: "m-r1", reason: "escalated" })
+    compare(a.notifyRunners.length, 1, "notify")
+    compare(argv(a.notifyRunners[0].current), "python3|/plugin/core/backend/runs/notify.py|m-r1|escalated")
+    reply(a.notifyRunners[0].current, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
+    compare(a.notifyRunners.length, 0)
+  }
 }
