@@ -1,6 +1,7 @@
 import QtQuick
 import qs.Commons
 import qs.Ui
+import "../../core/domain/text.js" as TextQuery
 import "../components" as UI
 import "../theme" as T
 
@@ -68,6 +69,11 @@ Item {
   // RunStore's dispatchProjectRows, [{root, name, open, enabled, reason}];
   // anything not array-like reads as [].
   property var projectRows: []
+  // RunStore's dispatchTargetRows, [{key, level, card, label, depth}];
+  // anything not array-like reads as [].
+  property var targetRows: []
+  // RunStore's dispatchTargetLoading: the tree is still being read.
+  property bool targetLoading: false
   readonly property bool atProject: dialog.step === "project"
   readonly property bool atTarget: dialog.step === "target"
   // The form step's parts show at every step but the two pickers.
@@ -75,6 +81,8 @@ Item {
   // Back shows at the target step and at the form step a Runs dispatch reaches.
   readonly property bool canGoBack: dialog.atTarget || dialog.step === "form"
   readonly property bool hasEnabledProject: dialog.nextEnabledProject(0, 1) >= 0
+  // The target rows the list shows; see shownTargets().
+  readonly property var shownTargetRows: dialog.shownTargets()
 
   readonly property Item focusItem: dialog.atProject ? projectKeys : dialog.form ? baseField : cancelButton
   // The project step's cursor: a row index in projectRows, never a disabled
@@ -352,6 +360,60 @@ Item {
     event.accepted = true
   }
 
+  // The target rows: a list, or the array-like a list arrives as through
+  // createObject; anything else (null, an object, a string) reads as [].
+  function targetList() {
+    var rows = dialog.targetRows
+    if (!rows || typeof rows !== "object" || typeof rows.length !== "number") return []
+    return Array.prototype.slice.call(rows)
+  }
+
+  // A row is an object whose key is a non-empty string; anything else gives no row.
+  function validTarget(row) {
+    return !!row && typeof row === "object" && typeof row.key === "string" && row.key !== ""
+  }
+
+  // "Milestone", "Story" or "Subtask"; "" for the board and any other level.
+  function targetLevelWord(row) {
+    switch (row.level) {
+    case "milestone": return "Milestone"
+    case "story": return "Story"
+    case "subtask": return "Subtask"
+    }
+    return ""
+  }
+
+  // "Whole board" for the board; else the card's string title, or "".
+  function targetTitleOf(row) {
+    if (row.level === "board") return "Whole board"
+    var card = row.card
+    return !!card && typeof card === "object" && typeof card.title === "string" ? card.title : ""
+  }
+
+  // The first 8 characters of the card's string id, or "".
+  function targetShortId(row) {
+    var card = row.card
+    return !!card && typeof card === "object" && typeof card.id === "string" ? card.id.slice(0, 8) : ""
+  }
+
+  // A whole number >= 0; anything else reads as 0.
+  function targetDepth(row) {
+    var depth = row.depth
+    return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 ? depth : 0
+  }
+
+  // The valid rows whose title or short id holds the filter text, in
+  // targetRows order; none while loading and at every other step.
+  function shownTargets() {
+    if (!dialog.atTarget || dialog.targetLoading) return []
+    var query = targetFilter.text
+    return dialog.targetList().filter(function(row) {
+      return dialog.validTarget(row)
+        && (TextQuery.matchesQuery(dialog.targetTitleOf(row), query)
+            || TextQuery.matchesQuery(dialog.targetShortId(row), query))
+    })
+  }
+
   // The project step's keys: focusItem at that step.
   Item {
     id: projectKeys
@@ -466,6 +528,42 @@ Item {
       width: parent.width
       text: dialog.projectList().length === 0 ? "No projects registered" : "No project's board can be read"
       wrapMode: Text.WordWrap
+    }
+
+    TextField {
+      id: targetFilter
+      objectName: "dispatchTargetFilter"
+      visible: dialog.atTarget
+      width: parent.width
+      foreground: dialog.foregroundColor
+      placeholderText: "Filter by title or id…"
+    }
+
+    // The target step's rows, in the owner's order, narrowed by the filter.
+    Flickable {
+      id: targetFlick
+      objectName: "dispatchTargetList"
+      visible: dialog.atTarget
+      width: parent.width
+      height: Math.min(targetColumn.implicitHeight, Style.space(240))
+      contentHeight: targetColumn.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+
+      UI.FilterableList {
+        id: targetColumn
+        width: targetFlick.width
+        theme: dialog.theme
+        statusObjectName: "dispatchTargetStatus"
+        loading: dialog.targetLoading
+        loadingText: "Reading the board…"
+        empty: dialog.shownTargetRows.length === 0
+        filtered: targetFilter.text.trim() !== ""
+        emptyText: "No target matches"
+        filteredText: "No target matches"
+        model: dialog.shownTargetRows
+        rowDelegate: Component { TargetRow {} }
+      }
     }
 
     UI.ThemedText {
@@ -808,6 +906,54 @@ Item {
         enabled: dialog.canStart
         theme: dialog.theme
         onClicked: dialog.start()
+      }
+    }
+  }
+
+  // One target row: the level word, the title and the short id on one line,
+  // indented by depth.
+  component TargetRow: UI.ListRow {
+    id: targetRow
+    required property var modelData
+    required index
+    objectName: "dispatchTargetRow" + targetRow.index
+    width: targetFlick.width
+    theme: dialog.theme
+
+    Row {
+      id: targetLine
+      objectName: "dispatchTargetLine" + targetRow.index
+      x: dialog.targetDepth(targetRow.modelData) * Style.space(16)
+      width: Math.max(0, parent.width - targetLine.x)
+      spacing: Style.space(8)
+
+      UI.ThemedText {
+        id: targetLevel
+        objectName: "dispatchTargetLevel" + targetRow.index
+        variant: "caption"
+        theme: dialog.theme
+        visible: targetLevel.text !== ""
+        text: dialog.targetLevelWord(targetRow.modelData)
+      }
+
+      UI.ThemedText {
+        objectName: "dispatchTargetTitle" + targetRow.index
+        theme: dialog.theme
+        width: Math.max(0, targetLine.width
+          - (targetLevel.visible ? targetLevel.width + targetLine.spacing : 0)
+          - (targetId.visible ? targetId.width + targetLine.spacing : 0))
+        text: dialog.targetTitleOf(targetRow.modelData)
+        color: dialog.foregroundColor
+        elide: Text.ElideRight
+      }
+
+      UI.ThemedText {
+        id: targetId
+        objectName: "dispatchTargetId" + targetRow.index
+        variant: "caption"
+        theme: dialog.theme
+        visible: targetId.text !== ""
+        text: dialog.targetShortId(targetRow.modelData)
       }
     }
   }

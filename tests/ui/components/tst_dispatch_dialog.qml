@@ -1502,4 +1502,245 @@ TestCase {
     d.back()
     compare(backs.count, 0, "back() refuses at step \"\"")
   }
+
+  // RunStore's dispatchTargetRows for one milestone, as Runs.dispatchTargets
+  // builds them: the board row, then the tree in order.
+  function targetFixture() {
+    return [
+      { key: "board", level: "board", card: "board", label: "Whole board", depth: 0 },
+      { key: "card:aaaa1111-0000-4000-8000-000000000001", level: "milestone",
+        card: { id: "aaaa1111-0000-4000-8000-000000000001", title: "M4 Run story", status: "todo", depth: 0 },
+        label: "Milestone \"M4 Run story\"", depth: 0 },
+      { key: "card:bbbb2222-0000-4000-8000-000000000002", level: "story",
+        card: { id: "bbbb2222-0000-4000-8000-000000000002", title: "Story dispatch backend", status: "todo",
+                depth: 1 },
+        label: "Story \"Story dispatch backend\"", depth: 1 },
+      { key: "card:cccc3333-0000-4000-8000-000000000003", level: "subtask",
+        card: { id: "cccc3333-0000-4000-8000-000000000003", title: "1.2 runs.js: targets", status: "todo",
+                depth: 2 },
+        label: "Subtask \"1.2 runs.js: targets\"", depth: 2 },
+      { key: "card:dddd4444-0000-4000-8000-000000000004", level: "subtask",
+        card: { id: "dddd4444-0000-4000-8000-000000000004", title: "1.3 dialog rows", status: "todo", depth: 2 },
+        label: "Subtask \"1.3 dialog rows\"", depth: 2 }
+    ]
+  }
+
+  // The dialog at the target step over targetFixture(); `over` replaces any
+  // prop. The mouse is parked on the backdrop so no row is hovered.
+  function targetStep(over) {
+    var d = make(Object.assign({ step: "target", targetRows: tc.targetFixture(), projectName: "agent-manager" },
+                               over || {}))
+    mouseMove(d, 1, 1)
+    return d
+  }
+
+  // How many target rows are on screen: dispatchTargetRow0, 1, … up to the
+  // first one missing. The wait lets a replaced row finish being deleted.
+  function shownRowCount(d) {
+    wait(0)
+    var n = 0
+    while (H.find(d, "dispatchTargetRow" + n)) n++
+    return n
+  }
+
+  // 1
+  function test_the_target_step_lists_each_row_with_its_level_and_id() {
+    var d = targetStep()
+    compare(shownRowCount(d), 5)
+    var titles = ["Whole board", "M4 Run story", "Story dispatch backend", "1.2 runs.js: targets", "1.3 dialog rows"]
+    var levels = ["", "Milestone", "Story", "Subtask", "Subtask"]
+    var ids = ["", "aaaa1111", "bbbb2222", "cccc3333", "dddd4444"]
+    for (var i = 0; i < 5; i++) {
+      compare(H.find(d, "dispatchTargetTitle" + i).text, titles[i], "title " + i)
+      var level = H.find(d, "dispatchTargetLevel" + i)
+      compare(level.text, levels[i], "level " + i)
+      compare(level.visible, levels[i] !== "", "level " + i + " visible")
+      var id = H.find(d, "dispatchTargetId" + i)
+      compare(id.text, ids[i], "id " + i)
+      compare(id.visible, ids[i] !== "", "id " + i + " visible")
+    }
+    verify(!H.find(d, "dispatchTargetStatus").visible, "no status line over rows")
+    verify(sameColour(H.find(d, "dispatchTargetLevel1").color, d.theme.dim), "the level word is dim")
+    verify(sameColour(H.find(d, "dispatchTargetId1").color, d.theme.dim), "the id is dim")
+    verify(sameColour(H.find(d, "dispatchTargetTitle1").color, d.theme.foreground), "the title is foreground")
+  }
+
+  // 2 (the line, not the title, is indented: see the plan's deviation note)
+  function test_target_rows_are_indented_by_depth() {
+    var d = targetStep()
+    var want = [0, 0, 16, 32, 32]
+    for (var i = 0; i < 5; i++)
+      compare(H.find(d, "dispatchTargetLine" + i).x, want[i], "row " + i)
+  }
+
+  // 3
+  function test_the_filter_and_the_list_show_only_at_the_target_step_data() {
+    return [
+      { tag: "card", step: "", shown: false },
+      { tag: "project", step: "project", shown: false },
+      { tag: "form", step: "form", shown: false },
+      { tag: "target", step: "target", shown: true }
+    ]
+  }
+
+  function test_the_filter_and_the_list_show_only_at_the_target_step(data) {
+    var d = targetStep({ step: data.step })
+    var filter = H.find(d, "dispatchTargetFilter")
+    compare(filter.visible, data.shown)
+    compare(H.find(d, "dispatchTargetList").visible, data.shown)
+    compare(filter.placeholderText, "Filter by title or id…")
+    compare(filter.width, H.find(d, "dispatchHeading").parent.width, "full card width")
+    if (!data.shown) compare(shownRowCount(d), 0, "no rows off the target step")
+  }
+
+  // 4, 15
+  function test_loading_reads_the_board_and_shows_no_row_data() {
+    return [{ tag: "no-rows", rows: [] }, { tag: "rows", rows: tc.targetFixture() }]
+  }
+
+  function test_loading_reads_the_board_and_shows_no_row(data) {
+    var d = targetStep({ targetRows: data.rows, targetLoading: true })
+    var status = H.find(d, "dispatchTargetStatus")
+    verify(status.visible)
+    compare(status.text, "Reading the board…")
+    compare(shownRowCount(d), 0)
+    verify(H.find(d, "dispatchTargetFilter").visible, "the filter shows while loading")
+    click(H.find(d, "dispatchBack"))
+    compare(backs.count, 1, "Back cancels the read")
+    d.targetRows = tc.targetFixture()
+    d.targetLoading = false
+    compare(shownRowCount(d), 5)
+    verify(!status.visible)
+  }
+
+  // 5
+  function test_an_empty_or_malformed_target_list_says_no_target_matches_data() {
+    return [
+      { tag: "empty", rows: [] },
+      { tag: "null", rows: null },
+      { tag: "undefined", rows: undefined },
+      { tag: "object", rows: {} },
+      { tag: "string", rows: "x" }
+    ]
+  }
+
+  function test_an_empty_or_malformed_target_list_says_no_target_matches(data) {
+    var d = targetStep({ targetRows: data.rows })
+    var status = H.find(d, "dispatchTargetStatus")
+    verify(status.visible)
+    compare(status.text, "No target matches")
+    compare(shownRowCount(d), 0)
+    click(H.find(d, "dispatchBack"))
+    compare(backs.count, 1)
+  }
+
+  // 6, Review Focus 4
+  function test_the_filter_matches_titles_case_blind_data() {
+    return [
+      { tag: "lower", query: "dialog", titles: ["1.3 dialog rows"] },
+      { tag: "upper", query: "DIALOG", titles: ["1.3 dialog rows"] },
+      { tag: "padded", query: "  dialog ", titles: ["1.3 dialog rows"] },
+      { tag: "blank", query: "   ",
+        titles: ["Whole board", "M4 Run story", "Story dispatch backend", "1.2 runs.js: targets", "1.3 dialog rows"] }
+    ]
+  }
+
+  function test_the_filter_matches_titles_case_blind(data) {
+    var d = targetStep()
+    H.find(d, "dispatchTargetFilter").text = data.query
+    compare(shownRowCount(d), data.titles.length)
+    for (var i = 0; i < data.titles.length; i++)
+      compare(H.find(d, "dispatchTargetTitle" + i).text, data.titles[i])
+    verify(!H.find(d, "dispatchTargetStatus").visible)
+  }
+
+  // 7
+  function test_the_filter_matches_the_short_id_not_the_level_word() {
+    var d = targetStep()
+    var filter = H.find(d, "dispatchTargetFilter")
+    filter.text = "cccc33"
+    compare(shownRowCount(d), 1)
+    compare(H.find(d, "dispatchTargetTitle0").text, "1.2 runs.js: targets")
+    filter.text = "story"
+    compare(shownRowCount(d), 2)
+    compare(H.find(d, "dispatchTargetTitle0").text, "M4 Run story")
+    compare(H.find(d, "dispatchTargetTitle1").text, "Story dispatch backend")
+    filter.text = "subtask"
+    compare(shownRowCount(d), 0, "the level word is not matched")
+    filter.text = "0000-4000"
+    compare(shownRowCount(d), 0, "only the short id is matched, not the whole id")
+  }
+
+  // 8
+  function test_a_filter_matching_nothing_says_no_target_matches() {
+    var d = targetStep()
+    var filter = H.find(d, "dispatchTargetFilter")
+    filter.text = "zzz"
+    compare(shownRowCount(d), 0)
+    compare(H.find(d, "dispatchTargetStatus").text, "No target matches")
+    filter.text = ""
+    compare(shownRowCount(d), 5)
+    verify(!H.find(d, "dispatchTargetStatus").visible)
+  }
+
+  // 25, Review Focus 1
+  function test_malformed_target_rows() {
+    var rows = [
+      { level: "subtask", card: { id: "ffff0000-x", title: "No key" }, depth: 2 },
+      42,
+      null,
+      { key: "", level: "story", card: { id: "ffff1111-x", title: "Empty key" }, depth: 1 },
+      { key: "card:nocard", level: "subtask", card: null, depth: 1 },
+      { key: "card:neg", level: "story", card: { id: "eeee5555-0000", title: "Negative" }, depth: -1 },
+      { key: "card:frac", level: "story", card: { id: "eeee6666-0000", title: "Fraction" }, depth: 1.5 },
+      { key: "card:inf", level: "story", card: { id: "eeee7777-0000", title: "Infinite" }, depth: Infinity },
+      { key: "card:text", level: "story", card: { id: "eeee8888-0000", title: "Text depth" }, depth: "2" },
+      { key: "card:odd", level: "epic", card: { id: 7, title: 9 } }
+    ]
+    var d = targetStep({ targetRows: rows })
+    compare(shownRowCount(d), 6, "no key, a number, null and an empty key give no row")
+    compare(H.find(d, "dispatchTargetTitle0").text, "", "no card: no title")
+    verify(!H.find(d, "dispatchTargetId0").visible, "no card: no id")
+    compare(H.find(d, "dispatchTargetLevel0").text, "Subtask")
+    compare(H.find(d, "dispatchTargetLine0").x, 16, "a valid depth still indents")
+    for (var i = 1; i <= 4; i++)
+      compare(H.find(d, "dispatchTargetLine" + i).x, 0, "row " + i + " reads as depth 0")
+    compare(H.find(d, "dispatchTargetLevel5").text, "", "an unknown level has no word")
+    verify(!H.find(d, "dispatchTargetLevel5").visible)
+    compare(H.find(d, "dispatchTargetTitle5").text, "", "a non-string title reads as empty")
+    compare(H.find(d, "dispatchTargetId5").text, "", "a non-string id reads as empty")
+    compare(H.find(d, "dispatchTargetLine5").x, 0, "a missing depth reads as 0")
+  }
+
+  // Review Focus 5
+  function test_a_long_target_title_elides_and_keeps_its_id() {
+    var long = new Array(30).join("A very long subtask title ")
+    var rows = [{ key: "card:long", level: "subtask", card: { id: "abcd1234-0000", title: long }, depth: 2 }]
+    var d = targetStep({ targetRows: rows })
+    var title = H.find(d, "dispatchTargetTitle0")
+    var row = H.find(d, "dispatchTargetRow0")
+    var id = H.find(d, "dispatchTargetId0")
+    compare(title.elide, Text.ElideRight)
+    verify(title.truncated, "the title is cut, not wrapped")
+    compare(title.lineCount, 1)
+    verify(id.visible)
+    var idRight = id.mapToItem(row, id.width, 0).x
+    verify(idRight <= row.width + 0.5, "the id stays inside the row")
+    verify(H.find(d, "dispatchTargetLevel0").visible, "the level word stays")
+  }
+
+  // 26
+  function test_nulling_every_object_prop_at_the_target_step_and_destroying_is_quiet() {
+    var d = targetStep()
+    d.theme = null
+    d.target = null
+    d.form = null
+    d.preview = null
+    d.targetRows = null
+    wait(0)
+    compare(H.find(d, "dispatchTargetStatus").text, "No target matches")
+    compare(edits.count, 0)
+    d.destroy()
+    wait(0)
+  }
 }
