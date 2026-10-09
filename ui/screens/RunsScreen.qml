@@ -18,10 +18,12 @@ import "../theme" as T
 // has runs and none is open; clicking one asks the store to toggle its
 // project filter. Needs attention / Live / Parked / All chips apply across
 // groups and count within the project filter -- clicking the active chip
-// means All again -- and a footer says whether the runs are watched. It reads
-// the run store and asks the navigator to open a run or move the cursor; it
-// owns no state of its own. Ages are read against the clock once per
-// snapshot: there is no timer.
+// means All again -- and a footer says whether the runs are watched. The row
+// with the cursor shows Open project for a run of a registered project other
+// than the open one; the button asks the navigator to choose that project. It
+// reads the run store and the project registry and asks the navigator to open
+// a run, choose a project or move the cursor; it owns no state of its own.
+// Ages are read against the clock once per snapshot: there is no timer.
 Column {
   id: screen
   objectName: "runsView"
@@ -152,6 +154,29 @@ Column {
   // for All projects, the open project for This project, else the chip's root.
   function chooseProject(id) {
     screen.app.runs.toggleProjectFilter(id === "all" ? "" : id === "this" ? screen.app.runs.project : id)
+  }
+
+  // The first entry of the registry `list` ({root_path, name} objects, in
+  // list order) whose root_path is `root`, both compared by rootKey; null
+  // when `root` is "", `list` is not array-like or no entry matches. Entries
+  // that are not objects are skipped.
+  function registryEntryOf(list, root) {
+    var want = screen.rootKey(root)
+    if (want === "") return null
+    for (var i = 0; i < screen.sizeOf(list); i++) {
+      var entry = list[i]
+      if (entry !== null && typeof entry === "object" && screen.rootKey(entry.root_path) === want) return entry
+    }
+    return null
+  }
+
+  // The registry entry Open project chooses for `run`: registryEntryOf
+  // `list` for the run's project.root; null when the run has no project or
+  // its project's root is `open` (the open project's, by rootKey).
+  function openProjectTargetOf(run, open, list) {
+    var project = run !== null && typeof run === "object" ? run.project : null
+    var root = screen.rootKey(project !== null && typeof project === "object" ? project.root : "")
+    return root === "" || root === open ? null : screen.registryEntryOf(list, root)
   }
 
   // The list's entries, scalar values only (a Repeater converts nested ones):
@@ -435,6 +460,10 @@ Column {
     // the progress, phase and escalation reason would silently vanish.
     readonly property var run: screen.app.runs.filteredRuns[row.index]
 
+    // The registry entry Open project chooses (openProjectTargetOf); null
+    // hides the button.
+    readonly property var openTarget: screen.openProjectTargetOf(row.run, screen.openRoot, screen.app.projects.projects)
+
     readonly property string runState: Runs.runState(row.run)
     readonly property var runProgress: Runs.runProgress(row.run)
     readonly property string runAge: Runs.runAgeText(row.run, screen.nowMs)
@@ -530,7 +559,8 @@ Column {
 
     // Under the row: the buttons while it has the cursor (hover moves the
     // cursor, so that is hover or selected) or a request is pending, and the
-    // waiting and error lines whenever they apply.
+    // waiting and error lines whenever they apply; then Open project while it
+    // has the cursor and openTarget is not null.
     actions: [
       UI.RunControls {
         objectName: "runRowControls" + row.index
@@ -544,6 +574,12 @@ Column {
         wholeRun: false
         showButtons: row.hasCursor
         onActionRequested: function(action) { screen.requestControl(action, row.run) }
+      },
+      UI.ActionButton {
+        objectName: "runRowOpenProject" + row.index
+        theme: screen.theme
+        text: "Open project"
+        visible: row.hasCursor && row.openTarget !== null
       }
     ]
   }

@@ -100,7 +100,11 @@ TestCase {
     QtObject {
       property var nav: null
       property var runs: null
-      property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" } })
+      // The project registry, as ProjectStore holds it: alpha and beta. A test
+      // that changes it assigns a whole new object, so bindings follow.
+      property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" },
+                                projects: [{ root_path: "/home/u/a", name: "alpha" },
+                                           { root_path: "/home/u/b", name: "beta" }] })
     }
   }
 
@@ -1278,5 +1282,152 @@ TestCase {
     compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
     compare(H.find(s.screen, "runChiplive").text, "Live 0")
     compare(H.find(s.screen, "runChipparked").text, "Parked 0")
+  }
+
+  // ---- Open project (4.4)
+
+  // Row i's Open project button; the test fails when the row has none.
+  function openButton(s, i) {
+    var b = H.find(s.screen, "runRowOpenProject" + i)
+    verify(b, "row " + i + " has an Open project button")
+    return b
+  }
+
+  // The stub registry: alpha's selected, `list` the registry.
+  function registry(list) {
+    return { selectedProject: { root_path: "/home/u/a", name: "alpha" }, projects: list }
+  }
+
+  // twoProjects(): rows 0 and 1 are alpha's, row 2 is beta's.
+  // 1
+  function test_open_project_shows_on_the_cursor_row_of_another_projects_run() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.nav.cursorIndex = 2
+    wait(20)
+    compare(openButton(s, 2).visible, true)
+    compare(openButton(s, 2).text, "Open project")
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(openButton(s, 0).visible, false, "alpha is the open project")
+    compare(openButton(s, 2).visible, false, "beta's row lost the cursor")
+  }
+
+  // 2
+  function test_open_project_is_hidden_off_the_cursor() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.nav.cursorIndex = 0
+    wait(20)
+    var row = H.find(s.screen, "runRow2")
+    compare(openButton(s, 2).visible, false)
+    var before = row.height
+    s.nav.cursorIndex = 2
+    wait(20)
+    compare(openButton(s, 2).visible, true)
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(openButton(s, 2).visible, false)
+    compare(row.height, before, "the row is as tall as before the cursor came")
+  }
+
+  // 3
+  function test_open_project_is_hidden_for_the_open_project_with_a_trailing_slash() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a/"
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(openButton(s, 0).visible, false)
+    s.nav.cursorIndex = 1
+    wait(20)
+    compare(openButton(s, 1).visible, false)
+    s.nav.cursorIndex = 2
+    wait(20)
+    compare(openButton(s, 2).visible, true, "beta is not the open project")
+  }
+
+  // 4
+  function test_with_no_project_open_every_registered_projects_run_shows_open_project() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = ""
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(openButton(s, 0).visible, true, "alpha's run")
+    s.nav.cursorIndex = 2
+    wait(20)
+    compare(openButton(s, 2).visible, true, "beta's run")
+  }
+
+  // 5
+  function test_open_project_is_hidden_for_a_run_with_no_project_or_an_unregistered_one() {
+    var s = make([run("run-20261004-plain001", "started", true, {}),
+                  tagged(run("run-c-live0009", "started", true, {}), "/home/u/c", "gamma")]); if (!s) return
+    s.runs.project = "/home/u/a"
+    for (var i = 0; i < 2; i++) {
+      s.nav.cursorIndex = i
+      wait(20)
+      compare(openButton(s, i).visible, false, "row " + i)
+    }
+  }
+
+  // 6
+  function test_open_project_tolerates_a_missing_registry() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.nav.cursorIndex = 2
+    wait(20)
+    var lists = [undefined, null, "abc", 7, ({ length: 1 })]
+    for (var i = 0; i < lists.length; i++) {
+      s.app.projects = registry(lists[i])
+      compare(openButton(s, 2).visible, false, "registry " + i)
+    }
+    s.app.projects = { selectedProject: { root_path: "/home/u/a", name: "alpha" } }
+    compare(openButton(s, 2).visible, false, "no projects key at all")
+  }
+
+  // Review Focus 2.
+  function test_a_malformed_run_project_hides_open_project_without_throwing() {
+    var bad = [run("run-x-null0001", "started", true, {}), run("run-x-strg0002", "started", true, {}),
+               run("run-x-nort0003", "started", true, {}), run("run-x-arry0004", "started", true, {})]
+    bad[0].project = null
+    bad[1].project = "/home/u/b"
+    bad[2].project = { root: 7, name: "beta" }
+    bad[3].project = ["/home/u/b"]
+    var s = make(bad.concat([{}])); if (!s) return
+    s.runs.project = "/home/u/a"
+    for (var i = 0; i < 5; i++) {
+      s.nav.cursorIndex = i
+      wait(20)
+      compare(openButton(s, i).visible, false, "row " + i)
+    }
+  }
+
+  // Review Focus 3.
+  function test_malformed_registry_entries_are_skipped() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.app.projects = registry([null, 5, "/home/u/b", { root_path: 7 }, { name: "no root" }])
+    s.nav.cursorIndex = 2
+    wait(20)
+    compare(openButton(s, 2).visible, false, "no well-formed entry for beta")
+    s.app.projects = registry([null, { root_path: 7 }, { root_path: "/home/u/b/", name: "beta" }])
+    compare(openButton(s, 2).visible, true, "the well-formed entry past the bad ones")
+  }
+
+  // Review Focus 4.
+  function test_open_project_follows_the_open_project_and_the_registry() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.nav.cursorIndex = 2
+    wait(20)
+    compare(openButton(s, 2).visible, true)
+    s.runs.project = "/home/u/b"
+    compare(openButton(s, 2).visible, false, "beta is open now")
+    s.runs.project = "/home/u/a"
+    compare(openButton(s, 2).visible, true)
+    s.app.projects = registry([{ root_path: "/home/u/a", name: "alpha" }])
+    compare(openButton(s, 2).visible, false, "beta left the registry")
+    s.app.projects = registry([{ root_path: "/home/u/a", name: "alpha" }, { root_path: "/home/u/b", name: "beta" }])
+    compare(openButton(s, 2).visible, true, "beta is back")
   }
 }
