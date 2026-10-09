@@ -4912,6 +4912,17 @@ TestCase {
                 stopEscWant({ headline: "Escalated", phase: "", detail: "", attempt: null }), "another card's failed row")
   }
 
+  function test_stopReport_last_failed_row_wins() {
+    // synthetic: review set done, and an earlier implement row of the same card made failed
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].status = "done"
+    var rows = raw.status.rows
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].subtask === stopEscCard && rows[i].phase === "implement") rows[i].state = "failed"
+    }
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({}), "the last failed row names the phase")
+  }
+
   function test_stopReport_row_attempt_newer() {
     // synthetic: review set done, its gate_failed row a second attempt the tree has not recorded
     var raw = amRun("status-escalated.json")
