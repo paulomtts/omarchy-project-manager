@@ -431,4 +431,60 @@ TestCase {
     compare(ind.visible, true, "on the Runs list")
     compare(ind.running, 2)
   }
+
+  // Review Focus 1, 2
+  function test_clicking_an_indicator_segment_shows_runs_on_that_chip() {
+    var p = makeTwo(); if (!p) return
+    widen(p)
+    p.navigator.showSection("board")
+    wait(50)
+    compare(p.app.runs.runFilter, "")
+    tap(H.find(p, "runIndicatorParked"))
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.runFilter, "parked")
+    wait(50)
+    p.app.nav.searchQuery = "zzz"
+    tap(H.find(p, "runIndicatorParked"))
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.runFilter, "parked", "the active chip is kept, not toggled to All")
+    compare(p.app.nav.searchQuery, "", "the search is cleared, so the list holds what was counted")
+    tap(H.find(p, "runIndicatorAttention"))
+    compare(p.app.runs.runFilter, "attention")
+    tap(H.find(p, "runIndicatorRunning"))
+    compare(p.app.runs.runFilter, "live")
+    compare(p.app.projects.selectedProject.root_path, pA.root_path, "the open project is kept")
+  }
+
+  function test_an_indicator_click_resets_the_project_filter_and_works_with_no_project() {
+    var p = makeTwo(); if (!p) return
+    widen(p)
+    p.app.projects.selectedProject = null
+    setRuns(p, twoProjectRuns())
+    p.navigator.showSection("runs")
+    p.app.runs.toggleProjectFilter(pB.root_path)
+    compare(p.app.runs.projectFilter, pB.root_path)
+    p.navigator.openRun("run-0000000000b1", "runs")
+    compare(p.app.nav.viewMode, "run")
+    wait(50)
+    tap(H.find(p, "runIndicatorRunning"))
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.runFilter, "live")
+    compare(p.app.runs.projectFilter, "", "All projects, as the indicator counts")
+    compare(p.app.projects.selectedProject, null)
+  }
+
+  // A pin: passes before showRunsFiltered exists (nothing handles the
+  // signal yet) and must keep passing after it.
+  function test_an_indicator_click_under_a_modal_changes_nothing() {
+    var p = makeTwo(); if (!p) return
+    p.navigator.showSection("board")
+    compare(p.app.runs.runFilter, "")
+    p.app.deleter.openDelete(pA)
+    verify(p.app.deleter.deleteTarget, "the delete confirmation is open")
+    // The backdrop takes mouse clicks, so the segment is asked through its signal.
+    H.find(p, "runIndicator").filterRequested("parked")
+    compare(p.app.nav.viewMode, "board")
+    compare(p.app.runs.runFilter, "")
+    compare(p.app.runs.projectFilter, "")
+  }
 }

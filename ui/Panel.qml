@@ -251,6 +251,18 @@ Panel {
   // Runs list's project filter, chip or search.
   readonly property var runCounts: Runs.runFilterCounts(appStores.runs.runs)
 
+  // A RunIndicator segment: the Runs list over every registered project (All
+  // projects), on that segment's chip -- "live", "parked" or "attention". The
+  // chip is set, never toggled off: a click on the active chip keeps it.
+  // Nothing changes while the navigator refuses the section (a modal is open
+  // or a memory draft is dirty).
+  function showRunsFiltered(filter) {
+    navi.showSection("runs")
+    if (appStores.nav.viewMode !== "runs") return
+    if (appStores.runs.projectFilter !== "") appStores.runs.toggleProjectFilter("")
+    if (appStores.runs.runFilter !== filter) appStores.runs.toggleRunFilter(filter)
+  }
+
   // ---- Dispatch (S3 4.2). Panel opens every dispatch: a refused plan does
   // not say which card it was for, and the dialog needs the card's title,
   // story and blockers, so the card is kept here. The Runs entry adds a row
@@ -551,12 +563,14 @@ Panel {
           // The am run strip, last in the row, over every registered project's
           // runs (runCounts), with or without an open project and in every view;
           // it hides itself while no run is running, parked or needs attention.
+          // A segment shows the Runs list on its chip (showRunsFiltered).
           UI.RunIndicator {
             objectName: "runIndicator"
             theme: panelTheme
             running: root.runCounts.live
             parked: root.runCounts.parked
             attention: root.runCounts.attention
+            onFilterRequested: function(filter) { root.showRunsFiltered(filter) }
           }
         }
 
