@@ -114,6 +114,10 @@ QtObject {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
     }
+    onProjectFilterToggled: {
+      app.nav.cursorIndex = 0
+      app.nav.scrollOnCursor = false
+    }
   }
 
   readonly property GraphStore graph: GraphStore {

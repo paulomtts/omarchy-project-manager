@@ -162,4 +162,16 @@ TestCase {
     compare(app.nav.cursorIndex, 0)
     compare(app.nav.scrollOnCursor, false)
   }
+
+  // ---- the project filter (3.3)
+
+  // 11
+  function test_a_project_filter_toggle_puts_the_cursor_home() {
+    var app = makeBare(); if (!app) return
+    app.nav.cursorIndex = 3
+    app.nav.scrollOnCursor = true
+    app.runs.toggleProjectFilter("")
+    compare(app.nav.cursorIndex, 0)
+    compare(app.nav.scrollOnCursor, false)
+  }
 }
