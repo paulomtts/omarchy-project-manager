@@ -37,10 +37,13 @@ QtObject {
   // the section, and clicking it is what "‹ Back" used to be.
   readonly property var crumbs: navi.buildCrumbs()
 
+  // With no project the run views keep their trail (Runs, Runs > run); every
+  // other view is just the panel's name.
   function buildCrumbs() {
     if (!navi.app) return []
-    if (!navi.app.projects.selectedProject) return [{ label: "Project Manager", clickable: false }]
     var mode = navi.app.nav.viewMode
+    if (!navi.app.projects.selectedProject && mode !== "runs" && mode !== "run")
+      return [{ label: "Project Manager", clickable: false }]
     var section = { label: navi.app.nav.sectionTitle,
                     clickable: mode === "entry" || mode === "document" || mode === "memory" || mode === "issue" || mode === "run" }
     if (mode === "run")
@@ -165,8 +168,10 @@ QtObject {
     navi.chooseProject(list[navi.app.nav.dropdownCursor])
   }
 
+  // Runs is the one section that opens with no project; every other name
+  // needs one. A modal or an unsaved memory edit blocks them all.
   function showSection(name) {
-    if (!navi.app.projects.selectedProject || navi.app.deleter.deleteTarget || navi.app.memories.memoryDeleteOpen || navi.app.memories.newMemoryOpen || navi.app.milestones.dialogOpen || navi.app.board.archiveOpen) return
+    if ((!navi.app.projects.selectedProject && name !== "runs") || navi.app.deleter.deleteTarget || navi.app.memories.memoryDeleteOpen || navi.app.memories.newMemoryOpen || navi.app.milestones.dialogOpen || navi.app.board.archiveOpen) return
     if (navi.app.memories.memoryEditing && navi.app.memories.memoryDraft !== navi.app.memories.memoryText) return
     if (name === "documents" && !navi.documentsEnabled) return
     var wasSection = navi.app.nav.section

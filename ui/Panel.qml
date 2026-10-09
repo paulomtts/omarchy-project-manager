@@ -184,7 +184,7 @@ Panel {
     : appStores.runs.cancelOpen ? runCancelModal.focusItem
     : (appStores.nav.viewMode === "memory" && appStores.memories.memoryEditing) ? memoryNoteScreen.editorItem
     : appStores.nav.dropdownOpen ? sidebar.filterItem
-    : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "run" || appStores.nav.viewMode === "graph" || !appStores.projects.selectedProject) ? keyCatcher
+    : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "run" || appStores.nav.viewMode === "graph" || (!appStores.projects.selectedProject && appStores.nav.viewMode !== "runs")) ? keyCatcher
     : searchField
 
   function focusForView() {
@@ -244,6 +244,23 @@ Panel {
       return
     }
     navi.openRun(runId, "runs")
+  }
+
+  // The toolbar RunIndicator's counts: Runs.runFilterCounts over every
+  // registered project's runs, whatever project is open and whatever the
+  // Runs list's project filter, chip or search.
+  readonly property var runCounts: Runs.runFilterCounts(appStores.runs.runs)
+
+  // A RunIndicator segment: the Runs list over every registered project (All
+  // projects), on that segment's chip -- "live", "parked" or "attention". The
+  // chip is set, never toggled off: a click on the active chip keeps it.
+  // Nothing changes while the navigator refuses the section (a modal is open
+  // or a memory draft is dirty).
+  function showRunsFiltered(filter) {
+    navi.showSection("runs")
+    if (appStores.nav.viewMode !== "runs") return
+    if (appStores.runs.projectFilter !== "") appStores.runs.toggleProjectFilter("")
+    if (appStores.runs.runFilter !== filter) appStores.runs.toggleRunFilter(filter)
   }
 
   // ---- Dispatch (S3 4.2). Panel opens every dispatch: a refused plan does
@@ -527,17 +544,33 @@ Panel {
             onClicked: appStores.board.openArchive()
           }
 
-          // The Runs list's way to start a run: the dialog opens on the whole
-          // board with a row of targets. Disabled while am is missing.
+          // The Runs list's way to start a run on the open project: the dialog
+          // opens on its whole board with a row of targets. Shown with or
+          // without a project; disabled with none or while am is missing, and
+          // the tooltip says which (no project first).
           UI.ActionButton {
             objectName: "startRunButton"
             theme: panelTheme
-            visible: appStores.nav.viewMode === "runs" && !!appStores.projects.selectedProject
-            enabled: appStores.runs.amStatus !== "missing"
+            visible: appStores.nav.viewMode === "runs"
+            enabled: !!appStores.projects.selectedProject && appStores.runs.amStatus !== "missing"
             iconText: "▶"
             text: "Start run"
-            tooltipText: appStores.runs.amStatus === "missing" ? "am is not installed or not on PATH" : "Start an am run"
+            tooltipText: !appStores.projects.selectedProject ? "Open a project to dispatch"
+              : appStores.runs.amStatus === "missing" ? "am is not installed or not on PATH" : "Start an am run"
             onClicked: root.openRunsDispatch("board")
+          }
+
+          // The am run strip, last in the row, over every registered project's
+          // runs (runCounts), with or without an open project and in every view;
+          // it hides itself while no run is running, parked or needs attention.
+          // A segment shows the Runs list on its chip (showRunsFiltered).
+          UI.RunIndicator {
+            objectName: "runIndicator"
+            theme: panelTheme
+            running: root.runCounts.live
+            parked: root.runCounts.parked
+            attention: root.runCounts.attention
+            onFilterRequested: function(filter) { root.showRunsFiltered(filter) }
           }
         }
 
@@ -563,7 +596,8 @@ Panel {
         TextField {
           id: searchField
           objectName: "searchField"
-          visible: !!appStores.projects.selectedProject && (appStores.nav.viewMode === "board" || appStores.nav.viewMode === "documents" || appStores.nav.viewMode === "memories" || appStores.nav.viewMode === "issues" || appStores.nav.viewMode === "runs")
+          // The Runs list searches with or without a project; the other lists need one.
+          visible: appStores.nav.viewMode === "runs" || (!!appStores.projects.selectedProject && (appStores.nav.viewMode === "board" || appStores.nav.viewMode === "documents" || appStores.nav.viewMode === "memories" || appStores.nav.viewMode === "issues"))
           width: parent.width
           foreground: root.foreground
           placeholderText: appStores.nav.viewMode === "documents" ? "Search documents…" : appStores.nav.viewMode === "memories" ? "Search memories…" : appStores.nav.viewMode === "issues" ? "Search issues…" : appStores.nav.viewMode === "runs" ? "Search runs…" : "Search cards…"
@@ -627,10 +661,13 @@ Panel {
             wrapMode: Text.WrapAnywhere
           }
 
+          // Not on the run views: they list runs with or without a project.
           UI.ThemedText {
+            objectName: "noProjectsText"
             variant: "dim"
             theme: panelTheme
             visible: !appStores.projects.selectedProject && appStores.projects.loadError === ""
+              && appStores.nav.viewMode !== "runs" && appStores.nav.viewMode !== "run"
             width: parent.width
             text: "No projects registered with brd."
             wrapMode: Text.WordWrap

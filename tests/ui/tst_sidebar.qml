@@ -250,12 +250,26 @@ TestCase {
     compare(sectionSpy.signalArguments[0][0], "runs")
   }
 
-  function test_the_runs_row_is_disabled_without_a_project() {
+  function test_the_runs_row_is_enabled_without_a_project() {
     var sb = make()
     sb.selectedProject = null
-    compare(find(sb, "navRuns").enabled, false)
+    compare(find(sb, "navRuns").enabled, true)
     click(find(sb, "navRuns"))
-    compare(sectionSpy.count, 0)
+    compare(sectionSpy.count, 1)
+    compare(sectionSpy.signalArguments[0][0], "runs")
+  }
+
+  function test_without_a_project_only_the_runs_row_is_enabled() {
+    var sb = make()
+    sb.selectedProject = null
+    var bound = ["navBoard", "navGraph", "navDocuments", "navMemories", "navIssues"]
+    for (var i = 0; i < bound.length; i++) {
+      compare(find(sb, bound[i]).enabled, false, bound[i])
+      click(find(sb, bound[i]))
+    }
+    compare(sectionSpy.count, 0, "no bound row emits a section")
+    compare(find(sb, "deleteButton").enabled, false)
+    compare(find(sb, "navRuns").enabled, true)
   }
 
   function test_the_runs_row_shows_the_attention_count() {

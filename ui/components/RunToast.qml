@@ -7,7 +7,8 @@ import "../theme" as T
 // The run toasts: one card per run that newly needs a human, oldest at the
 // top and newest at the bottom, closest to the corner the owner puts it in.
 // Each card reads `‼ Run needs you` (or `✖` for a dead run, from runGlyphs.js)
-// in `urgent`, `<title> escalated` or `<title> died`, the reason, and Open /
+// in `urgent`, the run's project name (hidden when `project` is empty or not a
+// string), `<title> escalated` or `<title> died`, the reason, and Open /
 // Dismiss.
 //
 // Presentation only, like RunControls: it imports no store. The owner passes
@@ -83,6 +84,16 @@ Column {
           text: RunGlyphs.glyphOf(card.entry.state) + " Run needs you"
           color: stack.theme.urgent
           font.bold: true
+          elide: Text.ElideRight
+        }
+
+        UI.ThemedText {
+          objectName: "runToastProject" + card.index
+          variant: "caption"
+          theme: stack.theme
+          width: parent.width
+          visible: text !== ""
+          text: stack.textOf(card.entry.project)
           elide: Text.ElideRight
         }
 

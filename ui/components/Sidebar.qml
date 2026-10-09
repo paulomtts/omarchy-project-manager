@@ -107,8 +107,9 @@ Item {
     // Issues is Ctrl+5. Its glyph is the Nerd Font bug (U+F188).
     NavRow { objectName: "navIssues"; label: "Issues"; iconText: "\uf188"; section: "issues"; enabled: sidebar.hasProject }
     // Appended after Issues, so Runs is Ctrl+6. Its glyph is the Nerd Font
-    // play symbol (U+F04B); its count is the runs that need attention.
-    NavRow { objectName: "navRuns"; label: "Runs"; iconText: "\uf04b"; section: "runs"; enabled: sidebar.hasProject; countText: sidebar.runsAttentionText }
+    // play symbol (U+F04B); its count is the runs that need attention. The
+    // one row enabled with no project: runs are listed across every project.
+    NavRow { objectName: "navRuns"; label: "Runs"; iconText: "\uf04b"; section: "runs"; countText: sidebar.runsAttentionText }
 
     Item { Layout.fillHeight: true }
 

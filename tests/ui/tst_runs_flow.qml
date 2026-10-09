@@ -7,6 +7,7 @@ import QtQuick
 import QtTest
 import "../helpers/find.js" as H
 import "../helpers/amFixtures.js" as F
+import "../../core/domain/runs.js" as Runs
 
 TestCase {
   id: tc
@@ -17,11 +18,20 @@ TestCase {
   Component { id: hostC; Item { width: 900; height: 700 } }
 
   property var pA: ({ root_path: "/home/u/a", name: "alpha" })
+  property var pB: ({ root_path: "/home/u/b", name: "beta" })
 
   function run(id, status, live, milestone) {
     return { id: id, repo_dir: "/home/u/a", milestone_id: milestone, status: status, started_at: "",
              lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
              rows: [], tree: { stories: [], subtasks: [] }, project: { root: "/home/u/a", name: "alpha" } }
+  }
+
+  // run(), in the project at `root` named `name`.
+  function runIn(id, status, live, milestone, root, name) {
+    var r = run(id, status, live, milestone)
+    r.repo_dir = root
+    r.project = { root: root, name: name }
+    return r
   }
 
   function make() {
@@ -43,10 +53,23 @@ TestCase {
     p.app.runs.snapshotRunner.cancel()
     p.app.runs.settingsLoadRunner.cancel()
     p.app.runs.runSettingsRunner.cancel()
-    p.app.runs.runs = [run("run-0000000000a1", "started", true, "alpha"),
-                       run("run-0000000000b2", "escalated", null, "beta"),
-                       run("run-0000000000c3", "started", false, "gamma"),
-                       run("run-0000000000d4", "stopped", null, "delta")]
+    p.app.runs.runs = sampleRuns()
+    return p
+  }
+
+  function sampleRuns() {
+    return [run("run-0000000000a1", "started", true, "alpha"),
+            run("run-0000000000b2", "escalated", null, "beta"),
+            run("run-0000000000c3", "started", false, "gamma"),
+            run("run-0000000000d4", "stopped", null, "delta")]
+  }
+
+  // make() with no project selected. The registry still lists pA, so the run
+  // store keeps its root; the runs are set again after the clear.
+  function makeNoProject() {
+    var p = make(); if (!p) return null
+    p.app.projects.selectedProject = null
+    p.app.runs.runs = sampleRuns()
     return p
   }
   function labels(crumbs) { return crumbs.map(function(c) { return c.label }).join(" > ") }
@@ -165,7 +188,30 @@ TestCase {
     wait(50)
     p.shortcuts.handleSearchKey(key(Qt.Key_Return))
     compare(p.app.nav.viewMode, "runs")
-    compare(H.find(p, "runsMessage").text, "No runs for this project yet.")
+    compare(H.find(p, "runsMessage").text, "No runs yet.", "the registry holds alpha")
+  }
+
+  // alpha (two runs that need attention) is listed before beta (one live
+  // run): the cursor's third position is beta's first run, under beta's header.
+  function test_enter_on_the_first_run_of_the_second_project_opens_it() {
+    var p = make(); if (!p) return
+    p.app.projects.applyProjectsList([pA, pB])
+    p.app.runs.snapshotRunner.cancel()
+    p.app.runs.runs = [runIn("run-0000000000f6", "started", true, "zeta", "/home/u/b", "beta"),
+                       runIn("run-0000000000b2", "escalated", null, "beta-ms", "/home/u/a", "alpha"),
+                       runIn("run-0000000000c3", "started", false, "gamma", "/home/u/a", "alpha")]
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    compare(ids(p.app.runs.filteredRuns), "run-0000000000b2,run-0000000000c3,run-0000000000f6")
+    compare(H.find(p, "runGroupName1").text, "beta")
+    compare(p.app.nav.cursorIndex, 0)
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    compare(p.app.nav.cursorIndex, 2)
+    compare(H.find(p, "runRow2").hasCursor, true, "the highlight is on beta's run")
+    p.shortcuts.handleSearchKey(key(Qt.Key_Return))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000f6")
   }
 
   function test_a_project_that_leaves_the_registry_takes_its_runs_with_it() {
@@ -497,8 +543,8 @@ TestCase {
 
   // On `view`: a baseline snapshot (it only arms the alerts), then one where
   // beta (b2) has escalated -- one toast.
-  function withToast(view) {
-    var p = make(); if (!p) return null
+  function withToast(view, noProject) {
+    var p = noProject ? makeNoProject() : make(); if (!p) return null
     p.navigator.showSection(view)
     feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha"), snapEntry("run-0000000000b2", "started", true, "beta")])
     compare(p.app.runs.toasts.length, 0, "the baseline raises nothing")
@@ -506,6 +552,91 @@ TestCase {
     compare(p.app.runs.toasts.length, 1)
     wait(50)
     return p
+  }
+
+  // runs-snapshot-all.py's reply: pA's entry lists `aEntries`, pB's `bEntries`.
+  function snapOkTwo(aEntries, bEntries) {
+    return JSON.stringify({ ok: true, projects: [{ root: tc.pA.root_path, ok: true, runs: aEntries },
+                                                 { root: tc.pB.root_path, ok: true, runs: bEntries }],
+                            data_dir: "/d" }) + "\n"
+  }
+
+  // snapEntry(), in project B.
+  function snapEntryB(id, runStatus, live, milestone) {
+    var e = snapEntry(id, runStatus, live, milestone)
+    e.repo_dir = tc.pB.root_path
+    return e
+  }
+
+  // The next snapshot of projects A and B.
+  function feedTwo(p, aEntries, bEntries) {
+    p.app.runs.refresh()
+    reply(p.app.runs.snapshotRunner.current, snapOkTwo(aEntries, bEntries), 0)
+  }
+
+  // Registers pB beside pA (pA stays open). The registry change launches a
+  // snapshot that cannot run here: it is cancelled.
+  function registerB(p) {
+    p.app.projects.applyProjectsList([pA, pB])
+    p.app.runs.snapshotRunner.cancel()
+  }
+
+  // 4.5 (11)
+  function test_each_toast_names_its_project() {
+    var p = withToast("board"); if (!p) return
+    compare(H.find(p, "runToastProject0").text, "alpha")
+    compare(H.find(p, "runToastProject0").visible, true)
+    registerB(p)
+    var aEntries = [snapEntry("run-0000000000a1", "started", true, "alpha"),
+                    snapEntry("run-0000000000b2", "escalated", null, "beta")]
+    feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "started", true, "zeta")])
+    compare(p.app.runs.toasts.length, 1, "beta's first entry only arms it")
+    feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
+    compare(p.app.runs.toasts.length, 2)
+    wait(50)
+    compare(H.find(p, "runToastLine1").text, "zeta escalated")
+    compare(H.find(p, "runToastProject1").text, "beta")
+    compare(H.find(p, "runToastProject0").text, "alpha", "the older toast keeps its project")
+  }
+
+  // 4.5 (10), a pin
+  function test_the_sidebar_count_covers_every_registered_project() {
+    var p = make(); if (!p) return
+    registerB(p)
+    p.app.runs.runs = [runIn("run-0000000000b2", "escalated", null, "beta-ms", "/home/u/a", "alpha"),
+                       runIn("run-0000000000f6", "started", false, "zeta", "/home/u/b", "beta")]
+    wait(50)
+    var count = H.find(p, "navCountRuns")
+    verify(count, "the Runs count")
+    compare(String(count.text), "‼2", "alpha's escalated run and beta's dead one")
+    p.app.projects.selectedProject = null
+    wait(50)
+    compare(p.app.runs.runs.length, 2, "closing the project leaves the runs alone")
+    compare(String(count.text), "‼2", "with no project open")
+    compare(count.visible, true)
+  }
+
+  // 4.5 (12), a pin
+  function test_toast_open_on_another_projects_run_keeps_the_open_project() {
+    var p = make(); if (!p) return
+    registerB(p)
+    var before = p.app.projects.selectedProject
+    verify(before !== null && before.root_path === "/home/u/a", "pA is open")
+    var aEntries = [snapEntry("run-0000000000a1", "started", true, "alpha")]
+    feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "started", true, "zeta")])
+    compare(p.app.runs.toasts.length, 0, "the baseline raises nothing")
+    feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
+    compare(p.app.runs.toasts.length, 1)
+    wait(50)
+    compare(H.find(p, "runToastProject0").text, "beta")
+    mouseClick(H.find(p, "runToastOpen0"))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000f6")
+    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    verify(p.app.projects.selectedProject === before, "the same project object")
+    p.shortcuts.closeRequested()
+    compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
+    verify(p.app.projects.selectedProject === before)
   }
 
   // 26 (parent line 160: toast Open navigates)
@@ -585,5 +716,263 @@ TestCase {
     compare(p.app.nav.viewMode, "runs")
     compare(p.app.runs.selectedRunId, "")
     compare(H.find(p, "runsFooter").text, "This run is no longer in the snapshot")
+  }
+
+  // ---- no project (4.1)
+
+  // F1
+  function test_with_no_project_ctrl_6_opens_runs_with_search_and_no_placeholder() {
+    var p = makeNoProject(); if (!p) return
+    compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 }), true)
+    compare(p.app.nav.viewMode, "runs")
+    compare(labels(p.navigator.crumbs), "Runs")
+    compare(p.navigator.crumbs[0].clickable, false)
+    wait(50)
+    compare(H.find(p, "runsView").visible, true)
+    var field = H.find(p, "searchField")
+    compare(field.visible, true)
+    compare(String(field.placeholderText), "Search runs…")
+    compare(p.focusItem.objectName, "searchField")
+    compare(H.find(p, "noProjectsText").visible, false)
+    compare(p.navigator.currentList().length, 4, "currentList() is the run list")
+  }
+
+  // F2 (and Review Focus 1, 5)
+  function test_with_no_project_a_run_opens_and_back_returns() {
+    var p = makeNoProject(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    var id = p.navigator.currentList()[1].id
+    p.shortcuts.handleSearchKey(key(Qt.Key_Return))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, id)
+    compare(labels(p.navigator.crumbs), "Runs > " + Runs.shortId({ id: id }))
+    compare(p.navigator.crumbs[0].clickable, true)
+    compare(p.navigator.crumbs[1].clickable, false)
+    wait(50)
+    compare(H.find(p, "runDetailView").visible, true)
+    compare(H.find(p, "searchField").visible, false)
+    compare(H.find(p, "noProjectsText").visible, false)
+    compare(p.focusItem.objectName, "keyCatcher")
+    p.shortcuts.closeRequested()
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.nav.cursorIndex, 1, "back on the row it left")
+    compare(p.app.runs.selectedRunId, "")
+    p.navigator.openRun(id, "runs")
+    p.shortcuts.handleMove(-1, 0)
+    compare(p.app.nav.viewMode, "runs", "the Left arrow goes back")
+    p.navigator.openRun(id, "runs")
+    p.navigator.activateCrumb(0)
+    compare(p.app.nav.viewMode, "runs", "the Runs crumb goes back")
+  }
+
+  // F3
+  function test_with_no_project_the_search_filters_runs() {
+    var p = makeNoProject(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(p.navigator.currentList().length, 4)
+    var field = H.find(p, "searchField")
+    p.app.nav.cursorIndex = 2
+    field.text = "gamma"
+    compare(ids(p.navigator.currentList()), "run-0000000000c3")
+    compare(p.app.nav.cursorIndex, 0, "typing resets the cursor")
+    field.text = ""
+    compare(p.navigator.currentList().length, 4)
+  }
+
+  // F4
+  function test_with_no_project_toast_open_shows_the_run() {
+    var p = withToast("board", true); if (!p) return
+    compare(p.app.projects.selectedProject, null)
+    compare(p.app.nav.viewMode, "board")
+    compare(H.find(p, "runToastProject0").text, "alpha")
+    mouseClick(H.find(p, "runToastOpen0"))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000b2")
+    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    compare(p.app.projects.selectedProject, null, "Open opens no project")
+    wait(50)
+    compare(H.find(p, "runDetailView").visible, true)
+    p.shortcuts.closeRequested()
+    compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
+    wait(50)
+    compare(H.find(p, "runsView").visible, true)
+    // alpha dies, then leaves the snapshot: its toast outlives its row.
+    feed(p, [snapEntry("run-0000000000a1", "started", false, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
+    compare(p.app.runs.toasts.length, 1)
+    feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta")])
+    compare(p.app.runs.toasts.length, 1)
+    p.app.nav.viewMode = "board"
+    wait(50)
+    mouseClick(H.find(p, "runToastOpen0"))
+    compare(p.app.runs.toasts.length, 0)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.selectedRunId, "")
+    wait(50)
+    compare(H.find(p, "runsView").visible, true)
+    compare(H.find(p, "runsFooter").text, "This run is no longer in the snapshot")
+  }
+
+  // F5
+  function test_with_no_project_the_notify_switch_shows_and_toggles() {
+    var p = makeNoProject(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(H.find(p, "runsNotifyRow").visible, true)
+    var was = p.app.runs.notifyOnEscalation
+    H.find(p, "runsNotifyToggle").toggled()
+    compare(p.app.runs.notifyOnEscalation, !was)
+    compare(p.app.runs.settingsSaveRunner.sent, !was, "the set-global-settings request carries the new value")
+    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+  }
+
+  // F8
+  function test_with_no_project_the_bound_sections_stay_shut() {
+    var p = makeNoProject(); if (!p) return
+    wait(50)
+    compare(p.app.nav.viewMode, "board")
+    compare(H.find(p, "noProjectsText").visible, true)
+    compare(H.find(p, "searchField").visible, false)
+    compare(p.focusItem.objectName, "keyCatcher")
+    compare(labels(p.navigator.crumbs), "Project Manager")
+    compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 }), true)
+    compare(p.app.nav.viewMode, "runs")
+    var digits = [Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5]
+    for (var i = 0; i < digits.length; i++) {
+      compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: digits[i] }), true)
+      compare(p.app.nav.viewMode, "runs", "Ctrl+" + (i + 1))
+    }
+  }
+
+  // Review Focus 4: App's `selected` handler still opens the Board.
+  function test_with_no_project_choosing_a_project_on_a_run_opens_the_board() {
+    var p = makeNoProject(); if (!p) return
+    p.navigator.showSection("runs")
+    p.navigator.openRun("run-0000000000a1", "runs")
+    compare(p.app.nav.viewMode, "run")
+    p.navigator.chooseProject(tc.pA)
+    if (p.app.extras.exportProc) {
+      p.app.extras.exportProc.running = false
+      p.app.extras.exportProc.launchGuard = "stale"
+    }
+    p.app.runs.settingsLoadRunner.cancel()
+    p.app.runs.runSettingsRunner.cancel()
+    compare(p.app.projects.selectedProject.root_path, "/home/u/a")
+    compare(p.app.nav.viewMode, "board")
+    compare(labels(p.navigator.crumbs), "Board")
+    wait(50)
+    compare(H.find(p, "startRunButton").visible, false)
+    compare(H.find(p, "noProjectsText").visible, false)
+  }
+
+  // F6
+  function test_start_run_without_a_project_is_disabled_with_why() {
+    var p = makeNoProject(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    var button = H.find(p, "startRunButton")
+    compare(button.visible, true)
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "Open a project to dispatch")
+    mouseClick(button)
+    compare(p.dispatchOpen, false, "a click opens nothing")
+    compare(p.app.runs.dispatchState, "idle")
+    p.app.runs.amStatus = "missing"
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "Open a project to dispatch", "no project wins over am missing")
+  }
+
+  // ---- Open project (4.4)
+
+  // make() with pA and pB registered and pA open; filteredRuns is alpha's
+  // run-0000000000b2 and run-0000000000c3, then beta's run-0000000000f6.
+  function makeTwo() {
+    var p = make(); if (!p) return null
+    p.app.projects.applyProjectsList([pA, pB])
+    p.app.runs.snapshotRunner.cancel()
+    p.app.runs.runs = [runIn("run-0000000000f6", "started", true, "zeta", "/home/u/b", "beta"),
+                       runIn("run-0000000000b2", "escalated", null, "beta-ms", "/home/u/a", "alpha"),
+                       runIn("run-0000000000c3", "started", false, "gamma", "/home/u/a", "alpha")]
+    return p
+  }
+
+  // A project switch starts a `brd export` and two run-settings reads that
+  // cannot run here: all are disarmed so their late replies change nothing.
+  function disarmSwitch(p) {
+    if (p.app.extras.exportProc) {
+      p.app.extras.exportProc.running = false
+      p.app.extras.exportProc.launchGuard = "stale"
+    }
+    p.app.runs.settingsLoadRunner.cancel()
+    p.app.runs.runSettingsRunner.cancel()
+  }
+
+  function ctrl6(p) {
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+  }
+
+  // Ctrl+6, then the cursor down to beta's run (index 2).
+  function runsOnBeta(p) {
+    ctrl6(p)
+    compare(ids(p.app.runs.filteredRuns), "run-0000000000b2,run-0000000000c3,run-0000000000f6")
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    compare(p.app.nav.cursorIndex, 2)
+  }
+
+  // 10
+  function test_open_project_on_another_projects_run_opens_its_board_and_ctrl_6_returns() {
+    var p = makeTwo(); if (!p) return
+    runsOnBeta(p)
+    var button = H.find(p, "runRowOpenProject2")
+    verify(button, "beta's row has Open project")
+    compare(button.visible, true)
+    wait(450)
+    mouseClick(button)
+    disarmSwitch(p)
+    compare(p.app.projects.selectedProject.root_path, "/home/u/b")
+    compare(p.app.nav.viewMode, "board")
+    compare(labels(p.navigator.crumbs), "Board")
+    ctrl6(p)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.project, "/home/u/b")
+    compare(p.app.nav.cursorIndex, 0)
+    compare(H.find(p, "runRowOpenProject0").visible, true, "alpha is no longer the open project")
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    p.shortcuts.handleSearchKey(key(Qt.Key_Down))
+    compare(p.app.nav.cursorIndex, 2)
+    compare(H.find(p, "runRowOpenProject2").visible, false, "beta is the open project now")
+  }
+
+  // 11: a pin — Run detail never switched the project, so this passes before
+  // the button has a click handler.
+  function test_run_detail_of_another_projects_run_keeps_the_open_project() {
+    var p = makeTwo(); if (!p) return
+    var open = p.app.projects.selectedProject
+    runsOnBeta(p)
+    p.shortcuts.handleSearchKey(key(Qt.Key_Return))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000f6")
+    compare(p.app.projects.selectedProject.root_path, "/home/u/a")
+    verify(p.app.projects.selectedProject === open, "the same project object")
+  }
+
+  // Review Focus 1.
+  function test_open_project_with_a_dirty_memory_draft_stays_on_runs() {
+    var p = makeTwo(); if (!p) return
+    runsOnBeta(p)
+    p.app.memories.memoryEditing = true
+    p.app.memories.memoryText = "saved"
+    p.app.memories.memoryDraft = "edited"
+    var button = H.find(p, "runRowOpenProject2")
+    verify(button, "beta's row has Open project")
+    wait(450)
+    mouseClick(button)
+    compare(p.app.projects.selectedProject.root_path, "/home/u/a")
+    compare(p.app.nav.viewMode, "runs")
+    verify(p.app.memories.memoryOpError.indexOf("unsaved changes") >= 0, p.app.memories.memoryOpError)
   }
 }

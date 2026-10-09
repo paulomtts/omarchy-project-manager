@@ -5,6 +5,8 @@
 import QtQuick
 import QtTest
 import "../helpers/find.js" as H
+import "../../core/domain/runs.js" as Runs
+import "../../ui/components/runGlyphs.js" as RG
 
 TestCase {
   id: tc
@@ -15,6 +17,7 @@ TestCase {
   Component { id: hostC; Item { width: 900; height: 700 } }
 
   property var pA: ({ root_path: "/home/u/my proj", name: "alpha" })
+  property var pB: ({ root_path: "/home/u/b", name: "beta" })
   property string memList: '{"ok": true, "found": true, "memory_dir": "/c/-home-u-my-proj/memory", "notes": [' +
     '{"file": "user_role.md", "name": "Role", "description": "d", "type": "user", "size": 10, "indexed": true}]}'
   property string docList: '{"ok": true, "docs": [' +
@@ -287,7 +290,7 @@ TestCase {
   // ---- Start run (S3 4.2)
 
   // 18
-  function test_start_run_shows_only_on_the_runs_list_of_a_project() {
+  function test_start_run_shows_only_on_the_runs_list() {
     var p = make(); if (!p) return
     p.app.runs.snapshotRunner.cancel()
     p.app.runs.runs = [{ id: "run-0000000000a1", repo_dir: "/home/u/my proj", milestone_id: "alpha", status: "started",
@@ -316,6 +319,172 @@ TestCase {
     compare(String(button.tooltipText), "am is not installed or not on PATH")
     p.app.projects.selectedProject = null
     p.app.nav.viewMode = "runs"
-    compare(button.visible, false, "no project")
+    compare(button.visible, true, "no project: still shown")
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "Open a project to dispatch")
+  }
+
+  // ---- the run indicator (4.5)
+
+  // One normalized run of the project at `root` named `name`; `status` and
+  // `live` (null: no lease) give its Runs state.
+  function runOf(id, root, name, status, live) {
+    return { id: id, repo_dir: root, milestone_id: "m-" + id.slice(-2), status: status, started_at: "",
+             lease: live === null ? null : { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live },
+             rows: [], tree: { stories: [], subtasks: [] }, project: { root: root, name: name } }
+  }
+
+  // The run list, set directly; a snapshot launched by a registry change or
+  // a project switch is cancelled first, so its reply never lands.
+  function setRuns(p, list) {
+    p.app.runs.snapshotRunner.cancel()
+    p.app.runs.runs = list
+  }
+
+  // alpha: one running, one escalated. beta: one running, one parked, one dead.
+  function twoProjectRuns() {
+    return [runOf("run-0000000000a1", pA.root_path, "alpha", "started", true),
+            runOf("run-0000000000a2", pA.root_path, "alpha", "escalated", null),
+            runOf("run-0000000000b1", pB.root_path, "beta", "started", true),
+            runOf("run-0000000000b2", pB.root_path, "beta", "stopped", null),
+            runOf("run-0000000000b3", pB.root_path, "beta", "started", false)]
+  }
+
+  // make() with pA and pB registered (pA open) and twoProjectRuns().
+  function makeTwo() {
+    var p = make(); if (!p) return null
+    p.app.projects.applyProjectsList([pA, pB])
+    setRuns(p, twoProjectRuns())
+    return p
+  }
+
+  // The test Panel is 380 wide, narrower than the toolbar with the strip.
+  function widen(p) {
+    var panel = H.find(p, "mainPanel")
+    panel.width = 840; panel.height = 600
+    wait(50)
+  }
+
+  // Two clicks inside the double-click interval make the second a double-click.
+  function tap(item) {
+    wait(450)
+    mouseClick(item, item.width / 2, item.height / 2)
+  }
+
+  function test_the_run_indicator_is_mounted_in_the_toolbar_and_hidden_with_no_runs() {
+    var p = make(); if (!p) return
+    widen(p)
+    var ind = H.find(p, "runIndicator")
+    verify(ind, "the run indicator")
+    verify(isUnder(ind, "panelToolbar"), "inside the fixed toolbar")
+    verify(!isUnder(ind, "panelFlick"), "and not inside the scrolling content")
+    setRuns(p, [])
+    compare(ind.visible, false, "no runs")
+    setRuns(p, [runOf("run-0000000000a1", pA.root_path, "alpha", "started", true)])
+    wait(50)
+    compare(ind.visible, true)
+    var running = H.find(p, "runIndicatorRunning")
+    compare(String(running.text), RG.glyphOf("running") + "1")
+    compare(String(running.text), "⟳1")
+    verify(ind.width > 0, "a visible strip has a width")
+    var toolbar = H.find(p, "panelToolbar")
+    var right = ind.mapToItem(toolbar, 0, 0).x + ind.width
+    verify(right <= toolbar.width + 0.5, "inside the toolbar: right edge " + right + " of " + toolbar.width)
+    setRuns(p, [runOf("run-0000000000d4", pA.root_path, "alpha", "done", null)])
+    compare(ind.visible, false, "only finished runs")
+  }
+
+  function test_the_run_indicator_counts_runs_across_two_projects() {
+    var runs = twoProjectRuns()
+    var states = runs.map(function(r) { return Runs.runState(r) }).join(",")
+    compare(states, "running,escalated,running,parked,dead", "the fixture's states")
+    var counts = Runs.runFilterCounts(runs)
+    compare(counts.live, 2)
+    compare(counts.parked, 1)
+    compare(counts.attention, 2)
+    var p = makeTwo(); if (!p) return
+    compare(p.app.projects.selectedProject.root_path, pA.root_path, "pA is open")
+    var ind = H.find(p, "runIndicator")
+    compare(ind.visible, true)
+    compare(ind.running, 2)
+    compare(ind.parked, 1)
+    compare(ind.attention, 2)
+    p.app.runs.toggleProjectFilter(pA.root_path)
+    compare(p.app.runs.projectFilter, pA.root_path, "the Runs list is narrowed to alpha")
+    compare(ind.running, 2)
+    compare(ind.parked, 1)
+    compare(ind.attention, 2)
+  }
+
+  function test_the_run_indicator_shows_with_no_project_open() {
+    var p = makeTwo(); if (!p) return
+    p.app.projects.selectedProject = null
+    setRuns(p, twoProjectRuns())
+    wait(50)
+    var ind = H.find(p, "runIndicator")
+    compare(ind.visible, true, "in " + p.app.nav.viewMode)
+    compare(ind.running, 2)
+    compare(ind.parked, 1)
+    compare(ind.attention, 2)
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(ind.visible, true, "on the Runs list")
+    compare(ind.running, 2)
+  }
+
+  // Review Focus 1, 2
+  function test_clicking_an_indicator_segment_shows_runs_on_that_chip() {
+    var p = makeTwo(); if (!p) return
+    widen(p)
+    p.navigator.showSection("board")
+    wait(50)
+    compare(p.app.runs.runFilter, "")
+    tap(H.find(p, "runIndicatorParked"))
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.runFilter, "parked")
+    wait(50)
+    p.app.nav.searchQuery = "zzz"
+    tap(H.find(p, "runIndicatorParked"))
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.runFilter, "parked", "the active chip is kept, not toggled to All")
+    compare(p.app.nav.searchQuery, "", "the search is cleared, so the list holds what was counted")
+    tap(H.find(p, "runIndicatorAttention"))
+    compare(p.app.runs.runFilter, "attention")
+    tap(H.find(p, "runIndicatorRunning"))
+    compare(p.app.runs.runFilter, "live")
+    compare(p.app.projects.selectedProject.root_path, pA.root_path, "the open project is kept")
+  }
+
+  function test_an_indicator_click_resets_the_project_filter_and_works_with_no_project() {
+    var p = makeTwo(); if (!p) return
+    widen(p)
+    p.app.projects.selectedProject = null
+    setRuns(p, twoProjectRuns())
+    p.navigator.showSection("runs")
+    p.app.runs.toggleProjectFilter(pB.root_path)
+    compare(p.app.runs.projectFilter, pB.root_path)
+    p.navigator.openRun("run-0000000000b1", "runs")
+    compare(p.app.nav.viewMode, "run")
+    wait(50)
+    tap(H.find(p, "runIndicatorRunning"))
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.runFilter, "live")
+    compare(p.app.runs.projectFilter, "", "All projects, as the indicator counts")
+    compare(p.app.projects.selectedProject, null)
+  }
+
+  // A pin: passes before showRunsFiltered exists (nothing handles the
+  // signal yet) and must keep passing after it.
+  function test_an_indicator_click_under_a_modal_changes_nothing() {
+    var p = makeTwo(); if (!p) return
+    p.navigator.showSection("board")
+    compare(p.app.runs.runFilter, "")
+    p.app.deleter.openDelete(pA)
+    verify(p.app.deleter.deleteTarget, "the delete confirmation is open")
+    // The backdrop takes mouse clicks, so the segment is asked through its signal.
+    H.find(p, "runIndicator").filterRequested("parked")
+    compare(p.app.nav.viewMode, "board")
+    compare(p.app.runs.runFilter, "")
+    compare(p.app.runs.projectFilter, "")
   }
 }

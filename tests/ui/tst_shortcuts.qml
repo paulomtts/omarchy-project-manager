@@ -338,6 +338,24 @@ TestCase {
     compare(s.app.nav.viewMode, "board")
   }
 
+  // K3
+  function test_ctrl_6_opens_runs_without_a_project_and_ctrl_1_to_5_do_not() {
+    var s = make(); if (!s) return
+    s.app.runs.snapshotRunner.cancel()
+    s.app.projects.selectedProject = null
+    var digits = [Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5]
+    for (var i = 0; i < digits.length; i++) {
+      compare(s.handleGlobalKey(ctrl(digits[i])), true, "Ctrl+" + (i + 1) + " is still handled")
+      compare(s.app.nav.viewMode, "board", "Ctrl+" + (i + 1))
+    }
+    compare(s.handleGlobalKey(ctrl(Qt.Key_6)), true)
+    compare(s.app.nav.viewMode, "runs")
+    for (var j = 0; j < digits.length; j++) {
+      compare(s.handleGlobalKey(ctrl(digits[j])), true)
+      compare(s.app.nav.viewMode, "runs", "Ctrl+" + (j + 1) + " from Runs")
+    }
+  }
+
   function test_escape_and_the_left_arrow_go_back_from_an_open_run() {
     var s = inRuns(); if (!s) return
     s.navigator.openRun("run-0000000000a1")
@@ -553,17 +571,64 @@ TestCase {
     compare(Object.keys(s.app.runs.pending).length, 0)
   }
 
-  // A run key needs a project: with none, the letter is left alone.
-  function test_without_a_project_the_run_keys_are_left_alone() {
+  // A run key needs no project: a run carries its own repository.
+  // K1
+  function test_without_a_project_the_run_keys_act_on_the_cursor_run() {
     var s = inRunKeys(); if (!s) return
     s.app.projects.selectedProject = null
-    s.app.runs.runs = [normRun("run-0000000000a1", "started", true)]
+    s.app.runs.runs = [normRun("run-0000000000a1", "started", true), normRun("run-0000000000b2", "stopped", null)]
+    s.app.nav.cursorIndex = 0
     compare(s.app.nav.viewMode, "runs")
+    compare(s.handleRunKey(plain(Qt.Key_R)), true, "a refused key is still handled")
+    compare(s.app.runs.flashText, "The run is still running")
+    compare(Object.keys(s.app.runs.pending).length, 0)
+    compare(s.handleRunKey(plain(Qt.Key_C)), true)
+    compare(s.app.runs.cancelOpen, true)
+    compare(s.app.runs.cancelRunId, "run-0000000000a1")
+    s.app.runs.closeCancel()
+    compare(s.handleRunKey(plain(Qt.Key_P)), true)
+    compare(s.app.runs.pending["run-0000000000a1"], "pause")
+    compare(s.app.runs.controlRunners.length, 1)
+  }
+
+  // K2
+  function test_without_a_project_the_run_keys_act_on_the_open_run() {
+    var s = inRunKeys(); if (!s) return
+    s.app.projects.selectedProject = null
+    s.navigator.openRun("run-0000000000b2")
+    compare(s.app.nav.viewMode, "run")
+    compare(s.handleRunKey(plain(Qt.Key_R)), true)
+    compare(s.app.runs.pending["run-0000000000b2"], "resume")
+    compare(s.app.runs.pending["run-0000000000a1"], undefined, "not the cursor row")
+  }
+
+  // Review Focus 2
+  function test_without_a_project_an_empty_runs_list_leaves_the_keys_alone() {
+    var s = inRunKeys(); if (!s) return
+    s.app.projects.selectedProject = null
+    s.app.runs.runs = []
+    s.app.nav.cursorIndex = 0
     compare(s.handleRunKey(plain(Qt.Key_P)), false)
+    compare(s.handleRunKey(plain(Qt.Key_R)), false)
     compare(s.handleRunKey(plain(Qt.Key_C)), false)
+    s.handleActivate()
+    compare(s.app.nav.viewMode, "runs", "Enter opens nothing")
+    compare(Object.keys(s.app.runs.pending).length, 0)
     compare(s.app.runs.cancelOpen, false)
     compare(s.app.runs.flashText, "")
+  }
+
+  // Review Focus 3
+  function test_without_a_project_the_cancel_dialog_swallows_ctrl_6_and_the_run_keys() {
+    var s = inRunKeys(); if (!s) return
+    s.app.projects.selectedProject = null
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.app.runs.openCancel("run-0000000000a1"), true)
+    compare(s.handleGlobalKey(ctrl(Qt.Key_6)), false)
+    compare(s.app.nav.viewMode, "run")
+    compare(s.handleRunKey(plain(Qt.Key_P)), false)
     compare(Object.keys(s.app.runs.pending).length, 0)
+    compare(s.app.runs.cancelOpen, true)
   }
 
   // ---- run toasts (S2 4.4)

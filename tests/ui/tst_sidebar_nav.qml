@@ -209,4 +209,56 @@ TestCase {
     compare(p.app.nav.viewMode, "runs")
     compare(p.app.nav.section, "runs")
   }
+
+  // ---- no project (4.1): Runs is the one section that needs none
+
+  function aRun(id) {
+    return { id: id, repo_dir: "/home/u/a", milestone_id: "alpha", status: "started", started_at: "",
+             lease: null, rows: [], tree: { stories: [], subtasks: [] }, project: { root: "/home/u/a", name: "alpha" } }
+  }
+
+  function test_clicking_the_runs_row_with_no_project_opens_the_runs_section() {
+    var p = make(); if (!p) return
+    compare(p.app.projects.selectedProject, null)
+    var row = H.find(p, "navRuns")
+    compare(row.enabled, true)
+    mouseClick(row, row.width / 2, row.height / 2)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.nav.section, "runs")
+    wait(50)
+    compare(H.find(p, "runsView").visible, true)
+    compare(H.find(p, "searchField").visible, true)
+  }
+
+  function test_focus_item_with_no_project() {
+    var p = make(); if (!p) return
+    compare(p.app.projects.selectedProject, null)
+    compare(p.app.nav.viewMode, "board")
+    compare(p.focusItem.objectName, "keyCatcher")
+    p.navigator.showSection("runs")
+    compare(p.focusItem.objectName, "searchField")
+    p.app.runs.runs = [aRun("run-0000000000a1")]
+    p.navigator.openRun("run-0000000000a1", "runs")
+    compare(p.app.nav.viewMode, "run")
+    compare(p.focusItem.objectName, "keyCatcher")
+  }
+
+  function test_with_no_project_the_bound_rows_stay_disabled_and_inert() {
+    var p = make(); if (!p) return
+    compare(p.app.projects.selectedProject, null)
+    p.navigator.showSection("runs")
+    compare(p.app.nav.viewMode, "runs")
+    var rows = ["navBoard", "navGraph", "navDocuments", "navMemories", "navIssues"]
+    for (var i = 0; i < rows.length; i++) {
+      var row = H.find(p, rows[i])
+      compare(row.enabled, false, rows[i])
+      mouseClick(row, row.width / 2, row.height / 2)
+      compare(p.app.nav.viewMode, "runs", rows[i])
+    }
+    var names = ["board", "graph", "documents", "memories", "issues"]
+    for (var j = 0; j < names.length; j++) {
+      p.navigator.showSection(names[j])
+      compare(p.app.nav.viewMode, "runs", names[j])
+    }
+  }
 }
