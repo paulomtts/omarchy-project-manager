@@ -6613,4 +6613,160 @@ TestCase {
     compare(store.eventsCursor, 10)
     compare(store.eventsDropped, 7, "10 - 2 - 1 held below")
   }
+
+  // An open panel with r1 selected: its --tail 200 fetch in flight.
+  function activeSelected() {
+    var store = make(); if (!store) return null
+    store.active = true
+    store.selectedRunId = "r1"
+    return store
+  }
+
+  // 4
+  function test_changes_during_a_fetch_queue_one_follow_up() {
+    var store = activeSelected(); if (!store) return
+    var tail = store.eventsRunner.current
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    store.runsNudged(["r1"])
+    store.runsNudged(["r2", "r1"])
+    verify(store.eventsRunner.current === tail, "the fetch in flight is left alone")
+    compare(tail.running, true)
+    compare(store.eventsRunner.seq, seq)
+    reply(tail, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(seqs(store.events), "8,9,10", "its reply is applied")
+    compare(store.eventsRunner.seq, seq + 1, "exactly one follow-up")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+    compare(store.eventsStatus, "loading")
+    reply(store.eventsRunner.current, eventsReply([], 10, 0), 0)
+    compare(store.eventsRunner.seq, seq + 1, "nothing more")
+    compare(store.eventsRunner.busy, false)
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 5
+  function test_a_change_during_the_follow_up_queues_one_more() {
+    var store = activeSelected(); if (!store) return
+    store.runsNudged(["r1"])
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    var followUp = store.eventsRunner.current
+    compare(argv(followUp), tc.eventsCmd + "r1|--since|10")
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    verify(store.eventsRunner.current === followUp, "the follow-up is left alone")
+    reply(followUp, eventsReply(attemptEvents(11, 2), 12, 2), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsRunner.seq, seq + 1)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|12", "from the cursor the reply raised")
+  }
+
+  // 6
+  function test_the_follow_up_runs_after_a_failed_reply() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var first = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    reply(first, JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsError, "UnknownRunError: no run r1", "the failure was applied")
+    verify(store.eventsRunner.current !== first, "then the follow-up launched")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10", "from the unchanged cursor")
+    compare(store.eventsStatus, "loading")
+    compare(seqs(store.events), "8,9,10")
+    compare(store.eventsDropped, 7)
+    var second = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    reply(second, "not json\n", 1)
+    compare(store.eventsError, "The events snapshot gave no usable result (exit 1).")
+    verify(store.eventsRunner.current !== second, "an unusable reply is followed up too")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(seqs(store.events), "8,9,10,11")
+  }
+
+  // Review Focus 1
+  function test_a_refresh_supersedes_a_change_fetch_and_the_follow_up_waits() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.refreshEvents()
+    var refresh = store.eventsRunner.current
+    compare(argv(refresh), tc.eventsCmd + "r1|--tail|200")
+    compare(change.running, false, "latest wins")
+    var seq = store.eventsRunner.seq
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(store.eventsRunner.seq, seq, "the superseded fetch's exit launches nothing")
+    compare(seqs(store.events), "8,9,10", "and is not applied")
+    reply(refresh, eventsReply(attemptEvents(11, 2), 12, 20), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsDropped, 15, "a --tail reply: 20 - 2 - 3 held below")
+    compare(store.eventsRunner.seq, seq + 1, "the queued follow-up runs after the refresh")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|12")
+  }
+
+  // 7
+  function test_a_new_selection_clears_the_queue() {
+    var store = activeSelected(); if (!store) return
+    var p1 = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.selectedRunId = "r2"
+    var p2 = store.eventsRunner.current
+    compare(argv(p2), tc.eventsCmd + "r2|--tail|200")
+    var seq = store.eventsRunner.seq
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsRunner.seq, seq, "r1's late exit launches nothing")
+    reply(p2, eventsReply(attemptEvents(5, 2), 6, 6), 0)
+    compare(seqs(store.events), "5,6")
+    compare(store.eventsRunner.seq, seq, "no follow-up: the queue went with r1")
+    compare(store.eventsRunner.busy, false)
+
+    store.selectedRunId = "r1"
+    var p3 = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.selectedRunId = ""
+    compare(store.eventsRunner.busy, false)
+    seq = store.eventsRunner.seq
+    reply(p3, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsRunner.seq, seq, "nothing is launched after leaving")
+    compare(store.eventsStatus, "idle")
+    store.selectedRunId = "r1"
+    var p4 = store.eventsRunner.current
+    seq = store.eventsRunner.seq
+    reply(p4, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(seqs(store.events), "1,2,3")
+    compare(store.eventsRunner.seq, seq, "the queue went with leaving")
+  }
+
+  // 8 and Review Focus 2
+  function test_closing_the_panel_starts_nothing_new() {
+    var store = activeSelected(); if (!store) return
+    var tail = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    compare(tail.running, true, "the fetch in flight is not stopped")
+    verify(store.eventsRunner.current === tail)
+    var seq = store.eventsRunner.seq
+    reply(tail, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(seqs(store.events), "8,9,10", "its reply is applied")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsRunner.seq, seq, "nothing is launched after it")
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq, "a change while closed starts nothing")
+    store.active = true
+    compare(store.eventsRunner.seq, seq, "reopening launches no events fetch")
+    compare(store.eventsRunner.busy, false)
+    compare(seqs(store.events), "8,9,10", "reopening keeps the rows")
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq + 1)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply is applied")
+    compare(store.eventsRunner.seq, seq + 1, "a change queued before a closing does not outlive it")
+  }
 }

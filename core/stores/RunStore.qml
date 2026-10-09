@@ -389,12 +389,14 @@ Scope {
   // The panel closed: no process and no timer is left running, and no toast
   // or dispatch outlives the opening (a start in flight runs to its end). The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
-  // and is applied. The project filter is back to All projects, with no
-  // projectFilterToggled. The runs, the selection, the chip and amStatus stay
-  // for the next opening.
+  // and is applied. The queued events follow-up is dropped; an events fetch
+  // in flight runs to its end and is applied. The project filter is back to
+  // All projects, with no projectFilterToggled. The runs, the selection, the
+  // events, the chip and amStatus stay for the next opening.
   function stopLive() {
     store.projectFilter = ""
     snapshotState.pending = null
+    eventsState.followUp = false
     store.stopWatch()
     debounceTimer.stop()
     store.nudges = {}
@@ -867,9 +869,11 @@ Scope {
 
   // ---- the selected run's events (3.1)
 
-  // No events held; then the selected run's last 200 are fetched, or, with
-  // no run selected, the fetch in flight is stopped and the status is idle.
+  // No events held and no follow-up queued; then the selected run's last 200
+  // are fetched, or, with no run selected, the fetch in flight is stopped and
+  // the status is idle.
   function selectEvents() {
+    eventsState.followUp = false
     store.events = []
     store.eventsDropped = 0
     store.eventsCursor = 0
@@ -898,12 +902,16 @@ Scope {
   }
 
   // A debounce window's run ids (runsNudged). While active, with ids an array
-  // holding selectedRunId: the change fetch (fetchNewEvents), unless a fetch
-  // is in flight, which is left alone. The run's status is never read.
+  // holding selectedRunId: the change fetch (fetchNewEvents), or, while a
+  // fetch is in flight, one follow-up queued behind it (followUpEvents); the
+  // fetch in flight is left alone. The run's status is never read.
   function nudgeEvents(ids) {
     if (!store.active || store.selectedRunId === "" || !Array.isArray(ids)) return
     if (ids.indexOf(store.selectedRunId) < 0) return
-    if (eventsRunner.busy) return
+    if (eventsRunner.busy) {
+      eventsState.followUp = true
+      return
+    }
     store.fetchNewEvents()
   }
 
@@ -921,6 +929,15 @@ Scope {
     eventsRunner.guard = store.selectedRunId
     eventsState.kind = "since"
     eventsRunner.run([store.selectedRunId, "--since", String(store.eventsCursor)])
+  }
+
+  // The fetch in flight ended and its reply is applied: a queued follow-up is
+  // taken and, while active with a run selected, the change fetch launches
+  // from the state that reply left.
+  function followUpEvents() {
+    if (!eventsState.followUp) return
+    eventsState.followUp = false
+    if (store.active && store.selectedRunId !== "") store.fetchNewEvents()
   }
 
   // The labels for an events reply, a fresh object: every own key of
@@ -1958,11 +1975,15 @@ Scope {
 
   // The selected run's events helper. Guard: the run id a fetch was launched
   // for, never the open project. A newer fetch wins over an older one, and a
-  // reply is applied only while its run is still the selected one.
+  // reply is applied only while its run is still the selected one; then a
+  // queued follow-up launches (followUpEvents).
   HelperRunner {
     id: eventsRunner
     script: store.backendDir + "runs/runs-events.py"
-    onFinished: function(stdout, exitCode, launchedGuard) { store.applyEvents(stdout, exitCode, launchedGuard) }
+    onFinished: function(stdout, exitCode, launchedGuard) {
+      store.applyEvents(stdout, exitCode, launchedGuard)
+      store.followUpEvents()
+    }
   }
 
   // get-global-settings, once per opening (startLive); latest wins. No guard:
@@ -2109,10 +2130,12 @@ Scope {
 
   // The selected run's events fetches' own state; kept apart so consumers
   // cannot write it. `kind` is the newest launch's: "tail" (RUN --tail 200)
-  // or "since" (RUN --since eventsCursor).
+  // or "since" (RUN --since eventsCursor). `followUp`: one change fetch
+  // waits behind the fetch in flight.
   QtObject {
     id: eventsState
     property string kind: "tail"
+    property bool followUp: false
   }
 
   // The control requests' own state; kept apart so consumers cannot write it.
