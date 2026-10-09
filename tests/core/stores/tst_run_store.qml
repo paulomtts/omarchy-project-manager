@@ -2440,6 +2440,7 @@ TestCase {
     compare(store.logsLoading, false)
     compare(store.logsError, "")
     compare(store.logsStatus, "")
+    compare(store.logsNote, "")
     verify(!store.logsRunner.current, "no logs fetch at start")
   }
 
@@ -2797,6 +2798,96 @@ TestCase {
     verify(store.logsFetchedMs > 0)
     compare(store.logsLoading, true)
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+  }
+
+  function test_a_step_with_no_log_says_so_without_an_error() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("explore text\n"), 0)
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    var before = Date.now()
+    reply(store.logsRunner.current, refusalReply(), 0)
+    var after = Date.now()
+    compare(store.logsText, "")
+    compare(store.logsTruncated, false)
+    compare(store.logsError, "", "not an error")
+    compare(store.logsNote, "This step records no output")
+    compare(store.logsLoading, false)
+    verify(store.logsFetchedMs >= before && store.logsFetchedMs <= after, "a reply landed: " + store.logsFetchedMs)
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    store.refreshLogs()
+    compare(store.logsNote, "This step records no output", "a refresh keeps the note until its reply")
+    reply(store.logsRunner.current, logsReply("worktree text\n"), 0)
+    compare(store.logsNote, "", "a good reply clears the note")
+    compare(store.logsText, "worktree text")
+    compare(store.logsError, "")
+  }
+
+  function test_the_note_is_only_for_a_steps_unknown_attempt() {
+    var store = opened(); if (!store) return
+    var refusal = F.load("logs-follow-refusal.json")
+    reply(store.logsRunner.current, logsReply("explore text\n"), 0)
+    store.refreshLogs()
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsError, "UnknownAttemptError: " + refusal.error.message, "an attempt's refusal is an error")
+    compare(store.logsNote, "")
+    compare(store.logsText, "explore text", "the text is kept")
+
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsNote, "This step records no output")
+    store.refreshLogs()
+    reply(store.logsRunner.current, JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }) + "\n", 1)
+    compare(store.logsError, "HelperError: boom", "another failure of a step is an error")
+    compare(store.logsNote, "", "and drops the note")
+    store.refreshLogs()
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsNote, "This step records no output")
+    compare(store.logsError, "", "the note replaces the error")
+    store.refreshLogs()
+    reply(store.logsRunner.current, "not json", 1)
+    compare(store.logsError, "The logs snapshot gave no usable result (exit 1).")
+    compare(store.logsNote, "", "an unusable reply drops the note")
+    // synthetic: an ok:false envelope whose error is not an object
+    store.refreshLogs()
+    reply(store.logsRunner.current, JSON.stringify({ ok: false, error: "UnknownAttemptError" }) + "\n", 1)
+    compare(store.logsNote, "", "only error.type UnknownAttemptError is the note")
+    compare(store.logsError, "unknown error")
+  }
+
+  // Review Focus 2.
+  function test_a_late_step_refusal_after_switching_to_an_attempt_is_dropped() {
+    var store = opened(); if (!store) return
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    var stepFetch = store.logsRunner.current
+    store.selectAttempt(tc.openCard, "explore", 1)
+    var attemptFetch = store.logsRunner.current
+    reply(stepFetch, refusalReply(), 0)
+    compare(store.logsNote, "", "the step's late reply is dropped")
+    reply(attemptFetch, refusalReply(), 0)
+    compare(store.logsNote, "", "the attempt's refusal is no note")
+    verify(store.logsError.indexOf("UnknownAttemptError: ") === 0, store.logsError)
+  }
+
+  function test_another_selection_empties_the_note_and_the_same_step_keeps_it() {
+    var store = opened(); if (!store) return
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    reply(store.logsRunner.current, refusalReply(), 0)
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    compare(store.logsNote, "This step records no output", "the same step keeps the note until its reply")
+    store.selectAttempt(tc.openCard, "explore", 1)
+    compare(store.logsNote, "", "another selection starts without it")
+  }
+
+  // Review Focus 5.
+  function test_clearing_the_run_clears_the_note() {
+    var store = opened(); if (!store) return
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsNote, "This step records no output")
+    store.selectedRunId = ""
+    compare(store.logsNote, "")
+    compare(store.selectedAttempt, null)
   }
 
   // ---- run controls (S2 4.1)

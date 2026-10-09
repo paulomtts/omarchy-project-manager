@@ -120,6 +120,7 @@ Scope {
   property bool logsLoading: false    // a fetch is in flight
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
+  property string logsNote: ""        // a neutral sentence about the selection's output, not an error; "" when none
 
   // The selected run's event timeline (3.1). `titles` is the open project's
   // card id -> title map, handed in by App. `events` is RunEvents.eventRow
@@ -811,6 +812,7 @@ Scope {
       store.logsTruncated = false
       store.logsFetchedMs = 0
       store.logsError = ""
+      store.logsNote = ""
     }
     store.selectedAttempt = isStep ? { card_id: cardId, phase: phase, attempt: 0, step: true }
                                    : { card_id: cardId, phase: phase, attempt: attempt }
@@ -851,6 +853,7 @@ Scope {
     store.logsFetchedMs = 0
     store.logsLoading = false
     store.logsError = ""
+    store.logsNote = ""
     store.logsStatus = ""
   }
 
@@ -1060,12 +1063,16 @@ Scope {
     store.eventsError = ""
   }
 
-  // One logs reply. ok:true replaces the text with its last 200 lines; any
-  // failure keeps the text and only says why. Never touches amStatus, runs or
+  // One logs reply. ok:true replaces the text with its last 200 lines; a
+  // step's UnknownAttemptError (am has no log for it) empties the text and
+  // sets logsNote "This step records no output", with no error; any other
+  // failure keeps the text and only says why. Every reply but the step's
+  // UnknownAttemptError leaves logsNote "". Never touches amStatus, runs or
   // lastError: those belong to the snapshot. A reply for an older fetch never
   // gets here (the runner's latest-wins).
   function applyLogs(stdout, exitCode) {
     store.logsLoading = false
+    store.logsNote = ""
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var tail = Runs.logTail(envelope.data, 200)
@@ -1073,6 +1080,17 @@ Scope {
       store.logsTruncated = tail.truncated
       store.logsFetchedMs = Date.now()
       store.logsError = ""
+      return
+    }
+    var sel = store.selectedAttempt
+    if (envelope !== null && envelope.ok === false && sel && sel.step === true
+        && envelope.error !== null && typeof envelope.error === "object"
+        && envelope.error.type === "UnknownAttemptError") {
+      store.logsText = ""
+      store.logsTruncated = false
+      store.logsError = ""
+      store.logsNote = "This step records no output"
+      store.logsFetchedMs = Date.now()
       return
     }
     if (envelope !== null && envelope.ok === false) {
