@@ -37,7 +37,7 @@ TestCase {
   // requestSnapshot(roots); noticeRequested to the control store's flash;
   // runSettingsWanted and runSettingsSaveRequested to its loadRunSettings and
   // saveRunSettings, and its runSettingsSaveFailed back to
-  // dispatchSaveFailed. The run store's dispatchStore handle is not set.
+  // dispatchSaveFailed.
   // Returns the dispatch store.
   function make() {
     var runsComp = Qt.createComponent("../../../core/stores/RunStore.qml")
@@ -49,7 +49,6 @@ TestCase {
     c.project = Qt.binding(function() { return store.project })
     c.active = Qt.binding(function() { return store.active })
     c.runs = Qt.binding(function() { return store.runs })
-    store.controlStore = c
     store.snapshotReplied.connect(function(root, outcome) { if (outcome === "ok") c.settleAfterSnapshot() })
     c.refreshRequested.connect(function(roots) {
       if (roots === "all") store.refresh()
