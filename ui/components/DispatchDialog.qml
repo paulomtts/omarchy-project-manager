@@ -249,7 +249,6 @@ Item {
     }
   }
 
-
   // The project rows: a list, or the array-like a list arrives as through
   // createObject; anything else (null, an object, a string) reads as [].
   function projectList() {
