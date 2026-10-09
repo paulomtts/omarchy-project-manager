@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""One attempt's output snapshot: an `am logs` passthrough.
+"""One attempt's (or the phase's newest) output snapshot: an `am logs` passthrough.
 
     runs-logs.py <project_root> RUN CARD PHASE ATTEMPT
 
 Runs `am logs RUN CARD --phase PHASE --attempt ATTEMPT --repo-dir ROOT` as an
-argv list (no shell, stdin /dev/null, 60 s timeout). The five arguments go to am
-verbatim; am refuses bad ones itself.
+argv list (no shell, stdin /dev/null, 60 s timeout). With ATTEMPT `0` no
+--attempt is sent (`am logs RUN CARD --phase PHASE --repo-dir ROOT`), so am
+returns the phase's newest recorded output: this is how a step's output is read,
+since steps record no attempts in `am status`. Any other ATTEMPT is sent verbatim
+with --attempt. The arguments reach am unvalidated, attempt `0` being the one
+exception; am refuses bad ones itself.
 
 Prints exactly one JSON line on EVERY path:
 - am's envelope, unchanged, whether {"ok": true, "data": ...} or
@@ -44,8 +48,10 @@ def failure(kind, message, code=0):
 
 
 def logs_argv(root, run, card, phase, attempt):
-    """am's argv after the executable: the attempt, then --repo-dir ROOT."""
-    return ["logs", run, card, "--phase", phase, "--attempt", attempt, "--repo-dir", root]
+    """am's argv after the executable: --attempt ATTEMPT, omitted when ATTEMPT is
+    exactly "0" (am's newest output of the phase), then --repo-dir ROOT."""
+    chosen = [] if attempt == "0" else ["--attempt", attempt]
+    return ["logs", run, card, "--phase", phase, *chosen, "--repo-dir", root]
 
 
 def envelope_of(stdout, returncode):
