@@ -301,6 +301,24 @@ def watch_all_once(am):
     return payload["data"]["events"]
 
 
+def watch_run_once(am, run_id, *extra):
+    """The events of `am watch RUN_ID *extra`, which must exit 0 with exactly
+    {"ok": true, "data": {"events": [...]}}; otherwise the test fails with
+    am's stdout and stderr."""
+    proc = am.run("watch", run_id, *extra)
+    output = f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert proc.returncode == 0, output
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        pytest.fail(f"am watch {run_id} printed no JSON envelope: {output}")
+    assert isinstance(payload, dict) and payload.get("ok") is True, output
+    assert set(payload) == {"ok", "data"}, output
+    assert isinstance(payload["data"], dict) and set(payload["data"]) == {"events"}, output
+    assert isinstance(payload["data"]["events"], list), output
+    return payload["data"]["events"]
+
+
 def test_watch_all_returns_the_events_envelope_with_journal_line_keys(am, seeded_run):
     assert_seeded_events(watch_all_once(am), seeded_run, am.repo)
 
@@ -331,3 +349,34 @@ def test_watch_all_follow_prints_a_hello_line_then_journal_lines(am, seeded_run)
     # The backlog replays the same events the one-shot envelope holds.
     assert events == expected
     assert_seeded_events(events, seeded_run, am.repo)
+
+
+def fake_am(returncode, stdout, stderr=""):
+    """A stand-in for the am fixture whose every run returns this output."""
+    def run(*args):
+        return subprocess.CompletedProcess(["am", *args], returncode, stdout, stderr)
+
+    return SimpleNamespace(run=run)
+
+
+def test_watch_run_once_fails_with_ams_output_on_a_refusal():
+    refusal = json.dumps({"ok": False, "error": {"type": "UnknownRunError", "message": "no run r1"}})
+    with pytest.raises(AssertionError, match="UnknownRunError.*boom"):
+        watch_run_once(fake_am(3, refusal, "boom"), "r1")
+
+
+def test_watch_run_once_fails_with_ams_output_when_it_prints_no_json():
+    with pytest.raises(pytest.fail.Exception, match="not json.*traceback"):
+        watch_run_once(fake_am(0, "not json", "traceback"), "r1")
+
+
+def test_watch_run_returns_the_events_envelope_with_journal_line_keys(am, seeded_run):
+    events = watch_run_once(am, seeded_run.id)
+    assert_seeded_events(events, seeded_run, am.repo)
+    # runs-events.py takes seq as the --since cursor: an int, never a bool or float.
+    assert all(type(event["seq"]) is int for event in events), events
+
+
+def test_watch_run_is_the_run_filtered_watch_all(am, seeded_run):
+    expected = [event for event in watch_all_once(am) if event["run_id"] == seeded_run.id]
+    assert watch_run_once(am, seeded_run.id) == expected
