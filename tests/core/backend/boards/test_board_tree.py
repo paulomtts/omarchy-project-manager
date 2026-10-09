@@ -141,3 +141,83 @@ def test_bad_usage_is_a_helpererror_and_runs_nothing(box, args):
 
 def test_timeout_constant_is_twenty_seconds():
     assert load_module().TIMEOUT_SECONDS == 20
+
+
+def test_a_brd_that_hangs_times_out_as_brdfailed_and_is_killed(box, monkeypatch, capsys):
+    mod = load_module()
+    monkeypatch.setattr(mod, "TIMEOUT_SECONDS", 0.5)
+    for key, value in box["env"].items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("FAKE_SLEEP", "30")
+    started = time.monotonic()
+    code = mod.main(["board-tree.py", str(box["project"])])
+    elapsed = time.monotonic() - started
+    assert code == 0
+    assert elapsed < 10
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == {"ok": False, "error": {"type": "BrdFailed", "message": "brd tree timed out after 0.5 s"}}
+
+
+def test_brd_missing_from_path_is_brdmissing(box):
+    code, out = run(box, str(box["project"]), extra_env={"PATH": str(box["empty"])})
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "BrdMissing", "message": "brd was not found on PATH"}}
+
+
+BRD_NOT_FOUND = {"ok": False, "error": {"type": "ProjectNotFoundError",
+                                        "message": "no registered project at or above /tmp; run `brd init` there"}}
+
+
+def test_brdfailed_carries_brds_own_message(box):
+    code, out = run(box, str(box["project"]), extra_env={"FAKE_OUT": json.dumps(BRD_NOT_FOUND), "FAKE_EXIT": "1"})
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "BrdFailed", "message": BRD_NOT_FOUND["error"]["message"]}}
+
+
+def test_brd_error_message_wins_even_with_exit_zero(box):
+    code, out = run(box, str(box["project"]), extra_env={"FAKE_OUT": json.dumps(BRD_NOT_FOUND), "FAKE_EXIT": "0"})
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "BrdFailed", "message": BRD_NOT_FOUND["error"]["message"]}}
+
+
+def test_an_empty_brd_error_message_falls_back_to_stderr(box):
+    payload = {"ok": False, "error": {"type": "X", "message": ""}}
+    code, out = run(box, str(box["project"]),
+                    extra_env={"FAKE_OUT": json.dumps(payload), "FAKE_ERR": "fallback text\n", "FAKE_EXIT": "1"})
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "BrdFailed", "message": "fallback text"}}
+
+
+def test_a_success_payload_with_a_non_zero_exit_is_brdfailed(box):
+    code, out = run(box, str(box["project"]),
+                    extra_env={"FAKE_OUT": json.dumps({"ok": True, "data": []}), "FAKE_ERR": "partial failure", "FAKE_EXIT": "2"})
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "BrdFailed", "message": "partial failure"}}
+
+
+@pytest.mark.parametrize("fake_out,fake_err,message", [
+    ("", "  boom on stderr \n", "boom on stderr"),
+    ("  boom on stdout \n", "", "boom on stdout"),
+    ("", "", "brd tree exited with 3"),
+])
+def test_brdfailed_falls_back_to_stderr_then_stdout_then_exit_code(box, fake_out, fake_err, message):
+    code, out = run(box, str(box["project"]), extra_env={"FAKE_OUT": fake_out, "FAKE_ERR": fake_err, "FAKE_EXIT": "3"})
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "BrdFailed", "message": message}}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can enter a mode-000 directory")
+def test_an_unexpected_exception_is_a_helpererror_line(box):
+    locked = box["tmp"] / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        code, out = run(box, str(locked))
+    finally:
+        locked.chmod(0o755)
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert isinstance(out["error"]["message"], str) and out["error"]["message"]
+    assert calls(box) == []

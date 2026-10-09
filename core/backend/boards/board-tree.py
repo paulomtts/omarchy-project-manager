@@ -36,8 +36,13 @@ def failure(error_type, message):
 def tree(root):
     if not os.path.isdir(root):
         return failure("RootMissing", "project directory not found: %s" % root)
-    proc = subprocess.run(["brd", "tree"], cwd=root, stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+    try:
+        proc = subprocess.run(["brd", "tree"], cwd=root, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+    except FileNotFoundError:
+        return failure("BrdMissing", "brd was not found on PATH")
+    except subprocess.TimeoutExpired:
+        return failure("BrdFailed", "brd tree timed out after %g s" % TIMEOUT_SECONDS)
     try:
         payload = json.loads(proc.stdout)
     except ValueError:
@@ -45,15 +50,25 @@ def tree(root):
     if (proc.returncode == 0 and isinstance(payload, dict) and payload.get("ok") is True
             and isinstance(payload.get("data"), list)):
         return payload
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict) and isinstance(error.get("message"), str) and error["message"]:
+        return failure("BrdFailed", error["message"])
+    if proc.returncode != 0:
+        message = (proc.stderr.strip() or proc.stdout.strip()
+                   or "brd tree exited with %d" % proc.returncode)
+        return failure("BrdFailed", message)
     return failure("BrdBadOutput", "brd tree returned unexpected output")
 
 
 def main(argv):
     args = argv[1:]
-    if len(args) == 1 and not args[0].startswith("-"):
-        payload = tree(args[0])
-    else:
-        payload = failure("HelperError", USAGE)
+    try:
+        if len(args) == 1 and not args[0].startswith("-"):
+            payload = tree(args[0])
+        else:
+            payload = failure("HelperError", USAGE)
+    except Exception as exc:
+        payload = failure("HelperError", str(exc) or type(exc).__name__)
     return emit(payload, 0)
 
 
