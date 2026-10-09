@@ -1846,6 +1846,55 @@ Scope {
     runner.destroy()
   }
 
+  // ---- dispatch: project and target steps
+
+  // The Runs dialog's step: project | target | form; "" when the dispatch
+  // was not opened from Runs (idle or a card entry).
+  property string dispatchStep: ""
+  // The latest board-tree.py --probe envelope ({ok: true, projects}) while a
+  // step is open; null before its reply, when the reply is unreadable and
+  // whenever the steps are cleared.
+  property var dispatchProjectProbe: null
+  // The project step's rows: Runs.dispatchProjects over the usable roots,
+  // the probe and the open project while a step is open, else [].
+  readonly property var dispatchProjectRows: store.dispatchStep !== ""
+    ? Runs.dispatchProjects(store.usableRoots(), store.dispatchProjectProbe, store.project) : []
+  readonly property alias dispatchProjectRunner: dispatchProjectRunner
+
+  // Opens the dispatch from Runs at the project step with no root and probes
+  // every usable root, in registry order. Refused (false, nothing changes)
+  // while a start is in flight; else true, from any state or step: a second
+  // call starts the step over. With no usable root nothing is launched and
+  // the rows are [].
+  function dispatchOpenFromRuns() {
+    if (store.dispatchState === "starting") return false
+    store.resetDispatch()
+    store.dispatchRoot = ""
+    store.dispatchStep = "project"
+    store.dispatchProjectProbe = null
+    var roots = store.usableRoots().map(function(p) { return p.root })
+    if (roots.length > 0) dispatchProjectRunner.run(["--probe"].concat(roots))
+    else dispatchProjectRunner.cancel()
+    return true
+  }
+
+  // The probe's reply: dispatchProjectProbe is its envelope when that is
+  // {ok: true, projects: [...]}, else null (every row enabled). The exit code
+  // is not read. Applied only while a step is open.
+  function dispatchProjectReplied(stdout) {
+    if (store.dispatchStep === "") return
+    var reply = store.parseEnvelope(stdout)
+    store.dispatchProjectProbe = reply !== null && reply.ok === true && Array.isArray(reply.projects) ? reply : null
+  }
+
+  // board-tree.py --probe ROOT... for the project step; latest wins. No
+  // guard: the probe depends on no root.
+  HelperRunner {
+    id: dispatchProjectRunner
+    script: store.backendDir + "boards/board-tree.py"
+    onFinished: function(stdout, exitCode) { store.dispatchProjectReplied(stdout) }
+  }
+
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is
   // matched to the registry by root, whatever project is open. Only
   // refresh() with no usable root and resetCursor() stop it.

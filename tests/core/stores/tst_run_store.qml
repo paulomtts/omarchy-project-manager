@@ -3950,7 +3950,7 @@ TestCase {
     compare(store.dispatchLog, "", label + ": log")
     compare(store.dispatchLogTail, "", label + ": log tail")
     compare(store.dispatchExitCode, null, label + ": exit code")
-    compare(store.dispatchTargetLabel, "", label + ": target label")
+    compare(store.dispatchStep, "", label + ": step")
   }
 
   // 1 (dispatchStart() from idle is checked in Task 5's test 21)
@@ -5625,6 +5625,131 @@ TestCase {
     reply(runner.current, "garbage\n", 1)
     compare(store.flashText, "", "a save failure that is not here does not flash")
     compare(store.dispatchStartRunners.length, 0)
+  }
+
+  // ---- dispatch: project and target steps (2.2)
+
+  property string probeCmd: "python3|/plugin/core/backend/boards/board-tree.py|--probe"
+
+  // board-tree.py --probe's reply line: {"ok": true, "projects": entries}.
+  function probeReply(entries) {
+    return JSON.stringify({ ok: true, projects: entries }) + "\n"
+  }
+
+  // The project step's rows as "root:name:open:on|off:reason", " / "-joined.
+  function rowsText(rows) {
+    return rows.map(function(r) {
+      return r.root + ":" + r.name + ":" + (r.open ? "open" : "") + ":" + (r.enabled ? "on" : "off") + ":" + r.reason
+    }).join(" / ")
+  }
+
+  // Projects A and B registered, A open with its settings read (dispatchSettings).
+  function runsStore() {
+    var store = make(); if (!store) return null
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    store.project = tc.rootA
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
+    return store
+  }
+
+  // 2.2 test 1
+  function test_dispatch_step_empty_for_idle_and_card_entry() {
+    var fresh = make(); if (!fresh) return
+    compare(fresh.dispatchStep, "", "fresh")
+    compare(fresh.dispatchProjectRows.length, 0, "fresh: no rows")
+    compare(fresh.dispatchProjectProbe, null, "fresh: no probe")
+
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchStep, "", "a card entry has no step")
+    compare(store.dispatchProjectRows.length, 0, "a card entry has no rows")
+    verify(!store.dispatchProjectRunner.current, "a card entry probes nothing")
+  }
+  // 2.2 test 2
+  function test_dispatch_open_from_runs_argv_and_rows() {
+    var store = runsStore(); if (!store) return
+    compare(store.dispatchOpenFromRuns(), true)
+    compare(store.dispatchStep, "project")
+    compare(store.dispatchRoot, "", "no root until a pick")
+    compare(store.dispatchState, "idle")
+    compare(store.dispatchTarget, null, "S3's fields keep their none values")
+    compare(store.dispatchForm, null)
+    var probe = store.dispatchProjectRunner.current
+    verify(probe, "the probe is launched")
+    compare(argv(probe), tc.probeCmd + "|/home/u/my proj|/home/u/b")
+    compare(probe.command.length, 5)
+    compare(store.dispatchProjectProbe, null, "null before the reply")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:",
+            "before the reply every row is enabled, the open project first")
+    reply(probe, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    compare(store.dispatchProjectProbe.ok, true)
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:no .brd marker")
+
+    var none = makeWithRoots([tc.rootB, tc.rootA]); if (!none) return
+    compare(none.dispatchOpenFromRuns(), true, "no project needs to be open")
+    compare(argv(none.dispatchProjectRunner.current), tc.probeCmd + "|/home/u/b|/home/u/my proj", "registry order")
+    compare(rowsText(none.dispatchProjectRows), "/home/u/my proj:alpha::on: / /home/u/b:beta::on:", "no row open, ordered by name")
+  }
+  // 2.2 test 3
+  function test_dispatch_open_from_runs_with_no_root_and_while_starting() {
+    var empty = make(); if (!empty) return
+    compare(empty.dispatchOpenFromRuns(), true)
+    compare(empty.dispatchStep, "project")
+    compare(empty.dispatchProjectRows.length, 0, "No projects registered")
+    verify(!empty.dispatchProjectRunner.current, "nothing to probe")
+
+    var unusable = make(); if (!unusable) return
+    unusable.projectRoots = [{ root: "-x", name: "x" }, { root: "", name: "empty" }, null, { name: "no root" }]
+    compare(unusable.dispatchOpenFromRuns(), true)
+    compare(unusable.dispatchProjectRows.length, 0, "an unusable entry gives no row")
+    verify(!unusable.dispatchProjectRunner.current, "an unusable entry is not probed")
+
+    var emptied = runsStore(); if (!emptied) return
+    emptied.dispatchOpenFromRuns()
+    var old = emptied.dispatchProjectRunner.current
+    emptied.projectRoots = []
+    compare(emptied.dispatchOpenFromRuns(), true)
+    compare(emptied.dispatchProjectRows.length, 0)
+    reply(old, probeReply([{ root: tc.rootA, ok: true }]), 0)
+    compare(emptied.dispatchProjectProbe, null, "a reopening with no root drops the older probe")
+
+    var starting = readyStore(); if (!starting) return
+    compare(starting.dispatchStart(), true)
+    compare(starting.dispatchOpenFromRuns(), false)
+    compare(starting.dispatchState, "starting")
+    compare(starting.dispatchStep, "")
+    compare(starting.dispatchRoot, tc.rootA)
+    verify(!starting.dispatchProjectRunner.current, "nothing launched")
+  }
+  // 2.2 test 4
+  function test_dispatch_project_probe_unreadable_and_latest_wins() {
+    var store = runsStore(); if (!store) return
+    var bad = probeReply([{ root: tc.rootB, ok: false, reason: "not a directory" }])
+    var unreadable = ["Traceback: boom\n", "", "[1, 2]\n",
+                      JSON.stringify({ ok: false, error: { type: "Usage", message: "no roots" } }) + "\n",
+                      JSON.stringify({ ok: true, projects: "nope" }) + "\n"]
+    for (var i = 0; i < unreadable.length; i++) {
+      store.dispatchOpenFromRuns()
+      reply(store.dispatchProjectRunner.current, bad, 0)
+      verify(store.dispatchProjectProbe !== null, "case " + i + ": a good reply first")
+      store.dispatchProjectReplied(unreadable[i])
+      compare(store.dispatchProjectProbe, null, "case " + i + ": unreadable is null")
+      compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:",
+              "case " + i + ": every row enabled")
+    }
+
+    store.dispatchOpenFromRuns()
+    var first = store.dispatchProjectRunner.current
+    compare(store.dispatchOpenFromRuns(), true, "a second call starts the step over")
+    var second = store.dispatchProjectRunner.current
+    verify(first !== second, "a new probe")
+    reply(first, bad, 0)
+    compare(store.dispatchProjectProbe, null, "the older reply is dropped")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:")
+    reply(second, bad, 0)
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:not a directory",
+            "the newer reply applies")
   }
 
   // ---- list snapshots
