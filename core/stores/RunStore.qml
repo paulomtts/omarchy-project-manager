@@ -146,12 +146,18 @@ Scope {
   readonly property var controlRunners: store.controlStore ? store.controlStore.controlRunners : []
   readonly property var pendingTimer: store.controlStore ? store.controlStore.pendingTimer : null
   readonly property var flashTimer: store.controlStore ? store.controlStore.flashTimer : null
+  readonly property bool notifyOnEscalation: store.controlStore ? store.controlStore.notifyOnEscalation : false
+  readonly property bool notifySaved: store.controlStore ? store.controlStore.notifySaved : false
+  readonly property bool notifyTouched: store.controlStore ? store.controlStore.notifyTouched : false
+  readonly property var settingsLoadRunner: store.controlStore ? store.controlStore.settingsLoadRunner : null
+  readonly property var settingsSaveRunner: store.controlStore ? store.controlStore.settingsSaveRunner : null
   function control(action, runId) { return store.controlStore ? store.controlStore.control(action, runId) : undefined }
   function refusalOf(action, runId) { return store.controlStore ? store.controlStore.refusalOf(action, runId) : undefined }
   function flash(text) { return store.controlStore ? store.controlStore.flash(text) : undefined }
   function openCancel(runId) { return store.controlStore ? store.controlStore.openCancel(runId) : undefined }
   function closeCancel() { return store.controlStore ? store.controlStore.closeCancel() : undefined }
   function confirmCancel() { return store.controlStore ? store.controlStore.confirmCancel() : undefined }
+  function setNotifyOnEscalation(on) { return store.controlStore ? store.controlStore.setNotifyOnEscalation(on) : undefined }
 
   // Moved to RunAlertsStore; removed by the last story
   property var alertsStore: null
@@ -166,14 +172,6 @@ Scope {
   function dismissToast(key) { return store.alertsStore ? store.alertsStore.dismissToast(key) : undefined }
   function dismissAllToasts() { return store.alertsStore ? store.alertsStore.dismissAllToasts() : undefined }
   function notify(alert) { return store.alertsStore ? store.alertsStore.notify(alert) : undefined }
-  // "Notify on escalation", viewer-wide and off until read: the switch's
-  // value, the last value read from or written to viewer-state.py's global
-  // settings, and whether the user changed it since this opening's load was
-  // launched (a late load reply then changes nothing). A project switch
-  // never changes them.
-  property bool notifyOnEscalation: false
-  property bool notifySaved: false
-  property bool notifyTouched: false
   // The open project's last get-run-settings object (runSettingsRunner), as
   // it was read: {} until its reply, when the reply is unreadable, and after
   // a project switch. The dispatch form starts from it; its
@@ -227,8 +225,6 @@ Scope {
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
-  readonly property alias settingsLoadRunner: settingsLoadRunner
-  readonly property alias settingsSaveRunner: settingsSaveRunner
   readonly property alias runSettingsRunner: runSettingsRunner
   readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
   readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
@@ -371,13 +367,10 @@ Scope {
     else store.stopLive()
   }
 
-  // The panel opened: fetch now and read the notify switch (get-global-settings;
-  // notifyTouched is cleared first unless a save is in flight); the first good
-  // snapshot starts the watch, and the stale clock counts from now.
+  // The panel opened: fetch now; the first good snapshot starts the watch,
+  // and the stale clock counts from now.
   function startLive() {
     store.watchTried = false
-    if (!settingsSaveRunner.busy) store.notifyTouched = false
-    settingsLoadRunner.run(["get-global-settings"])
     store.restartStale()
     store.refresh()
   }
@@ -1054,47 +1047,11 @@ Scope {
     })
   }
 
-  // ---- the notify switch (S2 4.4)
-
-  // The switch changed: shown at once, written to the global settings in the
-  // background. Always works, with or without a project, and returns true.
-  function setNotifyOnEscalation(on) {
-    var value = !!on
-    store.notifyOnEscalation = value
-    store.notifyTouched = true
-    settingsSaveRunner.sent = value
-    settingsSaveRunner.run(["set-global-settings", JSON.stringify({ notifyOnEscalation: value })])
-    return true
-  }
-
-  // get-global-settings: only a real true turns the switch on; an unreadable
-  // reply leaves it off. Too late once the user changed the switch in this
-  // opening.
-  function applyGlobalSettings(stdout, exitCode) {
-    if (store.notifyTouched) return
-    var settings = Results.parseEnvelope(stdout)
-    var on = settings !== null && settings.notifyOnEscalation === true
-    store.notifyOnEscalation = on
-    store.notifySaved = on
-  }
-
   // get-run-settings: one bare object, kept whole as runSettings ({} when
   // unreadable) on every reply. Never touches the notify switch.
   function applyRunSettings(stdout, exitCode) {
     var settings = Results.parseEnvelope(stdout)
     store.runSettings = settings !== null ? settings : {}
-  }
-
-  // set-global-settings: {"ok": true} means `sent` is stored; anything else puts
-  // the switch back to what is stored and says so.
-  function notifySaveReplied(stdout, exitCode, sent) {
-    var reply = Results.parseEnvelope(stdout)
-    if (reply !== null && reply.ok === true) {
-      store.notifySaved = sent
-      return
-    }
-    store.notifyOnEscalation = store.notifySaved
-    store.flash("Notify on escalation could not be saved")
   }
 
   // ---- dispatch (S3 3.1)
@@ -1452,15 +1409,6 @@ Scope {
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
   }
 
-  // get-global-settings, once per opening (startLive); latest wins. No guard:
-  // the switch is viewer-wide, and a reply that lands after the panel closed
-  // is still applied.
-  HelperRunner {
-    id: settingsLoadRunner
-    script: store.backendDir + "projects/viewer-state.py"
-    onFinished: function(stdout, exitCode) { store.applyGlobalSettings(stdout, exitCode) }
-  }
-
   // get-run-settings on a project switch, for runSettings only. Its guard is
   // set by projectSwitched() itself rather than bound to `project`:
   // projectSwitched() runs from onProjectChanged, before a binding here is
@@ -1470,16 +1418,6 @@ Scope {
     id: runSettingsRunner
     script: store.backendDir + "projects/viewer-state.py"
     onFinished: function(stdout, exitCode) { store.applyRunSettings(stdout, exitCode) }
-  }
-
-  // set-global-settings on a change of the switch; latest wins. No guard: a
-  // project switch never drops its reply. `sent` is the value the latest
-  // launch writes.
-  HelperRunner {
-    id: settingsSaveRunner
-    property bool sent: false
-    script: store.backendDir + "projects/viewer-state.py"
-    onFinished: function(stdout, exitCode) { store.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
   }
 
   // dispatch-preview.py --defaults, once per opening. Guarded by the project:

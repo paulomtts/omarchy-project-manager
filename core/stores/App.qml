@@ -143,12 +143,13 @@ QtObject {
   }
 
   // The run alerts never import the run store: App hands them the backend
-  // directory, the panel-open flag, the notify switch and the registry, and
-  // routes every project's snapshot reply (runs.snapshotReplied) here.
+  // directory, the panel-open flag, run control's notify switch and the
+  // registry, and routes every project's snapshot reply (runs.snapshotReplied)
+  // here.
   readonly property RunAlertsStore runAlerts: RunAlertsStore {
     backendDir: app.backendDir
     active: app.panelOpen
-    notifyOnEscalation: app.runs.notifyOnEscalation
+    notifyOnEscalation: app.runControl.notifyOnEscalation
     projectRoots: app.runs.projectRoots
   }
 

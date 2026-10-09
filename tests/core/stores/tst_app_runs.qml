@@ -493,8 +493,8 @@ TestCase {
     app.panelOpen = false
     compare(app.runAlerts.active, false)
     compare(app.runAlerts.notifyOnEscalation, false)
-    app.runs.notifyOnEscalation = true
-    compare(app.runAlerts.notifyOnEscalation, true, "the switch follows the run store's")
+    app.runControl.setNotifyOnEscalation(true)
+    compare(app.runAlerts.notifyOnEscalation, true, "the switch follows run control's")
     app.projects.applyStoredState('{"last_project": null}', 0)
     app.projects.applyProjectsList([pA, pB])
     compare(app.runAlerts.projectRoots.length, 2)
@@ -639,5 +639,41 @@ TestCase {
                            data_dir: "/home/u/.local/share" }) + "\n", 0)
     compare(app.runs.amStatus, "ok")
     compare(app.runControl.pending.b1, undefined, "settled on pB's ok emission")
+  }
+
+  // ---- the notify switch on app.runControl (split-runstore 3.2)
+
+  // A8
+  function test_the_alerts_switch_is_run_controls() {
+    var app = makeBare(); if (!app) return
+    app.panelOpen = true
+    var load = app.runControl.settingsLoadRunner.current
+    verify(load, "the opening loads the switch on run control")
+    compare(argv(load), tc.viewerCmd + "get-global-settings")
+    reply(load, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(app.runControl.notifyOnEscalation, true)
+    compare(app.runAlerts.notifyOnEscalation, true, "the alerts input follows run control's")
+    verify(app.runs.settingsLoadRunner === app.runControl.settingsLoadRunner, "the run store's shim")
+    compare(app.runs.notifyOnEscalation, true)
+  }
+
+  // A9
+  function test_with_run_controls_switch_on_an_escalation_launches_notify() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    reply(app.runControl.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(app.runAlerts.notifyOnEscalation, true)
+    snapshot(app, listReply([escalatedIn("r1")], []))
+    compare(app.runAlerts.toasts.length, 1)
+    compare(app.runAlerts.notifyRunners.length, 1, "the switch is on: a notification")
+    compare(argv(app.runAlerts.notifyRunners[0].current), tc.notifyCmd + "m-r1|escalated")
+    reply(app.runAlerts.notifyRunners[0].current, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
+    compare(app.runAlerts.notifyRunners.length, 0)
+    compare(app.runControl.setNotifyOnEscalation(false), true)
+    reply(app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(app.runAlerts.notifyOnEscalation, false)
+    snapshot(app, listReply([escalatedIn("r1"), runningIn("r2")], []))
+    snapshot(app, listReply([escalatedIn("r1"), escalatedIn("r2")], []))
+    compare(app.runAlerts.toasts.length, 2, "r2's escalation is raised")
+    compare(app.runAlerts.notifyRunners.length, 0, "the switch is off: a toast only")
   }
 }
