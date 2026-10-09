@@ -179,7 +179,7 @@ TestCase {
     wait(50)
     p.shortcuts.handleSearchKey(key(Qt.Key_Return))
     compare(p.app.nav.viewMode, "runs")
-    compare(H.find(p, "runsMessage").text, "No runs for this project yet.")
+    compare(H.find(p, "runsMessage").text, "No runs yet.", "the registry holds alpha")
   }
 
   function test_a_project_that_leaves_the_registry_takes_its_runs_with_it() {

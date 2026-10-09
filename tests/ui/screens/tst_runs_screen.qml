@@ -41,7 +41,14 @@ TestCase {
       // no hello known).
       property int amSchema: 0
       property string amVersion: ""
-      readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(rs.runs, rs.runFilter), rs.searchQuery)
+      // The registry, the per-root snapshot errors and the project filter, as
+      // the real store holds them; groups and filteredRuns derive exactly as
+      // the store's do.
+      property var projectRoots: [{ root: "/home/u/a", name: "alpha" }]
+      property var projectErrors: ({})
+      property string projectFilter: ""
+      readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(rs.runs, rs.runFilter), rs.searchQuery), rs.projectFilter))
+      readonly property var filteredRuns: Runs.displayOrder(rs.groups)
       function toggleRunFilter(id) { rs.runFilter = id === "all" || id === rs.runFilter ? "" : id }
       // The control surface the rows read (S2 4.2). `control` only records.
       property var pending: ({})
@@ -291,8 +298,26 @@ TestCase {
   function test_no_runs_says_so() {
     var s = make([]); if (!s) return
     var msg = H.find(s.screen, "runsMessage")
-    compare(msg.text, "No runs for this project yet.")
+    compare(msg.text, "No runs yet.")
     compare(msg.visible, true)
+  }
+
+  function test_no_projects_registered_says_so_whatever_the_chip() {
+    var s = make([]); if (!s) return
+    s.runs.projectRoots = []
+    var msg = H.find(s.screen, "runsMessage")
+    compare(msg.text, "No projects registered.")
+    compare(msg.visible, true)
+    s.runs.toggleRunFilter("live")
+    compare(msg.text, "No projects registered.", "a chip does not change it")
+    s.nav.searchQuery = "beta"
+    compare(msg.text, "No projects registered.", "nor does a search")
+    s.runs.projectRoots = null
+    compare(msg.text, "No projects registered.", "a registry that is not a list is empty")
+    s.runs.projectRoots = [{ root: "/home/u/a", name: "alpha" }]
+    compare(msg.text, "No runs match “beta”.", "a registered project brings the usual wording back")
+    s.nav.searchQuery = ""
+    compare(msg.text, "No Live runs.")
   }
 
   function test_missing_am_is_one_message_with_no_chips_or_rows() {

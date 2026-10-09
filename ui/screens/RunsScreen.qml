@@ -31,6 +31,9 @@ Column {
   readonly property real nowMs: screen.app.runs.filteredRuns ? Date.now() : 0
   readonly property bool amMissing: screen.app.runs.amStatus === "missing"
   readonly property var counts: Runs.runFilterCounts(screen.app.runs.runs)
+  // The registry is empty: the status line says so whatever the chip or the
+  // search.
+  readonly property bool noProjects: screen.sizeOf(screen.app.runs.projectRoots) === 0
 
   visible: screen.app.nav.viewMode === "runs"
   spacing: Style.space(6)
@@ -38,6 +41,11 @@ Column {
   // A chip's wording, also used by the "No <chip> runs." line.
   function chipLabel(id) {
     return id === "attention" ? "Needs attention" : id === "live" ? "Live" : id === "parked" ? "Parked" : "All"
+  }
+
+  // The length of a list or array-like object; 0 for anything else.
+  function sizeOf(list) {
+    return list !== null && typeof list === "object" && typeof list.length === "number" ? list.length : 0
   }
 
   // A dead or parked run's state, spelled out with its age folded in so the
@@ -104,11 +112,11 @@ Column {
 
     error: screen.amMissing ? "am is not installed or not on PATH" : ""
     empty: screen.app.runs.filteredRuns.length === 0
-    filtered: screen.app.nav.searchQuery !== "" || screen.app.runs.runFilter !== ""
+    filtered: !screen.noProjects && (screen.app.nav.searchQuery !== "" || screen.app.runs.runFilter !== "")
     filteredText: screen.app.nav.searchQuery !== ""
       ? "No runs match “" + screen.app.nav.searchQuery + "”."
       : "No " + screen.chipLabel(screen.app.runs.runFilter) + " runs."
-    emptyText: "No runs for this project yet."
+    emptyText: screen.noProjects ? "No projects registered." : "No runs yet."
 
     model: screen.app.runs.filteredRuns
     rowDelegate: Component { RunRow {} }
