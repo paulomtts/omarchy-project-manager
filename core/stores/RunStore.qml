@@ -32,7 +32,8 @@ import "../domain/runs.js" as Runs
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
-// Start.
+// Start. Each applied list snapshot reply is announced per project
+// (snapshotReplied).
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
 // as `app.runs` and binds `active` to the panel being open.
@@ -192,6 +193,13 @@ Scope {
   // known to the store or not. Never for a snapshot the store started itself.
   // (`runs` already owns the runsChanged name.)
   signal runsNudged(var ids)
+  // One project's list snapshot reply, once its state is applied: per usable
+  // root with a matched entry, in registry order, whether or not `active`.
+  // `outcome` is "ok", "failed" or "missing" (AmMissing, and a start-over);
+  // `previousRuns` are the root's runs before the reply ([] when it had none);
+  // `runs` are, for "ok", the root's runs that the merged `runs` lists under
+  // it, else [].
+  signal snapshotReplied(var root, var outcome, var previousRuns, var runs)
 
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
@@ -583,15 +591,21 @@ Scope {
 
   // The live state of the store last seen is forgotten: the cursor, the
   // nudges and their debounce, the runs and every root's list of them, and
-  // the alerts (the next list snapshot only arms). Selection, logs, controls
-  // and dispatch stay.
+  // the alerts (the next list snapshot only arms). Then snapshotReplied(root,
+  // "missing", previousRuns, []) for every usable root, in registry order.
+  // Selection, logs, controls and dispatch stay.
   function forgetLive() {
+    var prev = store.runsByProject
     store.watchCursor = 0
     store.nudges = {}
     debounceTimer.stop()
     store.runs = []
     store.runsByProject = {}
     store.armedRoots = {}
+    var usable = store.usableRoots()
+    var outcomes = {}
+    for (var i = 0; i < usable.length; i++) outcomes[usable[i].root] = "missing"
+    store.emitReplied(usable, outcomes, prev, {})
   }
 
   // A store id seen in a hello. A non-empty string is recorded as storeId;
@@ -912,7 +926,11 @@ Scope {
   // (alertsOf) and every root with an ok entry is armed. With none, amStatus
   // is "error" with the first failed entry's sentence, and armedRoots and
   // `stale` stay as they are. A failed entry, a root with no entry and a
-  // closed panel never change armedRoots.
+  // closed panel never change armedRoots. Last, once the state is applied,
+  // each root with a matched entry gets snapshotReplied in registry order
+  // (emitReplied): "missing" for each in an AmMissing reply, else "ok" for an
+  // ok entry, with the runs the merged list attributes to it (ownedRuns), and
+  // "failed" for any other, with [].
   function applyProjects(entries, exitCode, launched) {
     var usable = store.usableRoots()
     var names = {}
@@ -943,6 +961,8 @@ Scope {
       var type = err !== null && typeof err === "object" ? err.type : ""
       if (matched[m].ok === true || type !== "AmMissing") missing = false
     }
+    var prev = store.runsByProject
+    var outcomes = {}
     if (missing) {
       store.runs = []
       store.runsByProject = {}
@@ -954,9 +974,10 @@ Scope {
       // Every root is disarmed: comparing its next good entry against []
       // would alert every escalated run again.
       store.armedRoots = {}
+      for (var mr = 0; mr < matched.length; mr++) outcomes[matched[mr].root] = "missing"
+      store.emitReplied(usable, outcomes, prev, {})
       return
     }
-    var prev = store.runsByProject
     var byProject = Runs.copyMap(store.runsByProject)
     var errors = Runs.copyMap(store.projectErrors)
     var anyOk = false
@@ -968,6 +989,7 @@ Scope {
       if (entry.ok === true) {
         anyOk = true
         okRoots[root] = true
+        outcomes[root] = "ok"
         var list = Array.isArray(entry.runs) ? entry.runs : []
         var out = []
         for (var r = 0; r < list.length; r++) {
@@ -978,6 +1000,7 @@ Scope {
         byProject[root] = out
         delete errors[root]
       } else {
+        outcomes[root] = "failed"
         if (!Runs.hasKey(byProject, root)) byProject[root] = []
         errors[root] = Runs.errorText(entry.error)
         if (firstError === "") firstError = errors[root]
@@ -988,6 +1011,8 @@ Scope {
     var applied = {}
     var ids = Object.keys(merged.owner)
     for (var d = 0; d < ids.length; d++) applied[ids[d]] = 0
+    var after = {}
+    for (var o in okRoots) after[o] = store.ownedRuns(byProject[o], merged.owner, o)
     // Compared before the runs are replaced; raised below only while open.
     var alerts = store.active ? store.alertsOf(prev, byProject, merged.owner, okRoots, usable) : []
     store.runsByProject = byProject
@@ -998,6 +1023,7 @@ Scope {
     if (!anyOk) {
       store.amStatus = "error"
       store.lastError = firstError
+      store.emitReplied(usable, outcomes, prev, after)
       return
     }
     store.settleAfterSnapshot()
@@ -1023,6 +1049,7 @@ Scope {
       for (var ok in okRoots) armed[ok] = true
       store.armedRoots = armed
     }
+    store.emitReplied(usable, outcomes, prev, after)
   }
 
   // One list reply's alerts, in registry order, then each root's order: for
@@ -1049,6 +1076,26 @@ Scope {
       }
     }
     return out
+  }
+
+  // snapshotReplied for each root of `usable` that `outcomes` ({root:
+  // outcome}) names, in registry order: previousRuns is prev[root] ([] when it
+  // had none), runs is after[root] ([] when it has none).
+  function emitReplied(usable, outcomes, prev, after) {
+    for (var i = 0; i < usable.length; i++) {
+      var root = usable[i].root
+      if (!Runs.hasKey(outcomes, root)) continue
+      store.snapshotReplied(root, outcomes[root], Runs.hasKey(prev, root) ? prev[root] : [],
+                            Runs.hasKey(after, root) ? after[root] : [])
+    }
+  }
+
+  // The runs of `list`, in its order, that `owner` (mergedRuns' {id: root})
+  // attributes to `root`; a run without an owned id is no root's.
+  function ownedRuns(list, owner, root) {
+    return list.filter(function(run) {
+      return run !== null && typeof run === "object" && Runs.hasKey(owner, run.id) && owner[run.id] === root
+    })
   }
 
   // ---- run controls (S2 4.1)

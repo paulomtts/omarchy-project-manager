@@ -5951,4 +5951,178 @@ TestCase {
     reply(store.snapshotRunner.current, capturedList(), 0)
     compare(store.runs.length, 2)
   }
+  // ---- snapshotReplied (split-runstore 2.2)
+
+  // Every snapshotReplied of `store` from now on, as {root, outcome,
+  // previous, runs, status, all, error}: the arguments (previousRuns and runs
+  // as ids) and the store's amStatus, ids(runs) and lastError at emission.
+  function recordReplies(store) {
+    var out = []
+    store.snapshotReplied.connect(function(root, outcome, previousRuns, runs) {
+      out.push({ root: root, outcome: outcome, previous: ids(previousRuns), runs: ids(runs),
+                 status: store.amStatus, all: ids(store.runs), error: store.lastError })
+    })
+    return out
+  }
+
+  // R1
+  function test_an_ok_reply_emits_ok_per_root_in_registry_order() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)])]), 0)
+    var seen = recordReplies(store)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotReplied" })
+    store.refresh()
+    // B's entry first: the registry's order decides, not the reply's.
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB), entry("b2", "started", true, tc.rootB)]),
+                                                  okEntry(tc.rootA, [entry("a2", "started", true)])]), 0)
+    compare(spy.count, 2)
+    compare(seen.length, 2)
+    compare(seen[0].root, tc.rootA, "A first, in registry order")
+    compare(seen[0].outcome, "ok")
+    compare(seen[0].previous, "a1", "the root's runs before the reply")
+    compare(seen[0].runs, "a2", "and after it")
+    compare(seen[1].root, tc.rootB)
+    compare(seen[1].outcome, "ok")
+    compare(seen[1].previous, "b1")
+    compare(seen[1].runs, "b1,b2")
+    compare(seen[0].all, "a2,b1,b2", "emitted after the merged runs are applied")
+    compare(seen[0].status, "ok")
+    compare(seen[0].error, "")
+    compare(spy.signalArguments[0][2][0].project.name, "alpha", "previousRuns are the tagged runs")
+    compare(spy.signalArguments[1][3][1].project.name, "beta", "and so are runs")
+  }
+
+  // R2
+  function test_a_root_with_no_entry_emits_nothing_and_a_failed_entry_emits_failed() {
+    var store = makeWithRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    var seen = recordReplies(store)
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootC, "AmTimeout", "am did not answer within 60 s."),
+                                                  okEntry(tc.rootA, [entry("a1", "done", false)])]), 0)
+    compare(seen.length, 2, "B, with no entry, emits nothing")
+    compare(seen[0].root, tc.rootA)
+    compare(seen[0].outcome, "ok")
+    compare(seen[0].previous, "", "a root with no runs before: []")
+    compare(seen[0].runs, "a1")
+    compare(seen[1].root, tc.rootC)
+    compare(seen[1].outcome, "failed")
+    compare(seen[1].previous, "")
+    compare(seen[1].runs, "", "a failed root's runs are []")
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmTimeout", "am did not answer within 60 s."),
+                                                  okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])]), 0)
+    compare(seen.length, 4)
+    compare(seen[2].root, tc.rootA)
+    compare(seen[2].outcome, "failed")
+    compare(seen[2].previous, "a1", "a failed root's runs before the reply")
+    compare(seen[2].runs, "")
+    compare(seen[3].root, tc.rootC)
+    compare(seen[3].outcome, "ok")
+    compare(seen[3].runs, "c1")
+  }
+
+  // R3
+  function test_a_run_listed_under_two_roots_is_in_its_owners_runs_only() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    var seen = recordReplies(store)
+    // synthetic: x under both roots, and a run without an id under B.
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("x", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("x", "done", false, tc.rootB), entry("b1", "done", false, tc.rootB),
+                                                                     entry("", "done", false, tc.rootB)])]), 0)
+    compare(seen.length, 2)
+    compare(seen[0].runs, "x", "A owns x")
+    compare(seen[1].runs, "b1", "B's runs lack x, and a run without an id is no root's")
+    compare(ids(store.runsByProject[tc.rootB]), "x,b1,", "B's own list keeps all three")
+  }
+
+  // R4
+  function test_every_entry_failed_emits_failed_after_the_error_is_set() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootB, [])]), 0)
+    var seen = recordReplies(store)
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s."),
+                                                  failEntry(tc.rootA, "HelperError", "boom")]), 0)
+    compare(seen.length, 2)
+    compare(seen[0].root, tc.rootA)
+    compare(seen[0].outcome, "failed")
+    compare(seen[0].previous, "a1")
+    compare(seen[0].runs, "")
+    compare(seen[1].root, tc.rootB)
+    compare(seen[1].outcome, "failed")
+    compare(seen[0].status, "error", "amStatus is set before the emission")
+    compare(seen[0].error, "AmTimeout: am did not answer within 60 s.", "lastError is the first failed entry's sentence")
+    compare(seen[0].all, "a1", "the runs stay")
+  }
+
+  // R5
+  function test_am_missing_emits_missing_per_matched_root_after_the_runs_are_emptied() {
+    var store = makeWithRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                                                  okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])]), 0)
+    var seen = recordReplies(store)
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootB, "AmMissing", "am is not installed."),
+                                                  failEntry(tc.rootA, "AmMissing", "am is not installed.")]), 0)
+    compare(seen.length, 2, "C, with no entry, emits nothing")
+    compare(seen[0].root, tc.rootA, "registry order")
+    compare(seen[0].outcome, "missing")
+    compare(seen[0].previous, "a1", "the root's runs before the reply")
+    compare(seen[0].runs, "")
+    compare(seen[0].all, "", "emitted after the runs are emptied")
+    compare(seen[0].status, "missing")
+    compare(seen[1].root, tc.rootB)
+    compare(seen[1].outcome, "missing")
+    compare(seen[1].previous, "b1")
+  }
+
+  // R6
+  function test_a_reply_with_no_usable_result_emits_nothing() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotReplied" })
+    // synthetic: entries for no registered root.
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)]), null, "x"]), 0)
+    compare(store.amStatus, "error", "no matched entry")
+    compare(spy.count, 0)
+    store.refresh()
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "Usage", message: "usage" } }) + "\n", 2)
+    compare(spy.count, 0, "an ok: false envelope")
+    store.refresh()
+    reply(store.snapshotRunner.current, "garbage\n", 1)
+    compare(spy.count, 0, "garbage")
+    store.refresh()
+    var gone = store.snapshotRunner.current
+    store.projectRoots = registry([tc.rootC])
+    reply(gone, allReply([okEntry(tc.rootA, [entry("a1", "done", false)])]), 0)
+    compare(spy.count, 0, "every launched root gone")
+  }
+
+  // R7
+  function test_a_reply_while_closed_still_emits() {
+    var store = makeWithRoots([tc.rootA]); if (!store) return
+    compare(store.active, false)
+    var seen = recordReplies(store)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "escalated", false)])]), 0)
+    compare(seen.length, 1)
+    compare(seen[0].outcome, "ok")
+    compare(seen[0].runs, "a1")
+  }
+
+  // R8
+  function test_a_cursor_reset_emits_missing_for_every_usable_root() {
+    var store = threeRoots(); if (!store) return
+    var seen = recordReplies(store)
+    sendLine(store.watchProc, resetHello(true))
+    compare(seen.length, 3)
+    var roots = [tc.rootA, tc.rootB, tc.rootC]
+    var before = ["a1", "b1", "c1"]
+    for (var i = 0; i < 3; i++) {
+      compare(seen[i].root, roots[i], "registry order")
+      compare(seen[i].outcome, "missing")
+      compare(seen[i].previous, before[i], "the root's runs before the reset")
+      compare(seen[i].runs, "")
+      compare(seen[i].all, "", "emitted after the runs are cleared")
+    }
+  }
 }
