@@ -623,6 +623,20 @@ TestCase {
     compare(pane.following, true)
   }
 
+  function test_rows_that_rewrap_taller_keep_a_following_list_at_its_bottom() {
+    var rows = []
+    for (var i = 1; i <= 30; i++)
+      rows.push(eventRow(i, { detail: "a reason long enough to wrap onto more lines once the pane narrows" }))
+    var pane = make({ rows: rows, maxListHeight: 200 })
+    var list = listOf(pane)
+    tryVerify(function () { return atBottom(list) }, 1000)
+    var tall = list.contentHeight
+    pane.width = 120
+    tryVerify(function () { return list.contentHeight > tall }, 1000, "the rows rewrap taller")
+    tryVerify(function () { return atBottom(list) }, 1000, "the list stays at its bottom")
+    compare(pane.following, true)
+  }
+
   function test_destroying_the_pane_while_rows_arrive_warns_nothing() {
     failOnWarning(/TypeError|ReferenceError|is not a function/)
     var pane = make({ rows: manyRows(50), maxListHeight: 200 })
