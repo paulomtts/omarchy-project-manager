@@ -3590,6 +3590,228 @@ TestCase {
     compare(store.resumeRunId, "", "closing a closed dialog is harmless")
   }
 
+  property string resumeSaveCmd: "python3|/plugin/core/backend/projects/viewer-state.py|set-run-settings|/home/u/my proj|"
+  property string resumeSaveFailed: "The verify commands could not be saved"
+
+  // 7
+  function test_confirm_with_the_dialog_closed_does_nothing() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    compare(store.resumeConfirm(), false)
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.resumeSaveRunner.seq, 0, "nothing saved")
+  }
+
+  // 8
+  function test_confirm_without_commands_or_opt_out_is_refused() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["", "  "]
+    compare(store.resumeConfirm(), false)
+    compare(store.resumeError, "Add a verify command or choose to run without verification")
+    compare(store.resumeRunId, "r1", "the dialog stays open")
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.resumeSaveRunner.seq, 0)
+  }
+
+  // 9 (and Review Focus 2)
+  function test_confirm_with_commands_passes_them_in_order_dropping_blanks() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a", "", "  ", "-b c"]
+    compare(store.resumeConfirm(), true)
+    compare(store.controlRunners.length, 1)
+    var runner = store.controlRunners[0]
+    compare(runner.runId, "r1")
+    compare(runner.action, "resume")
+    compare(runner.seq, 1, "run-control directly, no settings read")
+    compare(argv(runner.current), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a|--verify|-b c")
+    compare(runner.current.command.length, 9)
+    compare(store.pending.r1, "resume")
+    compare(store.resumeRunId, "")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeError, "")
+    compare(store.resumeConfirm(), false, "a second confirm finds the dialog closed")
+    compare(store.controlRunners.length, 1, "one run-control launch")
+    compare(store.resumeSaveRunner.seq, 1, "one save")
+  }
+
+  // 10
+  function test_confirm_with_the_opt_out_passes_allow_no_verification() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = []
+    store.resumeAllowNoVerification = true
+    compare(store.resumeConfirm(), true)
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--allow-no-verification")
+    compare(proc.command.length, 6)
+  }
+
+  // 11
+  function test_commands_win_over_the_opt_out() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeAllowNoVerification = true
+    compare(store.resumeConfirm(), true)
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(proc.command.indexOf("--allow-no-verification"), -1)
+  }
+
+  // 12
+  function test_confirm_saves_the_set_for_the_runs_project() {
+    var store = resumeDialogStore([dead("r1"), dead("r2")], "r1"); if (!store) return
+    store.resumeVerify = ["a", "", "-b c"]
+    store.resumeConfirm()
+    var save = store.resumeSaveRunner.current
+    compare(argv(save), tc.resumeSaveCmd + '{"verify":["a","-b c"],"allowNoVerification":false}')
+    compare(save.command.length, 5, "the root with a space and the JSON are one argument each")
+    compare(save.launchGuard, "", "no guard")
+    compare(store.resumeOpenFor("r2"), true)
+    store.resumeAllowNoVerification = true
+    store.resumeConfirm()
+    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":[],"allowNoVerification":true}')
+  }
+
+  // Review Focus 3.
+  function test_non_string_commands_are_neither_passed_nor_saved() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = [5, "a", null]
+    compare(store.resumeConfirm(), true)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":["a"],"allowNoVerification":false}')
+    var only = resumeDialogStore([dead("r1")], "r1"); if (!only) return
+    only.resumeVerify = [5]
+    compare(only.resumeConfirm(), false, "a non-string is not a command")
+    compare(only.resumeError, "Add a verify command or choose to run without verification")
+  }
+
+  // Review Focus 4.
+  function test_commands_are_passed_and_saved_verbatim() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["  make test  "]
+    compare(store.resumeConfirm(), true)
+    compare(store.controlRunners[0].current.command[6], "  make test  ")
+    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":["  make test  "],"allowNoVerification":false}')
+  }
+
+  // 13
+  function test_the_resume_does_not_wait_for_the_save() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    compare(store.resumeConfirm(), true)
+    compare(store.resumeSaveRunner.busy, true, "the save has not replied")
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(proc.running, true)
+    compare(store.pending.r1, "resume")
+    compare(store.resumeRunId, "")
+  }
+
+  // 14
+  function test_a_changed_run_keeps_the_dialog_open() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    snapshot(store, [running("r1")])
+    compare(store.resumeConfirm(), false)
+    compare(store.resumeError, store.refusalOf("resume", "r1"))
+    compare(store.resumeError, "The run is still running")
+    compare(store.resumeRunId, "r1")
+    compare(store.controlRunners.length, 0)
+    compare(store.resumeSaveRunner.seq, 0)
+    snapshot(store, [])
+    compare(store.resumeConfirm(), false)
+    compare(store.resumeError, "This run is no longer in the snapshot")
+    compare(store.resumeRunId, "r1")
+    compare(store.controlRunners.length, 0)
+    compare(store.resumeSaveRunner.seq, 0)
+  }
+
+  // 15
+  function test_a_pending_request_refuses_the_confirm() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    compare(store.control("cancel", "r1"), true)
+    store.resumeVerify = ["a"]
+    compare(store.resumeConfirm(), false)
+    compare(store.resumeError, "A request for this run is pending")
+    compare(store.resumeRunId, "r1")
+    compare(store.controlRunners.length, 1, "only the cancel")
+    compare(store.resumeSaveRunner.seq, 0)
+  }
+
+  // 16
+  function test_a_failed_save_flashes_but_the_resume_runs() {
+    var replies = [[JSON.stringify({ ok: false, error: { type: "X", message: "y" } }) + "\n", 1],
+                   ["garbage\n", 0],
+                   ["", 1]]
+    for (var i = 0; i < replies.length; i++) {
+      var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+      store.resumeVerify = ["a"]
+      store.resumeConfirm()
+      reply(store.resumeSaveRunner.current, replies[i][0], replies[i][1])
+      compare(store.flashText, tc.resumeSaveFailed, "reply " + i)
+      compare(store.controlRunners.length, 1, "the run-control runner is still there")
+      compare(store.pending.r1, "resume")
+      compare(store.lastControlError, "")
+      compare(store.resumeRunId, "")
+    }
+  }
+
+  // 17
+  function test_a_good_save_flashes_nothing() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeConfirm()
+    reply(store.resumeSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.flashText, "")
+    compare(store.pending.r1, "resume")
+  }
+
+  // 18
+  function test_the_resume_save_runner_is_not_the_notify_runner() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    var resumeSeq = store.resumeSaveRunner.seq
+    store.setNotifyOnEscalation(true)
+    compare(store.resumeSaveRunner.seq, resumeSeq, "the switch does not use the resume runner")
+    var notifySeq = store.settingsSaveRunner.seq
+    var notifySave = store.settingsSaveRunner.current
+    store.resumeVerify = ["a"]
+    store.resumeConfirm()
+    compare(store.settingsSaveRunner.seq, notifySeq, "the confirm does not use the notify runner")
+    reply(notifySave, "garbage\n", 1)
+    compare(store.flashText, "Notify on escalation could not be saved", "not the resume sentence")
+    reply(store.resumeSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.flashText, "Notify on escalation could not be saved", "a good resume save changes nothing")
+  }
+
+  // 19
+  function test_the_confirmed_resume_clears_the_control_error() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    compare(store.control("cancel", "r1"), true)
+    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlErrorType, "LockTimeoutError")
+    compare(store.resumeOpenFor("r1"), true)
+    store.resumeVerify = ["a"]
+    compare(store.resumeConfirm(), true)
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "")
+  }
+
+  // 20
+  function test_a_refused_confirmed_resume_keeps_ams_error_type() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeConfirm()
+    var text = ctlFail("NotResumableError", "x")
+    reply(store.controlRunners[0].current, text, 0)
+    compare(store.lastControlError, Runs.controlError(JSON.parse(text)))
+    compare(store.lastControlErrorType, "NotResumableError")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.pending.r1, undefined, "the request is settled")
+    compare(store.controlRunners.length, 0)
+  }
+
   // ---- alerts: the toasts (S2 4.4)
 
   function escalated(id) { return entry(id, "escalated", false) }

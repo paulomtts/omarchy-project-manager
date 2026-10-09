@@ -1108,12 +1108,11 @@ Scope {
     return Object.prototype.hasOwnProperty.call(map, key)
   }
 
-  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
-  // returns whether it started: only when refusalOf(action, runId) is "".
-  // The request acts on the run's repo_dir; a milestone resume reads the run
-  // settings of the run's project.root. Confirming a cancel is the caller's job.
-  function control(action, runId) {
-    if (store.refusalOf(action, runId) !== "") return false
+  // A new request for runId, a run in `runs`: the control error is dismissed,
+  // the request is recorded with the run's state as its baseline, pending is
+  // set, and its runner (repo_dir and project.root of the run, not launched
+  // yet) joins controlRunners and is returned.
+  function startRequest(action, runId) {
     var run = store.runById(runId)
     store.dismissControlError()
     controlState.nextToken += 1
@@ -1127,6 +1126,17 @@ Scope {
     var runner = controlC.createObject(store, { runId: runId, action: action, token: controlState.nextToken,
                                                 repoDir: run.repo_dir, projectRoot: store.runRoot(run) })
     controlState.runners = controlState.runners.concat([runner])
+    return runner
+  }
+
+  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
+  // returns whether it started: only when refusalOf(action, runId) is "".
+  // The request acts on the run's repo_dir; a milestone resume reads the run
+  // settings of the run's project.root. Confirming a cancel is the caller's job.
+  function control(action, runId) {
+    if (store.refusalOf(action, runId) !== "") return false
+    var run = store.runById(runId)
+    var runner = store.startRequest(action, runId)
     if (action === "resume" && run.workflow !== "task") {
       // A milestone resume reuses its project's stored verify set: read it first.
       runner.settingsStep = true
@@ -1400,6 +1410,56 @@ Scope {
     store.resumeAllowNoVerification = false
     store.resumeError = ""
   }
+
+  // The dialog's confirm. Refused, with resumeError and the dialog left open,
+  // when the form has no non-blank command and no opt-out, or when the run
+  // cannot be resumed now (refusalOf). Otherwise the resume starts as
+  // control() starts one and launches run-control at once: the non-blank
+  // commands as --verify pairs in order, else --allow-no-verification. The
+  // set is saved for the run's project without waiting for the reply, the
+  // dialog closes, and true is returned.
+  function resumeConfirm() {
+    if (store.resumeRunId === "") return false
+    var form = { verify: store.resumeVerify, allowNoVerification: store.resumeAllowNoVerification }
+    var missing = Runs.validateDispatch(form).errors.filter(function(e) { return e.field === "verify" })
+    if (missing.length > 0) {
+      store.resumeError = missing[0].message
+      return false
+    }
+    var runId = store.resumeRunId
+    var reason = store.refusalOf("resume", runId)
+    if (reason !== "") {
+      store.resumeError = reason
+      return false
+    }
+    var commands = store.dispatchCommands(form)
+    var extra = []
+    for (var i = 0; i < commands.length; i++) extra.push("--verify", commands[i])
+    if (commands.length === 0) extra = ["--allow-no-verification"]
+    var runner = store.startRequest("resume", runId)
+    store.launchControl(runner, extra)
+    resumeSaveRunner.run(["set-run-settings", runner.projectRoot,
+                          JSON.stringify({ verify: commands, allowNoVerification: store.resumeAllowNoVerification === true })])
+    store.resumeClose()
+    return true
+  }
+
+  // set-run-settings: {"ok": true} changes nothing; anything else flashes.
+  // Never touches the request, the control error or the dialog.
+  function resumeSaveReplied(stdout, exitCode) {
+    var reply = store.parseEnvelope(stdout)
+    if (reply !== null && reply.ok === true) return
+    store.flash("The verify commands could not be saved")
+  }
+
+  // set-run-settings for a confirmed resume; latest wins. No guard: the save
+  // is for the run's project, whatever project is open.
+  HelperRunner {
+    id: resumeSaveRunner
+    script: store.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { store.resumeSaveReplied(stdout, exitCode) }
+  }
+  readonly property alias resumeSaveRunner: resumeSaveRunner
 
   // ---- alerts (S2 4.4)
 
