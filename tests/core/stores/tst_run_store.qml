@@ -2360,6 +2360,36 @@ TestCase {
     compare(spy.count, 1)
   }
 
+  // 9
+  function test_closing_the_panel_resets_the_project_filter_silently() {
+    var store = projectsStore(true); if (!store) return
+    store.toggleProjectFilter(tc.rootB)
+    store.runFilter = "attention"
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "projectFilterToggled" })
+    store.active = false
+    compare(store.projectFilter, "")
+    compare(spy.count, 0, "the list is not on screen")
+    compare(store.runFilter, "attention", "nothing else in stopLive changes")
+    compare(ids(store.runs), "a-park1,a-park2,b-esc1,b-park1,c-live1,c-park1", "the runs stay")
+    store.active = true
+    compare(store.projectFilter, "", "opening leaves it at All")
+    compare(spy.count, 0)
+  }
+
+  // 10
+  function test_a_project_switch_keeps_the_project_filter() {
+    var store = projectsStore(false); if (!store) return
+    store.toggleProjectFilter(tc.rootB)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "projectFilterToggled" })
+    store.project = tc.rootA
+    compare(store.projectFilter, tc.rootB)
+    compare(ids(store.filteredRuns), "b-esc1,b-park1")
+    store.project = ""
+    compare(store.projectFilter, tc.rootB)
+    compare(ids(store.filteredRuns), "b-esc1,b-park1")
+    compare(spy.count, 0)
+  }
+
   // ---- attempt logs (5.2)
 
   // A snapshot entry of the started capture: runs.json's first `am runs` row

@@ -68,7 +68,8 @@ Scope {
   signal runFilterToggled()
   // The Runs screen's project filter: "" is All projects, else a filterable
   // root (isFilterable). Set by toggleProjectFilter; back to "" when it stops
-  // being filterable (keepProjectFilter). Never persisted.
+  // being filterable (keepProjectFilter) and when the panel closes. A project
+  // switch keeps it. Never persisted.
   property string projectFilter: ""
   // The project filter's list changed under the cursor: emitted once per
   // toggleProjectFilter call and once per fallback to All.
@@ -356,9 +357,11 @@ Scope {
   // The panel closed: no process and no timer is left running, and no toast
   // or dispatch outlives the opening (a start in flight runs to its end). The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
-  // and is applied. The runs, the selection and amStatus stay for the next
-  // opening.
+  // and is applied. The project filter is back to All projects, with no
+  // projectFilterToggled. The runs, the selection, the chip and amStatus stay
+  // for the next opening.
   function stopLive() {
+    store.projectFilter = ""
     snapshotState.pending = null
     store.stopWatch()
     debounceTimer.stop()
