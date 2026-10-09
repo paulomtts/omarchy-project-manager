@@ -1060,6 +1060,7 @@ TestCase {
     compare(H.find(d, "dispatchProjectRow4"), null)
     compare(H.find(d, "dispatchProjectOpen0").text, "open")
     compare(H.find(d, "dispatchProjectReason3").text, "board unreachable: no .brd")
+    verify(tc.sameColour(H.find(d, "dispatchProjectReason3").color, d.theme.dim), "reason colour")
     verify(!H.find(d, "dispatchProjectEmpty").visible, "no empty line")
   }
 
