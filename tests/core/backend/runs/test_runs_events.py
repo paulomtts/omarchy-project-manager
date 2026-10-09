@@ -323,3 +323,159 @@ def test_usage(world, args):
     assert code == 2
     assert out == USAGE_LINE
     assert calls(world) == []
+
+
+# --- am's refusal, corrupt journal, bad output -----------------------------------
+
+# synthetic: am refusals other than the fake's UnknownRunError default.
+STORE_BUSY = {"ok": False, "error": {"type": "StoreBusyError", "message": "store is busy"}}
+CLI_ERROR = {"ok": False, "error": {"type": "CliError", "message": "--since must be >= 0"}}
+
+
+@pytest.mark.parametrize("envelope,exit_code", [
+    (None, 3),
+    (STORE_BUSY, 3),
+    (CLI_ERROR, 0),
+], ids=["unknown-run-default", "store-busy", "cli-error-exit-0"])
+def test_refusal_passthrough(world, envelope, exit_code):
+    if envelope is None:
+        expected = UNKNOWN_RUN  # no watch.out: the fake answers UnknownRunError, exit 3
+    else:
+        set_watch(world, envelope, code=exit_code)
+        expected = envelope
+    code, out = run(world)
+    assert code == 0
+    assert out == expected
+    assert calls(world) == [["watch", RUN]]
+
+
+def test_refusal_with_stderr_is_not_corrupt(world):
+    # synthetic: a refusal at exit 3 with stderr noise stays am's refusal.
+    (world["am"] / "watch.err").write_text("warning: noisy\n")
+    set_watch(world, STORE_BUSY, code=3)
+    code, out = run(world)
+    assert code == 0
+    assert out == STORE_BUSY
+
+
+def test_ok_wins_over_exit_code_and_stderr(world):
+    # The envelope's `ok` decides, not am's exit code; am's stderr never reaches
+    # the helper's stdout line.
+    for exit_code in (3, 1):
+        # synthetic: am stderr noise.
+        set_raw(world, json.dumps(watch_envelope()) + "\n", code=exit_code,
+                stderr="warning: noisy\nmore noise\n")
+        code, out = run(world, [RUN, "--tail", "2"])
+        assert code == 0
+        assert out == {"ok": True, "events": watch_events()[-2:], "last_seq": 60, "total": 60}
+
+
+# synthetic: am exit 3 output that is not an envelope.
+@pytest.mark.parametrize("text", [
+    "",
+    "store unreadable\n",
+    "Traceback (most recent call last):\n  sqlite3.DatabaseError: file is not a database\n",
+], ids=["empty", "text", "traceback"])
+@pytest.mark.parametrize("stderr,message", [
+    (None, "am watch exited 3."),
+    ("", "am watch exited 3."),
+    ("  journal is corrupt\n\n", "journal is corrupt"),
+], ids=["no-stderr", "empty-stderr", "stderr"])
+def test_corrupt_journal_exit_3(world, text, stderr, message):
+    set_raw(world, text, code=3, stderr=stderr)
+    code, out = run(world)
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "CorruptJournal", "message": message}}
+
+
+# synthetic: am failing without an envelope at an exit code other than 3.
+@pytest.mark.parametrize("text,exit_code", [
+    ("boom\n", 1),
+    ("Usage: am watch [OPTIONS] [RUN]\nError: Invalid value\n", 2),
+], ids=["exit-1", "exit-2"])
+def test_other_nonzero_without_envelope_is_bad_output(world, text, exit_code):
+    set_raw(world, text, code=exit_code, stderr="error\n")
+    code, out = run(world)
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert "am watch" in out["error"]["message"]
+    assert "(exit %d)" % exit_code in out["error"]["message"]
+
+
+# synthetic: am output at exit 0 that is not a usable envelope.
+@pytest.mark.parametrize("text", [
+    "not json\n",
+    "",
+    "[1, 2]\n",
+    "null\n",
+    '{"data": {"events": []}}\n',
+    '{"ok": "true", "data": {"events": []}}\n',
+    '{"ok": true}\n',
+    '{"ok": true, "data": [1]}\n',
+    '{"ok": true, "data": {}}\n',
+    '{"ok": true, "data": {"events": {"seq": 1}}}\n',
+    '{"ok": true, "data": {"events": [{"event": "run_upsert"}]}}\n',
+    '{"ok": true, "data": {"events": [{"seq": "1"}]}}\n',
+    '{"ok": true, "data": {"events": [{"seq": true}]}}\n',
+    '{"ok": true, "data": {"events": [{"seq": 1.0}]}}\n',
+    '{"ok": true, "data": {"events": [{"seq": 1}, 2]}}\n',
+], ids=["not-json", "empty", "list", "null", "no-ok", "ok-string", "no-data",
+        "data-list", "no-events", "events-object", "event-without-seq", "seq-string",
+        "seq-bool", "seq-float", "event-not-object"])
+def test_bad_output_at_exit_0(world, text):
+    set_raw(world, text, code=0)
+    code, out = run(world)
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert "am watch" in out["error"]["message"]
+    assert "(exit 0)" in out["error"]["message"]
+
+
+# --- am missing, catch-all ---------------------------------------------------------
+
+def test_am_missing(world):
+    empty = world["tmp"] / "empty-bin"
+    empty.mkdir()
+    code, out = run(world, PATH=str(empty))
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "AmMissing", "message": "am is not installed."}}
+
+
+def test_am_cannot_start_is_helper_error(world):
+    # Executable (so shutil.which finds it) but unstartable: subprocess raises
+    # OSError and guarded() must still print exactly one JSON line.
+    write_exec(world["bin"] / "am", "#!/nonexistent/interpreter\n")
+    code, out = run(world)
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The events snapshot failed: ")
+
+
+def load_helper():
+    """The script as a module (its name has a hyphen, so no plain import)."""
+    spec = importlib.util.spec_from_file_location("runs_events", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_am_timeout_is_helper_error(world, monkeypatch, capsys):
+    # An am that hangs is cut off after AM_TIMEOUT and reported as HelperError
+    # (shortened here so the test does not wait the real 60 s).
+    write_exec(world["bin"] / "am", "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n")
+    helper = load_helper()
+    assert helper.AM_TIMEOUT == 60
+    monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
+    for key, value in env_for(world).items():
+        monkeypatch.setenv(key, value)
+    code = helper.guarded([RUN])
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    assert len(lines) == 1, lines
+    out = json.loads(lines[0])
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The events snapshot failed: ")
