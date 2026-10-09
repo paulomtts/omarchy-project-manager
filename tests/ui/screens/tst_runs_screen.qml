@@ -391,12 +391,13 @@ TestCase {
 
   function test_hovering_a_header_moves_no_cursor_and_a_row_past_it_reports_its_global_index() {
     var s = make(twoProjects()); if (!s) return
+    // The pointer rests on the chips (not a row) first, so the move onto the
+    // header is an entry: only that entry counts here.
+    var chips = H.find(s.screen, "runChips")
+    mouseMove(chips, 1, 1)
+    s.navi.hovered = -1
     var header = H.find(s.screen, "runGroup1")
     mouseMove(header, header.width / 2, header.height / 2)
-    // A row created under a resting pointer may report a hover of its own;
-    // only the moves over the header count here.
-    s.navi.hovered = -1
-    mouseMove(header, header.width / 4, header.height / 2)
     compare(s.navi.hovered, -1)
     var row = H.find(s.screen, "runRow2")
     mouseMove(row, row.width / 2, row.height / 2)
