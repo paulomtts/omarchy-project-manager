@@ -867,23 +867,6 @@ TestCase {
     compare(H.find(p, "noProjectsText").visible, false)
   }
 
-  // F6
-  function test_start_run_without_a_project_is_disabled_with_why() {
-    var p = makeNoProject(); if (!p) return
-    p.navigator.showSection("runs")
-    wait(50)
-    var button = H.find(p, "startRunButton")
-    compare(button.visible, true)
-    compare(button.enabled, false)
-    compare(String(button.tooltipText), "Open a project to dispatch")
-    mouseClick(button)
-    compare(p.dispatchOpen, false, "a click opens nothing")
-    compare(p.app.runs.dispatchState, "idle")
-    p.app.runs.amStatus = "missing"
-    compare(button.enabled, false)
-    compare(String(button.tooltipText), "Open a project to dispatch", "no project wins over am missing")
-  }
-
   // ---- Open project (4.4)
 
   // make() with pA and pB registered and pA open; filteredRuns is alpha's
@@ -974,5 +957,230 @@ TestCase {
     compare(p.app.projects.selectedProject.root_path, "/home/u/a")
     compare(p.app.nav.viewMode, "runs")
     verify(p.app.memories.memoryOpError.indexOf("unsaved changes") >= 0, p.app.memories.memoryOpError)
+  }
+
+  // ---- the Runs dispatch (3.3)
+
+  // A brd card as board-tree.py lists it; blockedBy undefined leaves
+  // blocked_by out.
+  function card(id, title, status, children, blockedBy) {
+    var c = { id: id, title: title, status: status, description: "d", children: children || [] }
+    if (blockedBy !== undefined) c.blocked_by = blockedBy
+    return c
+  }
+
+  // m1 > s1 > t0 (done), t1 (blocked by t0, issue i1 and an unknown id), t2;
+  // m9 is a done milestone. Its target rows: board, m1, s1, t1, t2.
+  function tree() {
+    return [
+      card("m1", "M one", "todo", [
+        card("s1", "Story one", "todo", [
+          card("t0", "Prep", "done", [], []),
+          card("t1", "Do it", "todo", [], ["t0", "i1", "ghost"]),
+          card("t2", "Loose end", "todo")
+        ])
+      ]),
+      card("m9", "M nine", "done")
+    ]
+  }
+
+  // A Panel on the Runs list whose helpers never run (each launch a test
+  // cares about is answered through reply()): `registry` registered, pA open
+  // when `open`, else no project open.
+  function makeDispatch(registry, open) {
+    var host = createTemporaryObject(hostC, tc)
+    var comp = Qt.createComponent("../../ui/Panel.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
+    var p = comp.createObject(host)
+    p.app.backendDir = "/plugin/core/backend/"
+    p.opened = true
+    p.app.projects.stateLoaded = true
+    p.app.projects.applyProjectsList(registry)
+    disarmSwitch(p)
+    p.app.extras.extrasLoading = false
+    p.app.runs.snapshotRunner.cancel()
+    if (!open) p.app.projects.selectedProject = null
+    p.app.runs.runSettings = { verify: ["uv run pytest"] }
+    p.app.runs.runs = sampleRuns()
+    ctrl6(p)
+    compare(p.app.nav.viewMode, "runs")
+    return p
+  }
+
+  function dialog(p) { return H.find(p, "dispatchDialog") }
+  function textOf(p, name) { return String(H.find(p, name).text) }
+
+  // board-tree.py --probe's reply: every root in `roots` readable.
+  function probeOk(p, roots) {
+    reply(p.app.runs.dispatchProjectRunner.current,
+          JSON.stringify({ ok: true, projects: roots.map(function(r) { return { root: r, ok: true } }) }) + "\n", 0)
+  }
+
+  // Start run clicked and the probe answered: the project step.
+  function startRun(p) {
+    H.find(p, "startRunButton").clicked()
+    compare(p.app.runs.dispatchStep, "project")
+    probeOk(p, p.app.runs.usableRoots().map(function(r) { return r.root }))
+    wait(50)
+  }
+
+  // The dialog's pick of the project at `root`, then the tree read answered
+  // with tree(): the target step.
+  function toTarget(p, root) {
+    dialog(p).projectChosen(root)
+    compare(p.app.runs.dispatchStep, "target")
+    reply(p.app.runs.dispatchTargetRunner.current, JSON.stringify({ ok: true, data: tree() }) + "\n", 0)
+    compare(p.app.runs.dispatchTargetRows.map(function(r) { return r.key }).join(","),
+            "board,card:m1,card:s1,card:t1,card:t2")
+    wait(50)
+  }
+
+  // The dialog's pick of the target row `key`: the form step.
+  function toForm(p, key) {
+    dialog(p).targetPicked(key)
+    compare(p.app.runs.dispatchStep, "form")
+    wait(50)
+  }
+
+  // 2
+  function test_start_run_with_an_empty_registry_is_disabled_with_why() {
+    var p = makeDispatch([], false); if (!p) return
+    wait(50)
+    var button = H.find(p, "startRunButton")
+    compare(button.visible, true)
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "No projects registered")
+    mouseClick(button)
+    compare(p.dispatchOpen, false, "a click opens nothing")
+    compare(p.app.runs.dispatchStep, "")
+  }
+
+  // 3
+  function test_start_run_with_am_missing_is_disabled_with_why() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    p.app.runs.amStatus = "missing"
+    wait(50)
+    var button = H.find(p, "startRunButton")
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "am is not installed or not on PATH")
+    p.app.projects.applyProjectsList([])
+    p.app.runs.snapshotRunner.cancel()
+    compare(p.app.runs.usableRoots().length, 0)
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "am is not installed or not on PATH", "am missing wins over an empty registry")
+  }
+
+  // 4
+  function test_back_and_escape_in_the_runs_dialog() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    var button = H.find(p, "startRunButton")
+    compare(button.enabled, true)
+    compare(String(button.tooltipText), "Start an am run")
+    startRun(p)
+    compare(dialog(p).visible, true)
+    compare(String(dialog(p).step), "project")
+    compare(p.focusItem.objectName, "dispatchProjectKeys")
+    verify(H.find(p, "dispatchProjectKeys").activeFocus, "the project step has the keyboard")
+    toTarget(p, "/home/u/a")
+    compare(p.focusItem.objectName, "dispatchTargetFilter")
+    verify(H.find(p, "dispatchTargetFilter").activeFocus, "the target step has the keyboard")
+    H.find(p, "dispatchBack").clicked()
+    compare(p.app.runs.dispatchStep, "project")
+    compare(dialog(p).visible, true)
+    wait(50)
+    verify(H.find(p, "dispatchProjectKeys").activeFocus, "Back to the project step moves the keyboard there")
+    toTarget(p, "/home/u/a")
+    toForm(p, "card:t1")
+    compare(p.dispatchCardId, "t1")
+    H.find(p, "dispatchBack").clicked()
+    compare(p.app.runs.dispatchStep, "target")
+    compare(p.app.runs.dispatchTargetKey, "card:t1")
+    wait(50)
+    compare(dialog(p).targetCursor, 3, "the picked row is under the cursor")
+    verify(H.find(p, "dispatchTargetFilter").activeFocus, "Back to the target step moves the keyboard there")
+    H.find(p, "dispatchBack").clicked()
+    wait(50)
+    verify(H.find(p, "dispatchProjectKeys").activeFocus)
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.dispatchStep, "")
+    compare(dialog(p).visible, false)
+    compare(p.app.nav.viewMode, "runs", "that Escape closed the dialog only")
+    compare(p.opened, true)
+    wait(50)
+    compare(p.focusItem.objectName, "searchField")
+    verify(H.find(p, "searchField").activeFocus, "the focus is back on the Runs search")
+  }
+
+  // Review Focus 2
+  function test_escape_in_the_target_filter_closes_the_runs_dialog() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    verify(H.find(p, "dispatchTargetFilter").activeFocus)
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.dispatchStep, "")
+    compare(dialog(p).visible, false)
+    compare(p.app.nav.viewMode, "runs")
+    wait(50)
+    verify(H.find(p, "searchField").activeFocus, "the focus is back on the Runs search")
+  }
+
+  // Review Focus 5
+  function test_d_typed_in_the_target_filter_filters() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    keyClick("d")
+    compare(String(H.find(p, "dispatchTargetFilter").text), "d", "the letter went into the filter")
+    compare(p.app.runs.dispatchStep, "target")
+    compare(p.app.runs.dispatchRoot, "/home/u/a")
+    p.app.runs.closeDispatch()
+  }
+
+  // Review Focus 4
+  function test_the_board_row_dispatches_the_whole_board() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    toForm(p, "card:m1")
+    compare(p.dispatchCardId, "m1")
+    compare(textOf(p, "dispatchTarget"), "Target   Milestone \"M one\"")
+    H.find(p, "dispatchBack").clicked()
+    toForm(p, "board")
+    compare(p.dispatchCardId, "", "the board row has no card")
+    compare(textOf(p, "dispatchTarget"), "Target   Whole board")
+    p.app.runs.closeDispatch()
+  }
+
+  // Review Focus 1
+  function test_a_registry_emptied_under_the_project_step_keeps_the_dialog() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    p.app.projects.applyProjectsList([])
+    p.app.runs.snapshotRunner.cancel()
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(dialog(p).visible, true)
+    compare(p.app.runs.dispatchStep, "project")
+    compare(H.find(p, "dispatchProjectEmpty").visible, true)
+    compare(textOf(p, "dispatchProjectEmpty"), "No projects registered")
+    compare(H.find(p, "startRunButton").enabled, false)
+    compare(String(H.find(p, "startRunButton").tooltipText), "No projects registered")
+    p.app.runs.closeDispatch()
+  }
+
+  // B5 through the panel: d in the empty Runs search.
+  function test_d_in_the_empty_runs_search_opens_the_runs_dialog_without_typing() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    wait(50)
+    var field = H.find(p, "searchField")
+    field.forceActiveFocus()
+    keyClick("d")
+    compare(p.app.runs.dispatchStep, "project")
+    compare(dialog(p).visible, true)
+    compare(String(field.text), "", "the handled letter was not typed")
+    wait(50)
+    verify(H.find(p, "dispatchProjectKeys").activeFocus, "the dialog took the keyboard")
+    p.app.runs.closeDispatch()
   }
 }
