@@ -527,16 +527,19 @@ Panel {
             onClicked: appStores.board.openArchive()
           }
 
-          // The Runs list's way to start a run: the dialog opens on the whole
-          // board with a row of targets. Disabled while am is missing.
+          // The Runs list's way to start a run on the open project: the dialog
+          // opens on its whole board with a row of targets. Shown with or
+          // without a project; disabled with none or while am is missing, and
+          // the tooltip says which (no project first).
           UI.ActionButton {
             objectName: "startRunButton"
             theme: panelTheme
-            visible: appStores.nav.viewMode === "runs" && !!appStores.projects.selectedProject
-            enabled: appStores.runs.amStatus !== "missing"
+            visible: appStores.nav.viewMode === "runs"
+            enabled: !!appStores.projects.selectedProject && appStores.runs.amStatus !== "missing"
             iconText: "▶"
             text: "Start run"
-            tooltipText: appStores.runs.amStatus === "missing" ? "am is not installed or not on PATH" : "Start an am run"
+            tooltipText: !appStores.projects.selectedProject ? "Open a project to dispatch"
+              : appStores.runs.amStatus === "missing" ? "am is not installed or not on PATH" : "Start an am run"
             onClicked: root.openRunsDispatch("board")
           }
         }

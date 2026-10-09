@@ -287,7 +287,7 @@ TestCase {
   // ---- Start run (S3 4.2)
 
   // 18
-  function test_start_run_shows_only_on_the_runs_list_of_a_project() {
+  function test_start_run_shows_only_on_the_runs_list() {
     var p = make(); if (!p) return
     p.app.runs.snapshotRunner.cancel()
     p.app.runs.runs = [{ id: "run-0000000000a1", repo_dir: "/home/u/my proj", milestone_id: "alpha", status: "started",
@@ -316,6 +316,8 @@ TestCase {
     compare(String(button.tooltipText), "am is not installed or not on PATH")
     p.app.projects.selectedProject = null
     p.app.nav.viewMode = "runs"
-    compare(button.visible, false, "no project")
+    compare(button.visible, true, "no project: still shown")
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "Open a project to dispatch")
   }
 }

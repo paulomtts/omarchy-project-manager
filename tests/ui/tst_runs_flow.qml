@@ -747,4 +747,21 @@ TestCase {
     compare(H.find(p, "startRunButton").visible, false)
     compare(H.find(p, "noProjectsText").visible, false)
   }
+
+  // F6
+  function test_start_run_without_a_project_is_disabled_with_why() {
+    var p = makeNoProject(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    var button = H.find(p, "startRunButton")
+    compare(button.visible, true)
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "Open a project to dispatch")
+    mouseClick(button)
+    compare(p.dispatchOpen, false, "a click opens nothing")
+    compare(p.app.runs.dispatchState, "idle")
+    p.app.runs.amStatus = "missing"
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "Open a project to dispatch", "no project wins over am missing")
+  }
 }
