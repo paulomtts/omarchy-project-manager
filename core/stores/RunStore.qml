@@ -1903,11 +1903,11 @@ Scope {
     return probe !== null ? entries.concat(probe.projects) : entries
   }
 
-  // Opens the dispatch from Runs at the project step with no root and no
-  // failures, and probes every usable root, in registry order. Refused
-  // (false, nothing changes) while a start is in flight; else true, from
-  // any state or step: a second call starts the step over. With no usable
-  // root nothing is launched and the rows are [].
+  // Opens the dispatch from Runs at the project step with no root, no
+  // failures and the target data cleared, and probes every usable root, in
+  // registry order. Refused (false, nothing changes) while a start is in
+  // flight; else true, from any state or step: a second call starts the
+  // step over. With no usable root nothing is launched and the rows are [].
   function dispatchOpenFromRuns() {
     if (store.dispatchState === "starting") return false
     store.resetDispatch()
@@ -1915,6 +1915,7 @@ Scope {
     store.dispatchStep = "project"
     store.dispatchProjectProbe = null
     store.dispatchProjectFailures = {}
+    store.dispatchClearTarget()
     var roots = store.usableRoots().map(function(p) { return p.root })
     if (roots.length > 0) dispatchProjectRunner.run(["--probe"].concat(roots))
     else dispatchProjectRunner.cancel()
@@ -1978,11 +1979,13 @@ Scope {
     store.dispatchRoot = ""
   }
 
-  // From the target step back to the project step, dispatchRoot "". The
-  // probe and its rows stay and nothing is relaunched. Refused (false,
-  // nothing changes) at any other step.
+  // From the target step back to the project step: dispatchRoot "" and the
+  // target data cleared; the probe, its rows and the failures stay and
+  // nothing is relaunched. Refused (false, nothing changes) at any other
+  // step.
   function dispatchBack() {
     if (store.dispatchStep !== "target") return false
+    store.dispatchClearTarget()
     store.dispatchStep = "project"
     store.dispatchRoot = ""
     return true
@@ -1997,10 +2000,11 @@ Scope {
     store.dispatchTargetKey = ""
   }
 
-  // The steps cleared: the probe cancelled, dispatchStep "",
-  // dispatchProjectProbe null and dispatchProjectFailures {}.
+  // The steps cleared: the probe cancelled, the target data cleared,
+  // dispatchStep "", dispatchProjectProbe null and dispatchProjectFailures {}.
   function dispatchClearSteps() {
     dispatchProjectRunner.cancel()
+    store.dispatchClearTarget()
     store.dispatchStep = ""
     store.dispatchProjectProbe = null
     store.dispatchProjectFailures = {}
@@ -2008,13 +2012,15 @@ Scope {
 
   // The registry changed: at the target step, a dispatchRoot that is no
   // longer a usable root (trailing "/" removed) goes back to the project
-  // step with dispatchRoot "". Any other step is left alone.
+  // step with dispatchRoot "" and the target data cleared. Any other step
+  // is left alone.
   function dispatchRegistryChanged() {
     if (store.dispatchStep !== "target") return
     var rows = Runs.dispatchProjects(store.usableRoots(), null, "")
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].root === store.dispatchRoot) return
     }
+    store.dispatchClearTarget()
     store.dispatchStep = "project"
     store.dispatchRoot = ""
   }

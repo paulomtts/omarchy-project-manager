@@ -6148,6 +6148,94 @@ TestCase {
     compare(Object.keys(closed.dispatchProjectFailures).length, 0, "a close forgets the failures")
   }
 
+  // 2.3 test 6
+  function test_dispatch_back_from_target_cancels_the_read() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    var probe = store.dispatchProjectProbe
+    var probeSeq = store.dispatchProjectRunner.seq
+    var late = store.dispatchTargetRunner.current
+    compare(store.dispatchBack(), true)
+    compare(store.dispatchStep, "project")
+    compare(store.dispatchRoot, "")
+    compare(store.dispatchTargetLoading, false, "Back cancels the read")
+    verify(store.dispatchProjectProbe === probe, "the probe is kept")
+    compare(store.dispatchProjectRunner.seq, probeSeq, "the probe is not relaunched")
+    compare(store.dispatchProjectRows.length, 2)
+    reply(late, treeReply(treeData()), 0)
+    compare(store.dispatchStep, "project", "the late reply changes nothing")
+    checkTargetCleared(store, "late reply")
+    compare(Object.keys(store.dispatchProjectFailures).length, 0, "and marks nothing")
+    var seq = store.dispatchTargetRunner.seq
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    verify(store.dispatchTargetRunner.seq > seq, "a new read")
+    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
+    compare(targetKeys(store.dispatchTargetRows), "board,card:m1,card:s1,card:t1", "its reply applies")
+    compare(store.dispatchBack(), true)
+    checkTargetCleared(store, "Back after the reply")
+  }
+
+  // 2.3 test 7
+  function test_dispatch_target_stale_replies_are_dropped() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    var lateB = store.dispatchTargetRunner.current
+    store.dispatchBack()
+    compare(store.dispatchProjectPick(tc.rootA), true)
+    var procA = store.dispatchTargetRunner.current
+    reply(lateB, treeReply(treeData()), 0)
+    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchTargetLoading, true, "B's reply leaves A's read in flight")
+    compare(store.dispatchTargetRows.length, 0, "B's tree is not shown for A")
+    reply(procA, treeReply([]), 0)
+    compare(targetKeys(store.dispatchTargetRows), "board", "A's reply applies")
+
+    var failed = pickedStore(tc.rootB); if (!failed) return
+    var lateFail = failed.dispatchTargetRunner.current
+    failed.dispatchBack()
+    failed.dispatchProjectPick(tc.rootA)
+    reply(lateFail, treeFail("gone"), 0)
+    compare(failed.dispatchStep, "target", "B's failure does not send A back")
+    compare(failed.dispatchRoot, tc.rootA)
+    compare(Object.keys(failed.dispatchProjectFailures).length, 0, "and marks nothing")
+
+    var closed = pickedStore(tc.rootB); if (!closed) return
+    var lateClosed = closed.dispatchTargetRunner.current
+    compare(closed.closeDispatch(), true)
+    checkDispatchIdle(closed, "closed")
+    reply(lateClosed, treeReply(treeData()), 0)
+    checkDispatchIdle(closed, "a reply after the close")
+    compare(closed.dispatchRoot, "")
+
+    var card = pickedStore(tc.rootB); if (!card) return
+    var lateCard = card.dispatchTargetRunner.current
+    var cards = dispatchCards()
+    compare(card.openDispatch(cards.m1, cards), true)
+    compare(card.dispatchStep, "")
+    compare(card.dispatchRoot, tc.rootA)
+    checkTargetCleared(card, "card entry")
+    reply(lateCard, treeReply(treeData()), 0)
+    checkTargetCleared(card, "a reply after a card entry")
+    compare(card.dispatchStep, "")
+    compare(card.dispatchState, "previewing", "the card's dispatch is untouched")
+
+    var reopened = pickedStore(tc.rootB); if (!reopened) return
+    var lateReopen = reopened.dispatchTargetRunner.current
+    compare(reopened.dispatchOpenFromRuns(), true)
+    checkTargetCleared(reopened, "reopened")
+    reply(lateReopen, treeReply(treeData()), 0)
+    compare(reopened.dispatchStep, "project", "a reply after a reopening is dropped")
+    checkTargetCleared(reopened, "a reply after a reopening")
+
+    var dropped = pickedStore(tc.rootB); if (!dropped) return
+    var lateDropped = dropped.dispatchTargetRunner.current
+    dropped.projectRoots = registry([tc.rootA])
+    compare(dropped.dispatchStep, "project")
+    compare(dropped.dispatchRoot, "")
+    checkTargetCleared(dropped, "registry fallback")
+    reply(lateDropped, treeReply(treeData()), 0)
+    compare(dropped.dispatchStep, "project", "a reply after the registry fallback is dropped")
+    checkTargetCleared(dropped, "a reply after the registry fallback")
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).
