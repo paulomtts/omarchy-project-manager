@@ -50,6 +50,29 @@ TestCase {
       readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(rs.runs, rs.runFilter), rs.searchQuery), rs.projectFilter))
       readonly property var filteredRuns: Runs.displayOrder(rs.groups)
       function toggleRunFilter(id) { rs.runFilter = id === "all" || id === rs.runFilter ? "" : id }
+      // The open project's root ("" = none) and the project filter's toggle,
+      // as the real store has them: toggleProjectFilter records its argument;
+      // "", or the active root again, means All; a root no run has means All.
+      // A `var`, not a `string`: a test assigns undefined and a number.
+      property var project: ""
+      property var projectToggles: []
+      function toggleProjectFilter(root) {
+        rs.projectToggles = rs.projectToggles.concat([root])
+        var want = typeof root === "string" ? root.replace(/\/+$/, "") : ""
+        var next = want === "" || want === rs.projectFilter ? "" : want
+        rs.projectFilter = rs.hasRoot(next) ? next : ""
+      }
+      // Some run in `runs` has `root` as its project.root.
+      function hasRoot(root) {
+        if (root === "") return false
+        for (var i = 0; i < rs.runs.length; i++) {
+          var p = rs.runs[i] && rs.runs[i].project
+          if (p && p.root === root) return true
+        }
+        return false
+      }
+      // The store's keepProjectFilter: a filter no run has any more is All.
+      onRunsChanged: if (rs.projectFilter !== "" && !rs.hasRoot(rs.projectFilter)) rs.projectFilter = ""
       // The control surface the rows read (S2 4.2). `control` only records.
       property var pending: ({})
       property var stillWaiting: ({})
@@ -140,6 +163,20 @@ TestCase {
 
   // An item's top edge in the screen's coordinates.
   function topOf(s, name) { return H.find(s.screen, name).mapToItem(s.screen, 0, 0).y }
+
+  // The project chip row's chip ids, in model order, joined by ",".
+  function projectChipIds(s) {
+    var model = H.find(s.screen, "runProjectChips").model
+    var ids = []
+    for (var i = 0; i < model.length; i++) ids.push(model[i].id)
+    return ids.join(",")
+  }
+
+  // A project chip's text; null when there is no such chip.
+  function projectChipText(s, id) {
+    var chip = H.find(s.screen, "runProjectChip" + id)
+    return chip ? chip.text : null
+  }
 
   // Project A (/home/u/a, "alpha") with an escalated and a dead run, project
   // B (/home/u/b, "beta") with one live run. Display order: A (attention)
@@ -963,5 +1000,124 @@ TestCase {
     s.runs.amStatus = "missing"
     wait(20)
     compare(row.visible, true, "the setting is the project's, not am's")
+  }
+
+  // ---- project chips (4.3)
+
+  // 1
+  function test_project_chips_without_an_open_project() {
+    var s = make(twoProjects()); if (!s) return
+    compare(shown(s, "runProjectChips"), true)
+    compare(projectChipText(s, "all"), "All projects")
+    compare(projectChipText(s, "/home/u/a"), "alpha 2")
+    compare(projectChipText(s, "/home/u/b"), "beta 1")
+    compare(H.find(s.screen, "runProjectChipthis"), null)
+    compare(projectChipIds(s), "all,/home/u/a,/home/u/b", "alpha (attention) before beta (live)")
+    var a = H.find(s.screen, "runProjectChip/home/u/a")
+    var b = H.find(s.screen, "runProjectChip/home/u/b")
+    verify(a.mapToItem(s.screen, 0, 0).x < b.mapToItem(s.screen, 0, 0).x, "alpha is drawn left of beta")
+  }
+
+  // 2
+  function test_an_open_project_adds_this_project_in_place_of_its_own_chip() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = "/home/u/a/"
+    compare(projectChipText(s, "this"), "This project 2")
+    compare(H.find(s.screen, "runProjectChip/home/u/a"), null, "alpha is listed once, as This project")
+    compare(projectChipText(s, "/home/u/b"), "beta 1")
+    compare(projectChipIds(s), "all,this,/home/u/b")
+  }
+
+  // 4
+  function test_the_row_hides_with_one_project_and_none_open() {
+    var all = twoProjects()
+    var s = make([all[0], all[2]]); if (!s) return
+    compare(shown(s, "runProjectChips"), false, "one project with runs, none open")
+    s.runs.project = "/home/u/a"
+    compare(shown(s, "runProjectChips"), true)
+    compare(projectChipIds(s), "all,this")
+    compare(projectChipText(s, "this"), "This project 2")
+    s.runs.project = "/home/u/b"
+    compare(projectChipIds(s), "all,this,/home/u/a", "the open project is not the one with runs")
+    compare(projectChipText(s, "this"), "This project 0")
+    s.runs.project = ""
+    s.runs.runs = sample()
+    compare(shown(s, "runProjectChips"), false, "runs with no project are no project")
+    s.runs.runs = []
+    compare(shown(s, "runProjectChips"), false, "no runs, none open")
+    s.runs.project = "/home/u/c"
+    compare(shown(s, "runProjectChips"), true)
+    compare(projectChipIds(s), "all,this")
+    compare(projectChipText(s, "this"), "This project 0")
+  }
+
+  // 11
+  function test_the_project_chips_sit_above_the_status_chips() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.watchWarning = "CorruptJournal: bad"
+    wait(20)
+    verify(topOf(s, "runsWarning") < topOf(s, "runProjectChips"), "below the banners")
+    verify(topOf(s, "runProjectChips") < topOf(s, "runChips"), "above the status chips")
+  }
+
+  // 12
+  function test_missing_am_hides_the_project_chips() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(shown(s, "runProjectChips"), false)
+    s.runs.amStatus = "schema"
+    wait(20)
+    compare(shown(s, "runProjectChips"), true, "a schema mismatch keeps them, as it keeps the status chips")
+    s.runs.amStatus = "error"
+    s.runs.stale = true
+    wait(20)
+    compare(shown(s, "runProjectChips"), true, "an error or stale data keeps them")
+  }
+
+  // 13
+  function test_project_chip_labels_fall_back_to_the_root_and_follow_group_order() {
+    var nameless = run("run-n-park0004", "stopped", null, {})
+    nameless.project = { root: "/home/u/n", name: "" }
+    var s = make([tagged(run("run-g-done0001", "done", null, {}), "/home/u/g", "gamma"),
+                  tagged(run("run-a-live0002", "started", true, {}), "/home/u/a", "Alpha"),
+                  tagged(run("run-b-escl0003", "escalated", null, {}), "/home/u/b", "beta"),
+                  nameless]); if (!s) return
+    compare(projectChipIds(s), "all,/home/u/b,/home/u/a,/home/u/n,/home/u/g",
+            "attention, live, then name case-blind with the empty name first")
+    compare(projectChipText(s, "/home/u/b"), "beta 1")
+    compare(projectChipText(s, "/home/u/a"), "Alpha 1")
+    compare(projectChipText(s, "/home/u/n"), "/home/u/n 1")
+    compare(projectChipText(s, "/home/u/g"), "gamma 1")
+  }
+
+  // 14
+  function test_a_non_string_project_shows_no_this_chip_and_does_not_throw() {
+    var s = make(twoProjects()); if (!s) return
+    s.runs.project = undefined
+    compare(H.find(s.screen, "runProjectChipthis"), null)
+    compare(projectChipIds(s), "all,/home/u/a,/home/u/b")
+    s.runs.project = 7
+    compare(H.find(s.screen, "runProjectChipthis"), null)
+    compare(projectChipIds(s), "all,/home/u/a,/home/u/b")
+  }
+
+  // Review Focus 1.
+  function test_many_project_chips_wrap_and_keep_the_status_chips_below() {
+    var names = ["first-long-project-name", "second-long-project-name", "third-long-project-name",
+                 "fourth-long-project-name", "fifth-long-project-name", "sixth-long-project-name"]
+    var list = []
+    for (var i = 0; i < names.length; i++)
+      list.push(tagged(run("run-p" + i + "-done000" + i, "done", null, {}), "/home/u/p" + i, names[i]))
+    var s = make(list); if (!s) return
+    var row = H.find(s.screen, "runProjectChips")
+    var first = H.find(s.screen, "runProjectChip/home/u/p0")
+    verify(row.height > first.height * 2, "the chips wrap onto more lines")
+    verify(topOf(s, "runProjectChips") + row.height <= topOf(s, "runChips"), "the status chips stay below")
+    compare(shown(s, "runChips"), true)
+    for (var p = 0; p < names.length; p++) {
+      var chip = H.find(s.screen, "runProjectChip/home/u/p" + p)
+      verify(chip.mapToItem(s.screen, 0, 0).x + chip.width <= s.screen.width, "chip " + p + " stays inside the screen")
+    }
   }
 }

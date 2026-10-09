@@ -12,12 +12,14 @@ import "../theme" as T
 // project's snapshot error), flat with no header under a project filter. Each
 // run is one row (state glyph, short id, title, done/total, current phase,
 // age) whose index is its position in the store's filteredRuns, the one list
-// the cursor walks; headers are not cursor targets. Needs attention / Live /
-// Parked / All chips apply across groups -- clicking the active chip means All
-// again -- and a footer says whether the runs are watched. It reads the run
-// store and asks the navigator to open a run or move the cursor; it owns no
-// state of its own. Ages are read against the clock once per snapshot: there
-// is no timer.
+// the cursor walks; headers are not cursor targets. A project chip row (All
+// projects, This project when one is open, one chip per project with runs,
+// with run counts) sits above the status chips, hidden when only one project
+// has runs and none is open. Needs attention / Live / Parked / All chips
+// apply across groups -- clicking the active chip means All again -- and a
+// footer says whether the runs are watched. It reads the run store and asks
+// the navigator to open a run or move the cursor; it owns no state of its
+// own. Ages are read against the clock once per snapshot: there is no timer.
 Column {
   id: screen
   objectName: "runsView"
@@ -39,6 +41,15 @@ Column {
   // The registry is empty: the status line says so whatever the chip or the
   // search.
   readonly property bool noProjects: screen.sizeOf(screen.app.runs.projectRoots) === 0
+  // The open project's root, by rootKey; "" when none is open.
+  readonly property string openRoot: screen.rootKey(screen.app.runs.project)
+  // Every listed run by project, whatever the status chip, the search or the
+  // project filter: the project chips are counted from these.
+  readonly property var allGroups: Runs.groupByProject(screen.app.runs.runs)
+  // How many projects have runs.
+  readonly property int projectsWithRuns: screen.projectsIn(screen.allGroups)
+  // The project chip row's model (projectChipsOf).
+  readonly property var projectChips: screen.projectChipsOf(screen.allGroups, screen.openRoot)
 
   // What the list draws, in order (entriesOf).
   readonly property var entries: screen.entriesOf(screen.app.runs.groups, screen.app.runs.filteredRuns,
@@ -89,6 +100,41 @@ Column {
       if (screen.rootKey(keys[k]) === want && typeof errors[keys[k]] === "string") return errors[keys[k]]
     }
     return ""
+  }
+
+  // How many groups of `groups` have a root other than "".
+  function projectsIn(groups) {
+    var n = 0
+    for (var g = 0; g < screen.sizeOf(groups); g++) {
+      if (groups[g].project.root !== "") n++
+    }
+    return n
+  }
+
+  // The project chips, scalar values only (a Repeater converts nested ones):
+  // All projects (id "all", no count); This project (id "this") when `open`
+  // is not "", counting the runs of `open`'s group, 0 when it has none; then
+  // one chip per group of `groups` (groupByProject output), in order, except
+  // the root "" group and `open`'s: id its root, label its name else its
+  // root, count its runs.
+  function projectChipsOf(groups, open) {
+    var tint = screen.theme.dim
+    var named = []
+    var openCount = 0
+    for (var g = 0; g < screen.sizeOf(groups); g++) {
+      var group = groups[g]
+      var root = group.project.root
+      if (root === "") continue
+      if (root === open) {
+        openCount = screen.sizeOf(group.runs)
+        continue
+      }
+      named.push({ id: root, label: group.project.name !== "" ? group.project.name : root,
+                   count: screen.sizeOf(group.runs), tint: tint })
+    }
+    var out = [{ id: "all", label: "All projects", tint: tint }]
+    if (open !== "") out.push({ id: "this", label: "This project", count: openCount, tint: tint })
+    return out.concat(named)
   }
 
   // The list's entries, scalar values only (a Repeater converts nested ones):
@@ -181,6 +227,16 @@ Column {
     visible: !screen.amMissing && screen.app.runs.watchWarning !== ""
     text: screen.app.runs.watchWarning
     elide: Text.ElideRight
+  }
+
+  // Shown while a project is open or more than one project has runs.
+  UI.ChipRow {
+    objectName: "runProjectChips"
+    width: parent.width
+    theme: screen.theme
+    chipPrefix: "runProjectChip"
+    visible: !screen.amMissing && (screen.openRoot !== "" || screen.projectsWithRuns > 1)
+    model: screen.projectChips
   }
 
   UI.FilterableList {
