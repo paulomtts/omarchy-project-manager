@@ -167,14 +167,12 @@ TestCase {
     compare(H.find(p, "runsMessage").text, "No runs for this project yet.")
   }
 
-  function test_a_project_switch_clears_the_runs_and_the_filter() {
+  function test_a_project_that_leaves_the_registry_takes_its_runs_with_it() {
     var p = make(); if (!p) return
     p.navigator.showSection("runs")
-    p.app.runs.toggleRunFilter("live")
     p.app.projects.applyProjectsList([{ root_path: "/home/u/b", name: "beta" }])
     p.app.runs.snapshotRunner.cancel()
     compare(p.app.runs.runs.length, 0)
-    compare(p.app.runs.runFilter, "")
   }
 
   // ---- Run detail (5.2)
@@ -242,13 +240,12 @@ TestCase {
     compare(H.find(p, "runsView").visible, true)
   }
 
-  function test_a_project_switch_on_the_run_view_clears_it() {
+  function test_a_project_switch_on_the_run_view_leaves_it_and_drops_the_late_logs() {
     var p = openDetail(); if (!p) return
     var proc = p.app.runs.logsRunner.current
     p.app.projects.applyProjectsList([{ root_path: "/home/u/b", name: "beta" }])
     p.app.runs.snapshotRunner.cancel()
-    compare(p.app.runs.selectedAttempt, null)
-    compare(p.app.runs.logsText, "")
+    compare(p.app.nav.viewMode, "board")
     compare(H.find(p, "runDetailView").visible, false)
     proc.outText = logsOk("late\n")
     proc.exited(0)
@@ -262,9 +259,9 @@ TestCase {
     proc.exited(code)
   }
 
-  // One runs-snapshot.py entry: the `am runs` summary whose `status` the
-  // helper replaced with the `am status` data. workflow "task" makes a resume
-  // skip the run-settings read.
+  // One run of a runs-snapshot-all.py entry: the `am runs` summary whose
+  // `status` the helper replaced with the `am status` data. workflow "task"
+  // makes a resume skip the run-settings read.
   function snapEntry(id, runStatus, live, milestone) {
     var control = live === null ? {} : { lease: { pid: 1, host: "h", heartbeat_at: "", accepting: true, live: live } }
     return { id: id, workflow: "task", repo_dir: "/home/u/a", started_at: "",
@@ -272,7 +269,10 @@ TestCase {
                        rows: [], stories: [], subtasks: [], control: control } }
   }
 
-  function snapOk(entries) { return JSON.stringify({ ok: true, runs: entries, data_dir: "/d" }) + "\n" }
+  // runs-snapshot-all.py's reply: pA's entry lists `entries`.
+  function snapOk(entries) {
+    return JSON.stringify({ ok: true, projects: [{ root: tc.pA.root_path, ok: true, runs: entries }], data_dir: "/d" }) + "\n"
+  }
 
   function controlOf(p, name) { return H.find(H.find(p, "runRowControls0"), "runControl" + name) }
 

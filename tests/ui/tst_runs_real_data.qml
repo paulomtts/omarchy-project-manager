@@ -15,7 +15,7 @@ TestCase {
   width: 900; height: 700
   Component { id: hostC; Item { width: 900; height: 700 } }
 
-  // The captured runs' project: runs.json's repo_dir, so the store keeps them.
+  // The captured runs' project, registered: its snapshot entry lists them.
   property var pA: ({ root_path: "/home/user/Code/omarchy-project-manager", name: "alpha" })
 
   readonly property string startedRun: "20261008T143823Z-e795ad19"
@@ -55,15 +55,14 @@ TestCase {
     proc.exited(code)
   }
 
-  // The runs-snapshot.py reply for the captured runs: each `am runs` row with
-  // its `status` replaced by that run's `am status` data, and runs.json's
-  // as_of_seq and store_id, as the helper does.
+  // The runs-snapshot-all.py reply for the captured runs: pA's entry lists
+  // each `am runs` row with its `status` replaced by that run's `am status`
+  // data, as the helper does.
   function snapshot() {
-    var data = F.load("runs.json").data
-    var runs = data.runs
+    var runs = F.load("runs.json").data.runs
     runs[0].status = F.load("status-started.json").data
     runs[1].status = F.load("status-done.json").data
-    return JSON.stringify({ ok: true, as_of_seq: data.as_of_seq, store_id: data.store_id, runs: runs, data_dir: "/d" }) + "\n"
+    return JSON.stringify({ ok: true, projects: [{ root: tc.pA.root_path, ok: true, runs: runs }], data_dir: "/d" }) + "\n"
   }
 
   // The next snapshot of project A is the captured one.
