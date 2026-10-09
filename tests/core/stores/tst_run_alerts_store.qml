@@ -307,15 +307,13 @@ TestCase {
 
   // A RunAlertsStore wired to `store` the way App wires app.runAlerts:
   // backendDir copied; active and projectRoots bound to the run store's own;
-  // store.alertsStore set; snapshotReplied routed to it. notifyOnEscalation is
-  // left to each test.
+  // snapshotReplied routed to it. notifyOnEscalation is left to each test.
   function wireAlerts(store) {
     var comp = Qt.createComponent("../../../core/stores/RunAlertsStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
     var a = comp.createObject(tc, { backendDir: store.backendDir })
     a.active = Qt.binding(function() { return store.active })
     a.projectRoots = Qt.binding(function() { return store.projectRoots })
-    store.alertsStore = a
     store.snapshotReplied.connect(a.snapshotReplied)
     tc.alertsPairs = tc.alertsPairs.concat([{ store: store, alerts: a }])
     return a
@@ -871,7 +869,6 @@ TestCase {
     reply(second, "garbage\n", 1)
     compare(alerts(store).notifyRunners.length, 0, "a failed notification goes too")
     compare(toastIds(store), "a,b", "the replies change nothing else")
-    compare(store.flashText, "")
 
     snapshot(store, [escalated("a"), dead("b"), escalated("c")])
     compare(alerts(store).notifyRunners.length, 1)

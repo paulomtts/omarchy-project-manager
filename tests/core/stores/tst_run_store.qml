@@ -4,8 +4,9 @@
 // one-in-flight-plus-one-pending rule, what a registry change does and what a
 // project switch leaves alone, and the snapshotReplied it emits. Built
 // directly, wired to a RunControlStore and a RunAlertsStore the way App wires
-// app.runControl and app.runAlerts, and driven through stubbed Process
-// objects. The run controls and the notify switch are tested in
+// app.runControl and app.runAlerts (and, where a test needs it, a
+// RunDispatchStore the way App wires app.runDispatch), and driven through
+// stubbed Process objects. The run controls and the notify switch are tested in
 // tst_run_control_store.qml, the alerts in tst_run_alerts_store.qml. The
 // dispatch is tested in tst_run_dispatch_store.qml, the run settings load
 // and save in tst_run_control_store.qml.
@@ -51,8 +52,8 @@ TestCase {
 
   // A RunControlStore wired to `store` the way App wires app.runControl:
   // backendDir copied; project, active and runs bound to the run store's own;
-  // store.controlStore set; an ok snapshotReplied settles its requests; its
-  // refreshRequested goes to refresh() ("all") or requestSnapshot(roots).
+  // an ok snapshotReplied settles its requests; its refreshRequested goes to
+  // refresh() ("all") or requestSnapshot(roots).
   function wireControl(store) {
     var comp = Qt.createComponent("../../../core/stores/RunControlStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
@@ -60,7 +61,6 @@ TestCase {
     c.project = Qt.binding(function() { return store.project })
     c.active = Qt.binding(function() { return store.active })
     c.runs = Qt.binding(function() { return store.runs })
-    store.controlStore = c
     store.snapshotReplied.connect(function(root, outcome) { if (outcome === "ok") c.settleAfterSnapshot() })
     c.refreshRequested.connect(function(roots) {
       if (roots === "all") store.refresh()
@@ -83,8 +83,8 @@ TestCase {
 
   // A RunAlertsStore wired to `store` the way App wires app.runAlerts:
   // backendDir copied; active and projectRoots bound to the run store's own,
-  // notifyOnEscalation bound to the paired control store's; store.alertsStore
-  // set; snapshotReplied routed to it.
+  // notifyOnEscalation bound to the paired control store's; snapshotReplied
+  // routed to it.
   function wireAlerts(store) {
     var comp = Qt.createComponent("../../../core/stores/RunAlertsStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
@@ -92,7 +92,6 @@ TestCase {
     a.active = Qt.binding(function() { return store.active })
     a.notifyOnEscalation = Qt.binding(function() { var c = controlOf(store); return c ? c.notifyOnEscalation : false })
     a.projectRoots = Qt.binding(function() { return store.projectRoots })
-    store.alertsStore = a
     store.snapshotReplied.connect(a.snapshotReplied)
     tc.alertsPairs = tc.alertsPairs.concat([{ store: store, alerts: a }])
     return a
@@ -104,6 +103,59 @@ TestCase {
       if (tc.alertsPairs[i].store === store) return tc.alertsPairs[i].alerts
     }
     return null
+  }
+
+  // Every {store, dispatch} pair wireDispatch made.
+  property var dispatchPairs: []
+
+  // A RunDispatchStore with backendDir copied. When `bound`, it is wired the
+  // way App wires app.runDispatch: project, active and runs bound to the run
+  // store's own, runSettings to the paired control store's
+  // runSettingsOf(project); refreshRequested to refresh() ("all") or
+  // requestSnapshot(roots); noticeRequested to the paired control store's
+  // flash; runSettingsWanted and runSettingsSaveRequested to its
+  // loadRunSettings and saveRunSettings, and its runSettingsSaveFailed back to
+  // dispatchSaveFailed. Otherwise nothing is bound or routed.
+  function wireDispatch(store, bound) {
+    var comp = Qt.createComponent("../../../core/stores/RunDispatchStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
+    var d = comp.createObject(tc, { backendDir: store.backendDir })
+    if (bound) {
+      d.project = Qt.binding(function() { return store.project })
+      d.active = Qt.binding(function() { return store.active })
+      d.runs = Qt.binding(function() { return store.runs })
+      d.runSettings = Qt.binding(function() { return controlOf(store).runSettingsOf(store.project) })
+      d.refreshRequested.connect(function(roots) {
+        if (roots === "all") store.refresh()
+        else store.requestSnapshot(roots)
+      })
+      d.noticeRequested.connect(function(text) { controlOf(store).flash(text) })
+      var c = controlOf(store)
+      d.runSettingsWanted.connect(function(root) { c.loadRunSettings(root) })
+      d.runSettingsSaveRequested.connect(function(root, patch) { c.saveRunSettings(root, patch) })
+      c.runSettingsSaveFailed.connect(function(root, patch) { d.dispatchSaveFailed(root, patch) })
+    }
+    tc.dispatchPairs = tc.dispatchPairs.concat([{ store: store, dispatch: d }])
+    return d
+  }
+
+  // The RunDispatchStore wireDispatch paired with `store`; null when none.
+  function dispatchOf(store) {
+    for (var i = 0; i < tc.dispatchPairs.length; i++) {
+      if (tc.dispatchPairs[i].store === store) return tc.dispatchPairs[i].dispatch
+    }
+    return null
+  }
+
+  // A milestone, its story, the story's subtask and a done milestone, as
+  // Board.indexTree() leaves them; the object is also their {id: card} map.
+  function dispatchCards() {
+    return {
+      m1: { id: "m1", title: "M3 Document runs", status: "todo", parentId: "", depth: 0 },
+      s1: { id: "s1", title: "Dispatch store", status: "todo", parentId: "m1", depth: 1 },
+      t1: { id: "t1", title: "RunStore dispatch", status: "todo", parentId: "s1", depth: 2 },
+      d1: { id: "d1", title: "M2 Monitor runs", status: "done", parentId: "", depth: 0 }
+    }
   }
 
   // A root's registry entry: rootA is "alpha", rootB "beta", any other "proj".
@@ -298,8 +350,8 @@ TestCase {
   function test_a_failing_root_keeps_its_runs_and_says_why() {
     var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("escalated")])]), 0)
-    compare(store.alertsArmed, true)
-    compare(store.toasts.length, 0)
+    compare(alerts(store).alertsArmed, true)
+    compare(alerts(store).toasts.length, 0)
     store.refresh()
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started"), rec("done-integrate")]),
                                                   failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
@@ -310,11 +362,11 @@ TestCase {
     compare(Object.keys(store.projectErrors).join(","), tc.rootB)
     compare(store.amStatus, "ok", "A answered")
     compare(store.lastError, "")
-    compare(store.toasts.length, 0, "a failed entry raises nothing")
+    compare(alerts(store).toasts.length, 0, "a failed entry raises nothing")
     store.refresh()
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("escalated")])]), 0)
     compare(Object.keys(store.projectErrors).length, 0, "a good entry clears B's error")
-    compare(store.toasts.length, 0, "B's recovery replays no alert")
+    compare(alerts(store).toasts.length, 0, "B's recovery replays no alert")
 
     var first = makeWithRoots([tc.rootA, tc.rootB]); if (!first) return
     reply(first.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]),
@@ -339,12 +391,12 @@ TestCase {
     compare(ids(store.runs), tc.startedRun + "," + tc.doneRun, "the previous runs stay")
     compare(store.projectErrors[tc.rootA], "StoreBusyError: the am store is busy; try again")
     compare(store.projectErrors[tc.rootB], "SchemaMismatch: the plugin needs the newer am")
-    compare(store.alertsArmed, true, "the armed state is unchanged")
+    compare(alerts(store).alertsArmed, true, "the armed state is unchanged")
     compare(store.stale, true, "stale is unchanged")
 
     var closed = makeWithRoots([tc.rootA]); if (!closed) return
     reply(closed.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmTimeout", "am did not answer within 60 s.")]), 0)
-    compare(closed.alertsArmed, false, "a disarmed store stays disarmed")
+    compare(alerts(closed).alertsArmed, false, "a disarmed store stays disarmed")
     compare(closed.amStatus, "error")
   }
 
@@ -353,7 +405,7 @@ TestCase {
     var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]),
                                                   failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
-    compare(store.alertsArmed, true)
+    compare(alerts(store).alertsArmed, true)
     store.refresh()
     reply(store.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmMissing", "am is not installed."),
                                                   failEntry(tc.rootB, "AmMissing", "am is not installed.")]), 0)
@@ -364,7 +416,7 @@ TestCase {
     compare(store.asOfSeq, 0)
     compare(store.amStatus, "missing")
     compare(store.lastError, "AmMissing: am is not installed.")
-    compare(store.alertsArmed, false)
+    compare(alerts(store).alertsArmed, false)
     store.refresh()
     // synthetic: AmMissing beside another failure is not "am is missing".
     reply(store.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmMissing", "am is not installed."),
@@ -443,7 +495,7 @@ TestCase {
     compare(Object.keys(store.runsByProject).join(","), tc.rootA)
     compare(Object.keys(store.projectErrors).length, 0, "and so does its error")
     compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA, "then A alone is snapshotted")
-    compare(store.toasts.length, 0, "the registry change raises nothing")
+    compare(alerts(store).toasts.length, 0, "the registry change raises nothing")
     store.projectRoots = [{ root: tc.rootA, name: "renamed" }]
     compare(store.runs[0].project.name, "renamed", "a renamed project's runs carry the new name at once")
     compare(store.runsByProject[tc.rootA][0].project.name, "renamed")
@@ -470,18 +522,18 @@ TestCase {
                                                   okEntry(tc.rootB, [rec("done")])]), 0)
     store.selectedRunId = "r1"
     reply(store.logsRunner.current, logsReply("kept\n"), 0)
-    compare(store.control("pause", "r2"), true)
-    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(controlOf(store).control("pause", "r2"), true)
+    reply(controlOf(store).controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [treeEntry("r1", "started"), running("r2"), escalated("r3")]),
                                                   okEntry(tc.rootB, [rec("done")])]), 0)
-    compare(store.toasts.length, 1, "r3 escalated")
-    compare(store.pending.r2, "pause", "acknowledged, not yet settled")
+    compare(alerts(store).toasts.length, 1, "r3 escalated")
+    compare(controlOf(store).pending.r2, "pause", "acknowledged, not yet settled")
     store.toggleRunFilter("live")
     var watch = store.watchProc
     var runs = store.runs
     var applied = store.appliedSeq
     var attempt = store.selectedAttempt
-    var toasts = store.toasts
+    var toasts = alerts(store).toasts
     var seq = store.snapshotRunner.seq
     var targets = [tc.rootB, ""]
     for (var i = 0; i < targets.length; i++) {
@@ -496,9 +548,9 @@ TestCase {
       verify(store.watchProc === watch, label + ": the watch")
       compare(watch.running, true, label)
       compare(store.watching, true, label)
-      verify(store.toasts === toasts, label + ": the toasts")
-      compare(store.pending.r2, "pause", label)
-      compare(store.alertsArmed, true, label)
+      verify(alerts(store).toasts === toasts, label + ": the toasts")
+      compare(controlOf(store).pending.r2, "pause", label)
+      compare(alerts(store).alertsArmed, true, label)
       compare(store.amStatus, "ok", label)
       compare(store.snapshotRunner.seq, seq, label + ": no snapshot")
     }
@@ -506,7 +558,7 @@ TestCase {
     compare(store.debounceTimer.running, true, "a watch line after the switch is still handled")
     compare(store.nudges.r2, 7)
     store.project = tc.rootB
-    compare(store.dispatchState, "idle", "and the dispatch is still reset")
+    compare(dispatchOf(store).dispatchState, "idle", "and the dispatch is still reset")
   }
 
   // 10
@@ -531,7 +583,7 @@ TestCase {
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("done")])]), 0)
     verify(store.watchProc, "a good reply starts the watch")
     compare(store.watching, true)
-    compare(store.alertsArmed, true)
+    compare(alerts(store).alertsArmed, true)
     compare(store.staleTimer.running, true)
   }
 
@@ -841,8 +893,8 @@ TestCase {
     compare(store.runs.length, 0, "its late reply applies nothing")
     compare(store.snapshotRunner.seq, seq, "and launches nothing")
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "escalated", false)]), okEntry(tc.rootB, [])]), 0)
-    compare(store.toasts.length, 0, "the new store's first list only arms")
-    compare(store.alertsArmed, true)
+    compare(alerts(store).toasts.length, 0, "the new store's first list only arms")
+    compare(alerts(store).alertsArmed, true)
     compare(store.snapshotRunner.seq, seq, "no follow-up")
   }
 
@@ -1111,15 +1163,15 @@ TestCase {
   // Kept behaviour: a refresh that moves a run settles its pending request.
   function test_a_nudge_refresh_that_moves_the_run_settles_its_pending_request() {
     var store = capturedStore(); if (!store) return
-    compare(store.control("cancel", tc.startedRun), true)
-    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(controlOf(store).control("cancel", tc.startedRun), true)
+    reply(controlOf(store).controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
     reply(store.snapshotRunner.current, capturedList(), 0)
-    compare(store.pending[tc.startedRun], "cancel", "acknowledged, not yet settled")
+    compare(controlOf(store).pending[tc.startedRun], "cancel", "acknowledged, not yet settled")
     nudge(store, [tc.startedRun, 1005])
     fire(store.debounceTimer)
     // synthetic: status-escalated.json's data under the started run's id.
     reply(store.snapshotRunner.current, capturedList([], true), 0)
-    compare(store.pending[tc.startedRun], undefined, "the refresh settled it")
+    compare(controlOf(store).pending[tc.startedRun], undefined, "the refresh settled it")
   }
 
   // Kept behaviour: a nudge after a project switch is still handled.
@@ -1148,7 +1200,7 @@ TestCase {
     compare(store.runs.length, 0)
     compare(Object.keys(store.runsByProject).length, 0, "A's and C's runs go too")
     compare(Object.keys(store.projectErrors).length, 0)
-    compare(store.alertsArmed, false)
+    compare(alerts(store).alertsArmed, false)
   }
 
   // The plan's Review Focus 3
@@ -2685,7 +2737,7 @@ TestCase {
     compare(store.livenessTimer.running, false)
     compare(store.staleTimer.running, false)
     compare(store.pollTimer.running, false)
-    compare(store.pendingTimer.running, false)
+    compare(controlOf(store).pendingTimer.running, false)
   }
 
   // The next snapshot of project A lists `entries`.
@@ -2787,7 +2839,7 @@ TestCase {
   // ---- alerts (S2 4.4): the helpers the tests above share; the alerts tests are in tst_run_alerts_store.qml
 
   function escalated(id) { return entry(id, "escalated", false) }
-  function toastIds(store) { return store.toasts.map(function(t) { return t.id }).join(",") }
+  function toastIds(store) { return alerts(store).toasts.map(function(t) { return t.id }).join(",") }
 
   // ---- list snapshots
 
@@ -2838,7 +2890,7 @@ TestCase {
     compare(store.amStatus, "error", "no root answered")
     compare(store.lastError, "StoreBusyError: the am store is busy; try again")
     compare(store.stale, false, "stale is left as it was")
-    compare(store.toasts.length, 0)
+    compare(alerts(store).toasts.length, 0)
     var seq = store.snapshotRunner.seq
     store.livenessTimer.triggered()
     compare(store.snapshotRunner.seq, seq + 1, "the next tick retries")
@@ -3053,7 +3105,7 @@ TestCase {
     compare(store.debounceTimer.running, false)
     compare(store.runs.length, 0)
     compare(Object.keys(store.runsByProject).length, 0, "every root's list is forgotten too")
-    compare(store.alertsArmed, false)
+    compare(alerts(store).alertsArmed, false)
     compare(store.selectedRunId, tc.doneRun, "the selection is untouched")
     compare(old.running, false, "the old store's snapshot is stopped")
     var list = store.snapshotRunner.current
@@ -3064,8 +3116,8 @@ TestCase {
     compare(Object.keys(store.appliedSeq).length, 0)
     reply(list, capturedList([], true), 0)
     compare(store.runs[0].status, "escalated")
-    compare(store.toasts.length, 0, "the first list after a reset only arms")
-    compare(store.alertsArmed, true)
+    compare(alerts(store).toasts.length, 0, "the first list after a reset only arms")
+    compare(alerts(store).alertsArmed, true)
     compare(store.appliedSeq[tc.startedRun], 0)
   }
 
@@ -3079,7 +3131,7 @@ TestCase {
       compare(store.snapshotRunner.seq, seq, label)
       compare(store.runs.length, 2, label)
       compare(Object.keys(store.appliedSeq).length, 2, label)
-      compare(store.alertsArmed, true, label)
+      compare(alerts(store).alertsArmed, true, label)
     }
   }
 
@@ -3181,7 +3233,7 @@ TestCase {
     compare(Object.keys(store.appliedSeq).length, 2)
     compare(store.watchCursor, 1005)
     compare(store.nudges[tc.doneRun], 1005)
-    compare(store.alertsArmed, true)
+    compare(alerts(store).alertsArmed, true)
   }
 
   function test_a_hello_from_another_store_starts_over_from_a_list_snapshot() {
@@ -3201,7 +3253,7 @@ TestCase {
     compare(Object.keys(store.nudges).length, 0)
     compare(store.debounceTimer.running, false)
     compare(store.runs.length, 0)
-    compare(store.alertsArmed, false)
+    compare(alerts(store).alertsArmed, false)
     compare(store.selectedRunId, tc.doneRun, "the selection is untouched")
     compare(old.running, false, "the old store's snapshot is stopped")
     var list = store.snapshotRunner.current
@@ -3212,8 +3264,8 @@ TestCase {
     compare(Object.keys(store.appliedSeq).length, 0)
     reply(list, capturedList([], true), 0)
     compare(store.runs[0].status, "escalated")
-    compare(store.toasts.length, 0, "the new store's first list only arms")
-    compare(store.alertsArmed, true)
+    compare(alerts(store).toasts.length, 0, "the new store's first list only arms")
+    compare(alerts(store).alertsArmed, true)
     compare(store.appliedSeq[tc.startedRun], 0)
     compare(store.snapshotRunner.seq, seq, "its reply launches no further snapshot")
   }
@@ -3463,186 +3515,7 @@ TestCase {
   }
 
 
-  // R9
-  function test_without_an_alerts_store_the_shims_are_empty_and_inert() {
-    var comp = Qt.createComponent("../../../core/stores/RunStore.qml")
-    if (comp.status !== Component.Ready) { fail(comp.errorString()); return }
-    var store = comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
-    compare(store.alertsStore, null)
-    compare(JSON.stringify(store.armedRoots), "{}")
-    compare(store.alertsArmed, false)
-    compare(JSON.stringify(store.toasts), "[]")
-    compare(store.toastMs, 0)
-    compare(store.toastTimer, null)
-    compare(JSON.stringify(store.notifyRunners), "[]")
-    compare(store.raiseAlerts([{ id: "a", title: "t", state: "escalated", reason: "r", project: "p" }]), undefined)
-    compare(store.expireToasts(0), undefined)
-    compare(store.dismissToast(1), undefined)
-    compare(store.dismissAllToasts(), undefined)
-    compare(store.notify({ title: "t", reason: "r" }), undefined)
-    compare(store.toasts.length, 0, "nothing was raised")
-  }
-
-  // R10
-  function test_the_shims_follow_the_alerts_store_and_notify() {
-    var store = make(); if (!store) return
-    var a = alerts(store)
-    verify(store.alertsStore === a, "the handle is the paired alerts store")
-    verify(store.toasts === a.toasts)
-    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "toastsChanged" })
-    a.raiseAlerts([{ id: "r1", title: "m-r1", state: "escalated", reason: "escalated", project: "alpha" }])
-    compare(spy.count, 1, "the shim notifies like the original")
-    verify(store.toasts === a.toasts)
-    compare(store.toasts[0].id, "r1")
-    compare(store.alertsArmed, false)
-    a.armedRoots = ({ "/home/u/x": true })
-    compare(store.alertsArmed, true)
-    compare(JSON.stringify(store.armedRoots), JSON.stringify({ "/home/u/x": true }))
-    compare(store.toastMs, 8000)
-    verify(store.toastTimer === a.toastTimer)
-    verify(store.notifyRunners === a.notifyRunners)
-    store.dismissAllToasts()
-    compare(a.toasts.length, 0, "a forward reaches the alerts store")
-    compare(spy.count, 2)
-  }
-
-  function test_every_shim_function_forwards_to_the_alerts_store() {
-    var store = make(); if (!store) return
-    var a = alerts(store)
-    store.raiseAlerts([{ id: "r1", title: "m-r1", state: "escalated", reason: "escalated", project: "alpha" },
-                       { id: "r2", title: "m-r2", state: "dead", reason: "process died", project: "alpha" }])
-    compare(a.toasts.map(function(t) { return t.id }).join(","), "r1,r2", "raiseAlerts")
-    store.dismissToast(a.toasts[0].key)
-    compare(a.toasts.map(function(t) { return t.id }).join(","), "r2", "dismissToast")
-    store.expireToasts(a.toasts[0].expiresMs)
-    compare(a.toasts.length, 0, "expireToasts")
-    store.notify({ title: "m-r1", reason: "escalated" })
-    compare(a.notifyRunners.length, 1, "notify")
-    compare(argv(a.notifyRunners[0].current), "python3|/plugin/core/backend/runs/notify.py|m-r1|escalated")
-    reply(a.notifyRunners[0].current, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
-    compare(a.notifyRunners.length, 0)
-  }
-
-  // ---- the run control shims (split-runstore 3.1)
-
-  // R1
-  function test_without_a_control_store_the_shims_are_empty_and_inert() {
-    var comp = Qt.createComponent("../../../core/stores/RunStore.qml")
-    if (comp.status !== Component.Ready) { fail(comp.errorString()); return }
-    var store = comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
-    compare(store.controlStore, null)
-    compare(JSON.stringify(store.pending), "{}")
-    compare(JSON.stringify(store.stillWaiting), "{}")
-    compare(store.stillWaitingText, "")
-    compare(store.lastControlError, "")
-    compare(store.lastControlErrorRunId, "")
-    compare(store.cancelRunId, "")
-    compare(store.cancelOpen, false)
-    compare(store.cancelText, "")
-    compare(store.cancelError, "")
-    compare(store.flashText, "")
-    compare(JSON.stringify(store.controlRunners), "[]")
-    compare(store.pendingTimer, null)
-    compare(store.flashTimer, null)
-    compare(store.control("pause", "r1"), undefined)
-    compare(store.refusalOf("pause", "r1"), undefined)
-    compare(store.flash("x"), undefined)
-    compare(store.openCancel("r1"), undefined)
-    compare(store.closeCancel(), undefined)
-    compare(store.confirmCancel(), undefined)
-    store.cancelText = "x"
-    compare(store.cancelText, "", "a write with no handle snaps back")
-    store.cancelRunId = "r1"
-    compare(store.cancelRunId, "")
-    compare(store.cancelOpen, false)
-    compare(store.flashText, "")
-    compare(store.notifyOnEscalation, false)
-    compare(store.notifySaved, false)
-    compare(store.notifyTouched, false)
-    compare(store.settingsLoadRunner, null)
-    compare(store.settingsSaveRunner, null)
-    compare(store.setNotifyOnEscalation(true), undefined)
-    compare(store.notifyOnEscalation, false, "a forward with no handle does nothing")
-  }
-
-  // R2
-  function test_the_shims_follow_the_control_store_and_notify() {
-    var store = makeWithProject(rootA); if (!store) return
-    reply(store.snapshotRunner.current, okReply([running("r1"), running("r2")]), 0)
-    var c = controlOf(store)
-    verify(store.controlStore === c, "the handle is the paired control store")
-    verify(store.pending === c.pending)
-    var pendingSpy = createTemporaryObject(spyC, tc, { target: store, signalName: "pendingChanged" })
-    var openSpy = createTemporaryObject(spyC, tc, { target: store, signalName: "cancelOpenChanged" })
-    var flashSpy = createTemporaryObject(spyC, tc, { target: store, signalName: "flashTextChanged" })
-    compare(c.control("pause", "r1"), true)
-    compare(pendingSpy.count, 1, "the shim notifies like the original")
-    verify(store.pending === c.pending)
-    compare(store.pending.r1, "pause")
-    verify(store.controlRunners === c.controlRunners)
-    compare(store.controlRunners.length, 1)
-    compare(c.openCancel("r2"), true)
-    compare(openSpy.count, 1)
-    compare(store.cancelOpen, true)
-    compare(store.cancelRunId, "r2")
-    c.flash("hello")
-    compare(flashSpy.count, 1)
-    compare(store.flashText, "hello")
-    verify(store.pendingTimer === c.pendingTimer)
-    verify(store.flashTimer === c.flashTimer)
-    compare(store.stillWaitingText, c.stillWaitingText)
-    compare(store.refusalOf("pause", "r1"), "A request for this run is pending", "a function shim returns the target's result")
-    compare(store.confirmCancel(), false)
-    store.closeCancel()
-    compare(c.cancelOpen, false, "a forward reaches the control store")
-    compare(openSpy.count, 2)
-    verify(store.settingsLoadRunner === c.settingsLoadRunner)
-    verify(store.settingsSaveRunner === c.settingsSaveRunner)
-    var notifySpy = createTemporaryObject(spyC, tc, { target: store, signalName: "notifyOnEscalationChanged" })
-    compare(c.setNotifyOnEscalation(true), true)
-    compare(notifySpy.count, 1, "the switch shim notifies like the original")
-    compare(store.notifyOnEscalation, true)
-    compare(store.notifyTouched, true)
-    reply(c.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.notifySaved, true)
-    compare(store.setNotifyOnEscalation(false), true, "the forward returns the target's result")
-    compare(c.notifyOnEscalation, false, "and reaches the control store")
-  }
-
-  // R3
-  function test_writing_the_cancel_text_and_run_id_shims_reaches_the_control_store() {
-    var store = makeWithProject(rootA); if (!store) return
-    reply(store.snapshotRunner.current, okReply([running("r1"), running("r2")]), 0)
-    var c = controlOf(store)
-    store.cancelRunId = "r1"
-    compare(c.cancelRunId, "r1", "the write reached the control store")
-    compare(store.cancelOpen, true)
-    store.cancelText = "c"
-    store.cancelText = "ca"
-    store.cancelText = "can"
-    compare(c.cancelText, "can")
-    compare(store.cancelText, "can")
-    c.closeCancel()
-    compare(store.cancelRunId, "", "the binding is back")
-    compare(store.cancelText, "")
-    compare(c.openCancel("r2"), true)
-    compare(store.cancelRunId, "r2", "the shim follows the control store again")
-    c.cancelText = "typed"
-    compare(store.cancelText, "typed")
-    var spy = createTemporaryObject(spyC, tc, { target: c, signalName: "cancelTextChanged" })
-    store.cancelText = "typed"
-    compare(spy.count, 0, "a repeated write of the same value changes nothing")
-    c.cancelText = "other"
-    compare(store.cancelText, "other", "and the shim still follows the control store")
-    store.cancelText = " Cancel "
-    compare(c.cancelText, " Cancel ")
-    compare(spy.count, 2)
-    store.cancelRunId = "r2"
-    compare(store.confirmCancel(), true, "the written word is the control store's")
-    compare(store.cancelOpen, false)
-    compare(store.cancelRunId, "", "the run id shim follows after a repeated write too")
-    compare(store.cancelText, "")
-  }
+  // ---- the run store alone
 
   // R4
   function test_a_snapshot_settles_nothing_without_the_route() {
@@ -3653,7 +3526,6 @@ TestCase {
     if (cc.status !== Component.Ready) { fail(cc.errorString()); return }
     var c = cc.createObject(tc, { backendDir: "/plugin/core/backend/" })
     c.runs = Qt.binding(function() { return store.runs })
-    store.controlStore = c
     store.projectRoots = [rootEntry(rootA)]
     store.project = rootA
     reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
@@ -3663,7 +3535,6 @@ TestCase {
                               [{ command: "pause", requested_at: "t1", handled_at: "t1h" }])])
     compare(store.amStatus, "ok")
     compare(c.pending.r1, "pause", "the run store no longer settles requests itself")
-    compare(store.pending.r1, "pause")
   }
 
   // R5 and Review Focus 1, 5
@@ -3675,139 +3546,11 @@ TestCase {
     reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
     var seq = store.snapshotRunner.seq
     store.active = true
-    compare(store.settingsLoadRunner, null, "no handle: no switch to read")
-    compare(store.settingsSaveRunner, null)
-    compare(store.notifyOnEscalation, false)
+    var names = ["settingsLoadRunner", "settingsSaveRunner", "notifyOnEscalation"]
+    for (var i = 0; i < names.length; i++)
+      compare(typeof store[names[i]], "undefined", names[i] + ": the run store has no switch to read")
     compare(store.snapshotRunner.seq, seq + 1, "the opening still snapshots")
     verify(store.snapshotRunner.current)
-  }
-
-  // ---- the dispatch shims (split-runstore 4.1)
-
-  // A milestone, its story, the story's subtask and a done milestone, as
-  // Board.indexTree() leaves them; the object is also their {id: card} map.
-  function dispatchCards() {
-    return {
-      m1: { id: "m1", title: "M3 Document runs", status: "todo", parentId: "", depth: 0 },
-      s1: { id: "s1", title: "Dispatch store", status: "todo", parentId: "m1", depth: 1 },
-      t1: { id: "t1", title: "RunStore dispatch", status: "todo", parentId: "s1", depth: 2 },
-      d1: { id: "d1", title: "M2 Monitor runs", status: "done", parentId: "", depth: 0 }
-    }
-  }
-
-  // A RunDispatchStore with backendDir copied, set as `store`'s dispatchStore
-  // handle. When `bound`, it is wired the way App wires app.runDispatch:
-  // project, active and runs bound to the run store's own, runSettings to the
-  // paired control store's runSettingsOf(project); refreshRequested to
-  // refresh() ("all") or requestSnapshot(roots); noticeRequested to the
-  // paired control store's flash; runSettingsWanted and
-  // runSettingsSaveRequested to its loadRunSettings and saveRunSettings, and
-  // its runSettingsSaveFailed back to dispatchSaveFailed. Otherwise nothing
-  // is bound or routed.
-  function wireDispatch(store, bound) {
-    var comp = Qt.createComponent("../../../core/stores/RunDispatchStore.qml")
-    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
-    var d = comp.createObject(tc, { backendDir: store.backendDir })
-    if (bound) {
-      d.project = Qt.binding(function() { return store.project })
-      d.active = Qt.binding(function() { return store.active })
-      d.runs = Qt.binding(function() { return store.runs })
-      d.runSettings = Qt.binding(function() { return controlOf(store).runSettingsOf(store.project) })
-      d.refreshRequested.connect(function(roots) {
-        if (roots === "all") store.refresh()
-        else store.requestSnapshot(roots)
-      })
-      d.noticeRequested.connect(function(text) { controlOf(store).flash(text) })
-      var c = controlOf(store)
-      d.runSettingsWanted.connect(function(root) { c.loadRunSettings(root) })
-      d.runSettingsSaveRequested.connect(function(root, patch) { c.saveRunSettings(root, patch) })
-      c.runSettingsSaveFailed.connect(function(root, patch) { d.dispatchSaveFailed(root, patch) })
-    }
-    store.dispatchStore = d
-    return d
-  }
-
-  // R-D1 and Review Focus 4
-  function test_without_a_dispatch_store_the_shims_are_empty_and_inert() {
-    var store = make(); if (!store) return
-    compare(store.dispatchStore, null)
-    compare(store.dispatchState, "idle")
-    compare(store.dispatchTarget, null)
-    compare(store.dispatchForm, null)
-    compare(store.dispatchPreview, null)
-    compare(store.dispatchSuggest, null)
-    compare(store.dispatchExitCode, null)
-    compare(store.dispatchTargetLabel, "")
-    compare(store.dispatchError, "")
-    compare(store.dispatchErrorType, "")
-    compare(store.dispatchRunId, "")
-    compare(store.dispatchMessage, "")
-    compare(store.dispatchLog, "")
-    compare(store.dispatchLogTail, "")
-    compare(JSON.stringify(store.dispatchErrors), "[]")
-    compare(store.dispatchDefaultsRunner, null)
-    compare(store.dispatchPreviewRunner, null)
-    compare(store.dispatchDebounceTimer, null)
-    compare(JSON.stringify(store.dispatchStartRunners), "[]")
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), undefined)
-    compare(store.closeDispatch(), undefined)
-    compare(store.retargetToMilestone(), undefined)
-    compare(store.setDispatchField("prefix", "x"), undefined)
-    compare(store.dispatchStart(), undefined)
-    compare(store.checkDispatch(), undefined)
-    store.dispatchState = "ready"
-    compare(store.dispatchState, "idle", "no handle: a write is put back")
-    store.active = true
-    store.active = false
-    store.project = rootA
-    store.project = rootB
-    compare(store.dispatchState, "idle")
-  }
-
-  // R-D2
-  function test_the_dispatch_shims_follow_the_dispatch_store_and_notify() {
-    var store = makeWithProject(rootA); if (!store) return
-    var d = wireDispatch(store, true); if (!d) return
-    verify(store.dispatchDefaultsRunner === d.dispatchDefaultsRunner)
-    verify(store.dispatchPreviewRunner === d.dispatchPreviewRunner)
-    verify(store.dispatchDebounceTimer === d.dispatchDebounceTimer)
-    verify(store.dispatchStartRunners === d.dispatchStartRunners)
-    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "dispatchStateChanged" })
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(spy.count, 1, "the shim notifies like the original")
-    compare(store.dispatchState, "previewing")
-    verify(store.dispatchTarget === d.dispatchTarget)
-    compare(store.dispatchTargetLabel, 'Milestone "M3 Document runs"')
-    verify(store.dispatchForm === d.dispatchForm)
-    compare(store.setDispatchField("prefix", "x"), true)
-    compare(d.dispatchForm.prefix, "x")
-    compare(store.dispatchForm.prefix, "x")
-    compare(store.closeDispatch(), true)
-    compare(d.dispatchState, "idle")
-    compare(store.dispatchState, "idle")
-  }
-
-  // R-D3 and Review Focus 1
-  function test_writing_the_dispatch_state_shim_reaches_the_dispatch_store() {
-    var store = makeWithProject(rootA); if (!store) return
-    var d = wireDispatch(store, true); if (!d) return
-    store.dispatchState = "starting"
-    compare(d.dispatchState, "starting", "the write goes to the dispatch store")
-    compare(store.closeDispatch(), false, "and closeDispatch sees it")
-    d.resetDispatch()
-    compare(store.dispatchState, "idle", "the shim follows the dispatch store again")
-  }
-
-  // R-D4 and Review Focus 2
-  function test_dispatch_started_is_re_emitted_once() {
-    var store = make(); if (!store) return
-    var d = wireDispatch(store, true); if (!d) return
-    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "dispatchStarted" })
-    d.dispatchStarted("r-9")
-    compare(spy.count, 1)
-    compare(spy.signalArguments[0][0], "r-9")
   }
 
   // R-D5 and Review Focus 4
@@ -3816,61 +3559,12 @@ TestCase {
     var d = wireDispatch(store, false); if (!d) return
     d.project = rootA
     var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true)
+    compare(d.openDispatch(cards.m1, cards), true)
     compare(d.dispatchState, "previewing")
     store.active = true
     store.active = false
     compare(d.dispatchState, "previewing", "closing the run store leaves the dispatch")
     store.project = rootB
     compare(d.dispatchState, "previewing", "switching the run store's project leaves the dispatch")
-  }
-
-  // ---- the run settings shims (split-runstore 4.2)
-
-  // R-S1 and Review Focus 1
-  function test_without_a_control_store_the_run_settings_shims_are_empty() {
-    var comp = Qt.createComponent("../../../core/stores/RunStore.qml")
-    if (comp.status !== Component.Ready) { fail(comp.errorString()); return }
-    var store = comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
-    compare(Object.keys(store.runSettings).length, 0)
-    compare(store.runSettingsRunner, null)
-    store.project = tc.rootA
-    store.project = tc.rootB
-    compare(Object.keys(store.runSettings).length, 0)
-    compare(store.runSettingsRunner, null, "nothing is loaded")
-    var w = { verify: ["make check"] }
-    store.runSettings = w
-    verify(store.runSettings === w, "a write is kept as written")
-  }
-
-  // R-S2
-  function test_the_run_settings_shims_follow_the_control_store() {
-    var store = makeWithProject(rootA); if (!store) return
-    var c = controlOf(store)
-    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runSettingsChanged" })
-    compare(c.runSettingsRunners.length, 0, "the run store loads nothing on a project change")
-    compare(store.runSettingsRunner, null)
-    c.loadRunSettings(tc.rootA)
-    verify(store.runSettingsRunner === c.runSettingsLoadRunner)
-    reply(store.runSettingsRunner.current, JSON.stringify({ parallelism: 4 }) + "\n", 0)
-    verify(store.runSettings === c.runSettingsOf(tc.rootA))
-    compare(store.runSettings.parallelism, 4)
-    store.project = tc.rootB
-    compare(Object.keys(store.runSettings).length, 0)
-    verify(spy.count >= 1, "the shim notifies")
-  }
-
-  // R-S3 and Review Focus 1, 2
-  function test_writing_the_run_settings_shim_reaches_the_control_store() {
-    failOnWarning(/Binding loop/)
-    var store = makeWithProject(rootA); if (!store) return
-    var c = controlOf(store)
-    var w = { verify: ["make check"] }
-    store.runSettings = w
-    verify(c.runSettingsOf(tc.rootA) === w, "the write goes to the control store")
-    verify(store.runSettings === w)
-    c.loadRunSettings(tc.rootA)
-    reply(c.runSettingsLoadRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
-    compare(store.runSettings.parallelism, 9, "the shim follows the control store again")
   }
 }

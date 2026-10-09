@@ -47,7 +47,7 @@ Column {
     var id = ControlFacts.runIdOf(run)
     if (id === "") return
     if (action === "cancel") detailCard.cancelRequested(id)
-    else detailCard.app.runs.control(action, id)
+    else detailCard.app.runControl.control(action, id)
   }
 
   DetailLink {
@@ -287,10 +287,10 @@ Column {
         width: parent.width
         theme: detailCard.theme
         run: runRow.run
-        pendingAction: ControlFacts.pendingOf(detailCard.app.runs.pending, runRow.run)
-        waiting: ControlFacts.waitingOf(detailCard.app.runs.stillWaiting, runRow.run)
-        waitingText: detailCard.app.runs.stillWaitingText
-        errorText: ControlFacts.errorOf(detailCard.app.runs.lastControlError, detailCard.app.runs.lastControlErrorRunId, runRow.run)
+        pendingAction: ControlFacts.pendingOf(detailCard.app.runControl.pending, runRow.run)
+        waiting: ControlFacts.waitingOf(detailCard.app.runControl.stillWaiting, runRow.run)
+        waitingText: detailCard.app.runControl.stillWaitingText
+        errorText: ControlFacts.errorOf(detailCard.app.runControl.lastControlError, detailCard.app.runControl.lastControlErrorRunId, runRow.run)
         wholeRun: !!detailCard.card && detailCard.card.depth >= 1
         showButtons: true
         onActionRequested: function(action) { detailCard.requestControl(action, runRow.run) }

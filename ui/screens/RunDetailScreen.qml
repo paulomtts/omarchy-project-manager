@@ -158,7 +158,7 @@ Column {
     var id = ControlFacts.runIdOf(screen.run)
     if (id === "") return
     if (action === "cancel") screen.cancelRequested(id)
-    else screen.app.runs.control(action, id)
+    else screen.app.runControl.control(action, id)
   }
 
   UI.ListStatus {
@@ -221,10 +221,10 @@ Column {
       width: parent.width
       theme: screen.theme
       run: screen.run
-      pendingAction: ControlFacts.pendingOf(screen.app.runs.pending, screen.run)
-      waiting: ControlFacts.waitingOf(screen.app.runs.stillWaiting, screen.run)
-      waitingText: screen.app.runs.stillWaitingText
-      errorText: ControlFacts.errorOf(screen.app.runs.lastControlError, screen.app.runs.lastControlErrorRunId, screen.run)
+      pendingAction: ControlFacts.pendingOf(screen.app.runControl.pending, screen.run)
+      waiting: ControlFacts.waitingOf(screen.app.runControl.stillWaiting, screen.run)
+      waitingText: screen.app.runControl.stillWaitingText
+      errorText: ControlFacts.errorOf(screen.app.runControl.lastControlError, screen.app.runControl.lastControlErrorRunId, screen.run)
       wholeRun: false
       showButtons: true
       onActionRequested: function(action) { screen.requestControl(action) }
@@ -314,7 +314,7 @@ Column {
       theme: screen.theme
       width: parent.width
       visible: text !== ""
-      text: screen.app.runs.flashText
+      text: screen.app.runControl.flashText
       wrapMode: Text.WordWrap
     }
   }

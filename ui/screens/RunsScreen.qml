@@ -239,7 +239,7 @@ Column {
     var id = ControlFacts.runIdOf(run)
     if (id === "") return
     if (action === "cancel") screen.cancelRequested(id)
-    else screen.app.runs.control(action, id)
+    else screen.app.runControl.control(action, id)
   }
 
   UI.ThemedText {
@@ -319,8 +319,8 @@ Column {
     ToggleSwitch {
       objectName: "runsNotifyToggle"
       anchors.verticalCenter: parent.verticalCenter
-      checked: screen.app.runs.notifyOnEscalation
-      onToggled: screen.app.runs.setNotifyOnEscalation(!screen.app.runs.notifyOnEscalation)
+      checked: screen.app.runControl.notifyOnEscalation
+      onToggled: screen.app.runControl.setNotifyOnEscalation(!screen.app.runControl.notifyOnEscalation)
     }
 
     UI.ThemedText {
@@ -340,9 +340,9 @@ Column {
     variant: "caption"
     theme: screen.theme
     width: parent.width
-    visible: (!screen.amMissing && screen.app.runs.amStatus !== "schema") || screen.app.runs.flashText !== ""
-    text: screen.app.runs.flashText !== ""
-      ? screen.app.runs.flashText
+    visible: (!screen.amMissing && screen.app.runs.amStatus !== "schema") || screen.app.runControl.flashText !== ""
+    text: screen.app.runControl.flashText !== ""
+      ? screen.app.runControl.flashText
       : screen.app.runs.amStatus === "error" && screen.app.runs.lastError !== ""
         ? screen.app.runs.lastError
         : "am" +
@@ -567,10 +567,10 @@ Column {
         width: parent.width
         theme: screen.theme
         run: row.run
-        pendingAction: ControlFacts.pendingOf(screen.app.runs.pending, row.run)
-        waiting: ControlFacts.waitingOf(screen.app.runs.stillWaiting, row.run)
-        waitingText: screen.app.runs.stillWaitingText
-        errorText: ControlFacts.errorOf(screen.app.runs.lastControlError, screen.app.runs.lastControlErrorRunId, row.run)
+        pendingAction: ControlFacts.pendingOf(screen.app.runControl.pending, row.run)
+        waiting: ControlFacts.waitingOf(screen.app.runControl.stillWaiting, row.run)
+        waitingText: screen.app.runControl.stillWaitingText
+        errorText: ControlFacts.errorOf(screen.app.runControl.lastControlError, screen.app.runControl.lastControlErrorRunId, row.run)
         wholeRun: false
         showButtons: row.hasCursor
         onActionRequested: function(action) { screen.requestControl(action, row.run) }

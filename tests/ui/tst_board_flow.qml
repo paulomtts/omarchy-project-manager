@@ -148,9 +148,9 @@ TestCase {
     }
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
-    p.app.runs.runSettings = { verify: ["uv run pytest"] }
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
+    p.app.runControl.applyRunSettings(p.app.runs.project, { verify: ["uv run pytest"] })
     p.app.board.applyTreeData(dispatchRoots())
     wait(50)
     p.navigator.showSection("board")
@@ -165,7 +165,7 @@ TestCase {
   }
 
   function text(p, name) { return String(H.find(p, name).text) }
-  function flags(p) { return JSON.stringify(p.app.runs.dispatchTarget.flags) }
+  function flags(p) { return JSON.stringify(p.app.runDispatch.dispatchTarget.flags) }
 
   // From the board list: the cursor card m1 opened, then the story `steps`
   // links down its children (0 = s1, 1 = s2, 2 = s3) opened. The board list
@@ -211,9 +211,9 @@ TestCase {
     compare(H.find(p, "dispatchDialog").visible, true)
     compare(p.dispatchCardId, "s1")
     compare(text(p, "dispatchTarget"), "Target   Story \"Story one\" (milestone \"Milestone\")")
-    compare(p.app.runs.dispatchTarget.level, "story")
+    compare(p.app.runDispatch.dispatchTarget.level, "story")
     compare(flags(p), JSON.stringify(["--story", "s1"]))
-    compare(p.app.runs.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchState, "previewing")
     compare(H.find(p, "dispatchSuggest").visible, false, "no milestone offer")
     if (data.tag === "key") compare(p.app.nav.searchQuery, "", "the handled d was not typed")
   }
@@ -226,12 +226,12 @@ TestCase {
     useEntryPoint(p, "button")
     compare(p.dispatchCardId, "s2")
     compare(text(p, "dispatchTarget"), "Target   Story \"Story two\" (milestone \"Milestone\")")
-    compare(p.app.runs.dispatchState, "previewing", "the plugin does not refuse a blocked story up front")
-    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
-    compare(p.app.runs.dispatchState, "previewing")
-    reply(p.app.runs.dispatchPreviewRunner.current,
+    compare(p.app.runDispatch.dispatchState, "previewing", "the plugin does not refuse a blocked story up front")
+    reply(p.app.runDispatch.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
+    compare(p.app.runDispatch.dispatchState, "previewing")
+    reply(p.app.runDispatch.dispatchPreviewRunner.current,
           '{"ok":false,"error":{"type":"StoryBlockedError","message":"Story blocked by s1"}}')
-    compare(p.app.runs.dispatchState, "refused")
+    compare(p.app.runDispatch.dispatchState, "refused")
     compare(text(p, "dispatchRefusal"), "Story blocked by s1")
     compare(H.find(p, "dispatchStart").enabled, false)
     var offer = H.find(p, "dispatchSuggest")
@@ -240,9 +240,9 @@ TestCase {
     offer.clicked()
     compare(p.dispatchCardId, "m1")
     compare(text(p, "dispatchTarget"), "Target   Milestone \"Milestone\"")
-    compare(p.app.runs.dispatchTarget.level, "milestone")
+    compare(p.app.runDispatch.dispatchTarget.level, "milestone")
     compare(flags(p), JSON.stringify(["--milestone", "m1"]))
-    compare(p.app.runs.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchState, "previewing")
     compare(H.find(p, "dispatchDialog").visible, true)
   }
 
@@ -258,14 +258,14 @@ TestCase {
     useEntryPoint(p, data.tag)
     compare(H.find(p, "dispatchDialog").visible, true)
     compare(p.dispatchCardId, "s3")
-    compare(p.app.runs.dispatchState, "refused")
-    compare(p.app.runs.dispatchErrorType, "Target")
+    compare(p.app.runDispatch.dispatchState, "refused")
+    compare(p.app.runDispatch.dispatchErrorType, "Target")
     compare(text(p, "dispatchRefusal"), "The card is done")
     compare(H.find(p, "dispatchStart").enabled, false)
     compare(H.find(p, "dispatchSuggest").visible, false, "no milestone offer")
     compare(text(p, "dispatchTarget"), "Target   Story \"Story three\" (milestone \"Milestone\")")
-    verify(!p.app.runs.dispatchDefaultsRunner.current, "no defaults lookup was launched")
-    verify(!p.app.runs.dispatchPreviewRunner.current, "no preview was launched")
+    verify(!p.app.runDispatch.dispatchDefaultsRunner.current, "no defaults lookup was launched")
+    verify(!p.app.runDispatch.dispatchPreviewRunner.current, "no preview was launched")
   }
 
   // A story's dialog is a modal like any other: one Escape closes it and the
@@ -277,7 +277,7 @@ TestCase {
     compare(H.find(p, "dispatchDialog").visible, true)
     compare(p.focusItem.objectName, "dispatchBase", "the dialog has the keyboard")
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.runDispatch.dispatchState, "idle")
     compare(H.find(p, "dispatchDialog").visible, false)
     compare(p.app.nav.viewMode, "entry", "that Escape closed the dialog only")
     compare(p.app.board.selectedCardId, "s1")

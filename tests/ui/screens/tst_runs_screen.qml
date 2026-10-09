@@ -1,10 +1,11 @@
 // tests/ui/screens/tst_runs_screen.qml
 // ui/screens/RunsScreen.qml on its own: the rows it renders, the chips, the
 // footer and banners, and the empty and missing states. A stub app: a REAL
-// NavigationStore, plus a plain object carrying the RunStore properties the
-// screen reads (the real store's `watching` is a read-only alias that cannot
-// be set from a test), filtered through the same domain functions the store
-// uses. The navigator is a recorder.
+// NavigationStore, plus plain objects carrying the RunStore properties and,
+// apart, the RunControlStore properties the screen reads (the real store's
+// `watching` is a read-only alias that cannot be set from a test); the run
+// list is filtered through the same domain functions the store uses. The
+// navigator is a recorder.
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
@@ -36,7 +37,6 @@ TestCase {
       property string watchWarning: ""
       property bool watching: true
       property string watchSchemaError: ""
-      property string flashText: ""
       // The current watch's hello, with the real store's defaults (0 / "" =
       // no hello known).
       property int amSchema: 0
@@ -73,6 +73,14 @@ TestCase {
       }
       // The store's keepProjectFilter: a filter no run has any more is All.
       onRunsChanged: if (rs.projectFilter !== "" && !rs.hasRoot(rs.projectFilter)) rs.projectFilter = ""
+    }
+  }
+
+  Component {
+    id: controlC
+    QtObject {
+      id: rc
+      property string flashText: ""
       // The control surface the rows read (S2 4.2). `control` only records.
       property var pending: ({})
       property var stillWaiting: ({})
@@ -81,7 +89,7 @@ TestCase {
       property string lastControlErrorRunId: ""
       property var controlCalls: []
       function control(action, id) {
-        rs.controlCalls = rs.controlCalls.concat([action + "|" + id])
+        rc.controlCalls = rc.controlCalls.concat([action + "|" + id])
         return true
       }
       // The Notify on escalation switch (S2 4.4). `setNotifyOnEscalation`
@@ -89,7 +97,7 @@ TestCase {
       property bool notifyOnEscalation: false
       property var notifyCalls: []
       function setNotifyOnEscalation(on) {
-        rs.notifyCalls = rs.notifyCalls.concat([on])
+        rc.notifyCalls = rc.notifyCalls.concat([on])
         return true
       }
     }
@@ -100,6 +108,7 @@ TestCase {
     QtObject {
       property var nav: null
       property var runs: null
+      property var runControl: null
       // The project registry, as ProjectStore holds it: alpha and beta. A test
       // that changes it assigns a whole new object, so bindings follow.
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" },
@@ -128,7 +137,8 @@ TestCase {
     var nav = navComp.createObject(host)
     var runs = runsC.createObject(host)
     runs.searchQuery = Qt.binding(function() { return nav.searchQuery })
-    var app = appC.createObject(host, { nav: nav, runs: runs })
+    var control = controlC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control })
     var navi = naviC.createObject(host)
     var sC = Qt.createComponent("../../../ui/screens/RunsScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
@@ -136,7 +146,7 @@ TestCase {
     nav.viewMode = "runs"
     runs.runs = list || []
     wait(20)
-    return { app: app, runs: runs, nav: nav, navi: navi, screen: screen }
+    return { app: app, runs: runs, control: control, nav: nav, navi: navi, screen: screen }
   }
 
   function ago(ms) { return new Date(Date.now() - ms).toISOString() }
@@ -750,16 +760,16 @@ TestCase {
     var footer = H.find(s.screen, "runsFooter")
     s.runs.amSchema = 2
     s.runs.amVersion = "0.2.0"
-    s.runs.flashText = "The run has finished"
+    s.control.flashText = "The run has finished"
     compare(footer.text, "The run has finished", "the flash alone, with no am prefix")
-    s.runs.flashText = ""
+    s.control.flashText = ""
     compare(footer.text, "am 0.2.0 · schema 2 · watching")
     s.runs.amStatus = "error"
     s.runs.lastError = "AmFailed: boom"
     compare(footer.text, "AmFailed: boom", "the error alone, with no am prefix")
-    s.runs.flashText = "The run is still running"
+    s.control.flashText = "The run is still running"
     compare(footer.text, "The run is still running", "the flash wins over the error line")
-    s.runs.flashText = ""
+    s.control.flashText = ""
     compare(footer.text, "AmFailed: boom")
     s.runs.amStatus = "ok"
     compare(footer.text, "am 0.2.0 · schema 2 · watching")
@@ -798,12 +808,12 @@ TestCase {
     var footer = H.find(s.screen, "runsFooter")
     s.runs.amSchema = 2
     s.runs.amVersion = "0.2.0"
-    s.runs.flashText = "The run has finished"
+    s.control.flashText = "The run has finished"
     s.runs.amSchema = 0
     s.runs.amVersion = ""
     s.runs.watching = false
     compare(footer.text, "The run has finished")
-    s.runs.flashText = ""
+    s.control.flashText = ""
     compare(footer.text, "am · not watching")
   }
 
@@ -885,7 +895,7 @@ TestCase {
     wait(20)
     compare(ctl(s, 0, "Pause").visible, false)
     compare(ctl(s, 3, "Resume").visible, true)
-    s.runs.pending = { "run-20261004-live0001": "pause" }
+    s.control.pending = { "run-20261004-live0001": "pause" }
     compare(ctl(s, 0, "Pause").visible, true, "a pending request keeps its button")
     compare(ctl(s, 0, "Pause").text, "Pause requested…")
     compare(ctl(s, 0, "Pause").enabled, false)
@@ -900,12 +910,12 @@ TestCase {
     s.nav.cursorIndex = 0
     wait(20)
     tap(ctl(s, 0, "Pause"))
-    compare(s.runs.controlCalls.join(","), "pause|run-20261004-live0001")
+    compare(s.control.controlCalls.join(","), "pause|run-20261004-live0001")
     compare(s.navi.opened, "", "the button is not the row")
     s.nav.cursorIndex = 3
     wait(20)
     tap(ctl(s, 3, "Resume"))
-    compare(s.runs.controlCalls.join(","), "pause|run-20261004-live0001,resume|run-20261004-park0004")
+    compare(s.control.controlCalls.join(","), "pause|run-20261004-live0001,resume|run-20261004-park0004")
     compare(s.navi.opened, "")
   }
 
@@ -919,7 +929,7 @@ TestCase {
     tap(ctl(s, 0, "Cancel"))
     compare(cancelSpy.count, 1)
     compare(cancelSpy.signalArguments[0][0], "run-20261004-live0001")
-    compare(s.runs.controlCalls.length, 0)
+    compare(s.control.controlCalls.length, 0)
     compare(s.navi.opened, "")
   }
 
@@ -927,15 +937,15 @@ TestCase {
   function test_the_error_and_waiting_lines_show_under_their_own_run_only() {
     var s = make(sample()); if (!s) return
     s.nav.cursorIndex = -1
-    s.runs.lastControlError = "The run is not running"
-    s.runs.lastControlErrorRunId = "run-20261004-escl0002"
+    s.control.lastControlError = "The run is not running"
+    s.control.lastControlErrorRunId = "run-20261004-escl0002"
     wait(20)
     compare(ctl(s, 1, "Error").visible, true, "whether or not the row has the cursor")
     compare(ctl(s, 1, "Error").text, "The run is not running")
     compare(ctl(s, 0, "Error").visible, false)
     compare(ctl(s, 2, "Error").visible, false)
-    s.runs.pending = { "run-20261004-dead0003": "resume" }
-    s.runs.stillWaiting = { "run-20261004-dead0003": true }
+    s.control.pending = { "run-20261004-dead0003": "resume" }
+    s.control.stillWaiting = { "run-20261004-dead0003": true }
     compare(ctl(s, 2, "Waiting").visible, true)
     compare(ctl(s, 2, "Waiting").text, "still waiting — the run may be between phases or dead")
     compare(ctl(s, 2, "Resume").text, "Resume requested…")
@@ -963,24 +973,24 @@ TestCase {
   function test_a_flash_takes_the_footer_and_then_gives_it_back() {
     var s = make(sample()); if (!s) return
     var footer = H.find(s.screen, "runsFooter")
-    s.runs.flashText = "The run has finished"
+    s.control.flashText = "The run has finished"
     compare(footer.text, "The run has finished")
     compare(footer.visible, true)
-    s.runs.flashText = ""
+    s.control.flashText = ""
     compare(footer.text, "am · watching")
     s.runs.amStatus = "error"
     s.runs.lastError = "AmFailed: boom"
-    s.runs.flashText = "The run is still running"
+    s.control.flashText = "The run is still running"
     compare(footer.text, "The run is still running", "the flash wins over the error line")
-    s.runs.flashText = ""
+    s.control.flashText = ""
     compare(footer.text, "AmFailed: boom")
     s.runs.amStatus = "schema"
     s.runs.watchSchemaError = "SchemaMismatch: schema 2"
     compare(footer.visible, false)
-    s.runs.flashText = "A request for this run is pending"
+    s.control.flashText = "A request for this run is pending"
     compare(footer.visible, true, "a flash shows even beside the schema banner")
     compare(footer.text, "A request for this run is pending")
-    s.runs.flashText = ""
+    s.control.flashText = ""
     compare(footer.visible, false)
   }
 
@@ -995,12 +1005,12 @@ TestCase {
     verify(toggle, "the switch")
     compare(H.find(s.screen, "runsNotifyLabel").text, "Notify on escalation")
     compare(toggle.checked, false)
-    s.runs.notifyOnEscalation = true
+    s.control.notifyOnEscalation = true
     compare(toggle.checked, true)
-    s.runs.notifyOnEscalation = false
+    s.control.notifyOnEscalation = false
     compare(toggle.checked, false)
     toggle.toggled()
-    compare(s.runs.notifyCalls.join(","), "true", "asked once, for the flipped value")
+    compare(s.control.notifyCalls.join(","), "true", "asked once, for the flipped value")
     compare(toggle.checked, false, "the store decides; this stub did not flip it")
     compare(row.visible, true)
     verify(row.y < H.find(s.screen, "runsFooter").y, "above the footer")

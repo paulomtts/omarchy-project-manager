@@ -529,8 +529,8 @@ TestCase {
 
   // A RunControlStore wired to `store` the way App wires app.runControl:
   // backendDir copied; project, active and runs bound to the run store's own;
-  // store.controlStore set; an ok snapshotReplied settles its requests; its
-  // refreshRequested goes to refresh() ("all") or requestSnapshot(roots).
+  // an ok snapshotReplied settles its requests; its refreshRequested goes to
+  // refresh() ("all") or requestSnapshot(roots).
   function wireControl(store) {
     var comp = Qt.createComponent("../../../core/stores/RunControlStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
@@ -538,7 +538,6 @@ TestCase {
     c.project = Qt.binding(function() { return store.project })
     c.active = Qt.binding(function() { return store.active })
     c.runs = Qt.binding(function() { return store.runs })
-    store.controlStore = c
     store.snapshotReplied.connect(function(root, outcome) { if (outcome === "ok") c.settleAfterSnapshot() })
     c.refreshRequested.connect(function(roots) {
       if (roots === "all") store.refresh()
@@ -1426,7 +1425,6 @@ TestCase {
     compare(controlOf(store).notifyOnEscalation, false)
     compare(controlOf(store).notifySaved, false)
     compare(controlOf(store).notifyTouched, false)
-    compare(store.notifyRunners.length, 0)
     compare(controlOf(store).setNotifyOnEscalation(true), true, "no project and no registry: it still works")
     compare(controlOf(store).notifyOnEscalation, true, "the switch flips at once")
     compare(controlOf(store).notifyTouched, true)
@@ -1513,16 +1511,16 @@ TestCase {
     var store = makeWithProject(rootA); if (!store) return
     var c = controlOf(store)
     c.loadRunSettings(tc.rootA)
-    compare(Object.keys(store.runSettings).length, 0, "{} until the reply")
+    compare(Object.keys(c.runSettingsOf(store.project)).length, 0, "{} until the reply")
     var load = c.runSettingsLoadRunner.current
-    store.setNotifyOnEscalation(true)
+    c.setNotifyOnEscalation(true)
     reply(load, dispatchSettings(), 0)
-    compare(store.notifyOnEscalation, true, "the switch keeps the user's value")
-    compare(store.runSettings.prefixHistory.length, 1)
-    compare(store.runSettings.prefixHistory[0], "old")
-    compare(store.runSettings.parallelism, 4)
-    compare(store.runSettings.confirmDispatch, true)
-    compare(store.runSettings.verify[0], "uv run pytest")
-    compare(store.runSettings.notifyOnEscalation, false, "the object is kept as it was read")
+    compare(c.notifyOnEscalation, true, "the switch keeps the user's value")
+    compare(c.runSettingsOf(store.project).prefixHistory.length, 1)
+    compare(c.runSettingsOf(store.project).prefixHistory[0], "old")
+    compare(c.runSettingsOf(store.project).parallelism, 4)
+    compare(c.runSettingsOf(store.project).confirmDispatch, true)
+    compare(c.runSettingsOf(store.project).verify[0], "uv run pytest")
+    compare(c.runSettingsOf(store.project).notifyOnEscalation, false, "the object is kept as it was read")
   }
 }
