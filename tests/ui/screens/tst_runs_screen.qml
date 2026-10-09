@@ -533,7 +533,8 @@ TestCase {
     compare(s.screen.visible, false)
     s.nav.viewMode = "runs"
     s.app.projects = { selectedProject: null }
-    compare(s.screen.visible, false)
+    compare(s.screen.visible, true, "no project: the Runs list still shows")
+    compare(H.find(s.screen, "runsNotifyRow").visible, true, "and so does the notify switch")
   }
 
   // ---- run controls (S2 4.2)

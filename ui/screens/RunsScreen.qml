@@ -32,7 +32,7 @@ Column {
   readonly property bool amMissing: screen.app.runs.amStatus === "missing"
   readonly property var counts: Runs.runFilterCounts(screen.app.runs.runs)
 
-  visible: screen.app.nav.viewMode === "runs" && !!screen.app.projects.selectedProject
+  visible: screen.app.nav.viewMode === "runs"
   spacing: Style.space(6)
 
   // A chip's wording, also used by the "No <chip> runs." line.
@@ -114,8 +114,8 @@ Column {
     rowDelegate: Component { RunRow {} }
   }
 
-  // The project's Notify on escalation setting: a desktop notification for
-  // every run toast. Shown even while am is missing -- it is the project's.
+  // The global Notify on escalation setting: a desktop notification for
+  // every run toast. Shown with or without a project, and while am is missing.
   Row {
     objectName: "runsNotifyRow"
     spacing: Style.space(8)
