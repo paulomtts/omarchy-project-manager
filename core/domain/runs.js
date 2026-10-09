@@ -1172,6 +1172,7 @@ function stopReport(run) {
     relaunch: _relaunchOf(run)
   }
 }
+
 var _NOTE_AUTHOR = "am"
 var _NOTE_KEY_PREFIX = "am-key: "
 var _NOTE_KIND_PREFIX = "am \u00b7 "
