@@ -17,13 +17,14 @@ import "../domain/runs.js" as Runs
 // pending request (requestSnapshot): a request never stops the snapshot in
 // flight, and when that one ends its reply is applied and the pending
 // request launches. While `active` (the panel is open) a long-lived
-// runs-watch.py nudges it, "run X changed at seq N", and is never folded
-// into state: once per debounce window the nudged run ids are announced
-// (runsNudged) and the roots that list them are snapshotted, or every root
-// when one id is unknown. A cursorReset hello starts over from a list
-// snapshot, as does a hello naming a store_id other than the one last seen
-// (storeId); the first store_id seen resets nothing. watchCursor is the
-// watch's last cursor, held in memory only. Logs are fetched on a
+// runs-watch.py, given every usable root that begins with "/" and every
+// known run id (startWatch), nudges it, "run X changed at seq N", and is
+// never folded into state: once per debounce window the nudged run ids are
+// announced (runsNudged) and the roots that list them are snapshotted, or
+// every root when one id is unknown. A cursorReset hello starts over from a
+// list snapshot, as does a hello naming a store_id other than the one last
+// seen (storeId); the first store_id seen resets nothing. watchCursor is
+// the watch's last cursor, held in memory only. Logs are fetched on a
 // selection, on Refresh and when a snapshot changes the selected attempt's
 // status -- never on a timer.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
@@ -83,9 +84,11 @@ Scope {
   // keep it.
   property string storeId: ""
 
-  // A watch has been started since the last activation: later snapshots never
-  // start another (the helper picks up new runs itself), and a watch that
-  // ended is not restarted until the next activation.
+  // A watch has been started (or found no root to watch) since the last
+  // activation: a later good snapshot starts another only while the watch
+  // runs and the usable "/" roots changed (the helper picks up a watched
+  // root's new runs itself), and a watch that ended is not restarted until
+  // the next activation.
   property bool watchTried: false
   property int watchSeq: 0            // bumped on every watch start and stop: the launch guard
   property string watchSchemaError: "" // the schema banner text while its fallback poll runs
@@ -172,6 +175,7 @@ Scope {
 
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
+  readonly property alias watchRoots: watchState.roots    // the roots the current watch was launched with
   readonly property alias snapshotRunner: snapshotRunner
   readonly property alias snapshotRoots: snapshotState.roots     // the roots of the snapshot in flight; [] when idle
   readonly property alias pendingSnapshot: snapshotState.pending // the pending request: null, "all" or [root, ...]
@@ -326,18 +330,61 @@ Scope {
     store.forgetHello()
   }
 
-  // runs-watch.py with no argument: every project's nudges, from now.
-  // Long-lived, so a plain Process rather than the HelperRunner. It starts
-  // with am's schema and version unknown until its own hello.
+  // runs-watch.py ROOT... RUN...: the usable roots that begin with "/"
+  // (watchableRoots), then the known run ids (knownRunIds), from now. No
+  // root: no watch is launched, and watchTried keeps later snapshots from
+  // trying again. Long-lived, so a plain Process rather than the
+  // HelperRunner. It starts with am's schema and version unknown until its
+  // own hello.
   function startWatch() {
     store.watchSeq += 1
     store.watchTried = true
     store.forgetHello()
+    var roots = store.watchableRoots()
+    if (roots.length === 0) return
     var proc = watchC.createObject(store, { launchSeq: store.watchSeq })
-    proc.command = ["python3", store.backendDir + "runs/runs-watch.py"]
+    proc.command = ["python3", store.backendDir + "runs/runs-watch.py"].concat(roots, store.knownRunIds())
     watchState.proc = proc
+    watchState.roots = roots
     watchState.watching = true
     proc.running = true
+  }
+
+  // The usable roots, in registry order, that begin with "/": runs-watch.py
+  // reads any other argument as a run id.
+  function watchableRoots() {
+    return store.usableRoots().map(function(p) { return p.root }).filter(function(root) {
+      return root.charAt(0) === "/"
+    })
+  }
+
+  // Every run id the usable roots' runsByProject lists hold, in registry
+  // order then list order, each once. An id that is empty or begins with "-"
+  // or "/" is left out: runs-watch.py refuses or misreads it.
+  function knownRunIds() {
+    var usable = store.usableRoots()
+    var out = []
+    var seen = {}
+    for (var i = 0; i < usable.length; i++) {
+      var list = store.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
+      for (var j = 0; j < list.length; j++) {
+        var run = list[j]
+        var id = run !== null && typeof run === "object" && typeof run.id === "string" ? run.id : ""
+        if (id === "" || id.charAt(0) === "-" || id.charAt(0) === "/" || store.hasKey(seen, id)) continue
+        seen[id] = true
+        out.push(id)
+      }
+    }
+    return out
+  }
+
+  // Two root lists hold the same roots, whatever their order.
+  function sameRoots(a, b) {
+    if (a.length !== b.length) return false
+    for (var i = 0; i < a.length; i++) {
+      if (b.indexOf(a[i]) < 0) return false
+    }
+    return true
   }
 
   // A line or exit counts only from the newest launch: a watch that was
@@ -801,9 +848,10 @@ Scope {
   // root's runs ([] when it had none) and records Runs.errorText of its
   // error; a usable root with no entry keeps both. `runs` is merged again,
   // and asOfSeq is 0 and appliedSeq {id: 0} for every run in it. With an
-  // entry ok, everything after a good snapshot follows. With none, amStatus
-  // is "error" with the first failed entry's sentence, and the alerts and
-  // `stale` stay as they are.
+  // entry ok, everything after a good snapshot follows, and while active a
+  // running watch whose roots are no longer the usable "/" roots is started
+  // again. With none, amStatus is "error" with the first failed entry's
+  // sentence, and the alerts and `stale` stay as they are.
   function applyProjects(entries, exitCode, launched) {
     var usable = store.usableRoots()
     var names = {}
@@ -902,6 +950,10 @@ Scope {
     if (store.active) {
       staleTimer.restart()
       if (!store.watchTried) store.startWatch()
+      else if (store.watching && !store.sameRoots(watchState.roots, store.watchableRoots())) {
+        store.stopWatch()
+        store.startWatch()
+      }
       store.raiseAlerts(alerts)
       store.alertsArmed = true
     }
@@ -1744,10 +1796,12 @@ Scope {
   }
 
   // What the watch Process aliases read; kept apart so consumers cannot write it.
+  // `roots` are the roots the current watch was launched with.
   QtObject {
     id: watchState
     property var proc: null
     property bool watching: false
+    property var roots: []
   }
 
   // The list snapshots' own state; kept apart so consumers cannot write it.

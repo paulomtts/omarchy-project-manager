@@ -17,6 +17,7 @@ TestCase {
   property string rootB: "/home/u/b"
   property string rootC: "/home/u/c"
   property string snapCmd: "python3|/plugin/core/backend/runs/runs-snapshot-all.py"
+  property string watchCmd: "python3|/plugin/core/backend/runs/runs-watch.py"
   // The recorded escalated run (status-escalated.json) and the recorded
   // finished Integrate run (status-done-integrate.json).
   readonly property string escRun: "20261008T143755Z-f18d342f"
@@ -1182,9 +1183,8 @@ TestCase {
     var w = store.watchProc
     verify(w, "the first good snapshot starts the watch")
     compare(w.objectName, "watchProc")
-    compare(w.command.length, 2, "no project, no run ids, no --since-seq")
-    compare(w.command[0], "python3")
-    compare(w.command[1], "/plugin/core/backend/runs/runs-watch.py")
+    compare(JSON.stringify(w.command), JSON.stringify(["python3", "/plugin/core/backend/runs/runs-watch.py", tc.rootA, "a", "b"]),
+            "the root, then the run ids, and no --since-seq")
     compare(w.running, true)
     compare(store.watching, true)
   }
@@ -1194,7 +1194,7 @@ TestCase {
     reply(store.snapshotRunner.current, okReply([]), 0)
     var w = store.watchProc
     verify(w, "an empty project is watched too: its first run must show up")
-    compare(w.command.length, 2)
+    compare(argv(w), tc.watchCmd + "|" + tc.rootA, "the root alone")
     compare(w.running, true)
     compare(store.watching, true)
   }
@@ -1215,7 +1215,7 @@ TestCase {
     store.refresh()
     reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
     verify(store.watchProc, "the first GOOD snapshot starts it")
-    compare(store.watchProc.command.length, 2)
+    compare(argv(store.watchProc), tc.watchCmd + "|" + tc.rootA + "|a")
     compare(store.watching, true)
   }
 
@@ -1226,7 +1226,139 @@ TestCase {
     reply(store.snapshotRunner.current, okReply([entry("a", "started", true), entry("c", "started", true)]), 0)
     verify(store.watchProc === w, "the running watch is kept")
     compare(w.running, true)
-    compare(w.command.length, 2, "its argv is not rewritten: the helper watches every run itself")
+    compare(argv(w), tc.watchCmd + "|" + tc.rootA + "|a", "its argv is not rewritten: the helper picks up a watched root's new runs itself")
+  }
+
+  // ---- the watch argv (global 3.2)
+
+  // 1 and Review Focus 2
+  function test_the_watch_names_every_root_then_every_known_run_id() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)])]), 0)
+    var w = store.watchProc
+    verify(w, "the first good reply starts the watch")
+    compare(JSON.stringify(w.command), JSON.stringify(["python3", "/plugin/core/backend/runs/runs-watch.py", tc.rootA, tc.rootB, "a1", "b1"]))
+    compare(w.command[2], tc.rootA, "a root with a space is one argument")
+    compare(store.watchRoots.join("|"), tc.rootA + "|" + tc.rootB)
+  }
+
+  // 1 and Review Focus 2
+  function test_the_watch_leaves_out_ids_and_roots_the_helper_would_refuse() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.projectRoots = [rootEntry(tc.rootA), { root: "rel/proj", name: "rel" }, rootEntry(tc.rootB)]
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|rel/proj|" + tc.rootB,
+            "the snapshot still names every usable root")
+    // synthetic: run ids runs-watch.py would refuse or read as roots, and a run listed under two roots.
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("", "done", false), entry("-x", "done", false),
+                                                                     entry("/x", "done", false), entry("a1", "done", false)]),
+                                                  okEntry("rel/proj", [entry("r1", "done", false, "rel/proj")]),
+                                                  okEntry(tc.rootB, [entry("a1", "done", false, tc.rootB)])]), 0)
+    compare(JSON.stringify(store.watchProc.command),
+            JSON.stringify(["python3", "/plugin/core/backend/runs/runs-watch.py", tc.rootA, tc.rootB, "a1", "r1"]),
+            "no relative root, no refused id, a1 once")
+  }
+
+  // 1
+  function test_with_no_runs_the_watch_names_the_roots_alone() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    compare(argv(store.watchProc), tc.watchCmd + "|" + tc.rootA + "|" + tc.rootB)
+  }
+
+  // 2
+  function test_with_no_absolute_root_no_watch_is_launched() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.projectRoots = [{ root: "rel/proj", name: "rel" }]
+    var good = allReply([okEntry("rel/proj", [entry("r1", "done", false, "rel/proj")])])
+    reply(store.snapshotRunner.current, good, 0)
+    compare(store.amStatus, "ok")
+    verify(!store.watchProc, "no root the helper reads as a root: no watch")
+    compare(store.watching, false)
+    var seq = store.watchSeq
+    store.refresh()
+    reply(store.snapshotRunner.current, good, 0)
+    verify(!store.watchProc, "a second good reply does not try again")
+    compare(store.watching, false)
+    compare(store.watchSeq, seq)
+  }
+
+  // 12 and Review Focus 5
+  function test_a_new_root_set_restarts_a_running_watch() {
+    var store = activeRoots([tc.rootA]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)])]), 0)
+    var first = store.watchProc
+    compare(argv(first), tc.watchCmd + "|" + tc.rootA + "|a1")
+    store.projectRoots = registry([tc.rootA, tc.rootC])
+    verify(store.watchProc === first, "a registry change alone restarts nothing")
+    var both = allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])])
+    reply(store.snapshotRunner.current, both, 0)
+    var second = store.watchProc
+    verify(second !== first, "the good reply for the new roots restarts the watch")
+    compare(first.running, false, "the old watch is stopped")
+    compare(argv(second), tc.watchCmd + "|" + tc.rootA + "|" + tc.rootC + "|a1|c1", "with C and its run ids")
+    compare(second.running, true)
+    compare(store.watching, true)
+    store.refresh()
+    reply(store.snapshotRunner.current, both, 0)
+    verify(store.watchProc === second, "the same roots keep the watch")
+    store.projectRoots = registry([tc.rootA])
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)])]), 0)
+    var third = store.watchProc
+    verify(third !== second, "removing C restarts it too")
+    compare(second.running, false)
+    compare(argv(third), tc.watchCmd + "|" + tc.rootA + "|a1")
+  }
+
+  // 12
+  function test_a_watch_that_ended_is_not_restarted_by_a_new_root_set() {
+    var types = [["HelperError", 1], ["SchemaMismatch", 1]]
+    for (var i = 0; i < types.length; i++) {
+      var label = types[i][0]
+      var store = activeRoots([tc.rootA]); if (!store) return
+      reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)])]), 0)
+      endWatch(store.watchProc, watchError(types[i][0], "m"), types[i][1])
+      compare(store.watching, false, label)
+      var seq = store.watchSeq
+      store.projectRoots = registry([tc.rootA, tc.rootC])
+      reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootC, [])]), 0)
+      compare(store.watchSeq, seq, label + ": no watch is started until the next opening")
+      compare(store.watching, false, label)
+    }
+  }
+
+  // The plan's Review Focus 2
+  function test_a_reordered_or_renamed_registry_keeps_the_watch() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    var good = allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)])])
+    reply(store.snapshotRunner.current, good, 0)
+    var w = store.watchProc
+    store.projectRoots = [{ root: tc.rootB, name: "bee" }, rootEntry(tc.rootA)]
+    reply(store.snapshotRunner.current, good, 0)
+    verify(store.watchProc === w, "the same roots in another order, under another name, keep the watch")
+    compare(w.running, true)
+    compare(store.watchRoots.join("|"), tc.rootA + "|" + tc.rootB, "the roots it was launched with")
+  }
+
+  // The plan's Review Focus 5
+  function test_a_restart_with_no_absolute_root_left_launches_no_watch() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.projectRoots = [rootEntry(tc.rootA), { root: "rel/proj", name: "rel" }]
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry("rel/proj", [])]), 0)
+    var w = store.watchProc
+    compare(argv(w), tc.watchCmd + "|" + tc.rootA)
+    store.projectRoots = [{ root: "rel/proj", name: "rel" }]
+    reply(store.snapshotRunner.current, allReply([okEntry("rel/proj", [entry("r1", "done", false, "rel/proj")])]), 0)
+    compare(w.running, false, "the old watch is stopped")
+    compare(store.watching, false, "and none replaces it: no root the helper reads as a root")
+    var seq = store.watchSeq
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([okEntry("rel/proj", [])]), 0)
+    compare(store.watchSeq, seq, "later replies do not try again")
+    compare(store.amStatus, "ok")
   }
 
   // ---- debounce
@@ -1600,7 +1732,7 @@ TestCase {
     var fresh = store.watchProc
     verify(fresh !== old, "the reply that lands while open starts a new watch")
     compare(fresh.running, true)
-    compare(fresh.command.length, 2)
+    compare(argv(fresh), tc.watchCmd + "|" + tc.rootA + "|a")
     compare(store.watching, true)
     compare(store.snapshotRunner.seq, seq + 1, "then the pending request launches")
     reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
