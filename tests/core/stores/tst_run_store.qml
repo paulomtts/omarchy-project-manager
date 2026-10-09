@@ -3546,9 +3546,9 @@ TestCase {
     reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
     var seq = store.snapshotRunner.seq
     store.active = true
-    compare(store.settingsLoadRunner, null, "no handle: no switch to read")
-    compare(store.settingsSaveRunner, null)
-    compare(store.notifyOnEscalation, false)
+    var names = ["settingsLoadRunner", "settingsSaveRunner", "notifyOnEscalation"]
+    for (var i = 0; i < names.length; i++)
+      compare(typeof store[names[i]], "undefined", names[i] + ": the run store has no switch to read")
     compare(store.snapshotRunner.seq, seq + 1, "the opening still snapshots")
     verify(store.snapshotRunner.current)
   }

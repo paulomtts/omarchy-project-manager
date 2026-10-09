@@ -488,6 +488,50 @@ TestCase {
     compare(Object.keys(app.runAlerts.armedRoots).length, 2)
   }
 
+  // ---- the run store keeps none of the moved members (split-runstore 5.2)
+
+  // The members that moved out of the run store, by the store that owns them,
+  // in the order of MOVED in tests/architecture/test_run_store_callers.py.
+  // runSettings and runSettingsRunner have other names on run control.
+  property var movedToControl: ["pending", "stillWaiting", "stillWaitingText", "lastControlError",
+    "lastControlErrorRunId", "cancelRunId", "cancelOpen", "cancelText", "cancelError", "flashText",
+    "controlRunners", "pendingTimer", "flashTimer", "notifyOnEscalation", "notifySaved", "notifyTouched",
+    "settingsLoadRunner", "settingsSaveRunner", "control", "refusalOf", "flash", "openCancel", "closeCancel",
+    "confirmCancel", "setNotifyOnEscalation"]
+  property var renamedOnControl: ["runSettings", "runSettingsRunner"]
+  property var movedToAlerts: ["armedRoots", "alertsArmed", "toasts", "toastMs", "toastTimer", "notifyRunners",
+    "raiseAlerts", "expireToasts", "dismissToast", "dismissAllToasts", "notify"]
+  property var movedToDispatch: ["dispatchState", "dispatchTarget", "dispatchTargetLabel", "dispatchForm",
+    "dispatchPreview", "dispatchError", "dispatchErrorType", "dispatchErrors", "dispatchSuggest", "dispatchRunId",
+    "dispatchMessage", "dispatchLog", "dispatchLogTail", "dispatchExitCode", "dispatchDefaultsRunner",
+    "dispatchPreviewRunner", "dispatchDebounceTimer", "dispatchStartRunners", "dispatchStarted", "openDispatch",
+    "closeDispatch", "retargetToMilestone", "setDispatchField", "dispatchStart", "checkDispatch"]
+  // The handles the run store once read the moved members through.
+  property var runStoreHandles: ["controlStore", "alertsStore", "dispatchStore"]
+
+  // The names of `names` that `obj` answers to (present) or does not (absent).
+  function answered(obj, names, present) {
+    return names.filter(function(name) { return (typeof obj[name] !== "undefined") === present })
+  }
+
+  function test_the_run_store_has_none_of_the_moved_members() {
+    var app = makeBare(); if (!app) return
+    var names = tc.movedToControl.concat(tc.renamedOnControl, tc.movedToAlerts, tc.movedToDispatch, tc.runStoreHandles)
+    compare(names.length, 66, "63 moved members and 3 handles")
+    compare(answered(app.runs, names, true).join(", "), "", "the run store still answers to these")
+    compare(answered(app.runs, ["runs", "project", "refresh", "requestSnapshot", "snapshotReplied", "runsChanged"],
+                     false).join(", "), "", "members that stay are still there")
+  }
+
+  function test_each_owner_answers_to_its_moved_members() {
+    var app = makeBare(); if (!app) return
+    compare(answered(app.runControl, tc.movedToControl, false).join(", "), "", "run control lacks these")
+    compare(answered(app.runControl, ["runSettingsLoadRunner", "runSettingsOf", "applyRunSettings"], false).join(", "), "",
+            "run control lacks the renamed run settings members")
+    compare(answered(app.runAlerts, tc.movedToAlerts, false).join(", "), "", "the alerts lack these")
+    compare(answered(app.runDispatch, tc.movedToDispatch, false).join(", "), "", "the dispatch lacks these")
+  }
+
   // ---- app.runAlerts (split-runstore 2.2)
 
   // A1

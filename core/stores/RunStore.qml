@@ -10,9 +10,9 @@ import "../domain/runs.js" as Runs
 // run domain model and tagged with their project; `projectErrors` the roots
 // whose latest entry failed; `runs` every root's runs merged in registry
 // order, a run id listed once, under the first root that lists it. A project
-// switch leaves the run list alone: `project`, the open project, is read only
-// by the run settings shims; the attempt logs act on each run's own project
-// root. Plus the selected run, the
+// switch leaves the run list alone: `project`, the open project's root, is an
+// input App hands on to the other run stores; the attempt logs act on each
+// run's own project root. Plus the selected run, the
 // attempt the Run detail pane shows and that
 // attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
 // asked at all. One list snapshot is in flight at a time, plus at most one
@@ -29,8 +29,7 @@ import "../domain/runs.js" as Runs
 // the watch's last cursor, held in memory only. Logs are fetched on a
 // selection, on Refresh and when a snapshot changes the selected attempt's
 // status -- never on a timer.
-// The dispatch is RunDispatchStore's; its members here are shims through
-// `dispatchStore`. Each applied list snapshot reply is announced per project
+// Each applied list snapshot reply is announced per project
 // (snapshotReplied).
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
@@ -115,108 +114,6 @@ Scope {
   property bool logsLoading: false    // a fetch is in flight
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
-
-  // Moved to RunControlStore; removed by the last story
-  property var controlStore: null
-  readonly property var pending: store.controlStore ? store.controlStore.pending : ({})
-  readonly property var stillWaiting: store.controlStore ? store.controlStore.stillWaiting : ({})
-  readonly property string stillWaitingText: store.controlStore ? store.controlStore.stillWaitingText : ""
-  readonly property string lastControlError: store.controlStore ? store.controlStore.lastControlError : ""
-  readonly property string lastControlErrorRunId: store.controlStore ? store.controlStore.lastControlErrorRunId : ""
-  property string cancelRunId: ""
-  Binding { target: store; property: "cancelRunId"; value: store.controlStore ? store.controlStore.cancelRunId : "" }
-  onCancelRunIdChanged: {
-    var target = store.controlStore ? store.controlStore.cancelRunId : ""
-    if (store.cancelRunId === target) return
-    if (store.controlStore) store.controlStore.cancelRunId = store.cancelRunId
-    else store.cancelRunId = ""
-  }
-  readonly property bool cancelOpen: store.controlStore ? store.controlStore.cancelOpen : false
-  property string cancelText: ""
-  Binding { target: store; property: "cancelText"; value: store.controlStore ? store.controlStore.cancelText : "" }
-  onCancelTextChanged: {
-    var target = store.controlStore ? store.controlStore.cancelText : ""
-    if (store.cancelText === target) return
-    if (store.controlStore) store.controlStore.cancelText = store.cancelText
-    else store.cancelText = ""
-  }
-  readonly property string cancelError: store.controlStore ? store.controlStore.cancelError : ""
-  readonly property string flashText: store.controlStore ? store.controlStore.flashText : ""
-  readonly property var controlRunners: store.controlStore ? store.controlStore.controlRunners : []
-  readonly property var pendingTimer: store.controlStore ? store.controlStore.pendingTimer : null
-  readonly property var flashTimer: store.controlStore ? store.controlStore.flashTimer : null
-  readonly property bool notifyOnEscalation: store.controlStore ? store.controlStore.notifyOnEscalation : false
-  readonly property bool notifySaved: store.controlStore ? store.controlStore.notifySaved : false
-  readonly property bool notifyTouched: store.controlStore ? store.controlStore.notifyTouched : false
-  readonly property var settingsLoadRunner: store.controlStore ? store.controlStore.settingsLoadRunner : null
-  readonly property var settingsSaveRunner: store.controlStore ? store.controlStore.settingsSaveRunner : null
-  function control(action, runId) { return store.controlStore ? store.controlStore.control(action, runId) : undefined }
-  function refusalOf(action, runId) { return store.controlStore ? store.controlStore.refusalOf(action, runId) : undefined }
-  function flash(text) { return store.controlStore ? store.controlStore.flash(text) : undefined }
-  function openCancel(runId) { return store.controlStore ? store.controlStore.openCancel(runId) : undefined }
-  function closeCancel() { return store.controlStore ? store.controlStore.closeCancel() : undefined }
-  function confirmCancel() { return store.controlStore ? store.controlStore.confirmCancel() : undefined }
-  function setNotifyOnEscalation(on) { return store.controlStore ? store.controlStore.setNotifyOnEscalation(on) : undefined }
-  property var runSettings: ({})
-  Binding { target: store; property: "runSettings"; value: store.controlStore ? store.controlStore.runSettingsOf(store.project) : ({}) }
-  onRunSettingsChanged: {
-    if (!store.controlStore || store.runSettings === store.controlStore.runSettingsOf(store.project)) return
-    store.controlStore.applyRunSettings(store.project, store.runSettings)
-  }
-  readonly property var runSettingsRunner: store.controlStore ? store.controlStore.runSettingsLoadRunner : null
-
-  // Moved to RunAlertsStore; removed by the last story
-  property var alertsStore: null
-  readonly property var armedRoots: store.alertsStore ? store.alertsStore.armedRoots : ({})
-  readonly property bool alertsArmed: store.alertsStore ? store.alertsStore.alertsArmed : false
-  readonly property var toasts: store.alertsStore ? store.alertsStore.toasts : []
-  readonly property int toastMs: store.alertsStore ? store.alertsStore.toastMs : 0
-  readonly property var toastTimer: store.alertsStore ? store.alertsStore.toastTimer : null
-  readonly property var notifyRunners: store.alertsStore ? store.alertsStore.notifyRunners : []
-  function raiseAlerts(alerts) { return store.alertsStore ? store.alertsStore.raiseAlerts(alerts) : undefined }
-  function expireToasts(nowMs) { return store.alertsStore ? store.alertsStore.expireToasts(nowMs) : undefined }
-  function dismissToast(key) { return store.alertsStore ? store.alertsStore.dismissToast(key) : undefined }
-  function dismissAllToasts() { return store.alertsStore ? store.alertsStore.dismissAllToasts() : undefined }
-  function notify(alert) { return store.alertsStore ? store.alertsStore.notify(alert) : undefined }
-
-  // Moved to RunDispatchStore; removed by the last story
-  property var dispatchStore: null
-  property string dispatchState: "idle"
-  Binding { target: store; property: "dispatchState"; value: store.dispatchStore ? store.dispatchStore.dispatchState : "idle" }
-  onDispatchStateChanged: {
-    var target = store.dispatchStore ? store.dispatchStore.dispatchState : "idle"
-    if (store.dispatchState === target) return
-    if (store.dispatchStore) store.dispatchStore.dispatchState = store.dispatchState
-    else store.dispatchState = "idle"
-  }
-  readonly property var dispatchTarget: store.dispatchStore ? store.dispatchStore.dispatchTarget : null
-  readonly property string dispatchTargetLabel: store.dispatchStore ? store.dispatchStore.dispatchTargetLabel : ""
-  readonly property var dispatchForm: store.dispatchStore ? store.dispatchStore.dispatchForm : null
-  readonly property var dispatchPreview: store.dispatchStore ? store.dispatchStore.dispatchPreview : null
-  readonly property string dispatchError: store.dispatchStore ? store.dispatchStore.dispatchError : ""
-  readonly property string dispatchErrorType: store.dispatchStore ? store.dispatchStore.dispatchErrorType : ""
-  readonly property var dispatchErrors: store.dispatchStore ? store.dispatchStore.dispatchErrors : []
-  readonly property var dispatchSuggest: store.dispatchStore ? store.dispatchStore.dispatchSuggest : null
-  readonly property string dispatchRunId: store.dispatchStore ? store.dispatchStore.dispatchRunId : ""
-  readonly property string dispatchMessage: store.dispatchStore ? store.dispatchStore.dispatchMessage : ""
-  readonly property string dispatchLog: store.dispatchStore ? store.dispatchStore.dispatchLog : ""
-  readonly property string dispatchLogTail: store.dispatchStore ? store.dispatchStore.dispatchLogTail : ""
-  readonly property var dispatchExitCode: store.dispatchStore ? store.dispatchStore.dispatchExitCode : null
-  readonly property var dispatchDefaultsRunner: store.dispatchStore ? store.dispatchStore.dispatchDefaultsRunner : null
-  readonly property var dispatchPreviewRunner: store.dispatchStore ? store.dispatchStore.dispatchPreviewRunner : null
-  readonly property var dispatchDebounceTimer: store.dispatchStore ? store.dispatchStore.dispatchDebounceTimer : null
-  readonly property var dispatchStartRunners: store.dispatchStore ? store.dispatchStore.dispatchStartRunners : []
-  signal dispatchStarted(var runId)
-  Connections {
-    target: store.dispatchStore
-    function onDispatchStarted(runId) { store.dispatchStarted(runId) }
-  }
-  function openDispatch(card, cardMap) { return store.dispatchStore ? store.dispatchStore.openDispatch(card, cardMap) : undefined }
-  function closeDispatch() { return store.dispatchStore ? store.dispatchStore.closeDispatch() : undefined }
-  function retargetToMilestone() { return store.dispatchStore ? store.dispatchStore.retargetToMilestone() : undefined }
-  function setDispatchField(name, value) { return store.dispatchStore ? store.dispatchStore.setDispatchField(name, value) : undefined }
-  function dispatchStart() { return store.dispatchStore ? store.dispatchStore.dispatchStart() : undefined }
-  function checkDispatch() { return store.dispatchStore ? store.dispatchStore.checkDispatch() : undefined }
 
   // A debounce window's nudged run ids, each once, in first-nudge order,
   // known to the store or not. Never for a snapshot the store started itself.
