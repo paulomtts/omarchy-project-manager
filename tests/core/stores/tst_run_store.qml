@@ -336,7 +336,7 @@ TestCase {
   // 8
   function test_a_list_covers_every_listed_run_at_0_and_nudges_follow_it() {
     var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
-    // A project is open, whose reads these are.
+    // A project is open: nudges ignore it.
     store.project = tc.rootA
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("done")])]), 0)
     compare(store.asOfSeq, 0)
@@ -348,13 +348,13 @@ TestCase {
     var seq = store.snapshotRunner.seq
     nudge(store, [tc.doneRun, 1])
     fire(store.debounceTimer)
-    compare(store.readRunners.length, 1, "a listed run costs one run read, whatever its seq")
-    compare(argv(store.readRunners[0].current), tc.readCmd + tc.doneRun)
-    compare(store.snapshotRunner.seq, seq, "and no list snapshot")
+    compare(store.snapshotRunner.seq, seq + 1, "a listed run costs one snapshot of its root, whatever its seq")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [rec("done")])]), 0)
     // synthetic: a run am started after the list.
     nudge(store, ["20261008T150000Z-0a1b2c3d", 1006])
     fire(store.debounceTimer)
-    compare(store.snapshotRunner.seq, seq + 1, "an unlisted run costs one list snapshot")
+    compare(store.snapshotRunner.seq, seq + 2, "an unlisted run costs one snapshot of every root")
     compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB)
   }
 
@@ -449,7 +449,7 @@ TestCase {
     compare(store.snapshotRunner.seq, seq)
   }
 
-  // 11 (the snapshot half; Task 3 pins the run read)
+  // 11
   function test_with_no_project_open_the_panel_snapshots_every_root_and_watches() {
     var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
@@ -812,6 +812,268 @@ TestCase {
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [])]), 0)
     compare(store.amStatus, "error", "a reply matching nothing while C is still registered is still an error")
     compare(store.lastError, "The runs snapshot gave no usable result (exit 0).")
+  }
+
+  // ---- nudges announce their runs and refresh their roots (global 3.2)
+
+  // An active store with A, B and C registered and no project open, whose
+  // first snapshot listed a1 under A, b1 under B and c1 under C (all done):
+  // its watch runs and nothing is in flight.
+  function threeRoots() {
+    var store = activeRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return null
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                                                  okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])]), 0)
+    verify(store.watchProc, "the watch was started")
+    return store
+  }
+
+  // threeRoots()'s reply again: every root answers with its one done run.
+  function threeReply() {
+    return allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                     okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                     okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])])
+  }
+
+  // 3
+  function test_a_debounce_firing_announces_its_run_ids_once() {
+    var store = threeRoots(); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runsNudged" })
+    nudge(store, ["b1", 5, "a1", 6])
+    nudge(store, ["b1", 7])
+    compare(spy.count, 0, "nothing before the debounce")
+    fire(store.debounceTimer)
+    compare(spy.count, 1, "once per firing")
+    compare(JSON.stringify(spy.signalArguments[0][0]), JSON.stringify(["b1", "a1"]), "each id once, in first-nudge order")
+    reply(store.snapshotRunner.current, threeReply(), 0)
+    // synthetic: a run no root lists.
+    nudge(store, ["z9", 8])
+    fire(store.debounceTimer)
+    compare(spy.count, 2, "an unknown id is announced too")
+    compare(JSON.stringify(spy.signalArguments[1][0]), JSON.stringify(["z9"]))
+    reply(store.snapshotRunner.current, threeReply(), 0)
+    store.refresh()
+    reply(store.snapshotRunner.current, threeReply(), 0)
+    store.livenessTimer.triggered()
+    store.pollTimer.triggered()
+    reply(store.snapshotRunner.current, threeReply(), 0)
+    store.active = false
+    store.active = true
+    reply(store.snapshotRunner.current, threeReply(), 0)
+    fire(store.debounceTimer)
+    compare(spy.count, 2, "refresh(), a liveness tick, a poll tick, an opening and an empty firing announce nothing")
+  }
+
+  // 4
+  function test_a_nudge_refreshes_only_the_roots_that_list_its_runs() {
+    var store = threeRoots(); if (!store) return
+    var seq = store.snapshotRunner.seq
+    nudge(store, ["b1", 5])
+    fire(store.debounceTimer)
+    compare(store.snapshotRunner.seq, seq + 1, "one snapshot")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB, "of B only")
+    compare(store.snapshotRoots.join("|"), tc.rootB)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)])]), 0)
+    nudge(store, ["c1", 6, "a1", 7])
+    fire(store.debounceTimer)
+    compare(store.snapshotRunner.seq, seq + 2, "one snapshot for the window")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootC, "A and C, in registry order")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])]), 0)
+    compare(store.snapshotRunner.seq, seq + 2, "nothing more")
+    compare(store.readRunners, undefined, "there are no run reads")
+  }
+
+  // 4
+  function test_a_run_listed_by_two_roots_refreshes_both() {
+    var store = activeRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("s1", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("s1", "done", false, tc.rootB)]),
+                                                  okEntry(tc.rootC, [])]), 0)
+    compare(store.runById("s1").project.root, tc.rootA, "A won the de-duplication")
+    nudge(store, ["s1", 5])
+    fire(store.debounceTimer)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB, "every root that lists it")
+  }
+
+  // 5 and Review Focus 3
+  function test_a_partial_reply_keeps_the_other_roots_as_they_were() {
+    var store = threeRoots(); if (!store) return
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "escalated", false)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                                                  failEntry(tc.rootC, "AmTimeout", "am did not answer within 60 s.")]), 0)
+    compare(toastIds(store), "a1")
+    fire(store.staleTimer)
+    compare(store.stale, true)
+    var a1 = store.runById("a1")
+    var c1 = store.runById("c1")
+    nudge(store, ["b1", 9])
+    fire(store.debounceTimer)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "escalated", false, tc.rootB),
+                                                                     entry("b2", "done", false, tc.rootB)])]), 0)
+    compare(ids(store.runs), "a1,b1,b2,c1", "B's runs replaced, the others kept, in registry order")
+    verify(store.runById("a1") === a1, "an unrefreshed root's run is the same object")
+    verify(store.runById("c1") === c1)
+    compare(store.projectErrors[tc.rootC], "AmTimeout: am did not answer within 60 s.", "C's error stays")
+    compare(store.projectErrors[tc.rootB], undefined)
+    compare(toastIds(store), "a1,b1", "only b1 alerts: the unrefreshed a1 does not alert again")
+    compare(store.stale, false, "a good partial reply clears stale")
+    compare(store.staleTimer.running, true, "and restarts the clock")
+    compare(store.amStatus, "ok")
+  }
+
+  // 6
+  function test_a_window_with_an_unknown_id_refreshes_every_root_once() {
+    var store = threeRoots(); if (!store) return
+    var seq = store.snapshotRunner.seq
+    // synthetic: a run no root lists, beside a listed one.
+    nudge(store, ["b1", 5, "z9", 6])
+    fire(store.debounceTimer)
+    compare(store.snapshotRunner.seq, seq + 1, "exactly one snapshot")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB + "|" + tc.rootC)
+  }
+
+  // 7
+  function test_two_nudge_windows_during_a_snapshot_follow_up_with_their_roots_only() {
+    var store = threeRoots(); if (!store) return
+    store.refresh()
+    var inFlight = store.snapshotRunner.current
+    nudge(store, ["b1", 5])
+    fire(store.debounceTimer)
+    nudge(store, ["c1", 6])
+    fire(store.debounceTimer)
+    reply(inFlight, threeReply(), 0)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB + "|" + tc.rootC, "B and C only")
+  }
+
+  // 11
+  function test_stale_follows_any_good_reply_full_or_partial() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)])]), 0)
+    fire(store.staleTimer)
+    compare(store.stale, true, "no good reply for 30 s")
+    nudge(store, ["b1", 5])
+    fire(store.debounceTimer)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)])]), 0)
+    compare(store.stale, false, "a partial reply with one ok entry clears it")
+    compare(store.staleTimer.running, true, "and restarts the clock")
+    fire(store.staleTimer)
+    compare(store.stale, true)
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmTimeout", "am did not answer within 60 s."),
+                                                  failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
+    compare(store.stale, true, "every entry failed: stale stays")
+    compare(store.staleTimer.running, false, "and the clock is untouched")
+  }
+
+  // Kept behaviour: a refresh that escalates a run raises one toast.
+  function test_a_nudge_refresh_that_escalates_a_run_raises_one_toast() {
+    var store = threeRoots(); if (!store) return
+    nudge(store, ["b1", 5])
+    fire(store.debounceTimer)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "escalated", false, tc.rootB)])]), 0)
+    compare(store.toasts.length, 1)
+    compare(store.toasts[0].id, "b1")
+    compare(store.toasts[0].state, "escalated")
+    nudge(store, ["b1", 6])
+    fire(store.debounceTimer)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "escalated", false, tc.rootB)])]), 0)
+    compare(store.toasts.length, 1, "still escalated: no second toast")
+  }
+
+  // Kept behaviour: a refresh that moves the selected attempt refetches its logs.
+  function test_a_nudge_refresh_that_moves_the_selected_attempt_fetches_its_logs() {
+    var store = capturedStore(); if (!store) return
+    store.selectedRunId = tc.startedRun
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    nudge(store, [tc.startedRun, 990])
+    fire(store.debounceTimer)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.capRoot)
+    // synthetic: the captured list with the started run's open attempt (explore 1) ok.
+    var value = JSON.parse(capturedList())
+    value.projects[0].runs[0].status.stories[1].subtasks[1].phases[1].attempts[0].status = "ok"
+    reply(store.snapshotRunner.current, JSON.stringify(value) + "\n", 0)
+    compare(store.logsRunner.seq, seq + 1, "started -> ok fetches the logs again")
+    compare(argv(store.logsRunner.current), "python3|/plugin/core/backend/runs/runs-logs.py|" + tc.capRoot + "|" + tc.startedRun + "|" + tc.openCard + "|explore|1")
+  }
+
+  // Kept behaviour: a refresh that moves a run settles its pending request.
+  function test_a_nudge_refresh_that_moves_the_run_settles_its_pending_request() {
+    var store = capturedStore(); if (!store) return
+    compare(store.control("cancel", tc.startedRun), true)
+    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    reply(store.snapshotRunner.current, capturedList(), 0)
+    compare(store.pending[tc.startedRun], "cancel", "acknowledged, not yet settled")
+    nudge(store, [tc.startedRun, 1005])
+    fire(store.debounceTimer)
+    // synthetic: status-escalated.json's data under the started run's id.
+    reply(store.snapshotRunner.current, capturedList([], true), 0)
+    compare(store.pending[tc.startedRun], undefined, "the refresh settled it")
+  }
+
+  // Kept behaviour: a nudge after a project switch is still handled.
+  function test_a_nudge_after_a_project_switch_is_still_handled() {
+    var store = threeRoots(); if (!store) return
+    store.project = tc.rootA
+    store.project = tc.rootB
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runsNudged" })
+    nudge(store, ["a1", 5])
+    fire(store.debounceTimer)
+    compare(spy.count, 1)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA, "the nudged run's root, whatever project is open")
+    store.project = ""
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "escalated", false)])]), 0)
+    compare(store.runById("a1").status, "escalated", "applied with no project open")
+  }
+
+  // The plan's Review Focus 1
+  function test_a_partial_reply_that_is_am_missing_empties_every_root() {
+    var store = threeRoots(); if (!store) return
+    nudge(store, ["b1", 5])
+    fire(store.debounceTimer)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB)
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootB, "AmMissing", "am is not installed.")]), 0)
+    compare(store.amStatus, "missing", "am is on PATH or it is not: the whole store")
+    compare(store.runs.length, 0)
+    compare(Object.keys(store.runsByProject).length, 0, "A's and C's runs go too")
+    compare(Object.keys(store.projectErrors).length, 0)
+    compare(store.alertsArmed, false)
+  }
+
+  // The plan's Review Focus 3
+  function test_a_nudge_after_the_registry_emptied_announces_and_launches_nothing() {
+    var store = threeRoots(); if (!store) return
+    var w = store.watchProc
+    store.projectRoots = []
+    compare(store.runs.length, 0)
+    verify(store.watchProc === w, "no snapshot, so the watch is not restarted")
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runsNudged" })
+    var seq = store.snapshotRunner.seq
+    nudge(store, ["a1", 5])
+    fire(store.debounceTimer)
+    compare(spy.count, 1, "announced")
+    compare(store.snapshotRunner.seq, seq, "no root to snapshot")
+    compare(store.snapshotRunner.busy, false)
+    compare(store.pendingSnapshot, null)
+  }
+
+  // The plan's Review Focus 4
+  function test_a_nudge_for_a_run_kept_by_a_failed_root_refreshes_that_root() {
+    var store = threeRoots(); if (!store) return
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s."),
+                                                  okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])]), 0)
+    compare(ids(store.runs), "a1,b1,c1", "B keeps its run")
+    var seq = store.snapshotRunner.seq
+    nudge(store, ["b1", 5])
+    fire(store.debounceTimer)
+    compare(store.snapshotRunner.seq, seq + 1)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB, "B, not every root")
   }
 
   // ---- live refresh (3.2)
@@ -4405,13 +4667,13 @@ TestCase {
     compare(store.debounceTimer.running, false, "a cursor is not a change")
   }
 
-  function test_a_nudge_for_a_listed_run_always_costs_a_read() {
+  function test_a_nudge_for_a_listed_run_always_costs_a_snapshot_of_its_root() {
     var store = capturedStore(); if (!store) return
     var seq = store.snapshotRunner.seq
     nudge(store, [tc.startedRun, 1, tc.doneRun, 900])
     fire(store.debounceTimer)
-    compare(store.snapshotRunner.seq, seq, "no list snapshot")
-    compare(store.readRunners.length, 2, "the list covers at 0: each listed run is read")
+    compare(store.snapshotRunner.seq, seq + 1, "one snapshot, whatever the seqs")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.capRoot)
     compare(Object.keys(store.nudges).length, 0, "the nudges were taken")
   }
 
@@ -4424,7 +4686,6 @@ TestCase {
     fire(store.debounceTimer)
     compare(store.snapshotRunner.seq, seq + 1, "exactly one list snapshot")
     compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.capRoot)
-    compare(store.readRunners.length, 0, "and no run read in that trigger")
     compare(Object.keys(store.nudges).length, 0)
   }
 
@@ -4438,278 +4699,7 @@ TestCase {
     compare(store.watchCursor, 1005)
   }
 
-  // ---- run reads
-
-  property string readCmd: "python3|/plugin/core/backend/runs/runs-snapshot.py|--run|"
-
-  // runs-snapshot.py --run RUN's reply: `name`'s `am status` data with its own
-  // as_of_seq and store_id, under `run`.
-  function runReply(run, name) {
-    var data = F.load(name).data
-    return JSON.stringify({ ok: true, run: run, as_of_seq: data.as_of_seq, store_id: data.store_id,
-                            status: data, data_dir: "/d" }) + "\n"
-  }
-
-  // The store's run read of `run` in flight after a nudge at `seq` and the
-  // debounce: its Process.
-  function readOf(store, run, seq) {
-    nudge(store, [run, seq])
-    fire(store.debounceTimer)
-    var list = store.readRunners
-    return list.length > 0 ? list[list.length - 1].current : null
-  }
-
-  function test_a_nudge_for_a_held_run_reads_only_that_run() {
-    var store = capturedStore(); if (!store) return
-    var before = store.runs
-    var seq = store.snapshotRunner.seq
-    nudge(store, [tc.doneRun, 1005])
-    compare(store.readRunners.length, 0, "nothing before the debounce")
-    fire(store.debounceTimer)
-    compare(store.snapshotRunner.seq, seq, "no list snapshot")
-    compare(store.readRunners.length, 1)
-    var proc = store.readRunners[0].current
-    compare(argv(proc), tc.readCmd + tc.doneRun)
-    compare(proc.command.length, 4)
-    compare(proc.running, true)
-    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
-    verify(store.runs !== before, "runs is a new array")
-    compare(store.runs.length, 2)
-    verify(store.runs[0] === before[0], "the other run is the same object")
-    verify(store.runs[1] !== before[1], "the read run was rebuilt in its place")
-    compare(store.runs[1].id, tc.doneRun)
-    compare(store.runs[1].status, "done")
-    compare(JSON.stringify(store.runs[1].project), JSON.stringify({ root: tc.capRoot, name: "proj" }), "the read run keeps its project")
-    compare(store.runs[1].milestone_id, "63060df3-f582-4eb9-a56e-44cadb15b693", "rebuilt from its remembered am runs row")
-    compare(store.appliedSeq[tc.doneRun], 1005)
-    compare(store.appliedSeq[tc.startedRun], 0)
-    compare(store.asOfSeq, 0, "a run read leaves asOfSeq")
-    compare(store.readRunners.length, 0, "the runner is gone")
-    nudge(store, [tc.doneRun, 1005])
-    fire(store.debounceTimer)
-    compare(store.readRunners.length, 0, "the read covered 1005")
-  }
-
-  function test_several_nudges_in_a_window_cost_one_read() {
-    var store = capturedStore(); if (!store) return
-    nudge(store, [tc.doneRun, 1000])
-    nudge(store, [tc.doneRun, 1005])
-    fire(store.debounceTimer)
-    compare(store.readRunners.length, 1)
-    compare(store.readRunners[0].nudgeSeq, 1005, "at the highest seq")
-  }
-
-  function test_a_newer_read_of_a_run_supersedes_the_older() {
-    var store = capturedStore(); if (!store) return
-    var older = readOf(store, tc.doneRun, 1000)
-    var newer = readOf(store, tc.doneRun, 1005)
-    compare(store.readRunners.length, 2, "both in flight")
-    compare(older.running, true, "the older one is not stopped")
-    var before = store.runs[1]
-    // synthetic: status-escalated.json's data under the done run's id.
-    reply(older, runReply(tc.doneRun, "status-escalated.json"), 0)
-    verify(store.runs[1] === before, "the superseded reply changes nothing")
-    compare(store.readRunners.length, 1)
-    reply(newer, runReply(tc.doneRun, "status-done.json"), 0)
-    verify(store.runs[1] !== before)
-    compare(store.runs[1].status, "done")
-  }
-
-  function test_a_read_older_than_a_read_already_applied_changes_nothing() {
-    var store = capturedStore(); if (!store) return
-    var first = readOf(store, tc.doneRun, 1005)
-    // synthetic: status-done.json's run read reply at as_of_seq 1100.
-    var late = JSON.parse(runReply(tc.doneRun, "status-done.json"))
-    late.as_of_seq = 1100
-    reply(first, JSON.stringify(late) + "\n", 0)
-    compare(store.appliedSeq[tc.doneRun], 1100)
-    var second = readOf(store, tc.doneRun, 1200)
-    var before = store.runs[1]
-    // synthetic: status-escalated.json's data (as_of_seq 1005) under the done run's id.
-    reply(second, runReply(tc.doneRun, "status-escalated.json"), 0)
-    verify(store.runs[1] === before)
-    compare(store.runs[1].status, "done")
-    compare(store.appliedSeq[tc.doneRun], 1100)
-  }
-
-  function test_a_read_of_a_run_the_list_dropped_changes_nothing() {
-    var store = capturedStore(); if (!store) return
-    var proc = readOf(store, tc.doneRun, 1005)
-    store.refresh()
-    // synthetic: runs.json's list without the done run, landing before the read.
-    var data = F.load("runs.json").data
-    var only = data.runs.slice(0, 1)
-    only[0].status = F.load("status-started.json").data
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.capRoot, only)]), 0)
-    var before = store.runs
-    // synthetic: status-done.json's run read reply (as_of_seq 1005).
-    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
-    verify(store.runs === before, "a run no longer listed is not read back in")
-    compare(ids(store.runs), tc.startedRun)
-    compare(store.appliedSeq[tc.doneRun], undefined)
-  }
-
-  function test_a_read_reply_that_does_not_fit_changes_nothing() {
-    var store = capturedStore(); if (!store) return
-    var good = JSON.parse(runReply(tc.doneRun, "status-escalated.json"))
-    // synthetic: status-escalated.json's run read reply, each with one key broken.
-    var breaks = [["run", tc.startedRun], ["run", undefined], ["status", null], ["status", []],
-                  ["as_of_seq", -1], ["as_of_seq", "1005"], ["as_of_seq", undefined]]
-    for (var i = 0; i < breaks.length; i++) {
-      var label = breaks[i][0] + " " + JSON.stringify(breaks[i][1])
-      var proc = readOf(store, tc.doneRun, 1001 + i)
-      var before = store.runs[1]
-      var value = JSON.parse(JSON.stringify(good))
-      if (breaks[i][1] === undefined) delete value[breaks[i][0]]
-      else value[breaks[i][0]] = breaks[i][1]
-      reply(proc, JSON.stringify(value) + "\n", 0)
-      verify(store.runs[1] === before, label)
-      compare(store.appliedSeq[tc.doneRun], 0, label)
-      compare(store.readRunners.length, 0, label)
-    }
-  }
-
-  function test_other_read_failures_change_nothing() {
-    var store = capturedStore(); if (!store) return
-    // synthetic: helper failures runs-snapshot.py --run prints, then output that is not an envelope.
-    var replies = ['{"ok": false, "error": {"type": "AmMissing", "message": "am is not installed."}}',
-                   '{"ok": false, "error": {"type": "SchemaMismatch", "message": "the plugin needs the newer am"}}',
-                   '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}',
-                   '{"ok": false}', "Traceback (most recent call last):", ""]
-    for (var i = 0; i < replies.length; i++) {
-      var label = JSON.stringify(replies[i])
-      var proc = readOf(store, tc.doneRun, 1001 + i)
-      var before = store.runs[1]
-      var seq = store.snapshotRunner.seq
-      reply(proc, replies[i], 1)
-      verify(store.runs[1] === before, label)
-      compare(store.amStatus, "ok", label)
-      compare(store.lastError, "", label)
-      compare(store.stale, false, label)
-      compare(store.snapshotRunner.seq, seq, label + ": no list snapshot")
-      compare(Object.keys(store.nudges).length, 0, label + ": nothing to retry")
-    }
-  }
-
-  function test_two_runs_nudged_together_are_read_in_parallel() {
-    var store = capturedStore(); if (!store) return
-    nudge(store, [tc.doneRun, 1005, tc.startedRun, 1000])
-    fire(store.debounceTimer)
-    compare(store.readRunners.length, 2)
-    var first = store.readRunners[0].current
-    var second = store.readRunners[1].current
-    compare(argv(first), tc.readCmd + tc.doneRun, "in nudge order")
-    compare(argv(second), tc.readCmd + tc.startedRun)
-    compare(first.running, true, "neither stops the other")
-    compare(second.running, true)
-    // synthetic: status-escalated.json's data under the started run's id.
-    reply(second, runReply(tc.startedRun, "status-escalated.json"), 0)
-    reply(first, runReply(tc.doneRun, "status-done.json"), 0)
-    compare(store.runs[0].status, "escalated")
-    compare(store.runs[1].status, "done")
-    compare(store.appliedSeq[tc.startedRun], 1005)
-    compare(store.appliedSeq[tc.doneRun], 1005)
-  }
-
-  function test_a_read_that_escalates_a_run_raises_one_toast() {
-    var store = capturedStore(); if (!store) return
-    compare(store.alertsArmed, true)
-    // synthetic: status-escalated.json's data under the started run's id.
-    reply(readOf(store, tc.startedRun, 1005), runReply(tc.startedRun, "status-escalated.json"), 0)
-    compare(store.toasts.length, 1)
-    compare(store.toasts[0].id, tc.startedRun)
-    compare(store.toasts[0].state, "escalated")
-    compare(store.stale, false)
-    compare(store.staleTimer.running, true, "the stale clock restarts")
-    reply(readOf(store, tc.startedRun, 1006), runReply(tc.startedRun, "status-escalated.json"), 0)
-    compare(store.toasts.length, 1, "still escalated: no second toast")
-  }
-
-  // Review Focus 2.
-  function test_a_read_that_moves_the_selected_attempt_fetches_its_logs() {
-    var store = capturedStore(); if (!store) return
-    store.selectedRunId = tc.startedRun
-    reply(store.logsRunner.current, logsReply("a\n"), 0)
-    var seq = store.logsRunner.seq
-    var proc = readOf(store, tc.startedRun, 990)
-    // synthetic: status-started.json's data with its open attempt (explore 1) ok.
-    var data = F.load("status-started.json").data
-    data.stories[1].subtasks[1].phases[1].attempts[0].status = "ok"
-    reply(proc, JSON.stringify({ ok: true, run: tc.startedRun, as_of_seq: 990, store_id: data.store_id, status: data, data_dir: "/d" }) + "\n", 0)
-    compare(store.logsRunner.seq, seq + 1, "started -> ok fetches the logs again")
-    compare(argv(store.logsRunner.current), "python3|/plugin/core/backend/runs/runs-logs.py|" + tc.capRoot + "|" + tc.startedRun + "|" + tc.openCard + "|explore|1")
-  }
-
-  // Review Focus 3.
-  function test_a_read_that_moves_the_run_settles_its_pending_request() {
-    var store = capturedStore(); if (!store) return
-    compare(store.control("cancel", tc.startedRun), true)
-    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
-    compare(store.pending[tc.startedRun], "cancel")
-    // synthetic: status-escalated.json's data under the started run's id.
-    reply(readOf(store, tc.startedRun, 1005), runReply(tc.startedRun, "status-escalated.json"), 0)
-    compare(store.pending[tc.startedRun], undefined, "the read settled it")
-  }
-
-  // Review Focus 4.
-  function test_a_read_landing_after_the_panel_closed_is_applied_quietly() {
-    var store = capturedStore(); if (!store) return
-    var proc = readOf(store, tc.startedRun, 1005)
-    store.active = false
-    // synthetic: status-escalated.json's data under the started run's id.
-    reply(proc, runReply(tc.startedRun, "status-escalated.json"), 0)
-    compare(store.runs[0].status, "escalated", "applied, as a list snapshot is")
-    compare(store.toasts.length, 0, "no toast while closed")
-    compare(store.staleTimer.running, false, "no stale clock while closed")
-  }
-
-  // ---- reads, requests and logs across a project switch (3.1)
-
-  // 11 (the run read) and Review Focus 4
-  function test_a_read_with_no_project_open_launches_applies_and_keeps_its_project() {
-    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
-    compare(store.project, "")
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("done")])]), 0)
-    var proc = readOf(store, tc.doneRun, 1005)
-    verify(proc, "a run read launches with no project open")
-    compare(argv(proc), tc.readCmd + tc.doneRun)
-    // synthetic: status-escalated.json's data under the done run's id.
-    reply(proc, runReply(tc.doneRun, "status-escalated.json"), 0)
-    var run = store.runById(tc.doneRun)
-    compare(run.status, "escalated", "its reply applies")
-    compare(store.appliedSeq[tc.doneRun], 1005)
-    compare(JSON.stringify(run.project), JSON.stringify({ root: tc.rootB, name: "beta" }), "the read run keeps its project")
-    verify(store.runsByProject[tc.rootB][0] === run, "B's list holds the read run")
-    store.projectRoots = [rootEntry(tc.rootA), { root: tc.rootB, name: "bee" }]
-    compare(store.runById(tc.doneRun).status, "escalated", "a registry change merges the read value")
-    compare(store.runById(tc.doneRun).project.name, "bee")
-  }
-
-  function test_a_read_in_flight_at_a_project_switch_still_applies() {
-    var store = capturedStore(); if (!store) return
-    var proc = readOf(store, tc.doneRun, 1005)
-    store.project = rootB
-    store.project = ""
-    // synthetic: status-escalated.json's data under the done run's id.
-    reply(proc, runReply(tc.doneRun, "status-escalated.json"), 0)
-    compare(store.runs[1].status, "escalated", "applied whatever project is open")
-    compare(store.appliedSeq[tc.doneRun], 1005)
-    compare(store.readRunners.length, 0)
-  }
-
-  // 5 of the coverage rule: a kept run must not lose its row
-  function test_a_run_kept_by_a_failed_root_reads_back_from_its_row() {
-    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("done")])]), 0)
-    store.refresh()
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]),
-                                                  failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
-    reply(readOf(store, tc.doneRun, 1005), runReply(tc.doneRun, "status-done.json"), 0)
-    var run = store.runById(tc.doneRun)
-    compare(store.appliedSeq[tc.doneRun], 1005)
-    compare(run.milestone_id, "63060df3-f582-4eb9-a56e-44cadb15b693", "rebuilt from the row B's failed entry kept")
-    compare(run.project.root, tc.rootB)
-  }
+  // ---- requests and logs across a project switch (3.1)
 
   // 12 (the control half)
   function test_a_control_request_in_flight_at_a_switch_is_settled_without_an_error() {
@@ -4750,62 +4740,6 @@ TestCase {
     verify(store.selectedAttempt !== null)
   }
 
-  // ---- run read refusals (4.1.3)
-
-  function test_a_read_of_a_run_am_does_not_know_relists() {
-    var store = capturedStore(); if (!store) return
-    var proc = readOf(store, tc.doneRun, 1005)
-    var seq = store.snapshotRunner.seq
-    // synthetic: am's UnknownRunError envelope, which runs-snapshot.py --run re-emits unchanged.
-    reply(proc, '{"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": false}\n', 1)
-    compare(store.toasts.length, 0, "no toast")
-    compare(store.lastError, "")
-    compare(store.amStatus, "ok")
-    compare(ids(store.runs), tc.startedRun + "," + tc.doneRun, "the run stays until the next list")
-    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot")
-    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.capRoot)
-    // synthetic: runs.json's list without the done run.
-    var data = F.load("runs.json").data
-    var only = data.runs.slice(0, 1)
-    only[0].status = F.load("status-started.json").data
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.capRoot, only)]), 0)
-    compare(ids(store.runs), tc.startedRun, "it drops when am no longer lists it")
-    compare(store.appliedSeq[tc.doneRun], undefined)
-    compare(store.lastError, "")
-  }
-
-  function test_a_busy_store_on_a_read_keeps_the_run_and_retries_it() {
-    var store = capturedStore(); if (!store) return
-    var proc = readOf(store, tc.doneRun, 1005)
-    var before = store.runs[1]
-    var seq = store.snapshotRunner.seq
-    // synthetic: am's StoreBusyError envelope, which runs-snapshot.py --run re-emits unchanged.
-    reply(proc, '{"error": {"message": "the am store is busy; try again", "type": "StoreBusyError"}, "ok": false}\n', 1)
-    verify(store.runs[1] === before, "the last good run stays")
-    compare(store.stale, true)
-    compare(store.toasts.length, 0)
-    compare(store.lastError, "")
-    compare(store.amStatus, "ok")
-    compare(store.snapshotRunner.seq, seq, "no list snapshot")
-    compare(store.nudges[tc.doneRun], 1005, "the nudge is put back")
-    compare(store.debounceTimer.running, false, "without restarting the debounce")
-    nudge(store, [tc.startedRun, 1000])
-    fire(store.debounceTimer)
-    compare(store.readRunners.length, 2, "the next trigger retries it")
-    compare(argv(store.readRunners[0].current), tc.readCmd + tc.doneRun)
-    compare(argv(store.readRunners[1].current), tc.readCmd + tc.startedRun)
-  }
-
-  function test_a_busy_read_keeps_a_newer_nudge() {
-    var store = capturedStore(); if (!store) return
-    var proc = readOf(store, tc.doneRun, 1005)
-    nudge(store, [tc.doneRun, 1010])
-    // synthetic: am's StoreBusyError envelope, which runs-snapshot.py --run re-emits unchanged.
-    reply(proc, '{"error": {"message": "the am store is busy; try again", "type": "StoreBusyError"}, "ok": false}\n', 1)
-    compare(store.nudges[tc.doneRun], 1010, "the higher seq wins")
-    compare(store.debounceTimer.running, true, "the newer line's debounce still runs")
-  }
-
   // ---- cursor reset
 
   // synthetic: runs-watch.py's forwarded hello for watch-hello.json's schema_2
@@ -4818,10 +4752,10 @@ TestCase {
   function test_a_cursor_reset_starts_over_from_a_list_snapshot() {
     var store = capturedStore(); if (!store) return
     sendLine(store.watchProc, { cursor: 1005 })
-    var proc = readOf(store, tc.doneRun, 1005)
+    store.refresh()
+    var old = store.snapshotRunner.current
     nudge(store, [tc.startedRun, 1006])
     store.selectedRunId = tc.doneRun
-    var seq = store.snapshotRunner.seq
     sendLine(store.watchProc, resetHello(true))
     compare(store.amSchema, 2, "still a hello")
     compare(Object.keys(store.appliedSeq).length, 0)
@@ -4833,10 +4767,12 @@ TestCase {
     compare(Object.keys(store.runsByProject).length, 0, "every root's list is forgotten too")
     compare(store.alertsArmed, false)
     compare(store.selectedRunId, tc.doneRun, "the selection is untouched")
-    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot")
+    compare(old.running, false, "the old store's snapshot is stopped")
     var list = store.snapshotRunner.current
-    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
-    compare(store.runs.length, 0, "the dropped read changes nothing")
+    verify(list !== old, "one list snapshot is launched")
+    compare(argv(list), tc.snapCmd + "|" + tc.capRoot)
+    reply(old, capturedList(), 0)
+    compare(store.runs.length, 0, "the stopped snapshot's late reply changes nothing")
     compare(Object.keys(store.appliedSeq).length, 0)
     reply(list, capturedList([], true), 0)
     compare(store.runs[0].status, "escalated")
@@ -4963,10 +4899,10 @@ TestCase {
   function test_a_hello_from_another_store_starts_over_from_a_list_snapshot() {
     var store = namedStore(); if (!store) return
     sendLine(store.watchProc, { cursor: 1005 })
-    var proc = readOf(store, tc.doneRun, 1005)
+    store.refresh()
+    var old = store.snapshotRunner.current
     nudge(store, [tc.startedRun, 1006])
     store.selectedRunId = tc.doneRun
-    var seq = store.snapshotRunner.seq
     // A head above the cursor: cursorReset is false, yet the store changed.
     sendLine(store.watchProc, storeHello(otherStore(), 1200, false))
     compare(store.amSchema, 2, "still a hello")
@@ -4979,18 +4915,19 @@ TestCase {
     compare(store.runs.length, 0)
     compare(store.alertsArmed, false)
     compare(store.selectedRunId, tc.doneRun, "the selection is untouched")
-    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot")
+    compare(old.running, false, "the old store's snapshot is stopped")
     var list = store.snapshotRunner.current
-    reply(proc, runReply(tc.doneRun, "status-done.json"), 0)
-    compare(store.runs.length, 0, "the dropped read changes nothing")
+    verify(list !== old, "one list snapshot is launched")
+    var seq = store.snapshotRunner.seq
+    reply(old, capturedList(), 0)
+    compare(store.runs.length, 0, "the stopped snapshot's late reply changes nothing")
     compare(Object.keys(store.appliedSeq).length, 0)
-    compare(store.storeId, otherStore(), "the dropped read names no store")
     reply(list, capturedList([], true), 0)
     compare(store.runs[0].status, "escalated")
     compare(store.toasts.length, 0, "the new store's first list only arms")
     compare(store.alertsArmed, true)
     compare(store.appliedSeq[tc.startedRun], 0)
-    compare(store.snapshotRunner.seq, seq + 1, "its reply launches no further snapshot")
+    compare(store.snapshotRunner.seq, seq, "its reply launches no further snapshot")
   }
 
   function test_a_hello_from_another_store_with_cursor_reset_launches_one_list() {
@@ -5061,89 +4998,5 @@ TestCase {
     compare(store.storeId, otherStore(), "and names no store")
     reply(store.snapshotRunner.current, capturedList(), 0)
     compare(store.runs.length, 2)
-  }
-
-  // synthetic: runReply(run, name) with store_id `id` (the key absent when
-  // undefined).
-  function storeRead(run, name, id) {
-    var value = JSON.parse(runReply(run, name))
-    value.store_id = id
-    return JSON.stringify(value) + "\n"
-  }
-
-  function test_a_run_read_from_another_store_is_not_applied_and_starts_over() {
-    var store = namedStore(); if (!store) return
-    sendLine(store.watchProc, { cursor: 1005 })
-    var proc = readOf(store, tc.startedRun, 1005)
-    var seq = store.snapshotRunner.seq
-    reply(proc, storeRead(tc.startedRun, "status-escalated.json", otherStore()), 0)
-    compare(store.storeId, otherStore())
-    compare(store.appliedSeq[tc.startedRun], undefined, "not applied: the coverage starts over")
-    compare(store.asOfSeq, 0)
-    compare(store.watchCursor, 0)
-    compare(store.runs.length, 0)
-    compare(store.alertsArmed, false)
-    compare(store.toasts.length, 0, "the escalation is not alerted")
-    compare(store.lastError, "")
-    compare(store.amStatus, "ok")
-    compare(store.snapshotRunner.seq, seq + 1, "one list snapshot")
-    reply(store.snapshotRunner.current, capturedList([], true), 0)
-    compare(store.runs[0].status, "escalated")
-    compare(store.toasts.length, 0, "the new store's first list only arms")
-    compare(store.alertsArmed, true)
-    compare(store.snapshotRunner.seq, seq + 1, "its reply launches no further snapshot")
-  }
-
-  function test_a_run_read_with_the_seen_or_a_first_store_id_is_applied() {
-    var store = namedStore(); if (!store) return
-    var seq = store.snapshotRunner.seq
-    reply(readOf(store, tc.doneRun, 1005), runReply(tc.doneRun, "status-done.json"), 0)
-    compare(store.appliedSeq[tc.doneRun], 1005, "the seen store")
-    compare(store.storeId, fixtureStore())
-    compare(store.snapshotRunner.seq, seq)
-    var fresh = capturedStore(); if (!fresh) return
-    var freshSeq = fresh.snapshotRunner.seq
-    reply(readOf(fresh, tc.doneRun, 1005), runReply(tc.doneRun, "status-done.json"), 0)
-    compare(fresh.appliedSeq[tc.doneRun], 1005, "a first store id")
-    compare(fresh.storeId, fixtureStore(), "is recorded")
-    compare(fresh.snapshotRunner.seq, freshSeq)
-  }
-
-  function test_a_run_read_without_a_store_id_is_applied() {
-    var store = namedStore(); if (!store) return
-    var bad = ["", 7, null, { id: "x" }, undefined]
-    for (var i = 0; i < bad.length; i++) {
-      var label = "store_id " + JSON.stringify(bad[i])
-      var proc = readOf(store, tc.doneRun, 1006 + i)
-      var seq = store.snapshotRunner.seq
-      reply(proc, storeRead(tc.doneRun, "status-done.json", bad[i]), 0)
-      compare(store.appliedSeq[tc.doneRun], 1005, label)
-      compare(store.storeId, fixtureStore(), label)
-      compare(store.runs.length, 2, label)
-      compare(store.snapshotRunner.seq, seq, label + ": no list snapshot")
-    }
-  }
-
-  function test_a_refused_run_read_naming_another_store_changes_no_store_id() {
-    var store = namedStore(); if (!store) return
-    var proc = readOf(store, tc.doneRun, 1005)
-    // synthetic: am's StoreBusyError envelope carrying another store's id.
-    reply(proc, JSON.stringify({ ok: false, store_id: otherStore(),
-          error: { type: "StoreBusyError", message: "the am store is busy; try again" } }) + "\n", 1)
-    compare(store.storeId, fixtureStore())
-    compare(store.stale, true)
-    compare(store.runs.length, 2)
-  }
-
-  // Review Focus 2.
-  function test_a_superseded_run_read_naming_another_store_changes_nothing() {
-    var store = namedStore(); if (!store) return
-    var older = readOf(store, tc.doneRun, 1000)
-    readOf(store, tc.doneRun, 1005)
-    var seq = store.snapshotRunner.seq
-    reply(older, storeRead(tc.doneRun, "status-done.json", otherStore()), 0)
-    compare(store.storeId, fixtureStore())
-    compare(store.runs.length, 2)
-    compare(store.snapshotRunner.seq, seq, "no list snapshot")
   }
 }
