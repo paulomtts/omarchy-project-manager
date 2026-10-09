@@ -67,6 +67,7 @@ TestCase {
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
     p.app.runs.settingsLoadRunner.cancel()
+    p.app.runs.runSettingsRunner.cancel()
     // A stored verify command, so a fresh form passes the store's checks.
     p.app.runs.runSettings = { verify: ["uv run pytest"] }
     p.app.board.applyTreeData(roots())

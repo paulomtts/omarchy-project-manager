@@ -435,7 +435,7 @@ TestCase {
     compare(store.debounceTimer.running, true, "a watch line after the switch is still handled")
     compare(store.nudges.r2, 7)
     store.project = tc.rootB
-    compare(argv(store.settingsLoadRunner.current), tc.viewerCmd + "get-run-settings|" + tc.rootB,
+    compare(argv(store.runSettingsRunner.current), tc.viewerCmd + "get-run-settings|" + tc.rootB,
             "the new project's run settings still load")
     compare(store.dispatchState, "idle", "and the dispatch is still reset")
   }
@@ -3657,53 +3657,90 @@ TestCase {
     return JSON.stringify({ verify: [], allowNoVerification: false, notifyOnEscalation: notify }) + "\n"
   }
 
-  // 10 (the setting half)
-  function test_a_project_switch_resets_the_switch_and_loads_the_new_projects_setting() {
+  // 8 and Review Focus 5
+  function test_the_global_switch_loads_on_each_opening_with_no_project() {
+    var idle = make(); if (!idle) return
+    verify(!idle.settingsLoadRunner.current, "a closed panel loads nothing")
+    idle.project = tc.rootA
+    verify(!idle.settingsLoadRunner.current, "a project switch launches no global load")
+
+    var store = make(); if (!store) return
+    store.active = true
+    var load = store.settingsLoadRunner.current
+    verify(load, "opening the panel loads the switch, with no project and no registry")
+    compare(argv(load), tc.viewerCmd + "get-global-settings")
+    compare(load.command.length, 3)
+    compare(load.launchGuard, "")
+    reply(load, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(store.notifyOnEscalation, true)
+    compare(store.notifySaved, true)
+    store.project = tc.rootB
+    compare(store.notifyOnEscalation, true, "a project switch leaves the switch alone")
+    compare(store.notifySaved, true)
+    compare(store.notifyTouched, false)
+    var seq = store.settingsLoadRunner.seq
+    store.project = ""
+    compare(store.settingsLoadRunner.seq, seq, "and launches no global load")
+    store.active = false
+    store.active = true
+    compare(store.settingsLoadRunner.seq, seq + 1, "each opening loads once")
+    reply(store.settingsLoadRunner.current, "Traceback: boom\n", 1)
+    compare(store.notifyOnEscalation, false, "an unreadable reply leaves it off")
+    compare(store.notifySaved, false)
+    store.active = false
+    store.active = true
+    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: "yes" }) + "\n", 0)
+    compare(store.notifyOnEscalation, false, "only a real true turns it on")
+    store.active = false
+    store.active = true
+    reply(store.settingsLoadRunner.current, "{}\n", 0)
+    compare(store.notifyOnEscalation, false)
+    store.active = false
+    store.active = true
+    var late = store.settingsLoadRunner.current
+    store.active = false
+    reply(late, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
+    compare(store.notifyOnEscalation, true, "a reply after the panel closed still lands")
+    store.active = true
+    var older = store.settingsLoadRunner.current
+    store.active = false
+    store.active = true
+    reply(older, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(store.notifyOnEscalation, true, "an earlier opening's reply is dropped")
+    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
+    compare(store.notifyOnEscalation, false, "the newest opening's reply lands")
+  }
+
+  // 12
+  function test_run_settings_load_per_project_and_never_set_the_switch() {
     var store = makeWithProject(rootA); if (!store) return
-    var loadA = store.settingsLoadRunner.current
+    var loadA = store.runSettingsRunner.current
     verify(loadA, "selecting a project loads its run settings")
     compare(argv(loadA), tc.viewerCmd + "get-run-settings|/home/u/my proj")
     compare(loadA.command.length, 4)
     compare(loadA.launchGuard, "/home/u/my proj")
+    verify(!store.settingsLoadRunner.current, "and no global load")
     reply(loadA, runSettings(true), 0)
-    compare(store.notifyOnEscalation, true)
-    store.project = rootB
-    compare(store.notifyOnEscalation, false, "off until B's own reply")
+    compare(store.runSettings.notifyOnEscalation, true, "the object is kept as it was read")
+    compare(store.notifyOnEscalation, false, "a stored per-project value is never the switch")
     compare(store.notifySaved, false)
-    compare(store.notifyTouched, false)
-    var loadB = store.settingsLoadRunner.current
+    store.project = rootB
+    compare(Object.keys(store.runSettings).length, 0, "a project switch forgets A's settings")
+    var loadB = store.runSettingsRunner.current
     verify(loadB !== loadA, "a new load")
     compare(argv(loadB), tc.viewerCmd + "get-run-settings|/home/u/b")
     compare(loadB.launchGuard, "/home/u/b", "the launch is guarded by the NEW project")
-    var seq = store.settingsLoadRunner.seq
+    var seq = store.runSettingsRunner.seq
     store.project = ""
-    compare(store.settingsLoadRunner.seq, seq, "no project: nothing is loaded")
-    compare(store.settingsLoadRunner.guard, "")
-  }
+    compare(store.runSettingsRunner.seq, seq, "no project: nothing is loaded")
+    compare(store.runSettingsRunner.guard, "")
 
-  // 11
-  function test_the_load_reply_sets_the_switch_and_a_garbled_one_leaves_it_off() {
-    var store = makeWithProject(rootA); if (!store) return
-    reply(store.settingsLoadRunner.current, runSettings(true), 0)
-    compare(store.notifyOnEscalation, true)
-    compare(store.notifySaved, true)
     var other = makeWithProject(rootA); if (!other) return
-    reply(other.settingsLoadRunner.current, "Traceback: boom\n", 1)
+    var lateA = other.runSettingsRunner.current
+    other.project = rootB
+    reply(lateA, dispatchSettings(), 0)
+    compare(Object.keys(other.runSettings).length, 0, "a late reply for A is dropped")
     compare(other.notifyOnEscalation, false)
-    compare(other.notifySaved, false)
-    var third = makeWithProject(rootA); if (!third) return
-    reply(third.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: "yes" }) + "\n", 0)
-    compare(third.notifyOnEscalation, false, "only a real true turns it on")
-  }
-
-  // Review Focus 3
-  function test_a_late_load_reply_for_the_old_project_is_dropped() {
-    var store = makeWithProject(rootA); if (!store) return
-    var loadA = store.settingsLoadRunner.current
-    store.project = rootB
-    reply(loadA, runSettings(true), 0)
-    compare(store.notifyOnEscalation, false, "A's setting never shows in B")
-    compare(store.notifySaved, false)
   }
 
   // 12
@@ -3784,25 +3821,16 @@ TestCase {
     compare(store.flashText, "Notify on escalation could not be saved")
   }
 
-  // Review Focus 4
-  function test_a_save_reply_for_a_project_the_user_left_changes_nothing() {
-    var store = makeWithProject(rootA); if (!store) return
-    store.setNotifyOnEscalation(true)
-    var save = store.settingsSaveRunner.current
-    store.project = rootB
-    reply(save, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
-    compare(store.notifyOnEscalation, false)
-    compare(store.notifySaved, false)
-    compare(store.flashText, "", "no flash about A in B")
-  }
-
   // 14
   function test_a_load_reply_after_the_user_toggled_is_ignored() {
     var store = makeWithProject(rootA); if (!store) return
+    store.active = true
     var load = store.settingsLoadRunner.current
+    compare(argv(load), tc.viewerCmd + "get-global-settings")
     store.setNotifyOnEscalation(true)
-    reply(load, runSettings(false), 0)
+    reply(load, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
     compare(store.notifyOnEscalation, true)
+    compare(store.notifyTouched, true)
   }
 
   // 15
@@ -3816,7 +3844,7 @@ TestCase {
     compare(store.notifyOnEscalation, false)
     compare(store.notifyTouched, false)
     verify(!store.settingsSaveRunner.current, "nothing was launched")
-    verify(!store.settingsLoadRunner.current, "nothing was loaded")
+    verify(!store.runSettingsRunner.current, "nothing was loaded")
   }
 
   // ---- dispatch (S3 3.1)
@@ -3834,7 +3862,7 @@ TestCase {
   function test_run_settings_kept_even_after_notify_touched() {
     var store = makeWithProject(rootA); if (!store) return
     compare(Object.keys(store.runSettings).length, 0, "{} until the reply")
-    var load = store.settingsLoadRunner.current
+    var load = store.runSettingsRunner.current
     store.setNotifyOnEscalation(true)
     reply(load, dispatchSettings(), 0)
     compare(store.notifyOnEscalation, true, "the switch keeps the user's value")
@@ -3848,14 +3876,14 @@ TestCase {
 
   function test_run_settings_follow_the_project() {
     var store = makeWithProject(rootA); if (!store) return
-    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
     compare(store.runSettings.parallelism, 4)
     store.project = rootB
     compare(Object.keys(store.runSettings).length, 0, "a project switch forgets A's settings")
-    reply(store.settingsLoadRunner.current, "Traceback: boom\n", 1)
+    reply(store.runSettingsRunner.current, "Traceback: boom\n", 1)
     compare(Object.keys(store.runSettings).length, 0, "an unreadable reply is {}")
     var other = makeWithProject(rootA); if (!other) return
-    reply(other.settingsLoadRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
+    reply(other.runSettingsRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
     compare(other.runSettings.parallelism, 9)
   }
 
@@ -3873,7 +3901,7 @@ TestCase {
   // Project A with its run settings read (dispatchSettings).
   function dispatchStore() {
     var store = makeWithProject(rootA); if (!store) return null
-    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
     return store
   }
 
@@ -3919,7 +3947,7 @@ TestCase {
   // 3
   function test_open_milestone_goes_previewing_and_asks_defaults() {
     var store = makeWithProject(rootA); if (!store) return
-    reply(store.settingsLoadRunner.current, JSON.stringify({ verify: ["uv run pytest", "  "], allowNoVerification: true,
+    reply(store.runSettingsRunner.current, JSON.stringify({ verify: ["uv run pytest", "  "], allowNoVerification: true,
       notifyOnEscalation: false, prefixHistory: [], parallelism: 6, confirmDispatch: true }) + "\n", 0)
     var cards = dispatchCards()
     compare(store.openDispatch(cards.m1, cards), true)
@@ -3950,7 +3978,7 @@ TestCase {
     compare(store.openDispatch(cards.m1, cards), true)
     compare(store.dispatchForm.verify.length, 0)
     compare(store.dispatchForm.parallelism, 4)
-    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
     compare(store.dispatchForm.verify.length, 0, "a late settings reply does not touch the open form")
     compare(store.runSettings.verify[0], "uv run pytest", "but it is kept for the next opening")
   }
@@ -4470,7 +4498,7 @@ TestCase {
     var store = makeWithProject(rootA); if (!store) return
     var history = ["a", "m3", "", "  ", 7, "b"]
     for (var i = 0; i < 25; i++) history.push("p" + i)
-    reply(store.settingsLoadRunner.current, JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false,
+    reply(store.runSettingsRunner.current, JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false,
       notifyOnEscalation: false, prefixHistory: history, parallelism: 4, confirmDispatch: true }) + "\n", 0)
     var cards = dispatchCards()
     store.openDispatch(cards.m1, cards)
@@ -4490,7 +4518,7 @@ TestCase {
     compare(store.runSettings.prefixHistory.join(","), expected.join(","))
 
     var bare = makeWithProject(rootA); if (!bare) return
-    reply(bare.settingsLoadRunner.current, "Traceback: boom\n", 1)
+    reply(bare.runSettingsRunner.current, "Traceback: boom\n", 1)
     bare.openDispatch(cards.m1, cards)
     reply(bare.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
     bare.setDispatchField("verify", ["make test"])
@@ -4658,7 +4686,7 @@ TestCase {
     store.project = rootB
     store.project = rootA
     checkDispatchIdle(store, "back in A")
-    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
     var cards = dispatchCards()
     compare(store.openDispatch(cards.m1, cards), true)
     compare(store.dispatchState, "previewing")
@@ -4676,7 +4704,7 @@ TestCase {
     store.dispatchStart()
     var procA = store.dispatchStartRunners[0].current
     store.project = rootB
-    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
     var cards = dispatchCards()
     compare(store.openDispatch(cards.m1, cards), true, "B's dispatch opens while A's start is in flight")
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
@@ -4699,7 +4727,7 @@ TestCase {
   // 34
   function test_panel_close_closes_dispatch_but_not_a_start() {
     var store = activeStore(rootA); if (!store) return
-    reply(store.settingsLoadRunner.current, dispatchSettings(), 0)
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
     var cards = dispatchCards()
     store.openDispatch(cards.m1, cards)
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
@@ -4760,7 +4788,7 @@ TestCase {
   // 2.1 test 5
   function test_story_prefix_reads_the_snapshot_then_the_keyed_map() {
     var store = makeWithProject(rootA); if (!store) return
-    reply(store.settingsLoadRunner.current, keyedSettings({ m9: "m9-map" }), 0)
+    reply(store.runSettingsRunner.current, keyedSettings({ m9: "m9-map" }), 0)
     store.runs = [{ id: "r-old", milestone_id: "m1", branch_prefix: "m3-old", started_at: "2026-10-01T00:00:00Z" },
                   { id: "r-live", milestone_id: "m1", branch_prefix: " m3-live ", started_at: "2026-10-06T00:00:00Z" },
                   { id: "r-other", milestone_id: "m2", branch_prefix: "m2-x", started_at: "2026-10-07T00:00:00Z" }]
@@ -4771,7 +4799,7 @@ TestCase {
     compare(store.dispatchForm.prefix, "m3-live", "the same default serves the milestone")
 
     var keyed = makeWithProject(rootA); if (!keyed) return
-    reply(keyed.settingsLoadRunner.current, keyedSettings({ m1: "m3-map" }), 0)
+    reply(keyed.runSettingsRunner.current, keyedSettings({ m1: "m3-map" }), 0)
     keyed.openDispatch(cards.s1, cards)
     compare(keyed.dispatchForm.prefix, "m3-map", "the keyed map beats the prefix history")
     keyed.openDispatch(cards.t1, cards)
@@ -5006,7 +5034,7 @@ TestCase {
   // 2.1 test 6
   function test_a_story_start_saves_the_prefix_under_its_milestone() {
     var store = makeWithProject(rootA); if (!store) return
-    reply(store.settingsLoadRunner.current, keyedSettings({ m9: "x" }), 0)
+    reply(store.runSettingsRunner.current, keyedSettings({ m9: "x" }), 0)
     var cards = dispatchCards()
     store.openDispatch(cards.s1, cards)
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
@@ -5064,7 +5092,7 @@ TestCase {
     var stored = [[], "x", ["a"], 7, null]
     for (var i = 0; i < stored.length; i++) {
       var store = makeWithProject(rootA); if (!store) return
-      reply(store.settingsLoadRunner.current, keyedSettings(stored[i]), 0)
+      reply(store.runSettingsRunner.current, keyedSettings(stored[i]), 0)
       var cards = dispatchCards()
       store.openDispatch(cards.s1, cards)
       reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
@@ -5171,7 +5199,7 @@ TestCase {
     var backProc = back.dispatchStartRunners[0].current
     back.project = rootB
     back.project = rootA
-    reply(back.settingsLoadRunner.current, dispatchSettings(), 0)
+    reply(back.runSettingsRunner.current, dispatchSettings(), 0)
     var cards = dispatchCards()
     compare(back.openDispatch(cards.m1, cards), true)
     reply(backProc, startBlocked(), 0)

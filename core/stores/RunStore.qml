@@ -149,16 +149,18 @@ Scope {
   readonly property bool alertsArmed: Object.keys(store.armedRoots).length > 0
   property var toasts: []
   property int toastMs: 8000
-  // "Notify on escalation", per project and off by default: the switch's
-  // value, the last value read from or written to viewer-state.py, and
-  // whether the user changed it since the project was selected (a late load
-  // reply then changes nothing).
+  // "Notify on escalation", viewer-wide and off until read: the switch's
+  // value, the last value read from or written to viewer-state.py's global
+  // settings, and whether the user changed it since this opening's load was
+  // launched (a late load reply then changes nothing). A project switch
+  // never changes them.
   property bool notifyOnEscalation: false
   property bool notifySaved: false
   property bool notifyTouched: false
-  // The current project's last get-run-settings object, as it was read: {}
-  // until its reply, when the reply is unreadable, and after a project switch.
-  // The dispatch form starts from it.
+  // The open project's last get-run-settings object (runSettingsRunner), as
+  // it was read: {} until its reply, when the reply is unreadable, and after
+  // a project switch. The dispatch form starts from it; its
+  // notifyOnEscalation is never read.
   property var runSettings: ({})
 
   // Dispatch (S3 3.1): starting an am run. The UI opens it for a target
@@ -207,6 +209,7 @@ Scope {
   readonly property alias toastTimer: toastTimer
   readonly property alias settingsLoadRunner: settingsLoadRunner
   readonly property alias settingsSaveRunner: settingsSaveRunner
+  readonly property alias runSettingsRunner: runSettingsRunner
   readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
   readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
   readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
@@ -349,11 +352,14 @@ Scope {
     else store.stopLive()
   }
 
-  // The panel opened: fetch now; the first good snapshot starts the watch and
+  // The panel opened: fetch now and read the notify switch (get-global-settings,
+  // notifyTouched cleared first); the first good snapshot starts the watch and
   // arms every root that answers in it, and the stale clock counts from now.
   function startLive() {
     store.watchTried = false
     store.armedRoots = {}
+    store.notifyTouched = false
+    settingsLoadRunner.run(["get-global-settings"])
     store.restartStale()
     store.refresh()
   }
@@ -639,16 +645,12 @@ Scope {
   }
 
   // Another project was opened, or none. The run list, the selection, the
-  // logs, the watch, the coverage, the requests and the alerts belong to
-  // every registered project and stay, and no snapshot is launched. Reset:
-  // the notify switch and the run settings (loaded for the new project), the
-  // dispatch, the cancel dialog, the control error and the footer flash.
+  // logs, the watch, the coverage, the requests, the alerts, the toasts and
+  // the notify switch belong to every registered project and stay, and no
+  // snapshot is launched. Reset: the run settings (loaded for the new project
+  // on runSettingsRunner), the dispatch, the cancel dialog, the control error
+  // and the footer flash.
   function projectSwitched() {
-    // The switch reads off until this project's own reply. Notifications
-    // already launched still run.
-    store.notifyOnEscalation = false
-    store.notifySaved = false
-    store.notifyTouched = false
     store.runSettings = {}
     // The dispatch is the old project's, even mid-start: a start already
     // launched still runs, and its reply is no longer this dispatch's.
@@ -656,8 +658,8 @@ Scope {
     store.dismissControlError()
     store.closeCancel()
     store.flash("")
-    settingsLoadRunner.guard = store.project
-    if (store.project !== "") settingsLoadRunner.run(["get-run-settings", store.project])
+    runSettingsRunner.guard = store.project
+    if (store.project !== "") runSettingsRunner.run(["get-run-settings", store.project])
   }
 
   onProjectChanged: store.projectSwitched()
@@ -1401,17 +1403,22 @@ Scope {
     return true
   }
 
-  // get-run-settings: one bare object, kept whole as runSettings ({} when
-  // unreadable) on every reply. Only a real true turns the switch on; an
-  // unreadable reply leaves it off. Too late for the switch once the user
-  // changed it.
-  function applyRunSettings(stdout, exitCode) {
-    var settings = store.parseEnvelope(stdout)
-    store.runSettings = settings !== null ? settings : {}
+  // get-global-settings: only a real true turns the switch on; an unreadable
+  // reply leaves it off. Too late once the user changed the switch in this
+  // opening.
+  function applyGlobalSettings(stdout, exitCode) {
     if (store.notifyTouched) return
+    var settings = store.parseEnvelope(stdout)
     var on = settings !== null && settings.notifyOnEscalation === true
     store.notifyOnEscalation = on
     store.notifySaved = on
+  }
+
+  // get-run-settings: one bare object, kept whole as runSettings ({} when
+  // unreadable) on every reply. Never touches the notify switch.
+  function applyRunSettings(stdout, exitCode) {
+    var settings = store.parseEnvelope(stdout)
+    store.runSettings = settings !== null ? settings : {}
   }
 
   // set-run-settings: {"ok": true} means `sent` is stored; anything else puts
@@ -1783,12 +1790,22 @@ Scope {
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
   }
 
-  // get-run-settings on a project switch. Its guard is set by projectSwitched()
-  // itself rather than bound to `project`: projectSwitched() runs from
-  // onProjectChanged, before a binding here is sure to have followed the
-  // project, and this launch must carry the NEW project.
+  // get-global-settings, once per opening (startLive); latest wins. No guard:
+  // the switch is viewer-wide, and a reply that lands after the panel closed
+  // is still applied.
   HelperRunner {
     id: settingsLoadRunner
+    script: store.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { store.applyGlobalSettings(stdout, exitCode) }
+  }
+
+  // get-run-settings on a project switch, for runSettings only. Its guard is
+  // set by projectSwitched() itself rather than bound to `project`:
+  // projectSwitched() runs from onProjectChanged, before a binding here is
+  // sure to have followed the project, and this launch must carry the NEW
+  // project.
+  HelperRunner {
+    id: runSettingsRunner
     script: store.backendDir + "projects/viewer-state.py"
     onFinished: function(stdout, exitCode) { store.applyRunSettings(stdout, exitCode) }
   }

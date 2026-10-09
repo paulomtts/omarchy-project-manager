@@ -42,6 +42,7 @@ TestCase {
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
     p.app.runs.settingsLoadRunner.cancel()
+    p.app.runs.runSettingsRunner.cancel()
     p.app.runs.runs = [run("run-0000000000a1", "started", true, "alpha"),
                        run("run-0000000000b2", "escalated", null, "beta"),
                        run("run-0000000000c3", "started", false, "gamma"),
