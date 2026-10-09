@@ -247,6 +247,18 @@ HELLO_KEYS = {"am", "cursor_reset", "event", "head", "runs_dir", "schema", "stor
 # reaches an attempt records every one of them.
 WATCHED_EVENTS = {"run_upsert", "story_upsert", "subtask_upsert", "phase_upsert", "attempt_upsert"}
 
+# The payload keys of each watched event as the installed am writes them, every
+# time it records that event. An attempt carries no cost or token figure.
+PAYLOAD_KEYS = {
+    "run_upsert": {"base_branch", "branch_prefix", "config", "id", "milestone_id", "repo_dir",
+                   "started_at", "status", "workflow"},
+    "story_upsert": {"card_id", "level", "status", "tip_branch", "title"},
+    "subtask_upsert": {"base_branch", "branch", "card_id", "status", "worktree_path"},
+    "phase_upsert": {"detail", "ended_at", "kind", "name", "started_at", "status"},
+    "attempt_upsert": {"dispatch", "duration", "exit_code", "n", "prompt_path", "result_path",
+                       "status", "stdout_path"},
+}
+
 
 @pytest.fixture
 def seeded_run(am, story_board):
@@ -317,6 +329,26 @@ def watch_run_once(am, run_id, *extra):
     assert isinstance(payload["data"], dict) and set(payload["data"]) == {"events"}, output
     assert isinstance(payload["data"]["events"], list), output
     return payload["data"]["events"]
+
+
+def assert_payload_keys(events):
+    """Every watched event's payload has exactly its PAYLOAD_KEYS; events of
+    other kinds are not checked."""
+    for event in events:
+        expected = PAYLOAD_KEYS.get(event["event"])
+        if expected is not None:
+            assert set(event["payload"]) == expected, \
+                f"{event['event']} payload keys drifted: {sorted(event['payload'])} in {event}"
+
+
+def cost_or_token_keys(payload):
+    """The keys of `payload`, and of its dict values, naming a cost or a token
+    (case-insensitive)."""
+    keys = list(payload)
+    for value in payload.values():
+        if isinstance(value, dict):
+            keys.extend(value)
+    return [key for key in keys if "cost" in key.lower() or "token" in key.lower()]
 
 
 def test_watch_all_returns_the_events_envelope_with_journal_line_keys(am, seeded_run):
@@ -397,3 +429,47 @@ def test_watch_run_since_at_or_beyond_the_last_seq_is_an_empty_events_list(am, s
     last = events[-1]["seq"]
     assert watch_run_once(am, seeded_run.id, "--since", str(last)) == []
     assert watch_run_once(am, seeded_run.id, "--since", str(last + 1000)) == []
+
+
+def test_payload_keys_cover_exactly_the_watched_events():
+    assert set(PAYLOAD_KEYS) == WATCHED_EVENTS
+
+
+def test_assert_payload_keys_names_the_kind_that_drifted():
+    drifted = {"event": "attempt_upsert", "payload": dict.fromkeys(
+        PAYLOAD_KEYS["attempt_upsert"] | {"cost_usd"})}
+    with pytest.raises(AssertionError, match="attempt_upsert payload keys drifted.*cost_usd"):
+        assert_payload_keys([drifted])
+
+
+def test_assert_payload_keys_ignores_other_kinds():
+    lease = {"event": "lease_acquired",
+             "payload": {"claims": [], "host": "h", "pid": 1, "token": "t"}}
+    assert_payload_keys([lease])
+
+
+def test_cost_or_token_keys_finds_top_level_and_nested_keys_in_any_case():
+    payload = {"duration": 1.0, "Cost": 0.2,
+               "dispatch": {"model": "sonnet", "input_tokens": 3}}
+    assert cost_or_token_keys(payload) == ["Cost", "input_tokens"]
+
+
+def test_cost_or_token_keys_of_an_attempt_without_them_is_empty():
+    payload = {"duration": 1.0, "exit_code": 0, "status": "failed",
+               "prompt_path": "p", "result_path": "r", "stdout_path": "s", "n": 1,
+               "dispatch": {"harness": "claude", "model": "sonnet", "timeout": 1800.0}}
+    assert cost_or_token_keys(payload) == []
+
+
+def test_watched_event_payloads_carry_the_recorded_keys(am, seeded_run):
+    events = watch_run_once(am, seeded_run.id)
+    assert WATCHED_EVENTS <= {event["event"] for event in events}, events
+    assert_payload_keys(events)
+
+
+def test_attempt_payloads_carry_no_cost_or_token_keys(am, seeded_run):
+    attempts = [event for event in watch_run_once(am, seeded_run.id)
+                if event["event"] == "attempt_upsert"]
+    assert attempts, "the seeded run recorded no attempt_upsert"
+    for event in attempts:
+        assert cost_or_token_keys(event["payload"]) == [], event
