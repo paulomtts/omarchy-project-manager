@@ -465,4 +465,20 @@ TestCase {
     wheelOverList(stack, -120)
     tryVerify(function () { return stack.contentY > 0 }, 1000, "the page scrolls down")
   }
+
+  function test_new_rows_keep_the_list_where_it_was() {
+    var pane = make({ rows: manyRows(50), maxListHeight: 200 })
+    var list = listOf(pane)
+    list.contentY = list.originY + 300
+    wait(30)
+    var before = list.contentY
+    pane.rows = manyRows(52)
+    wait(50)
+    compare(list.count, 52, "the new rows are shown")
+    compare(list.contentY, before, "a new rows array does not move the list")
+    pane.rows = manyRows(3)
+    wait(50)
+    compare(list.count, 3)
+    compare(list.contentY, list.originY, "a list that now fits sits at its top")
+  }
 }

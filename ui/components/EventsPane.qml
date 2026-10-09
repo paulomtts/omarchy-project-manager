@@ -61,8 +61,19 @@ Item {
     return failure ? pane.palette.urgent : pane.palette[token]
   }
 
+  // Hands shownRows to the list. A new model puts a ListView back at its top,
+  // so the list keeps its scroll position instead, within its new bounds.
+  function _showRows() {
+    var y = list.contentY
+    list.model = pane.shownRows
+    list.forceLayout()
+    list.contentY = Math.max(list.originY, Math.min(y, list.originY + list.contentHeight - list.height))
+  }
+
   implicitHeight: column.implicitHeight
   onStatusChanged: if (pane.status !== "error") pane._errorExpanded = false
+  onShownRowsChanged: pane._showRows()
+  Component.onCompleted: pane._showRows()
 
   Column {
     id: column
@@ -148,7 +159,6 @@ Item {
       orientation: ListView.Vertical
       flickableDirection: Flickable.VerticalFlick
       boundsBehavior: Flickable.StopAtBounds
-      model: pane.shownRows
 
       delegate: ListRow {
         id: row
