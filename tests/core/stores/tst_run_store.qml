@@ -5887,6 +5887,38 @@ TestCase {
     compare(starting.dispatchStep, "form", "a refused card entry keeps the step")
   }
 
+  // 2.2 test 8
+  function test_dispatch_registry_change_while_open_drops_the_row() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    var seq = store.dispatchProjectRunner.seq
+    store.projectRoots = registry([tc.rootA])
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:", "B's row is gone")
+    compare(store.dispatchProjectRunner.seq, seq, "no new probe")
+    compare(store.dispatchStep, "project")
+
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    store.dispatchOpenFromRuns()
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    store.projectRoots = registry([tc.rootA])
+    compare(store.dispatchStep, "project", "the picked root left: back to step 1")
+    compare(store.dispatchRoot, "")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:")
+
+    compare(store.dispatchProjectPick(tc.rootA), true)
+    store.projectRoots = registry([tc.rootB, tc.rootA])
+    compare(store.dispatchStep, "target", "a reorder keeps the step")
+    compare(store.dispatchRoot, tc.rootA)
+    store.projectRoots = [{ root: tc.rootA + "/", name: "alpha" }, tc.rootEntry(tc.rootB)]
+    compare(store.dispatchStep, "target", "a trailing / is the same root")
+    compare(store.dispatchRoot, tc.rootA)
+
+    store.dispatchStep = "form"
+    store.projectRoots = registry([tc.rootB])
+    compare(store.dispatchStep, "form", "the form's registry rule is 2.3's")
+    compare(store.dispatchRoot, tc.rootA)
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).

@@ -740,7 +740,8 @@ Scope {
   // The registry changed. First the roots no longer usable lose their runs,
   // their errors and their arming (armedRoots is replaced only when a root
   // went), and `runs` is merged again in the new order with the new names;
-  // no alert is raised. Then every usable root is snapshotted.
+  // no alert is raised. Then every usable root is snapshotted, and the
+  // dispatch's target step follows the registry (dispatchRegistryChanged).
   function registryChanged() {
     var usable = store.usableRoots()
     var errors = {}
@@ -756,6 +757,7 @@ Scope {
     if (Object.keys(armed).length !== Object.keys(store.armedRoots).length) store.armedRoots = armed
     store.runs = store.mergedRuns(byProject, usable).runs
     store.refresh()
+    store.dispatchRegistryChanged()
   }
 
   onProjectRootsChanged: store.registryChanged()
@@ -1922,6 +1924,19 @@ Scope {
     dispatchProjectRunner.cancel()
     store.dispatchStep = ""
     store.dispatchProjectProbe = null
+  }
+
+  // The registry changed: at the target step, a dispatchRoot that is no
+  // longer a usable root (trailing "/" removed) goes back to the project
+  // step with dispatchRoot "". Any other step is left alone.
+  function dispatchRegistryChanged() {
+    if (store.dispatchStep !== "target") return
+    var rows = Runs.dispatchProjects(store.usableRoots(), null, "")
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].root === store.dispatchRoot) return
+    }
+    store.dispatchStep = "project"
+    store.dispatchRoot = ""
   }
 
   // board-tree.py --probe ROOT... for the project step; latest wins. No
