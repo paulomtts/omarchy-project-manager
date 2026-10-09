@@ -1,8 +1,9 @@
 // tests/core/stores/tst_run_store.qml
 // The run monitor's store: the snapshot helper's exact argv, how its one JSON
 // line becomes every registered root's normalized runs and an amStatus, the
-// latest-wins rule, what a registry change does and what a project switch
-// leaves alone. Built directly and driven through stubbed Process objects.
+// one-in-flight-plus-one-pending rule, what a registry change does and what a
+// project switch leaves alone. Built directly and driven through stubbed
+// Process objects.
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
@@ -376,6 +377,8 @@ TestCase {
     compare(store.runs[0].project.name, "renamed", "a renamed project's runs carry the new name at once")
     compare(store.runsByProject[tc.rootA][0].project.name, "renamed")
     store.projectRoots = [{ root: tc.rootA, name: "renamed" }, rootEntry(tc.rootB), rootEntry(tc.rootC)]
+    compare(store.pendingSnapshot, "all", "a registry change during a snapshot waits as the pending request")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")])]), 0)
     compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB + "|" + tc.rootC,
             "adding C snapshots every root")
     store.projectRoots = [{ root: tc.rootA, name: "renamed" }, rootEntry(tc.rootC)]
@@ -449,6 +452,7 @@ TestCase {
   // 11 (the snapshot half; Task 3 pins the run read)
   function test_with_no_project_open_the_panel_snapshots_every_root_and_watches() {
     var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
     var seq = store.snapshotRunner.seq
     store.active = true
     compare(store.snapshotRunner.seq, seq + 1, "opening the panel snapshots every root")
@@ -511,22 +515,6 @@ TestCase {
     compare(store.runs.length, 0, "an entry without a runs key is an empty list, not an error")
     compare(store.amStatus, "ok")
     compare(store.lastError, "")
-  }
-
-  function test_only_the_latest_refresh_is_applied() {
-    var store = makeWithProject(rootA); if (!store) return
-    store.refresh()
-    var first = store.snapshotRunner.current
-    store.refresh()
-    var second = store.snapshotRunner.current
-    verify(first !== second, "the second refresh launched its own process")
-    compare(first.running, false, "the older snapshot is stopped")
-    reply(second, okReply([entry("new", "started", true)]), 0)
-    compare(store.runs.length, 1)
-    compare(store.runs[0].id, "new")
-    reply(first, okReply([entry("old", "started", true), entry("old2", "done", false)]), 0)
-    compare(store.runs.length, 1, "a late exit of the older snapshot changes nothing")
-    compare(store.runs[0].id, "new")
   }
 
   function test_a_refresh_in_the_same_project_keeps_the_selection() {
@@ -650,6 +638,182 @@ TestCase {
     compare(store.lastError, "")
   }
 
+  // ---- one snapshot in flight plus one pending request (global 3.2)
+
+  // 7 and Review Focus 1
+  function test_a_request_during_a_snapshot_waits_as_the_one_pending_request() {
+    var store = activeRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    var inFlight = store.snapshotRunner.current
+    var seq = store.snapshotRunner.seq
+    var all = tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB + "|" + tc.rootC
+    compare(store.snapshotRoots.join("|"), [tc.rootA, tc.rootB, tc.rootC].join("|"), "the roots in flight")
+    compare(store.pendingSnapshot, null, "nothing pending yet")
+    store.requestSnapshot([tc.rootC])
+    store.requestSnapshot([tc.rootB, tc.rootC])
+    verify(store.snapshotRunner.current === inFlight, "the snapshot in flight is never replaced")
+    compare(inFlight.running, true, "nor stopped")
+    compare(store.snapshotRunner.seq, seq)
+    compare(store.pendingSnapshot.join("|"), [tc.rootC, tc.rootB].join("|"), "the union of the roots")
+    store.refresh()
+    compare(store.pendingSnapshot, "all", "all wins over any roots")
+    store.requestSnapshot([tc.rootB])
+    compare(store.pendingSnapshot, "all", "and stays all")
+    verify(store.snapshotRunner.current === inFlight)
+    compare(store.snapshotRunner.seq, seq)
+    reply(inFlight, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootB, []), okEntry(tc.rootC, [])]), 0)
+    compare(ids(store.runs), "a1", "the reply is applied")
+    compare(store.snapshotRunner.seq, seq + 1, "then exactly one follow-up launches")
+    compare(argv(store.snapshotRunner.current), all)
+    compare(store.pendingSnapshot, null)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootB, []),
+                                                  okEntry(tc.rootC, [])]), 0)
+    compare(store.snapshotRunner.seq, seq + 1, "answering the follow-up launches nothing more")
+    compare(store.snapshotRunner.busy, false)
+    compare(store.snapshotRoots.length, 0, "no roots in flight when idle")
+  }
+
+  // 7
+  function test_a_pending_set_of_roots_launches_those_roots_in_registry_order() {
+    var store = makeWithRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    var inFlight = store.snapshotRunner.current
+    store.requestSnapshot([tc.rootC])
+    store.requestSnapshot([tc.rootB])
+    reply(inFlight, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, []), okEntry(tc.rootC, [])]), 0)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB + "|" + tc.rootC, "B and C only, in registry order")
+    compare(store.snapshotRoots.join("|"), tc.rootB + "|" + tc.rootC)
+  }
+
+  // 7
+  function test_a_failed_or_garbage_reply_still_launches_the_pending_request() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    var replies = [[JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }), 1],
+                   ["Traceback (most recent call last):", 1], ["", 0],
+                   [allReply([failEntry(tc.rootA, "AmTimeout", "am did not answer within 60 s.")]), 0]]
+    for (var i = 0; i < replies.length; i++) {
+      var label = JSON.stringify(replies[i][0])
+      var seq = store.snapshotRunner.seq
+      store.refresh()
+      compare(store.snapshotRunner.seq, seq, label + ": waits")
+      reply(store.snapshotRunner.current, replies[i][0], replies[i][1])
+      compare(store.amStatus, "error", label + " is applied")
+      compare(store.snapshotRunner.seq, seq + 1, label + ": then the follow-up launches")
+      compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB, label)
+    }
+  }
+
+  // 8 and Review Focus 4
+  function test_a_pending_request_resolves_against_the_registry_at_launch() {
+    var store = makeWithRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    var inFlight = store.snapshotRunner.current
+    store.requestSnapshot([tc.rootB])
+    store.projectRoots = registry([tc.rootA, tc.rootC])
+    compare(store.pendingSnapshot, "all", "the registry change itself requests every root")
+    var seq = store.snapshotRunner.seq
+    reply(inFlight, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                              okEntry(tc.rootC, [])]), 0)
+    compare(Object.keys(store.runsByProject).sort().join(","), [tc.rootA, tc.rootC].sort().join(","), "B's entry is ignored")
+    compare(store.runs.length, 0)
+    compare(store.snapshotRunner.seq, seq + 1)
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootC, "the registry as it is now")
+  }
+
+  // 8
+  function test_a_request_for_roots_no_longer_usable_launches_nothing() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    var seq = store.snapshotRunner.seq
+    store.requestSnapshot(["/home/u/gone"])
+    compare(store.snapshotRunner.seq, seq, "an idle runner launches nothing for a root that is not registered")
+    compare(store.snapshotRunner.busy, false)
+    store.refresh()
+    var inFlight = store.snapshotRunner.current
+    store.requestSnapshot(["/home/u/gone"])
+    compare(store.pendingSnapshot.join("|"), "/home/u/gone")
+    reply(inFlight, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    compare(store.snapshotRunner.seq, seq + 1, "a pending request naming no usable root launches nothing")
+    compare(store.snapshotRunner.busy, false)
+    compare(store.pendingSnapshot, null)
+  }
+
+  // 8
+  function test_an_emptied_registry_drops_the_snapshot_in_flight_and_the_pending_request() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    var inFlight = store.snapshotRunner.current
+    store.refresh()
+    compare(store.pendingSnapshot, "all")
+    store.projectRoots = []
+    compare(inFlight.running, false, "the snapshot in flight is stopped")
+    compare(store.snapshotRunner.busy, false)
+    compare(store.pendingSnapshot, null, "the pending request is dropped")
+    compare(store.snapshotRoots.length, 0)
+    var seq = store.snapshotRunner.seq
+    reply(inFlight, allReply([okEntry(tc.rootA, [entry("a1", "done", false)])]), 0)
+    compare(store.snapshotRunner.seq, seq, "its late exit launches nothing")
+    compare(store.runs.length, 0, "and applies nothing")
+  }
+
+  // 8
+  function test_starting_over_stops_the_snapshot_in_flight_and_launches_every_root() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootB, [])]), 0)
+    verify(store.watchProc, "the watch runs")
+    store.refresh()
+    var old = store.snapshotRunner.current
+    store.requestSnapshot([tc.rootB])
+    // synthetic: a hello whose cursorReset is true.
+    sendLine(store.watchProc, { hello: { schema: 2, am: "0.1.0", cursorReset: true } })
+    compare(old.running, false, "the old store's snapshot is stopped")
+    verify(store.snapshotRunner.current !== old, "one snapshot is launched at once")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA + "|" + tc.rootB, "of every root")
+    compare(store.pendingSnapshot, null, "the pending request was dropped")
+    var seq = store.snapshotRunner.seq
+    reply(old, allReply([okEntry(tc.rootA, [entry("a1", "escalated", false)])]), 0)
+    compare(store.runs.length, 0, "its late reply applies nothing")
+    compare(store.snapshotRunner.seq, seq, "and launches nothing")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "escalated", false)]), okEntry(tc.rootB, [])]), 0)
+    compare(store.toasts.length, 0, "the new store's first list only arms")
+    compare(store.alertsArmed, true)
+    compare(store.snapshotRunner.seq, seq, "no follow-up")
+  }
+
+  // 9
+  function test_closing_the_panel_drops_the_pending_request() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    var inFlight = store.snapshotRunner.current
+    var seq = store.snapshotRunner.seq
+    store.refresh()
+    compare(store.pendingSnapshot, "all")
+    store.active = false
+    compare(store.pendingSnapshot, null, "closing drops it")
+    compare(inFlight.running, true, "the snapshot in flight runs to its end")
+    reply(inFlight, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootB, [])]), 0)
+    compare(ids(store.runs), "a1", "and is applied")
+    compare(store.snapshotRunner.seq, seq, "no follow-up")
+    compare(store.snapshotRunner.busy, false)
+    store.projectRoots = registry([tc.rootA, tc.rootB, tc.rootC])
+    compare(store.snapshotRunner.seq, seq + 1, "a registry change while closed still requests every root")
+  }
+
+  // 11 (the roots-left bullet) and Review Focus 4
+  function test_a_reply_for_roots_that_all_left_the_registry_changes_nothing() {
+    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootB, [])]), 0)
+    fire(store.staleTimer)
+    compare(store.stale, true)
+    store.refresh()
+    var inFlight = store.snapshotRunner.current
+    store.projectRoots = registry([tc.rootC])
+    reply(inFlight, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    compare(store.amStatus, "ok", "not an error")
+    compare(store.lastError, "")
+    compare(store.stale, true, "stale is untouched")
+    compare(store.staleTimer.running, false, "and so is the clock")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootC, "the pending request launches C")
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [])]), 0)
+    compare(store.amStatus, "error", "a reply matching nothing while C is still registered is still an error")
+    compare(store.lastError, "The runs snapshot gave no usable result (exit 0).")
+  }
+
   // ---- live refresh (3.2)
 
   // An active store (the panel is open) with project `root` registered and
@@ -675,6 +839,7 @@ TestCase {
 
   function test_activation_refreshes_every_root() {
     var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([]), 0)
     var seq = store.snapshotRunner.seq
     store.active = true
     compare(store.snapshotRunner.seq, seq + 1, "opening the panel fetches a fresh snapshot")
@@ -1109,20 +1274,22 @@ TestCase {
     store.active = false
     store.active = true
     var first = store.snapshotRunner.current
+    var seq = store.snapshotRunner.seq
     store.active = false
     store.active = true
-    var second = store.snapshotRunner.current
-    verify(first !== second, "each opening fetches its own snapshot")
+    verify(store.snapshotRunner.current === first, "the snapshot in flight is kept")
+    compare(store.snapshotRunner.seq, seq)
+    compare(store.pendingSnapshot, "all", "the second opening waits as the pending request")
     compare(old.running, false, "the old watch stays dead")
     reply(first, okReply([entry("a", "started", true)]), 0)
-    verify(store.watchProc === old, "the superseded opening's late reply starts nothing")
-    compare(store.watching, false)
-    reply(second, okReply([entry("a", "started", true)]), 0)
     var fresh = store.watchProc
-    verify(fresh !== old, "the latest opening's first good snapshot starts a new watch")
+    verify(fresh !== old, "the reply that lands while open starts a new watch")
     compare(fresh.running, true)
     compare(fresh.command.length, 2)
     compare(store.watching, true)
+    compare(store.snapshotRunner.seq, seq + 1, "then the pending request launches")
+    reply(store.snapshotRunner.current, okReply([entry("a", "started", true)]), 0)
+    verify(store.watchProc === fresh, "and its reply keeps the watch")
   }
 
   // ---- stale
@@ -3341,6 +3508,7 @@ TestCase {
   // 24
   function test_start_ok_with_run_id_emits_and_saves() {
     var store = readyStore(); if (!store) return
+    reply(store.snapshotRunner.current, okReply([]), 0)
     var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
     store.dispatchStart()
     var runner = store.dispatchStartRunners[0]

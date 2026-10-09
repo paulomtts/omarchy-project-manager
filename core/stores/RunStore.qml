@@ -13,7 +13,10 @@ import "../domain/runs.js" as Runs
 // the run settings, the dispatch, the run controls and the attempt logs'
 // root. Plus the selected run, the attempt the Run detail pane shows and that
 // attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
-// asked at all. While `active` (the panel is open) a long-lived
+// asked at all. One list snapshot is in flight at a time, plus at most one
+// pending request (requestSnapshot): a request never stops the snapshot in
+// flight, and when that one ends its reply is applied and the pending
+// request launches. While `active` (the panel is open) a long-lived
 // runs-watch.py nudges it, "run X changed at seq N", and is never folded into
 // state: once per debounce window, a nudge newer than the coverage of its run
 // (appliedSeq) costs one run read (runs-snapshot.py --run RUN, one
@@ -168,6 +171,8 @@ Scope {
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
+  readonly property alias snapshotRoots: snapshotState.roots     // the roots of the snapshot in flight; [] when idle
+  readonly property alias pendingSnapshot: snapshotState.pending // the pending request: null, "all" or [root, ...]
   readonly property alias readRunners: readState.runners  // in-flight run reads, oldest first
   readonly property alias debounceTimer: debounceTimer
   readonly property alias livenessTimer: livenessTimer
@@ -196,21 +201,72 @@ Scope {
     return false
   }
 
-  // Asks for a list snapshot: runs-snapshot-all.py with every usable root, in
-  // registry order, whether or not a project is open. With no usable root
-  // nothing is launched, a snapshot in flight is stopped, and the run list,
-  // runsByProject and projectErrors are emptied. A newer call replaces an
-  // older one (the runner's latest-wins rule).
+  // Requests a list snapshot of every usable root (requestSnapshot("all")),
+  // whether or not a project is open. With no usable root nothing is
+  // launched, the snapshot in flight is stopped, the pending request is
+  // dropped, and the run list, runsByProject and projectErrors are emptied.
   function refresh() {
-    var usable = store.usableRoots()
-    if (usable.length === 0) {
-      snapshotRunner.cancel()
+    if (store.usableRoots().length === 0) {
+      store.dropSnapshots()
       store.runs = []
       store.runsByProject = {}
       store.projectErrors = {}
       return
     }
-    snapshotRunner.run(usable.map(function(p) { return p.root }))
+    store.requestSnapshot("all")
+  }
+
+  // Asks for a list snapshot of `roots` ([root, ...]) or of "all" roots. An
+  // idle runner launches it at once (launchSnapshot). A busy one is never
+  // stopped: the request joins the one pending request, "all" winning over
+  // any roots, else the union of the roots.
+  function requestSnapshot(roots) {
+    if (!snapshotRunner.busy) {
+      store.launchSnapshot(roots)
+      return
+    }
+    var pending = snapshotState.pending
+    if (pending === "all" || roots === "all") {
+      snapshotState.pending = "all"
+      return
+    }
+    var next = pending === null ? [] : pending.slice()
+    for (var i = 0; i < roots.length; i++) {
+      if (next.indexOf(roots[i]) < 0) next.push(roots[i])
+    }
+    snapshotState.pending = next
+  }
+
+  // runs-snapshot-all.py with the requested roots that are usable now, in
+  // registry order, each once ("all": every usable root). None: nothing.
+  function launchSnapshot(roots) {
+    var usable = store.usableRoots()
+    var list = []
+    for (var i = 0; i < usable.length; i++) {
+      if (roots === "all" || roots.indexOf(usable[i].root) >= 0) list.push(usable[i].root)
+    }
+    if (list.length === 0) return
+    snapshotState.roots = list
+    snapshotRunner.run(list)
+  }
+
+  // The snapshot in flight is stopped (its late exit changes nothing) and
+  // the pending request is dropped.
+  function dropSnapshots() {
+    if (snapshotRunner.busy) snapshotRunner.cancel()
+    snapshotState.roots = []
+    snapshotState.pending = null
+  }
+
+  // The snapshot ended: its reply is applied, whatever it was, then the
+  // pending request, if any, is launched against the registry as it is now.
+  function snapshotEnded(stdout, exitCode) {
+    var launched = snapshotState.roots
+    snapshotState.roots = []
+    store.applySnapshot(stdout, exitCode, launched)
+    var next = snapshotState.pending
+    snapshotState.pending = null
+    if (next !== null) store.launchSnapshot(next)
   }
 
   // A chip was chosen: the All chip, or the active one again, means All.
@@ -235,8 +291,11 @@ Scope {
 
   // The panel closed: no process and no timer is left running, and no toast
   // or dispatch outlives the opening (a start in flight runs to its end). The
-  // runs, the selection and amStatus stay for the next opening.
+  // pending snapshot request is dropped; a snapshot in flight runs to its end
+  // and is applied. The runs, the selection and amStatus stay for the next
+  // opening.
   function stopLive() {
+    snapshotState.pending = null
     store.stopWatch()
     debounceTimer.stop()
     store.nudges = {}
@@ -355,9 +414,12 @@ Scope {
     for (var j = 0; j < reads.length; j++) store.readRun(reads[j], taken[reads[j]])
   }
 
-  // Starts over: the coverage (appliedSeq, asOfSeq) and the live state
-  // (forgetLive) are forgotten and one list snapshot is launched.
+  // Starts over: the snapshot in flight (the old store's) is stopped and the
+  // pending request dropped, the coverage (appliedSeq, asOfSeq) and the live
+  // state (forgetLive) are forgotten, and one list snapshot of every root is
+  // launched.
   function resetCursor() {
+    store.dropSnapshots()
     store.appliedSeq = {}
     store.asOfSeq = 0
     store.forgetLive()
@@ -685,14 +747,15 @@ Scope {
     return s
   }
 
-  // One list snapshot reply. {ok: true, projects} goes to applyProjects. An
-  // ok:false envelope (Usage, HelperError) or output that is not one keeps
-  // the runs, runsByProject and projectErrors and only reports why this one
-  // failed. Never reads a store_id. Never throws.
-  function applySnapshot(stdout, exitCode) {
+  // One list snapshot reply, for the roots it was launched with. {ok: true,
+  // projects} goes to applyProjects. An ok:false envelope (Usage,
+  // HelperError) or output that is not one keeps the runs, runsByProject and
+  // projectErrors and only reports why this one failed. Never reads a
+  // store_id. Never throws.
+  function applySnapshot(stdout, exitCode, launched) {
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
-      store.applyProjects(Array.isArray(envelope.projects) ? envelope.projects : [], exitCode)
+      store.applyProjects(Array.isArray(envelope.projects) ? envelope.projects : [], exitCode, launched)
       return
     }
     store.amStatus = "error"
@@ -702,7 +765,9 @@ Scope {
 
   // A list reply's entries, {root, ok, runs | error}, matched to the usable
   // roots by exact root: the first entry of a root counts, any other entry is
-  // ignored. No matched entry at all is a reply with no usable result. Every
+  // ignored. No matched entry at all is a reply with no usable result --
+  // unless none of the roots it was launched for (`launched`) is usable any
+  // more, when it changes nothing. Every
   // matched entry AmMissing: the runs, runsByProject, projectErrors and the
   // coverage are emptied and amStatus is "missing", disarming the alerts.
   // Otherwise an ok entry replaces its root's runs and clears its error
@@ -714,7 +779,7 @@ Scope {
   // the row kept from before. With an entry ok, everything after a good
   // snapshot follows. With none, amStatus is "error" with the first failed
   // entry's sentence, and the alerts and `stale` stay as they are.
-  function applyProjects(entries, exitCode) {
+  function applyProjects(entries, exitCode, launched) {
     var usable = store.usableRoots()
     var names = {}
     for (var u = 0; u < usable.length; u++) names[usable[u].root] = usable[u].name
@@ -728,6 +793,12 @@ Scope {
       matched.push(e)
     }
     if (matched.length === 0) {
+      var gone = true
+      var roots = Array.isArray(launched) ? launched : []
+      for (var g = 0; g < roots.length; g++) {
+        if (store.hasKey(names, roots[g])) gone = false
+      }
+      if (gone && roots.length > 0) return
       store.amStatus = "error"
       store.lastError = "The runs snapshot gave no usable result (exit " + exitCode + ")."
       return
@@ -1652,12 +1723,13 @@ Scope {
     runner.destroy()
   }
 
-  // The list snapshot of every usable root. No guard: its reply is matched to
-  // the registry by root, whatever project is open.
+  // The one list snapshot in flight (requestSnapshot). No guard: its reply is
+  // matched to the registry by root, whatever project is open. Only
+  // refresh() with no usable root and resetCursor() stop it.
   HelperRunner {
     id: snapshotRunner
     script: store.backendDir + "runs/runs-snapshot-all.py"
-    onFinished: function(stdout, exitCode) { store.applySnapshot(stdout, exitCode) }
+    onFinished: function(stdout, exitCode) { store.snapshotEnded(stdout, exitCode) }
   }
 
   // The attempt-logs helper. Guarded by the project, so a reply for a project
@@ -1791,6 +1863,15 @@ Scope {
     id: watchState
     property var proc: null
     property bool watching: false
+  }
+
+  // The list snapshots' own state; kept apart so consumers cannot write it.
+  // `roots` are the roots of the snapshot in flight ([] when idle);
+  // `pending` the one pending request: null, "all" or [root, ...].
+  QtObject {
+    id: snapshotState
+    property var roots: []
+    property var pending: null
   }
 
   // The control requests' own state; kept apart so consumers cannot write it.
