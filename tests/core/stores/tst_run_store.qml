@@ -5923,4 +5923,126 @@ TestCase {
     reply(store.snapshotRunner.current, capturedList(), 0)
     compare(store.runs.length, 2)
   }
+
+  // ---- the selected run's events (3.1)
+
+  property string eventsCmd: "python3|/plugin/core/backend/runs/runs-events.py|"
+
+  // 1
+  function test_events_defaults() {
+    var store = make(); if (!store) return
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsStatus, "idle")
+    compare(store.eventsError, "")
+    compare(store.eventsFilter, "All")
+    compare(JSON.stringify(store.titles), "{}")
+    verify(!store.eventsRunner.current, "no events fetch at start")
+  }
+
+  // 2
+  function test_selecting_a_run_fetches_its_last_200_events() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    verify(proc, "a run the snapshot does not list is still fetched")
+    compare(argv(proc), tc.eventsCmd + "r1|--tail|200")
+    compare(proc.command.length, 5, "no project root argument")
+    compare(proc.launchGuard, "r1", "guarded by the run id")
+    compare(store.eventsStatus, "loading")
+    compare(store.eventsRunner.busy, true)
+    // synthetic: a run id with a space and a ";".
+    store.selectedRunId = "r 2;x"
+    compare(store.eventsRunner.current.command.length, 5)
+    compare(store.eventsRunner.current.command[2], "r 2;x", "one argument, unchanged")
+  }
+
+  // 3 (the reset)
+  function test_switching_runs_resets_the_events_and_stops_the_old_fetch() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var first = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsStatus = "error"
+    store.eventsError = "UnknownRunError: no run r1"
+    store.eventsFilter = "Failures"
+    store.selectedRunId = "r2"
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "loading")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r2|--tail|200")
+    compare(first.running, false, "r1's fetch was stopped")
+    compare(store.eventsFilter, "Failures", "the filter is never touched")
+  }
+
+  // 9 (the reset)
+  function test_leaving_run_detail_resets_and_launches_nothing() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsError = "AmMissing: am is not on PATH."
+    store.eventsFilter = "Phases"
+    store.selectedRunId = ""
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "idle")
+    compare(store.eventsRunner.busy, false)
+    compare(proc.running, false, "r1's fetch was stopped")
+    verify(store.eventsRunner.current === proc, "nothing new is launched")
+    compare(store.eventsFilter, "Phases")
+  }
+
+  // 12
+  function test_selecting_the_selected_run_again_does_nothing() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    var seq = store.eventsRunner.seq
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsStatus = "ok"
+    store.selectedRunId = "r1"
+    compare(store.eventsRunner.seq, seq, "no new launch")
+    verify(store.eventsRunner.current === proc)
+    compare(store.events.length, 1, "no reset")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // Behavior: Selection 6
+  function test_refresh_events_fetches_again_without_a_reset() {
+    var store = make(); if (!store) return
+    store.refreshEvents()
+    verify(!store.eventsRunner.current, "no run selected: nothing is launched")
+    compare(store.eventsStatus, "idle")
+    store.selectedRunId = "r1"
+    var first = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsStatus = "error"
+    store.eventsError = "AmMissing: am is not on PATH."
+    store.refreshEvents()
+    verify(store.eventsRunner.current !== first, "a new fetch")
+    compare(first.running, false, "the older fetch was stopped")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+    compare(store.eventsRunner.current.launchGuard, "r1")
+    compare(store.eventsStatus, "loading")
+    compare(store.events.length, 1, "the rows stay until the reply")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 9)
+    compare(store.eventsError, "AmMissing: am is not on PATH.", "the error stays until the reply")
+  }
 }

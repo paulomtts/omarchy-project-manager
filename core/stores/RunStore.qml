@@ -27,7 +27,9 @@ import "../domain/runs.js" as Runs
 // seen (storeId); the first store_id seen resets nothing. watchCursor is
 // the watch's last cursor, held in memory only. Logs are fetched on a
 // selection, on Refresh and when a snapshot changes the selected attempt's
-// status -- never on a timer.
+// status -- never on a timer. The selected run's events (runs-events.py RUN
+// --tail 200) are fetched on a selection and on refreshEvents() -- never on
+// a timer, and a project switch leaves them alone.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
@@ -115,6 +117,19 @@ Scope {
   property bool logsLoading: false    // a fetch is in flight
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
+
+  // The selected run's event timeline (3.1). `titles` is the open project's
+  // card id -> title map, handed in by App. `events` is RunEvents.eventRow
+  // rows, ascending seq, at most 500, replaced, never changed in place.
+  // A selection empties them and fetches the run's last 200 events; leaving
+  // Run detail empties them and fetches nothing.
+  property var titles: ({})
+  property var events: []
+  property int eventsDropped: 0       // the selected run's events not held
+  property int eventsCursor: 0        // the highest seq seen for the selected run
+  property string eventsStatus: "idle" // idle | loading | ok | error
+  property string eventsError: ""     // why the last fetch failed; "" after a good one and after a reset
+  property string eventsFilter: "All" // All | Phases | Failures, read by RunEvents.filterRows; the store never sets it
 
   // Run controls (S2 4.1). `pending` holds the requests not yet settled,
   // {runId: action}; `stillWaiting` the pending ones 30 s or more old,
@@ -204,6 +219,7 @@ Scope {
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
+  readonly property alias eventsRunner: eventsRunner
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
@@ -647,7 +663,7 @@ Scope {
   }
 
   // Another project was opened, or none. The run list, the selection, the
-  // logs, the watch, the coverage, the requests (pending, stillWaiting,
+  // logs, the events, the watch, the coverage, the requests (pending, stillWaiting,
   // controlRunners), the control error, the cancel dialog, the footer flash,
   // the alerts, the toasts and the notify switch belong to every registered
   // project and stay, and no snapshot is launched. Reset: the run settings
@@ -837,10 +853,43 @@ Scope {
     if (status !== store.logsStatus) store.fetchLogs()
   }
 
-  // Another run (or none): the pane starts over on that run's default attempt.
+  // Another run (or none): the pane starts over on that run's default
+  // attempt, and the events start over (selectEvents).
   onSelectedRunIdChanged: {
     store.clearLogs()
     if (store.selectedRunId !== "") store.openDefaultAttempt()
+    store.selectEvents()
+  }
+
+  // ---- the selected run's events (3.1)
+
+  // No events held; then the selected run's last 200 are fetched, or, with
+  // no run selected, the fetch in flight is stopped and the status is idle.
+  function selectEvents() {
+    store.events = []
+    store.eventsDropped = 0
+    store.eventsCursor = 0
+    store.eventsError = ""
+    if (store.selectedRunId === "") {
+      eventsRunner.cancel()
+      store.eventsStatus = "idle"
+      return
+    }
+    store.fetchEvents()
+  }
+
+  // The selected run fetched again; the rows, eventsDropped, eventsCursor and
+  // eventsError stay until the reply. Nothing without a selected run.
+  function refreshEvents() {
+    if (store.selectedRunId === "") return
+    store.fetchEvents()
+  }
+
+  // runs-events.py RUN --tail 200 for the selected run, guarded by its id.
+  function fetchEvents() {
+    store.eventsStatus = "loading"
+    eventsRunner.guard = store.selectedRunId
+    eventsRunner.run([store.selectedRunId, "--tail", "200"])
   }
 
   // One logs reply. ok:true replaces the text with its last 200 lines; any
@@ -1784,6 +1833,13 @@ Scope {
     script: store.backendDir + "runs/runs-logs.py"
     onBusyChanged: if (!logsRunner.busy) store.logsLoading = false
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
+  }
+
+  // The selected run's events helper. Guard: the run id a fetch was launched
+  // for, never the open project. A newer fetch wins over an older one.
+  HelperRunner {
+    id: eventsRunner
+    script: store.backendDir + "runs/runs-events.py"
   }
 
   // get-global-settings, once per opening (startLive); latest wins. No guard:
