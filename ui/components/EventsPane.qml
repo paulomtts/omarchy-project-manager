@@ -16,7 +16,8 @@ import "../theme" as T
 //   following (read-only): true while the list is at its bottom. New rows keep
 //     a following list at its bottom; otherwise the list keeps its contentY.
 //     A scroll sets it to whether the list is at its bottom; a filter change
-//     keeps it.
+//     keeps it. While false and the list can scroll, "Jump ↓" under the list
+//     puts it at its bottom and sets it.
 //   filterRequested(filter): a chip was clicked.
 //   attemptRequested(card, phase, attempt): a row with a non-empty card and
 //     phase and an attempt above 0 was clicked.
@@ -94,6 +95,11 @@ Item {
     else list.contentY = Math.max(list.originY, Math.min(y, list.originY + list.contentHeight - list.height))
     pane._relayout = false
     pane._following = pane._atBottom()
+  }
+
+  function _jump() {
+    pane._toBottom()
+    pane._following = true
   }
 
   implicitHeight: column.implicitHeight
@@ -252,6 +258,21 @@ Item {
           text: pane._field(row.modelData, "detail")
           color: pane._tint(row.failure, "dim")
         }
+      }
+    }
+
+    Item {
+      width: parent.width
+      height: jump.height
+      visible: list.visible && list.contentHeight > list.height && !pane._following
+
+      ActionButton {
+        id: jump
+        objectName: "eventsJump"
+        anchors.right: parent.right
+        theme: pane.palette
+        text: "Jump ↓"
+        onClicked: pane._jump()
       }
     }
   }

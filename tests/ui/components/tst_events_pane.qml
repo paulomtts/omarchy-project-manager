@@ -4,7 +4,8 @@
 // Failures chips, "… N earlier events", the loading / empty / filtered-empty
 // line, the error block, a bounded list that scrolls itself and hands a wheel
 // to the page at its ends, and attemptRequested for a row naming an attempt.
-// The list follows the newest row while it is at its bottom.
+// The list follows the newest row while it is at its bottom; Jump ↓ under a
+// list that is not following returns it there.
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
@@ -628,5 +629,87 @@ TestCase {
     pane.rows = manyRows(52)
     pane.destroy()
     wait(50)
+  }
+
+  // ---- Jump ----------------------------------------------------------------
+
+  function jumpOf(pane) { return H.find(pane, "eventsJump") }
+
+  function test_jump_shows_while_scrolled_up_and_stays_through_new_rows() {
+    var pane = scrolledUp()
+    var list = listOf(pane)
+    var jump = jumpOf(pane)
+    compare(jump.visible, true)
+    compare(jump.text, "Jump ↓")
+    verify(jump.mapToItem(pane, 0, 0).y >= list.y + list.height, "Jump sits below the list")
+    compare(Math.round(jump.x + jump.width), Math.round(jump.parent.width), "at the line's right edge")
+    pane.rows = manyRows(52)
+    wait(50)
+    compare(jump.visible, true, "new rows do not hide it")
+  }
+
+  function test_jump_returns_to_the_bottom_and_resumes_following() {
+    var pane = scrolledUp()
+    var list = listOf(pane)
+    var jump = jumpOf(pane)
+    var withJump = pane.implicitHeight
+    mouseClick(jump)
+    tryVerify(function () { return atBottom(list) }, 1000, "the newest row is in view")
+    compare(pane.following, true)
+    compare(jump.visible, false)
+    tryVerify(function () { return pane.implicitHeight < withJump }, 1000, "the Jump line is gone from the pane's height")
+    compare(filterSpy.count, 0)
+    compare(attemptSpy.count, 0)
+    pane.rows = manyRows(55)
+    wait(50)
+    compare(list.count, 55)
+    tryVerify(function () { return atBottom(list) }, 1000, "the append is followed")
+  }
+
+  function test_jump_shows_exactly_while_a_list_that_scrolls_is_not_following() {
+    var stack = createTemporaryObject(stackC, tc)
+    var pane = stack.pane
+    pane.rows = manyRows(50)
+    wait(50)
+    var list = listOf(pane)
+    compare(jumpOf(pane).visible, false, "hidden at the bottom")
+    wheelOverList(stack, 120)
+    tryVerify(function () { return !pane.following }, 1000)
+    compare(jumpOf(pane).visible, true, "shown once a wheel leaves the bottom")
+    compare(stack.contentY, 0, "the page does not move")
+    pane.filter = "Phases"
+    wait(50)
+    compare(jumpOf(pane).visible, true, "a filter change keeps it")
+    list.positionViewAtEnd()
+    wait(30)
+    compare(jumpOf(pane).visible, false, "hidden once scrolled back to the bottom")
+    list.contentY = list.originY + 100
+    wait(30)
+    compare(jumpOf(pane).visible, true)
+    pane.filter = "Failures"
+    wait(50)
+    compare(jumpOf(pane).visible, false, "no list, no Jump")
+    pane.filter = "All"
+    wait(50)
+    compare(jumpOf(pane).visible, false, "the rows come back at the bottom")
+  }
+
+  function test_a_list_that_fits_shows_no_jump() {
+    var pane = make({ rows: manyRows(3), maxListHeight: 200 })
+    compare(jumpOf(pane).visible, false)
+    compare(pane.following, true)
+    pane.rows = manyRows(4)
+    wait(50)
+    compare(jumpOf(pane).visible, false)
+    compare(pane.following, true)
+  }
+
+  function test_empty_or_garbage_rows_show_no_jump_and_follow() {
+    var bad = [[], null, "x"]
+    for (var i = 0; i < bad.length; i++) {
+      var pane = make({ rows: bad[i], maxListHeight: 200 })
+      compare(jumpOf(pane).visible, false, JSON.stringify(bad[i]))
+      compare(pane.following, true, JSON.stringify(bad[i]))
+    }
   }
 }
