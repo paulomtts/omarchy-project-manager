@@ -948,14 +948,21 @@ Scope {
   }
 
   // One events reply, applied only while `launchedGuard` is still the
-  // selected run. ok true with an events array: foldReply. ok false: error
-  // with Runs.errorText. Anything else: error, "no usable result". A failure
-  // keeps events, eventsDropped and eventsCursor. Never touches any other
-  // state.
+  // selected run. ok true with an events array: foldReply, unless its
+  // last_seq is a non-negative integer below eventsCursor, which keeps
+  // events, eventsDropped and eventsCursor. Either way ok, no error. ok
+  // false: error with Runs.errorText. Anything else: error, "no usable
+  // result". A failure keeps events, eventsDropped and eventsCursor. Never
+  // touches any other state.
   function applyEvents(stdout, exitCode, launchedGuard) {
     if (launchedGuard !== store.selectedRunId) return
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true && Array.isArray(envelope.events)) {
+      if (store.isSeq(envelope.last_seq) && envelope.last_seq < store.eventsCursor) {
+        store.eventsStatus = "ok"
+        store.eventsError = ""
+        return
+      }
       store.foldReply(envelope)
       return
     }

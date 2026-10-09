@@ -6587,4 +6587,30 @@ TestCase {
       compare(store.eventsDropped, 7, String(lasts[i]))
     }
   }
+
+  // 11
+  function test_a_reply_behind_the_cursor_is_ignored() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "StoreBusyError", message: "the store is busy" } }) + "\n", 0)
+    compare(store.eventsStatus, "error")
+    store.refreshEvents()
+    // synthetic: a reply whose last_seq lies below the cursor.
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(4, 3), 6, 6), 0)
+    compare(JSON.stringify(store.events), held, "the rows are unchanged")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    compare(store.eventsStatus, "ok", "the read succeeded")
+    compare(store.eventsError, "")
+    store.refreshEvents()
+    var again = attemptEvents(9, 2)
+    again[0].payload.status = "failed"
+    reply(store.eventsRunner.current, eventsReply(again, 10, 10), 0)
+    compare(store.events[1].status, "failed", "a last_seq equal to the cursor is folded")
+    compare(seqs(store.events), "8,9,10")
+    compare(store.eventsCursor, 10)
+    compare(store.eventsDropped, 7, "10 - 2 - 1 held below")
+  }
 }
