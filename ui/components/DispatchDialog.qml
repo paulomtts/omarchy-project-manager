@@ -197,6 +197,14 @@ Item {
     property string key: ""
   }
 
+  // Rows a step change, a new key or new rows bring are laid out after the
+  // change; the reveal waits for them.
+  Timer {
+    id: targetReveal
+    interval: 0
+    onTriggered: dialog.revealTargetCursor()
+  }
+
   // A click on Start: from ready only; with confirmFirst the first click arms
   // and only the second starts.
   function start() {
@@ -346,6 +354,14 @@ Item {
     dialog.resetProjectCursor()
   }
 
+  // Scrolls `flick` the least that shows the whole of `item`.
+  function reveal(flick, item) {
+    if (!item) return
+    if (item.y < flick.contentY) flick.contentY = item.y
+    else if (item.y + item.height > flick.contentY + flick.height)
+      flick.contentY = item.y + item.height - flick.height
+  }
+
   // Down (1) / Up (-1): the next enabled row that way, scrolled into view; the
   // cursor stays at either end.
   function moveProjectCursor(by) {
@@ -353,7 +369,7 @@ Item {
     var next = dialog.nextEnabledProject(projectCursorState.index + by, by)
     if (next === -1) return
     dialog.setProjectCursor(next)
-    projectFlick.reveal(projectRepeater.itemAt(next))
+    dialog.reveal(projectFlick, projectRepeater.itemAt(next))
   }
 
   // A pick: at the project step and on an enabled row only.
@@ -456,11 +472,12 @@ Item {
     return at >= 0 ? at : rows.length > 0 ? 0 : -1
   }
 
-  // Entering the target step clears the filter and lands the cursor; any
-  // other step has no cursor.
+  // Entering the target step clears the filter and lands the cursor, scrolled
+  // into view; any other step has no cursor.
   function resetTargetCursor() {
     if (dialog.step === "target") targetFilter.text = ""
     dialog.setTargetCursor(dialog.step === "target" ? dialog.landingTarget() : -1)
+    targetReveal.restart()
   }
 
   // New rows, loading or filter text keep the cursor on its key while that
@@ -469,21 +486,45 @@ Item {
     var at = targetCursorState.key === "" ? -1
       : dialog.shownTargetIndex(dialog.shownTargets(), targetCursorState.key)
     dialog.setTargetCursor(at >= 0 ? at : dialog.landingTarget())
+    targetReveal.restart()
   }
 
   // A new targetKey moves the cursor onto its row when that row is shown.
   function jumpToTargetKey() {
     if (dialog.step !== "target") return
     var at = dialog.shownTargetIndex(dialog.shownTargets(), dialog.targetKey)
-    if (at >= 0) dialog.setTargetCursor(at)
+    if (at === -1) return
+    dialog.setTargetCursor(at)
+    targetReveal.restart()
   }
 
-  // Down (1) / Up (-1): the next shown row that way; the cursor stays at
-  // either end.
+  // Scrolls the target list the least that shows the cursor's row. A row
+  // being replaced can still be a child, so the last one with the name wins.
+  function revealTargetCursor() {
+    if (targetCursorState.index === -1) return
+    targetColumn.forceLayout()
+    var name = "dispatchTargetRow" + targetCursorState.index
+    var kids = targetColumn.children
+    for (var i = kids.length - 1; i >= 0; i--) {
+      if (kids[i].objectName === name) {
+        dialog.reveal(targetFlick, kids[i])
+        return
+      }
+    }
+  }
+
+  // A hover moves the cursor onto a shown row.
+  function hoverTarget(index) {
+    if (dialog.step === "target") dialog.setTargetCursor(index)
+  }
+
+  // Down (1) / Up (-1): the next shown row that way, scrolled into view; the
+  // cursor stays at either end.
   function moveTargetCursor(by) {
     if (targetCursorState.index === -1) return
     var last = dialog.shownTargets().length - 1
     dialog.setTargetCursor(Math.max(0, Math.min(last, targetCursorState.index + by)))
+    dialog.revealTargetCursor()
   }
 
   // A pick: at the target step and on a shown row only.
@@ -547,14 +588,6 @@ Item {
       contentHeight: projectColumn.implicitHeight
       clip: true
       boundsBehavior: Flickable.StopAtBounds
-
-      // Scrolls the least that shows the whole of `item`.
-      function reveal(item) {
-        if (!item) return
-        if (item.y < projectFlick.contentY) projectFlick.contentY = item.y
-        else if (item.y + item.height > projectFlick.contentY + projectFlick.height)
-          projectFlick.contentY = item.y + item.height - projectFlick.height
-      }
 
       Column {
         id: projectColumn
@@ -1017,6 +1050,8 @@ Item {
     width: targetFlick.width
     theme: dialog.theme
     cursorIndex: dialog.targetCursor
+    onHovered: function(index) { dialog.hoverTarget(index) }
+    onActivated: dialog.pickTarget(targetRow.index)
 
     Row {
       id: targetLine

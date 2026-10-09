@@ -2017,4 +2017,69 @@ TestCase {
     compare(targetPicks.count, 1)
     compare(targetPicks.signalArguments[0][0], "card:nocard")
   }
+
+  // n rows: the board, then n - 1 subtasks at depth 1.
+  function longTargets(n) {
+    var rows = [{ key: "board", level: "board", card: "board", label: "Whole board", depth: 0 }]
+    for (var i = 1; i < n; i++) {
+      var id = "e" + ("000000" + i).slice(-7) + "-0000"
+      rows.push({ key: "card:" + id, level: "subtask", card: { id: id, title: "subtask " + i, status: "todo" },
+                  label: "Subtask \"subtask " + i + "\"", depth: 1 })
+    }
+    return rows
+  }
+
+  // 13
+  function test_a_click_on_a_row_picks_it() {
+    var d = targetStep()
+    click(H.find(d, "dispatchTargetRow3"))
+    compare(d.targetCursor, 3)
+    compare(targetPicks.count, 1)
+    compare(targetPicks.signalArguments[0][0], "card:cccc3333-0000-4000-8000-000000000003")
+    compare(cancels.count, 0)
+    compare(backs.count, 0)
+  }
+
+  // 13
+  function test_hovering_a_row_moves_the_cursor() {
+    var d = targetStep()
+    var row = H.find(d, "dispatchTargetRow2")
+    wait(30)
+    mouseMove(row, row.width / 2, row.height / 2)
+    tryCompare(d, "targetCursor", 2)
+    verify(row.hasCursor)
+    compare(targetPicks.count, 0)
+    compare(row.hoverCursorShape, Qt.PointingHandCursor)
+  }
+
+  // 20
+  function test_a_long_target_list_keeps_the_cursor_in_view() {
+    var d = targetStep({ targetRows: tc.longTargets(30) })
+    var list = H.find(d, "dispatchTargetList")
+    verify(list.contentHeight > list.height, "the list scrolls")
+    compare(list.contentY, 0)
+    d.focusItem.forceActiveFocus()
+    for (var k = 0; k < 29; k++) keyClick(Qt.Key_Down)
+    compare(d.targetCursor, 29)
+    var last = H.find(d, "dispatchTargetRow29")
+    verify(list.contentY > 0, "the list scrolled")
+    verify(last.y >= list.contentY, "the last row's top is in view")
+    verify(last.y + last.height <= list.contentY + list.height + 0.5, "the last row's bottom is in view")
+    for (var u = 0; u < 29; u++) keyClick(Qt.Key_Up)
+    compare(d.targetCursor, 0)
+    compare(list.contentY, 0, "back at the top")
+  }
+
+  // 19
+  function test_back_from_the_form_scrolls_the_picked_row_into_view() {
+    var rows = tc.longTargets(30)
+    var d = targetStep({ step: "form", targetRows: rows, targetKey: rows[27].key })
+    d.step = "target"
+    compare(d.targetCursor, 27)
+    var list = H.find(d, "dispatchTargetList")
+    tryVerify(function() { return list.contentY > 0 }, 1000, "the list scrolled to the picked row")
+    var row = H.find(d, "dispatchTargetRow27")
+    verify(row.y >= list.contentY, "the row's top is in view")
+    verify(row.y + row.height <= list.contentY + list.height + 0.5, "the row's bottom is in view")
+  }
 }
