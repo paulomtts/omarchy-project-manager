@@ -1979,6 +1979,28 @@ Scope {
     store.dispatchRoot = ""
   }
 
+  // Takes the target step's row with this key: dispatchOpenFor(row.card,
+  // dispatchTargetCardMap) opens S3's form for dispatchRoot, the step is
+  // form and dispatchTargetKey the key; the rows and the card map stay.
+  // Refused (false, nothing changes) at any other step and for a key no row
+  // has. When dispatchOpenFor refuses, the dispatch is reset, the step stays
+  // target and it returns false.
+  function dispatchTargetPick(key) {
+    if (store.dispatchStep !== "target") return false
+    var rows = store.dispatchTargetRows
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].key !== key) continue
+      if (!store.dispatchOpenFor(rows[i].card, store.dispatchTargetCardMap)) {
+        store.resetDispatch()
+        return false
+      }
+      store.dispatchTargetKey = key
+      store.dispatchStep = "form"
+      return true
+    }
+    return false
+  }
+
   // From the target step back to the project step: dispatchRoot "" and the
   // target data cleared; the probe, its rows and the failures stay and
   // nothing is relaunched. Refused (false, nothing changes) at any other

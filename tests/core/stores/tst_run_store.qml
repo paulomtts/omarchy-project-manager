@@ -6236,6 +6236,94 @@ TestCase {
     checkTargetCleared(dropped, "a reply after the registry fallback")
   }
 
+  // 2.3 test 3
+  function test_dispatch_target_pick_enters_the_form_for_another_project() {
+    var store = targetStore(tc.rootB); if (!store) return
+    var rows = store.dispatchTargetRows
+    var map = store.dispatchTargetCardMap
+    compare(store.dispatchTargetPick("card:m1"), true)
+    compare(store.dispatchStep, "form")
+    compare(store.dispatchTargetKey, "card:m1")
+    compare(store.dispatchRoot, tc.rootB)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchTarget.level, "milestone")
+    compare(store.dispatchTargetLabel, Runs.dispatchLabel(map.m1, map))
+    compare(store.dispatchTargetLabel, "Milestone \"M3 Document runs\"")
+    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/b")
+    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b")
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchForm.parallelism, 2, "B's settings, not A's")
+    compare(store.dispatchForm.verify.join(","), "make test")
+    compare(store.dispatchForm.prefix, "bpre")
+    compare(store.dispatchForm.base, "main")
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "B's milestone is previewed")
+    verify(store.dispatchTargetRows === rows, "the rows stay")
+    verify(store.dispatchTargetCardMap === map, "the card map stays")
+
+    var board = targetStore(tc.rootB); if (!board) return
+    compare(board.dispatchTargetPick("board"), true)
+    compare(board.dispatchStep, "form")
+    compare(board.dispatchTargetKey, "board")
+    compare(board.dispatchTarget.level, "board")
+    compare(board.dispatchTargetLabel, "Whole board")
+  }
+
+  // 2.3 test 4
+  function test_dispatch_target_pick_for_the_open_project_and_refusals() {
+    var store = pickedStore(tc.rootA); if (!store) return
+    compare(store.dispatchTargetPick("board"), false, "no pick while loading")
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchTargetLoading, true)
+    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
+    var refused = ["card:t2", "card:zz", "", "t1", null, 7]
+    for (var i = 0; i < refused.length; i++) {
+      compare(store.dispatchTargetPick(refused[i]), false, "key " + refused[i])
+      compare(store.dispatchStep, "target", "key " + refused[i] + ": step")
+      compare(store.dispatchTargetKey, "", "key " + refused[i] + ": key")
+      compare(store.dispatchState, "idle", "key " + refused[i] + ": state")
+    }
+    verify(!store.dispatchDefaultsRunner.current, "a refused pick launches nothing")
+    compare(store.dispatchTargetPick("card:t1"), true)
+    compare(store.dispatchStep, "form")
+    compare(store.dispatchTargetKey, "card:t1")
+    compare(store.dispatchTarget.level, "subtask")
+    compare(store.dispatchTargetLabel, "Subtask \"RunStore dispatch\"")
+    verify(!store.dispatchSettingsRunner.current, "the open project's runSettings are used")
+    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/my proj")
+    compare(store.dispatchForm.prefix, "old", "A's prefix history")
+    compare(store.dispatchForm.parallelism, 4)
+    var defaults = store.dispatchDefaultsRunner.current
+    compare(store.dispatchTargetPick("card:m1"), false, "no pick at the form")
+    compare(store.dispatchTargetKey, "card:t1")
+    compare(store.dispatchTarget.level, "subtask")
+    verify(store.dispatchDefaultsRunner.current === defaults, "nothing relaunched")
+
+    var idle = runsStore(); if (!idle) return
+    compare(idle.dispatchTargetPick("board"), false, "no pick without a step")
+    checkDispatchIdle(idle, "no step")
+  }
+
+  // 2.3 test 11
+  function test_dispatch_start_from_runs_refreshes_only_its_root() {
+    var store = targetStore(tc.rootB); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    compare(store.dispatchTargetPick("card:t1"), true)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    compare(argv(runner.current), tc.startCmd + "/home/u/b|card|t1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
+    var seq = store.snapshotRunner.seq
+    reply(runner.current, startOk("r9", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(store.dispatchRunId, "r9")
+    compare(store.snapshotRunner.seq, seq + 1, "one snapshot is asked for")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|/home/u/b", "of B only")
+    compare(store.dispatchStep, "form")
+  }
+
   // ---- list snapshots
 
   // The captured runs' project root, and their run ids (runs.json).
