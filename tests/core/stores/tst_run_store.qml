@@ -3674,4 +3674,172 @@ TestCase {
     compare(argv(store.logsRunner.current), "python3|/plugin/core/backend/runs/runs-logs.py|" + tc.rootB + "|b-h1|c1|spec|1")
     compare(store.logsLoading, true)
   }
+
+  // Noon local time on 2026-10-09: the age tests' clock; that day's local
+  // midnight; the clock minus 7 days.
+  readonly property real fixedNow: new Date(2026, 9, 9, 12, 0, 0).getTime()
+  readonly property real fixedMidnight: new Date(2026, 9, 9, 0, 0, 0).getTime()
+  readonly property real fixedWeekAgo: fixedNow - 7 * 86400000
+
+  // `ms` as an ISO started_at.
+  function iso(ms) { return new Date(ms).toISOString() }
+
+  // rootA and rootB registered, the snapshot answered: A lists a-live1
+  // (running), a-dead1, a-park1, a-done1 and a-esc1, B lists b-canc1
+  // ("cancelled"); the history adds A's a-hdone, a-hcanc ("canceled") and
+  // a-hpark, and B's b-hesc. Every run started before 2026-10-02; nowMs is
+  // fixedNow.
+  function finishedStore() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return null
+    reply(store.snapshotRunner.current, allReply([
+      okEntry(tc.rootA, [entry("a-live1", "started", true, tc.rootA), entry("a-dead1", "started", false, tc.rootA),
+                         entry("a-park1", "stopped", false, tc.rootA), entry("a-done1", "done", false, tc.rootA),
+                         entry("a-esc1", "escalated", false, tc.rootA)]),
+      okEntry(tc.rootB, [entry("b-canc1", "cancelled", false, tc.rootB)])]), 0)
+    store.nowMs = tc.fixedNow
+    store.historyRuns = [histRun("a-hdone", tc.rootA, "done", "2026-09-20T00:00:00Z"),
+                         histRun("a-hcanc", tc.rootA, "canceled", "2026-09-19T00:00:00Z"),
+                         histRun("a-hpark", tc.rootA, "stopped", "2026-09-18T00:00:00Z"),
+                         histRun("b-hesc", tc.rootB, "escalated", "2026-09-17T00:00:00Z")]
+    return store
+  }
+
+  // H3
+  function test_each_chip_lists_snapshot_and_history_runs() {
+    var store = finishedStore(); if (!store) return
+    compare(ids(store.filteredRuns), "a-live1,a-dead1,a-park1,a-done1,a-esc1,a-hdone,a-hcanc,a-hpark,b-canc1,b-hesc")
+    store.runFilter = "attention"
+    compare(ids(store.filteredRuns), "a-dead1,a-esc1,b-hesc")
+    store.runFilter = "live"
+    compare(ids(store.filteredRuns), "a-live1")
+    store.runFilter = "parked"
+    compare(ids(store.filteredRuns), "a-park1,a-hpark")
+    store.runFilter = "finished"
+    compare(ids(store.filteredRuns), "a-done1,a-esc1,a-hdone,a-hcanc,b-canc1,b-hesc")
+    compare(groupText(store), "alpha:1/0/0,beta:1/0/0")
+  }
+
+  // H3
+  function test_run_filter_counts_cover_snapshot_and_history_in_the_project_filter() {
+    var store = finishedStore(); if (!store) return
+    var all = JSON.stringify({ attention: 3, live: 1, parked: 2, finished: 6, all: 10 })
+    compare(JSON.stringify(store.runFilterCounts), all)
+    store.runFilter = "live"
+    store.searchQuery = "zzz"
+    store.finishedState = "done"
+    store.finishedAge = "today"
+    compare(store.filteredRuns.length, 0)
+    compare(JSON.stringify(store.runFilterCounts), all, "the chip, the search and the finished rows never narrow the counts")
+    store.toggleProjectFilter(tc.rootB)
+    compare(store.projectFilter, tc.rootB)
+    compare(JSON.stringify(store.runFilterCounts), JSON.stringify({ attention: 1, live: 0, parked: 0, finished: 2, all: 2 }))
+  }
+
+  // H4
+  function test_the_finished_state_row_narrows_under_finished_only() {
+    var store = finishedStore(); if (!store) return
+    store.runFilter = "finished"
+    store.finishedState = "done"
+    compare(ids(store.filteredRuns), "a-done1,a-hdone")
+    store.finishedState = "escalated"
+    compare(ids(store.filteredRuns), "a-esc1,b-hesc")
+    store.finishedState = "cancelled"
+    compare(ids(store.filteredRuns), "a-hcanc,b-canc1", "both spellings")
+    store.runFilter = ""
+    compare(ids(store.filteredRuns), "a-live1,a-dead1,a-park1,a-done1,a-esc1,a-hdone,a-hcanc,a-hpark,b-canc1,b-hesc",
+            "All: the state row narrows nothing")
+    store.runFilter = "attention"
+    compare(ids(store.filteredRuns), "a-dead1,a-esc1,b-hesc", "Attention: nothing either")
+  }
+
+  // Review Focus 5
+  function test_an_unknown_finished_state_or_age_narrows_nothing() {
+    var store = finishedStore(); if (!store) return
+    store.runFilter = "finished"
+    store.finishedState = "bogus"
+    store.finishedAge = "fortnight"
+    compare(ids(store.filteredRuns), "a-done1,a-esc1,a-hdone,a-hcanc,b-canc1,b-hesc")
+  }
+
+  // rootA alone, the snapshot answered with a-live1 (running), a-dead1 and
+  // a-esc1, all started 2026-10-01T00:00:00Z; nowMs is fixedNow; the
+  // history: t-after (done, a minute after midnight), t-before (done, a
+  // minute before), w-in (escalated, a minute inside the 7 days), w-out
+  // (done, a minute outside), h-park (parked) and h-live (running), both 8
+  // days old, and h-nostart (done, no started_at).
+  function ageStore() {
+    var store = makeWithRoots([tc.rootA]); if (!store) return null
+    reply(store.snapshotRunner.current, okReply([entry("a-live1", "started", true), entry("a-dead1", "started", false),
+                                                 entry("a-esc1", "escalated", false)]), 0)
+    store.nowMs = tc.fixedNow
+    var old = tc.fixedWeekAgo - 86400000
+    store.historyRuns = [histRun("t-after", tc.rootA, "done", iso(tc.fixedMidnight + 60000)),
+                         histRun("t-before", tc.rootA, "done", iso(tc.fixedMidnight - 60000)),
+                         histRun("w-in", tc.rootA, "escalated", iso(tc.fixedWeekAgo + 60000)),
+                         histRun("w-out", tc.rootA, "done", iso(tc.fixedWeekAgo - 60000)),
+                         histRun("h-park", tc.rootA, "stopped", iso(old)),
+                         histRun("h-live", tc.rootA, "started", iso(old), true),
+                         histRun("h-nostart", tc.rootA, "done", "")]
+    return store
+  }
+
+  // H5
+  function test_the_age_row_narrows_finished_runs_under_finished_and_all() {
+    var store = ageStore(); if (!store) return
+    store.runFilter = "finished"
+    compare(ids(store.filteredRuns), "a-esc1,t-after,t-before,w-in,w-out,h-nostart", "all time")
+    store.finishedAge = "today"
+    compare(ids(store.filteredRuns), "t-after", "since local midnight; no started_at is hidden")
+    store.finishedAge = "week"
+    compare(ids(store.filteredRuns), "t-after,t-before,w-in", "the last 7 x 24 h")
+    store.runFilter = ""
+    compare(ids(store.filteredRuns), "a-live1,a-dead1,t-after,t-before,w-in,h-park,h-live",
+            "All: the age narrows finished runs only")
+    store.finishedAge = "today"
+    compare(ids(store.filteredRuns), "a-live1,a-dead1,t-after,h-park,h-live",
+            "a running, dead or parked run is never hidden")
+    store.runFilter = "attention"
+    compare(ids(store.filteredRuns), "a-dead1,a-esc1,w-in", "Attention: the age narrows nothing")
+    store.runFilter = "parked"
+    compare(ids(store.filteredRuns), "h-park", "Parked: nothing either")
+    store.runFilter = "live"
+    compare(ids(store.filteredRuns), "a-live1,h-live")
+  }
+
+  // Review Focus 3
+  function test_now_ms_0_measures_the_age_against_the_current_time() {
+    var store = makeWithRoots([tc.rootA]); if (!store) return
+    reply(store.snapshotRunner.current, okReply([]), 0)
+    compare(store.nowMs, 0)
+    store.historyRuns = [histRun("fresh", tc.rootA, "done", iso(Date.now())),
+                         histRun("stale", tc.rootA, "done", iso(Date.now() - 8 * 86400000))]
+    store.runFilter = "finished"
+    store.finishedAge = "week"
+    compare(ids(store.filteredRuns), "fresh")
+  }
+
+  // H8
+  function test_the_search_matches_a_history_runs_title() {
+    var store = historyStore(); if (!store) return
+    store.historyRuns = historyPage()
+    store.searchQuery = "widget"
+    compare(store.filteredRuns.length, 0, "no title map: no title to match")
+    var titles = {}
+    titles[tc.rootA] = { "m-a-h2": "Ship the Widget" }
+    store.titlesByRoot = titles
+    compare(ids(store.filteredRuns), "a-h2")
+    store.titlesByRoot = ({})
+    compare(store.filteredRuns.length, 0)
+  }
+
+  // Review Focus 4
+  function test_without_a_title_map_the_search_matches_ids_and_fallback_titles() {
+    var store = historyStore(); if (!store) return
+    store.historyRuns = historyPage()
+    store.titlesByRoot = "garbage"
+    store.searchQuery = "b-h1"
+    compare(ids(store.filteredRuns), "b-h1")
+    store.searchQuery = "milestone …m-a-h2"
+    compare(ids(store.filteredRuns), "a-h2", "runTitle's fallback title")
+  }
 }

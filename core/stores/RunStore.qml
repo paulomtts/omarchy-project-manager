@@ -59,9 +59,9 @@ Scope {
   property bool stale: false          // the last good snapshot is over 30 s old while active
   property string watchWarning: ""    // the corrupt-journal chip; "" when there is none
 
-  // The Runs screen's chip ("" means All, else "attention" | "live" | "parked")
-  // and search text. App binds searchQuery to the navigation store; the chip
-  // survives a section switch and a project switch.
+  // The Runs screen's chip ("" means All, else "attention" | "live" |
+  // "parked" | "finished") and search text. App binds searchQuery to the
+  // navigation store; the chip survives a section switch and a project switch.
   property string runFilter: ""
   property string searchQuery: ""
   // The chip changed: a different list, so the cursor goes home (App's job).
@@ -81,9 +81,32 @@ Scope {
   // `runs`, then each historyRuns entry that is a plain object whose id
   // neither `runs` nor an earlier entry lists, in historyRuns order.
   readonly property var listedRuns: store.listed(store.runs, store.historyRuns)
-  // listedRuns past the chip, the search and the project filter, grouped by
-  // project in display order (Runs.groupByProject).
-  readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(store.listedRuns, store.runFilter), store.searchQuery), store.projectFilter))
+  // {root: {id: title}}, the titles the search matches; App binds it.
+  property var titlesByRoot: ({})
+  // The Finished chip's state row ("" is every finished state, else "done" |
+  // "escalated" | "cancelled") and age row ("today" | "week" | "all", by
+  // started_at against nowMs). The state row narrows finished runs under
+  // Finished only, the age row under Finished and All; neither hides a run
+  // that is not finished.
+  property string finishedState: ""
+  property string finishedAge: "all"
+  // The age row's clock in ms; 0 is Date.now() whenever `groups` is
+  // evaluated. Time passing alone re-evaluates nothing.
+  property real nowMs: 0
+  // The chip counts, {attention, live, parked, finished, all}, over
+  // listedRuns in the project filter; the chip, the finished rows and the
+  // search never narrow them.
+  readonly property var runFilterCounts: Runs.runFilterCounts(Runs.filterByProject(store.listedRuns, store.projectFilter))
+  // listedRuns past the chip, the finished rows, the search (titles from
+  // titlesByRoot) and the project filter, grouped by project in display
+  // order (Runs.groupByProject).
+  readonly property var groups: {
+    var now = store.nowMs > 0 ? store.nowMs : Date.now()
+    var state = store.runFilter === "finished" ? store.finishedState : ""
+    var age = store.runFilter === "finished" || store.runFilter === "" ? store.finishedAge : "all"
+    var kept = Runs.filterFinished(Runs.filterRuns(store.listedRuns, store.runFilter), state, age, now, -new Date(now).getTimezoneOffset())
+    return Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(kept, store.searchQuery, store.titlesByRoot), store.projectFilter))
+  }
   // The one filtered list: the screen's rows and the navigator's cursor list,
   // group by group (Runs.displayOrder of groups).
   readonly property var filteredRuns: Runs.displayOrder(store.groups)
