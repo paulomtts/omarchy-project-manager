@@ -4,8 +4,9 @@
 // line. A stub app: a REAL NavigationStore, a plain object carrying the
 // RunStore properties the screen reads (with recorders for selectAttempt and
 // refreshLogs) and, apart, one carrying the RunControlStore properties it
-// reads (with a recorder for control), and a board whose cardMap lends titles
-// and brd statuses.
+// reads (with a recorder for control), one carrying RunTitlesStore's
+// titlesByRoot (the open project's map, as the store mirrors it from the
+// board), and a board whose cardMap lends brd statuses.
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
@@ -65,11 +66,20 @@ TestCase {
   }
 
   Component {
+    id: titlesC
+    QtObject {
+      property var titlesByRoot: ({ "/home/u/a": { s1: "Runs screens", t1: "RunDetailScreen", t2: "Old work",
+                                                   s2: "Dropped story", t3: "Shelved" } })
+    }
+  }
+
+  Component {
     id: appC
     QtObject {
       property var nav: null
       property var runs: null
       property var runControl: null
+      property var runTitles: null
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" } })
       property var board: ({ cardMap: {
         s1: { id: "s1", title: "Runs screens", status: "in_progress" },
@@ -88,7 +98,8 @@ TestCase {
     var nav = navComp.createObject(host)
     var runs = runsC.createObject(host)
     var control = controlC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control })
+    var titles = titlesC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles })
     var sC = Qt.createComponent("../../../ui/screens/RunDetailScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
     var screen = sC.createObject(host, { width: 500, app: app, navigator: null })
@@ -97,7 +108,7 @@ TestCase {
     runs.selectedRunId = selectedId === undefined ? "run-20261004-19efcddc" : selectedId
     runs.selectedAttempt = attempt === undefined ? null : attempt
     wait(20)
-    return { app: app, runs: runs, control: control, nav: nav, screen: screen }
+    return { app: app, runs: runs, control: control, titles: titles, nav: nav, screen: screen }
   }
 
   // Two clicks inside the double-click interval make the second a double-click.
@@ -106,10 +117,12 @@ TestCase {
     mouseClick(item)
   }
 
-  // A normalised run, as RunStore holds them. live === null means no lease.
+  // A normalised run, as RunStore holds them. live === null means no lease;
+  // opts.root is its project's root ("/home/u/a" unless given, "" for none).
   function run(id, status, live, opts) {
     var o = opts || {}
-    return { id: id, repo_dir: "/home/u/a", milestone_id: o.milestone === undefined ? "M3" : o.milestone,
+    return { id: id, repo_dir: "/home/u/a", project: { root: o.root === undefined ? "/home/u/a" : o.root, name: "p" },
+             milestone_id: o.milestone === undefined ? "M3" : o.milestone,
              base_branch: o.base === undefined ? "master" : o.base,
              branch_prefix: o.prefix === undefined ? "m3" : o.prefix,
              status: status, started_at: "",
@@ -150,10 +163,44 @@ TestCase {
 
   function test_the_header_names_the_run_its_state_and_its_branches() {
     var s = make(detail()); if (!s) return
-    compare(H.find(s.screen, "runDetailTitle").text, "Run …19efcddc")
+    compare(H.find(s.screen, "runDetailTitle").text, "milestone …M3")
+    compare(H.find(s.screen, "runDetailId").text, "…19efcddc")
     compare(H.find(s.screen, "runDetailState").text, RG.glyphOf("running") + " running")
     compare(H.find(s.screen, "runDetailMeta").text, "Milestone M3 · prefix m3 · base master · lease pid 4121 live")
     compare(H.find(s.screen, "runDetailReason").visible, false, "only an escalated run has a reason")
+  }
+
+  function test_the_header_reads_the_runs_title_then_its_short_id_in_dim() {
+    var s = make(detail()); if (!s) return
+    var title = H.find(s.screen, "runDetailTitle")
+    var id = H.find(s.screen, "runDetailId")
+    var state = H.find(s.screen, "runDetailState")
+    compare(title.text, "milestone …M3", "M3 is not in the map")
+    s.titles.titlesByRoot = { "/home/u/a": { M3: "Runs monitor" } }
+    compare(title.text, "Runs monitor")
+    compare(id.text, "…19efcddc")
+    compare(String(id.color), String(s.screen.theme.dim))
+    compare(state.text, RG.glyphOf("running") + " running")
+    verify(id.x > title.x, "the short id follows the title")
+    verify(state.x > id.x, "the state follows the short id")
+  }
+
+  // A title of any length elides; the short id and the state stay on the row.
+  function test_a_long_run_title_never_pushes_the_short_id_or_the_state_off_the_row() {
+    var s = make(detail()); if (!s) return
+    var long = "Long"
+    for (var i = 0; i < 40; i++) long += " a very long run title"
+    s.titles.titlesByRoot = { "/home/u/a": { M3: long } }
+    var title = H.find(s.screen, "runDetailTitle")
+    compare(title.text, long)
+    compare(title.elide, Text.ElideRight)
+    verify(title.width < title.implicitWidth, "the title is elided")
+    var names = ["runDetailId", "runDetailState"]
+    for (var j = 0; j < names.length; j++) {
+      var t = H.find(s.screen, names[j])
+      var right = t.mapToItem(s.screen, 0, 0).x + t.width
+      verify(right <= s.screen.width, names[j] + " stays on the row: right edge " + right + " of " + s.screen.width)
+    }
   }
 
   function test_a_dead_lease_and_no_lease() {

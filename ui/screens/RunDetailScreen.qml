@@ -33,6 +33,8 @@ Column {
   readonly property var run: screen.runById(screen.app.runs.runs, screen.app.runs.selectedRunId)
   readonly property var tree: Runs.runTree(screen.run)
   readonly property string runState: Runs.runState(screen.run)
+  // The run's project titles map (titlesOfRun); {} without app.runTitles.
+  readonly property var titles: Runs.titlesOfRun(screen.run, screen.app.runTitles ? screen.app.runTitles.titlesByRoot : null)
   readonly property var selection: screen.app.runs.selectedAttempt
   // Re-read whenever a logs reply lands or a snapshot replaces the runs.
   readonly property real nowMs: screen.app.runs.logsFetchedMs >= 0 && screen.app.runs.runs ? Date.now() : 0
@@ -179,14 +181,27 @@ Column {
       width: parent.width
       spacing: Style.space(8)
 
+      // Takes the width the others leave and elides, so they stay on the row.
       UI.ThemedText {
         objectName: "runDetailTitle"
         variant: "heading"
         theme: screen.theme
-        text: "Run " + Runs.shortId(screen.run)
+        width: Math.max(0, Math.min(implicitWidth, parent.width - detailId.width - detailState.width - parent.spacing * 2))
+        text: Runs.runTitle(screen.run, screen.titles)
+        elide: Text.ElideRight
       }
 
       UI.ThemedText {
+        id: detailId
+        objectName: "runDetailId"
+        variant: "caption"
+        theme: screen.theme
+        text: Runs.runSubtitle(screen.run)
+        color: screen.theme.dim
+      }
+
+      UI.ThemedText {
+        id: detailState
         objectName: "runDetailState"
         variant: "heading"
         theme: screen.theme

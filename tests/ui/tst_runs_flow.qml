@@ -260,7 +260,8 @@ TestCase {
     verify(view, "the Run detail screen is mounted")
     compare(view.visible, true)
     compare(H.find(p, "runsView").visible, false)
-    compare(H.find(p, "runDetailTitle").text, "Run …000000e5")
+    compare(H.find(p, "runDetailTitle").text, "milestone …alpha", "the open board has no card alpha")
+    compare(H.find(p, "runDetailId").text, "…000000e5")
     var proc = p.app.runs.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
     verify(String(proc.command[1]).indexOf("core/backend/runs/runs-logs.py") > 0, String(proc.command[1]))
