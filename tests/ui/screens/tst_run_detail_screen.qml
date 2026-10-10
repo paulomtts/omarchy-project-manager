@@ -1,9 +1,10 @@
 // tests/ui/screens/tst_run_detail_screen.qml
 // ui/screens/RunDetailScreen.qml on its own: the header, the Why it stopped
 // block and what feeds it, the story > subtask > attempt tree with its
-// bookkeeping rows, the output pane and the missing-run line. A stub app: a
-// REAL NavigationStore, a plain object carrying the RunStore properties the
-// screen reads (with recorders for selectAttempt, refreshLogs, control,
+// bookkeeping rows, the Output / Events tabs with the output pane and the
+// events pane, and the missing-run line. A stub app: a REAL NavigationStore, a
+// plain object carrying the RunStore properties the screen reads (with
+// recorders for selectAttempt, refreshLogs, setDetailTab, control,
 // relaunchOpenFor and flash), an extras stub whose commentsFor reads a
 // settable map, a board whose cardMap lends titles and brd statuses, and a
 // navigator stub recording openCard.
@@ -44,6 +45,21 @@ TestCase {
         rs.selectedAttempt = { card_id: cardId, phase: phase, attempt: attempt }
       }
       function refreshLogs() { rs.refreshed += 1 }
+      // The events and the tab (4.3). setDetailTab records every call and,
+      // as the store does, takes only output and events.
+      property var events: []
+      property int eventsDropped: 0
+      property string eventsStatus: "idle"
+      property string eventsError: ""
+      property string eventsFilter: "All"
+      property string detailTab: "output"
+      property var tabCalls: []
+      function setDetailTab(tab) {
+        rs.tabCalls = rs.tabCalls.concat([tab])
+        if (tab !== "output" && tab !== "events") return false
+        rs.detailTab = tab
+        return true
+      }
       // The control surface the header reads (S2 4.2). `control` only records.
       property var pending: ({})
       property var stillWaiting: ({})
@@ -672,5 +688,181 @@ TestCase {
     compare(line.text, "Integrate is running; it cannot be paused or cancelled")
     s.runs.flashText = ""
     compare(line.visible, false)
+  }
+
+  // ---- the Output / Events tabs (4.3)
+
+  // A complete row as RunEvents.eventRow returns it; `fields` overrides.
+  function eventRow(seq, fields) {
+    var row = { seq: seq, time: "12:00:00", level: "attempt", label: "row " + seq, status: "done",
+                glyph: "done", duration: "", detail: "", card: "card-" + seq, phase: "implement",
+                attempt: 1 }
+    for (var key in fields) row[key] = fields[key]
+    return row
+  }
+
+  function rowsUpTo(n) {
+    var rows = []
+    for (var i = 1; i <= n; i++) rows.push(eventRow(i, {}))
+    return rows
+  }
+
+  function shown(s, name) { return H.find(s.screen, name).visible }
+
+  // 6
+  function test_run_detail_opens_on_the_output_tab() {
+    var s = make(detail()); if (!s) return
+    var output = H.find(s.screen, "runTaboutput")
+    verify(output, "the Output chip")
+    compare(output.text, "Output")
+    compare(output.active, true)
+    verify(H.find(s.screen, "runTabevents"), "the Events chip")
+    compare(H.find(s.screen, "runTabevents").active, false)
+    compare(shown(s, "runOutputPane"), true)
+    compare(shown(s, "eventsPane"), false)
+  }
+
+  // 7
+  function test_the_events_chip_counts_rows_held_plus_dropped() {
+    var s = make(detail()); if (!s) return
+    compare(H.find(s.screen, "runTabevents").text, "Events 0", "none")
+    s.runs.events = rowsUpTo(3)
+    s.runs.eventsDropped = 40
+    compare(H.find(s.screen, "runTabevents").text, "Events 43")
+    s.runs.events = rowsUpTo(5)
+    compare(H.find(s.screen, "runTabevents").text, "Events 45")
+    s.runs.events = []
+    s.runs.eventsDropped = 0
+    compare(H.find(s.screen, "runTabevents").text, "Events 0")
+  }
+
+  // 8
+  function test_the_chips_switch_the_tabs() {
+    var s = make(detail()); if (!s) return
+    tap(H.find(s.screen, "runTabevents"))
+    compare(s.runs.tabCalls.join(","), "events")
+    compare(shown(s, "eventsPane"), true)
+    compare(shown(s, "runOutputPane"), false)
+    compare(H.find(s.screen, "runTabevents").active, true)
+    tap(H.find(s.screen, "runTabevents"))
+    compare(s.runs.detailTab, "events", "the active chip changes nothing")
+    compare(shown(s, "eventsPane"), true)
+    tap(H.find(s.screen, "runTaboutput"))
+    compare(s.runs.detailTab, "output")
+    compare(shown(s, "runOutputPane"), true)
+    compare(shown(s, "eventsPane"), false)
+    compare(H.find(s.screen, "runTaboutput").active, true)
+  }
+
+  // 9
+  function test_the_events_pane_shows_the_store_state() {
+    var s = make(detail()); if (!s) return
+    s.runs.setDetailTab("events")
+    s.runs.events = rowsUpTo(2)
+    s.runs.eventsDropped = 3
+    s.runs.eventsStatus = "ok"
+    var pane = H.find(s.screen, "eventsPane")
+    compare(JSON.stringify(pane.rows), JSON.stringify(s.runs.events))
+    compare(pane.filter, "All")
+    compare(pane.dropped, 3)
+    compare(pane.status, "ok")
+    compare(pane.errorMessage, "")
+    verify(H.find(pane, "eventsRow2"), "the store's rows are drawn")
+    compare(H.find(pane, "eventsErrorText").visible, false)
+    s.runs.eventsStatus = "error"
+    s.runs.eventsError = "AmMissing: am is not on PATH."
+    compare(pane.status, "error")
+    compare(pane.errorMessage, "AmMissing: am is not on PATH.")
+    compare(H.find(pane, "eventsErrorText").visible, true)
+  }
+
+  // 10
+  function test_a_filter_chip_sets_the_store_filter() {
+    var s = make(detail()); if (!s) return
+    s.runs.setDetailTab("events")
+    s.runs.events = [eventRow(1, { level: "phase", glyph: "dead", status: "failed" }), eventRow(2, {})]
+    var pane = H.find(s.screen, "eventsPane")
+    tap(H.find(pane, "eventsFilterChipFailures"))
+    compare(s.runs.eventsFilter, "Failures")
+    compare(pane.filter, "Failures", "the pane follows the store")
+    compare(H.find(pane, "eventsFilterChipFailures").active, true)
+  }
+
+  // 11
+  function test_a_row_naming_an_attempt_selects_it_and_shows_output() {
+    var s = make(detail()); if (!s) return
+    s.runs.setDetailTab("events")
+    s.runs.events = [eventRow(5, { card: "t1", phase: "implement", attempt: 1 })]
+    wait(30)
+    tap(H.find(s.screen, "eventsRow5"))
+    compare(s.runs.selected.join("|"), "t1|implement|1")
+    compare(s.runs.detailTab, "output")
+    compare(shown(s, "runOutputPane"), true)
+    compare(shown(s, "eventsPane"), false)
+    compare(H.find(s.screen, "runOutputHeading").text, "Output · t1 implement.1")
+  }
+
+  // 12
+  function test_a_row_without_an_attempt_changes_nothing() {
+    var s = make(detail()); if (!s) return
+    s.runs.setDetailTab("events")
+    s.runs.events = [eventRow(6, { attempt: 0 })]
+    wait(30)
+    tap(H.find(s.screen, "eventsRow6"))
+    compare(s.runs.selected, null)
+    compare(s.runs.detailTab, "events")
+    compare(s.runs.tabCalls.join(","), "events", "no tab call from the row")
+  }
+
+  // 13
+  function test_a_missing_run_shows_no_tabs() {
+    var s = make(detail(), "run-gone"); if (!s) return
+    compare(shown(s, "runDetailBody"), false)
+    compare(shown(s, "runTabs"), false)
+    compare(shown(s, "runDetailMissing"), true)
+  }
+
+  // 14 and Review Focus 3
+  function test_garbage_events_count_as_none() {
+    failOnWarning(/TypeError|ReferenceError|is not a function|Unable to assign/)
+    var s = make(detail()); if (!s) return
+    s.runs.eventsDropped = 2
+    s.runs.events = null
+    compare(H.find(s.screen, "runTabevents").text, "Events 2", "null")
+    s.runs.events = "abcdefghi"
+    compare(H.find(s.screen, "runTabevents").text, "Events 2", "a string")
+    s.runs.events = { length: 9 }
+    compare(H.find(s.screen, "runTabevents").text, "Events 2", "an object with a length")
+    s.runs.setDetailTab("events")
+    compare(shown(s, "eventsPane"), true)
+  }
+
+  // Review Focus 1
+  function test_rows_that_arrive_while_output_shows_open_at_the_newest() {
+    var s = make(detail()); if (!s) return
+    s.runs.events = rowsUpTo(60)
+    wait(30)
+    tap(H.find(s.screen, "runTabevents"))
+    wait(30)
+    var pane = H.find(s.screen, "eventsPane")
+    var list = H.find(pane, "eventsList")
+    verify(list.contentHeight > list.height, "the list scrolls")
+    compare(pane.following, true)
+    verify(Math.abs(list.contentY - (list.originY + list.contentHeight - list.height)) <= 1, "at the newest row")
+    compare(H.find(pane, "eventsJump").visible, false)
+  }
+
+  // Review Focus 2
+  function test_switching_tabs_keeps_the_output_and_the_filter() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsText = "3 passed"
+    s.runs.eventsFilter = "Failures"
+    tap(H.find(s.screen, "runTabevents"))
+    tap(H.find(s.screen, "runTaboutput"))
+    compare(H.find(s.screen, "runOutputHeading").text, "Output · t1 implement.2")
+    compare(H.find(s.screen, "runOutputText").text, "3 passed")
+    compare(s.runs.selected, null, "no attempt was selected")
+    compare(s.runs.refreshed, 0, "nothing was fetched")
+    compare(s.runs.eventsFilter, "Failures")
   }
 }

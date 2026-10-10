@@ -7,6 +7,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../../core/domain/runEvents.js" as RunEvents
 import "../../helpers/amFixtures.js" as F
 
 TestCase {
@@ -6637,5 +6638,930 @@ TestCase {
     compare(store.dispatchForm.base, "")
     reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
     compare(store.dispatchForm.base, "main", "the relaunch's base override is not inherited")
+  }
+
+  // ---- the selected run's events (3.1)
+
+  property string eventsCmd: "python3|/plugin/core/backend/runs/runs-events.py|"
+
+  // 1
+  function test_events_defaults() {
+    var store = make(); if (!store) return
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsStatus, "idle")
+    compare(store.eventsError, "")
+    compare(store.eventsFilter, "All")
+    compare(JSON.stringify(store.titles), "{}")
+    verify(!store.eventsRunner.current, "no events fetch at start")
+  }
+
+  // 2
+  function test_selecting_a_run_fetches_its_last_200_events() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    verify(proc, "a run the snapshot does not list is still fetched")
+    compare(argv(proc), tc.eventsCmd + "r1|--tail|200")
+    compare(proc.command.length, 5, "no project root argument")
+    compare(proc.launchGuard, "r1", "guarded by the run id")
+    compare(store.eventsStatus, "loading")
+    compare(store.eventsRunner.busy, true)
+    // synthetic: a run id with a space and a ";".
+    store.selectedRunId = "r 2;x"
+    compare(store.eventsRunner.current.command.length, 5)
+    compare(store.eventsRunner.current.command[2], "r 2;x", "one argument, unchanged")
+  }
+
+  // 3 (the reset)
+  function test_switching_runs_resets_the_events_and_stops_the_old_fetch() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var first = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsStatus = "error"
+    store.eventsError = "UnknownRunError: no run r1"
+    store.eventsFilter = "Failures"
+    store.selectedRunId = "r2"
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "loading")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r2|--tail|200")
+    compare(first.running, false, "r1's fetch was stopped")
+    compare(store.eventsFilter, "Failures", "the filter is never touched")
+  }
+
+  // 9 (the reset)
+  function test_leaving_run_detail_resets_and_launches_nothing() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsError = "AmMissing: am is not on PATH."
+    store.eventsFilter = "Phases"
+    store.selectedRunId = ""
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "idle")
+    compare(store.eventsRunner.busy, false)
+    compare(proc.running, false, "r1's fetch was stopped")
+    verify(store.eventsRunner.current === proc, "nothing new is launched")
+    compare(store.eventsFilter, "Phases")
+  }
+
+  // 12
+  function test_selecting_the_selected_run_again_does_nothing() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    var seq = store.eventsRunner.seq
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsStatus = "ok"
+    store.selectedRunId = "r1"
+    compare(store.eventsRunner.seq, seq, "no new launch")
+    verify(store.eventsRunner.current === proc)
+    compare(store.events.length, 1, "no reset")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // Behavior: Selection 6
+  function test_refresh_events_fetches_again_without_a_reset() {
+    var store = make(); if (!store) return
+    store.refreshEvents()
+    verify(!store.eventsRunner.current, "no run selected: nothing is launched")
+    compare(store.eventsStatus, "idle")
+    store.selectedRunId = "r1"
+    var first = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsStatus = "error"
+    store.eventsError = "AmMissing: am is not on PATH."
+    store.refreshEvents()
+    verify(store.eventsRunner.current !== first, "a new fetch")
+    compare(first.running, false, "the older fetch was stopped")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+    compare(store.eventsRunner.current.launchGuard, "r1")
+    compare(store.eventsStatus, "loading")
+    compare(store.events.length, 1, "the rows stay until the reply")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 9)
+    compare(store.eventsError, "AmMissing: am is not on PATH.", "the error stays until the reply")
+  }
+
+  // runs-events.py's good line: {"ok": true, "events", "last_seq", "total"}.
+  function eventsReply(events, lastSeq, total) {
+    return JSON.stringify({ ok: true, events: events, last_seq: lastSeq, total: total }) + "\n"
+  }
+
+  // `n` attempt_upsert journal events of card c1's explore attempt 1, seq
+  // first .. first + n - 1.
+  function attemptEvents(first, n) {
+    var out = []
+    for (var i = 0; i < n; i++) {
+      out.push({ seq: first + i, gseq: 1000 + first + i, ts: "2026-10-08T14:38:07Z", run_id: "r1",
+                 event: "attempt_upsert", story: "s1", card: "c1", phase: "explore", attempt: 1,
+                 payload: { status: "ok", duration: 1.5 } })
+    }
+    return out
+  }
+
+  function seqs(rows) { return rows.map(function(r) { return r.seq }).join(",") }
+
+  // r1 selected and its reply applied: events 8..10 of 10 (last_seq 10), so
+  // three rows, eventsDropped 7, eventsCursor 10.
+  function heldStore() {
+    var store = make(); if (!store) return null
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    return store
+  }
+
+  // 4
+  function test_a_good_reply_holds_one_row_per_upsert_event() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var list = F.load("watch-events.json").data.events
+    reply(store.eventsRunner.current, eventsReply(list, 60, 475), 0)
+    var want = list.filter(function(e) { return /_upsert$/.test(e.event) })
+                   .map(function(e) { return e.seq }).join(",")
+    compare(seqs(store.events), want, "only the *_upsert events, ascending seq")
+    compare(store.events.length, 59)
+    compare(JSON.stringify(store.events[0]),
+            JSON.stringify(RunEvents.eventRow(list[1], {}, -new Date().getTimezoneOffset())),
+            "a row is RunEvents.eventRow at the local offset")
+    compare(store.eventsCursor, 60, "last_seq")
+    compare(store.eventsDropped, 415, "475 - 60: the events the tail left out")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(store.eventsRunner.busy, false)
+  }
+
+  // 6
+  function test_one_reply_over_the_cap_keeps_the_newest_500() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 600), 600, 1000), 0)
+    compare(store.events.length, 500)
+    compare(store.events[0].seq, 101, "the lowest seqs were dropped")
+    compare(store.events[499].seq, 600)
+    compare(store.eventsDropped, 500, "1000 - 600 + 100")
+    compare(store.eventsCursor, 600)
+  }
+
+  // 7
+  function test_a_failure_keeps_the_rows() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    compare(seqs(store.events), "8,9,10")
+    store.refreshEvents()
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+    compare(store.eventsStatus, "loading")
+    compare(JSON.stringify(store.events), held, "the rows stay while refreshing")
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsStatus, "error")
+    compare(store.eventsError, "UnknownRunError: no run r1")
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current, "not json\n", 1)
+    compare(store.eventsStatus, "error")
+    compare(store.eventsError, "The events snapshot gave no usable result (exit 1).")
+    compare(JSON.stringify(store.events), held)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "Usage", message: "runs-events.py RUN [--since SEQ] [--tail N]" } }) + "\n", 2)
+    compare(store.eventsError, "Usage: runs-events.py RUN [--since SEQ] [--tail N]")
+    compare(JSON.stringify(store.events), held)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "", "a good reply clears the error")
+  }
+
+  // Review Focus 1
+  function test_a_refresh_folds_into_the_held_rows() {
+    var store = heldStore(); if (!store) return
+    store.refreshEvents()
+    var fresh = attemptEvents(9, 4)
+    fresh[0].payload.status = "failed"
+    reply(store.eventsRunner.current, eventsReply(fresh, 12, 12), 0)
+    compare(seqs(store.events), "8,9,10,11,12", "one row per seq")
+    compare(store.events[1].status, "failed", "the reply's row wins")
+    compare(store.eventsDropped, 7, "events 1..7: the held seq 8 fills part of the gap")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsStatus, "ok")
+  }
+
+  // Applying a reply: eventsDropped is never below 0
+  function test_held_rows_below_a_refresh_never_make_dropped_negative() {
+    var store = heldStore(); if (!store) return
+    store.refreshEvents()
+    // synthetic: no total, so it counts the 4 received; held 8 lies below them.
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: true, events: attemptEvents(9, 4), last_seq: 12 }) + "\n", 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsDropped, 0, "4 - 4 - 1 is floored at 0")
+  }
+
+  // Review Focus 2
+  function test_an_ok_reply_without_an_events_list_is_unusable() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    // synthetic: lines runs-events.py never prints.
+    var bad = [JSON.stringify({ ok: true }), JSON.stringify({ ok: true, events: { seq: 1 } }),
+               JSON.stringify({ ok: "yes", events: [] }), "[1, 2]", "", "   \n\n"]
+    for (var i = 0; i < bad.length; i++) {
+      store.refreshEvents()
+      reply(store.eventsRunner.current, bad[i] + "\n", 0)
+      compare(store.eventsStatus, "error", bad[i])
+      compare(store.eventsError, "The events snapshot gave no usable result (exit 0).", bad[i])
+      compare(JSON.stringify(store.events), held, bad[i])
+      compare(store.eventsDropped, 7, bad[i])
+      compare(store.eventsCursor, 10, bad[i])
+    }
+    // synthetic: junk and unknown kinds among the events are skipped.
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          eventsReply([null, 5, "x", [], { seq: 11, event: "lease_acquired", payload: {} }, attemptEvents(11, 1)[0]], 11, 11), 0)
+    compare(store.eventsStatus, "ok")
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.eventsCursor, 11)
+  }
+
+  // Review Focus 3
+  function test_a_bad_total_or_last_seq_falls_back() {
+    // synthetic: totals runs-events.py never prints count the events received.
+    var totals = [undefined, null, "10", 2, 2.5, -1]
+    for (var i = 0; i < totals.length; i++) {
+      var store = make(); if (!store) return
+      store.selectedRunId = "r1"
+      reply(store.eventsRunner.current,
+            JSON.stringify({ ok: true, events: attemptEvents(8, 3), last_seq: 10, total: totals[i] }) + "\n", 0)
+      compare(store.eventsStatus, "ok", String(totals[i]))
+      compare(store.eventsDropped, 0, String(totals[i]))
+    }
+    // synthetic: a last_seq that is not a non-negative integer is ignored.
+    var lasts = [undefined, null, "12", -1, 12.5, 3]
+    for (var j = 0; j < lasts.length; j++) {
+      var other = make(); if (!other) return
+      other.selectedRunId = "r1"
+      reply(other.eventsRunner.current,
+            JSON.stringify({ ok: true, events: attemptEvents(8, 3), last_seq: lasts[j], total: 3 }) + "\n", 0)
+      compare(other.eventsCursor, 10, "the highest held seq: " + String(lasts[j]))
+    }
+    var ahead = make(); if (!ahead) return
+    ahead.selectedRunId = "r1"
+    reply(ahead.eventsRunner.current, eventsReply(attemptEvents(8, 3), 12, 3), 0)
+    compare(ahead.eventsCursor, 12, "last_seq above the rows")
+  }
+
+  // 3
+  function test_switching_after_a_good_reply_starts_over() {
+    var store = heldStore(); if (!store) return
+    store.eventsFilter = "Failures"
+    store.refreshEvents()
+    var inFlight = store.eventsRunner.current
+    store.selectedRunId = "r2"
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "loading")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r2|--tail|200")
+    compare(inFlight.running, false, "r1's fetch was stopped")
+    compare(store.eventsFilter, "Failures")
+  }
+
+  // 8
+  function test_a_reply_for_a_run_no_longer_selected_is_dropped() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var p1 = store.eventsRunner.current
+    store.selectedRunId = "r2"
+    var p2 = store.eventsRunner.current
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "loading", "r1's reply changes nothing")
+    compare(store.events.length, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsDropped, 0)
+    compare(store.eventsRunner.busy, true, "r2's fetch is still in flight")
+    // The run-id check on its own, past the runner's latest-wins.
+    store.applyEvents(eventsReply(attemptEvents(1, 3), 3, 3), 0, "r1")
+    compare(store.eventsStatus, "loading")
+    compare(store.events.length, 0)
+    reply(p2, eventsReply(attemptEvents(5, 2), 6, 6), 0)
+    compare(seqs(store.events), "5,6", "r2's reply lands")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 9 (the late reply) and Review Focus 4
+  function test_a_reply_after_leaving_or_reselecting_is_dropped() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var p1 = store.eventsRunner.current
+    store.selectedRunId = ""
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "idle", "a late reply after leaving changes nothing")
+    compare(store.events.length, 0)
+    compare(store.eventsCursor, 0)
+    store.selectedRunId = "r1"
+    var p2 = store.eventsRunner.current
+    verify(p2 !== p1)
+    store.selectedRunId = ""
+    store.selectedRunId = "r1"
+    var p3 = store.eventsRunner.current
+    reply(p2, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "loading", "the same run's superseded fetch changes nothing")
+    compare(store.events.length, 0)
+    reply(p3, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(seqs(store.events), "1,2,3")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 10
+  function test_a_project_switch_leaves_the_events_alone() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    store.project = tc.rootA
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    var held = JSON.stringify(store.events)
+    var seq = store.eventsRunner.seq
+    store.project = tc.rootB
+    store.projectRoots = registry([tc.rootB])
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(store.eventsRunner.seq, seq, "nothing is launched")
+
+    store.refreshEvents()
+    var proc = store.eventsRunner.current
+    store.project = tc.rootA
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    compare(proc.running, true, "the fetch in flight is not stopped")
+    verify(store.eventsRunner.current === proc)
+    reply(proc, eventsReply(attemptEvents(11, 1), 11, 11), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply lands")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 11
+  function test_an_events_reply_touches_nothing_else() {
+    var store = opened(); if (!store) return
+    var before = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                  selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                                  logsLoading: store.logsLoading, logsError: store.logsError,
+                                  logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "AmMissing", message: "am is not on PATH." } }) + "\n", 0)
+    compare(store.eventsError, "AmMissing: am is not on PATH.")
+    var after = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                 selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                                 logsLoading: store.logsLoading, logsError: store.logsError,
+                                 logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    compare(after, before, "an error reply")
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 2), 2, 2), 0)
+    compare(store.eventsStatus, "ok")
+    after = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                             selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                             logsLoading: store.logsLoading, logsError: store.logsError,
+                             logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    compare(after, before, "a good reply")
+  }
+
+  // 5
+  function test_titles_come_from_the_project_then_the_run_tree_then_the_short_id() {
+    var store = opened(); if (!store) return
+    var domain = "9f0f68fc-f231-4ef2-b646-00a7af925ea2"   // tree title "Dispatch domain"
+    var backend = "7a7effb4-6ec5-4596-bcf1-be24546d4ac1"  // tree title "Dispatch backend"
+    var stranger = "11111111-2222-3333-4444-5555deadbeef" // in neither map
+    var t = {}
+    t[tc.openCard] = "Open subtask"
+    t[backend] = "Board story"
+    store.titles = t
+    var events = [
+      { seq: 1, event: "story_upsert", story: domain, payload: { status: "pending" } },
+      { seq: 2, event: "story_upsert", story: backend, payload: { status: "started" } },
+      { seq: 3, event: "subtask_upsert", story: backend, card: tc.openCard, payload: { status: "started" } },
+      { seq: 4, event: "phase_upsert", story: backend, card: stranger, phase: "explore",
+        payload: { name: "explore", status: "started" } }
+    ]
+    reply(store.eventsRunner.current, eventsReply(events, 4, 4), 0)
+    compare(store.events.map(function(r) { return r.label }).join("|"),
+            "Dispatch domain|Board story|Open subtask|…deadbeef explore")
+    compare(JSON.stringify(store.titles), JSON.stringify(t), "titles is never modified")
+    store.titles = {}
+    compare(store.events[0].label, "Dispatch domain", "held rows are not relabelled")
+    compare(store.events[1].label, "Board story")
+  }
+
+  // Review Focus 5
+  function test_titles_that_are_not_text_fall_back_to_the_short_id() {
+    var store = make(); if (!store) return
+    // synthetic: titles App never hands over.
+    store.titles = null
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: 7 }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: "" }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: "Card one" }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events.length, 1)
+    compare(store.events[0].label, "Card one explore.1", "the reply's row replaces the held one")
+  }
+
+  // ---- the follow-up fetch on a change (3.2)
+
+  // heldStore()'s rows (8..10, cursor 10, dropped 7) with the panel open.
+  function activeHeld() {
+    var store = make(); if (!store) return null
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    return store
+  }
+
+  // 1
+  function test_a_change_fetches_since_the_cursor() {
+    var store = activeHeld(); if (!store) return
+    var others = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                  logsSeq: store.logsRunner.seq, filter: store.eventsFilter })
+    store.runsNudged(["r1"])
+    var proc = store.eventsRunner.current
+    compare(argv(proc), tc.eventsCmd + "r1|--since|10")
+    compare(proc.command.length, 5, "no project root argument")
+    compare(proc.launchGuard, "r1", "guarded by the run id")
+    compare(store.eventsStatus, "loading")
+    compare(seqs(store.events), "8,9,10", "the rows stay until the reply")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    reply(proc, eventsReply(attemptEvents(11, 2), 12, 2), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsDropped, 7, "a --since reply counts only events after the cursor")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                             logsSeq: store.logsRunner.seq, filter: store.eventsFilter }),
+            others, "nothing else is touched")
+  }
+
+  // 2 and Review Focus 5
+  function test_a_change_for_other_runs_fetches_nothing() {
+    var store = activeHeld(); if (!store) return
+    var held = JSON.stringify(store.events)
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r2", "z9"])
+    compare(store.eventsRunner.seq, seq, "nothing is launched")
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsCursor, 10)
+    compare(store.eventsDropped, 7)
+    // synthetic: the selected id twice, among other ids and non-strings.
+    store.runsNudged(["r2", "r1", null, 5, "r1"])
+    compare(store.eventsRunner.seq, seq + 1, "one launch")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+  }
+
+  // Review Focus 5
+  function test_a_change_passes_the_run_id_verbatim() {
+    var store = make(); if (!store) return
+    store.active = true
+    // synthetic: a run id with a space and a ";".
+    store.selectedRunId = "r 2;x"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 2), 2, 2), 0)
+    store.runsNudged(["r 2;x"])
+    var proc = store.eventsRunner.current
+    compare(proc.command.length, 5)
+    compare(proc.command[2], "r 2;x", "one argument, unchanged")
+    compare(proc.command[3], "--since")
+    compare(proc.command[4], "2")
+  }
+
+  // 3
+  function test_no_selection_a_closed_panel_or_bad_ids_fetch_nothing() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.runsNudged(["r1"])
+    verify(!store.eventsRunner.current, "no run selected: nothing is launched")
+    compare(store.eventsStatus, "idle")
+    var closed = heldStore(); if (!closed) return
+    var seq = closed.eventsRunner.seq
+    closed.runsNudged(["r1"])
+    compare(closed.eventsRunner.seq, seq, "the panel is closed")
+    compare(closed.eventsStatus, "ok")
+    var open = activeHeld(); if (!open) return
+    seq = open.eventsRunner.seq
+    // synthetic: ids that are not a list.
+    var bad = ["r1", null, undefined, { r1: true }, 7]
+    for (var i = 0; i < bad.length; i++) {
+      open.runsNudged(bad[i])
+      compare(open.eventsRunner.seq, seq, String(bad[i]))
+      compare(open.eventsStatus, "ok", String(bad[i]))
+    }
+    open.runsNudged(["r1"])
+    compare(open.eventsRunner.seq, seq + 1, "a list naming the selected run launches")
+    compare(argv(open.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+  }
+
+  // 9 and Review Focus 4
+  function test_a_finished_run_gets_its_last_events_from_the_watch() {
+    var store = threeRoots(); if (!store) return
+    compare(Runs.runState(store.runById("a1")), "done")
+    store.selectedRunId = "a1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    nudge(store, ["a1", 11])
+    fire(store.debounceTimer)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "a1|--since|10")
+    reply(store.eventsRunner.current,
+          eventsReply([{ seq: 11, gseq: 1011, ts: "2026-10-08T14:40:00Z", run_id: "a1", event: "run_upsert",
+                         payload: { status: "done" } }], 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.events[3].level, "run")
+    compare(store.events[3].label, "run done")
+    compare(store.events[3].status, "done")
+    compare(store.eventsCursor, 11)
+    compare(store.eventsDropped, 7)
+  }
+
+  // 10
+  function test_a_change_reply_out_of_order_with_repeats_folds_one_row_per_seq() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    // synthetic: am lists each seq once, ascending; this reply does neither.
+    var first12 = attemptEvents(12, 1)[0]
+    var nine = attemptEvents(9, 1)[0]
+    nine.payload.status = "failed"
+    var eleven = attemptEvents(11, 1)[0]
+    var last12 = attemptEvents(12, 1)[0]
+    last12.payload.status = "escalated"
+    reply(store.eventsRunner.current, eventsReply([first12, nine, eleven, last12], 12, 4), 0)
+    compare(seqs(store.events), "8,9,10,11,12", "ascending, one row per seq")
+    compare(store.events[1].status, "failed", "the reply's 9 wins over the held one")
+    compare(store.events[4].status, "escalated", "the reply's last 12 wins")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsDropped, 7)
+  }
+
+  // 12
+  function test_a_change_with_no_cursor_fetches_the_last_200() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsCursor, 0)
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq + 1, "a fetch is launched")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200", "never --since 0")
+    compare(store.eventsStatus, "loading")
+    compare(store.eventsError, "UnknownRunError: no run r1", "the error stays until the reply")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.eventsDropped, 7, "a --tail reply keeps 3.1's count")
+    compare(store.eventsCursor, 10)
+
+    var empty = make(); if (!empty) return
+    empty.active = true
+    empty.selectedRunId = "r1"
+    reply(empty.eventsRunner.current, eventsReply([], 0, 0), 0)
+    compare(empty.eventsCursor, 0, "a run with no events")
+    var emptySeq = empty.eventsRunner.seq
+    empty.runsNudged(["r1"])
+    compare(empty.eventsRunner.seq, emptySeq + 1)
+    compare(argv(empty.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+  }
+
+  // 13
+  function test_the_cap_counts_on_a_change_reply() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 500), 500, 500), 0)
+    compare(store.events.length, 500)
+    compare(store.eventsDropped, 0)
+    store.runsNudged(["r1"])
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|500")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(501, 20), 520, 20), 0)
+    compare(store.events.length, 500)
+    compare(store.events[0].seq, 21, "the lowest seqs were dropped")
+    compare(store.events[499].seq, 520)
+    compare(store.eventsDropped, 20)
+    compare(store.eventsCursor, 520)
+  }
+
+  // Review Focus 3
+  function test_a_change_reply_with_a_bad_last_seq_is_folded() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    // synthetic: last_seq values runs-events.py never prints.
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: true, events: attemptEvents(11, 1), total: 1 }) + "\n", 0)
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.eventsCursor, 11, "the highest held seq")
+    compare(store.eventsDropped, 7)
+    var lasts = [null, "5", -1, 2.5]
+    for (var i = 0; i < lasts.length; i++) {
+      store.runsNudged(["r1"])
+      compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|11", String(lasts[i]))
+      reply(store.eventsRunner.current,
+            JSON.stringify({ ok: true, events: [], last_seq: lasts[i], total: 0 }) + "\n", 0)
+      compare(store.eventsStatus, "ok", String(lasts[i]))
+      compare(seqs(store.events), "8,9,10,11", String(lasts[i]))
+      compare(store.eventsCursor, 11, String(lasts[i]))
+      compare(store.eventsDropped, 7, String(lasts[i]))
+    }
+  }
+
+  // 11
+  function test_a_reply_behind_the_cursor_is_ignored() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "StoreBusyError", message: "the store is busy" } }) + "\n", 0)
+    compare(store.eventsStatus, "error")
+    store.refreshEvents()
+    // synthetic: a reply whose last_seq lies below the cursor.
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(4, 3), 6, 6), 0)
+    compare(JSON.stringify(store.events), held, "the rows are unchanged")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    compare(store.eventsStatus, "ok", "the read succeeded")
+    compare(store.eventsError, "")
+    store.refreshEvents()
+    var again = attemptEvents(9, 2)
+    again[0].payload.status = "failed"
+    reply(store.eventsRunner.current, eventsReply(again, 10, 10), 0)
+    compare(store.events[1].status, "failed", "a last_seq equal to the cursor is folded")
+    compare(seqs(store.events), "8,9,10")
+    compare(store.eventsCursor, 10)
+    compare(store.eventsDropped, 7, "10 - 2 - 1 held below")
+  }
+
+  // An open panel with r1 selected: its --tail 200 fetch in flight.
+  function activeSelected() {
+    var store = make(); if (!store) return null
+    store.active = true
+    store.selectedRunId = "r1"
+    return store
+  }
+
+  // 4
+  function test_changes_during_a_fetch_queue_one_follow_up() {
+    var store = activeSelected(); if (!store) return
+    var tail = store.eventsRunner.current
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    store.runsNudged(["r1"])
+    store.runsNudged(["r2", "r1"])
+    verify(store.eventsRunner.current === tail, "the fetch in flight is left alone")
+    compare(tail.running, true)
+    compare(store.eventsRunner.seq, seq)
+    reply(tail, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(seqs(store.events), "8,9,10", "its reply is applied")
+    compare(store.eventsRunner.seq, seq + 1, "exactly one follow-up")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+    compare(store.eventsStatus, "loading")
+    reply(store.eventsRunner.current, eventsReply([], 10, 0), 0)
+    compare(store.eventsRunner.seq, seq + 1, "nothing more")
+    compare(store.eventsRunner.busy, false)
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 5
+  function test_a_change_during_the_follow_up_queues_one_more() {
+    var store = activeSelected(); if (!store) return
+    store.runsNudged(["r1"])
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    var followUp = store.eventsRunner.current
+    compare(argv(followUp), tc.eventsCmd + "r1|--since|10")
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    verify(store.eventsRunner.current === followUp, "the follow-up is left alone")
+    reply(followUp, eventsReply(attemptEvents(11, 2), 12, 2), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsRunner.seq, seq + 1)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|12", "from the cursor the reply raised")
+  }
+
+  // 6
+  function test_the_follow_up_runs_after_a_failed_reply() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var first = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    reply(first, JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsError, "UnknownRunError: no run r1", "the failure was applied")
+    verify(store.eventsRunner.current !== first, "then the follow-up launched")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10", "from the unchanged cursor")
+    compare(store.eventsStatus, "loading")
+    compare(seqs(store.events), "8,9,10")
+    compare(store.eventsDropped, 7)
+    var second = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    reply(second, "not json\n", 1)
+    compare(store.eventsError, "The events snapshot gave no usable result (exit 1).")
+    verify(store.eventsRunner.current !== second, "an unusable reply is followed up too")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(seqs(store.events), "8,9,10,11")
+  }
+
+  // Review Focus 1
+  function test_a_refresh_supersedes_a_change_fetch_and_the_follow_up_waits() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.refreshEvents()
+    var refresh = store.eventsRunner.current
+    compare(argv(refresh), tc.eventsCmd + "r1|--tail|200")
+    compare(change.running, false, "latest wins")
+    var seq = store.eventsRunner.seq
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(store.eventsRunner.seq, seq, "the superseded fetch's exit launches nothing")
+    compare(seqs(store.events), "8,9,10", "and is not applied")
+    reply(refresh, eventsReply(attemptEvents(11, 2), 12, 20), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsDropped, 15, "a --tail reply: 20 - 2 - 3 held below")
+    compare(store.eventsRunner.seq, seq + 1, "the queued follow-up runs after the refresh")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|12")
+  }
+
+  // 7
+  function test_a_new_selection_clears_the_queue() {
+    var store = activeSelected(); if (!store) return
+    var p1 = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.selectedRunId = "r2"
+    var p2 = store.eventsRunner.current
+    compare(argv(p2), tc.eventsCmd + "r2|--tail|200")
+    var seq = store.eventsRunner.seq
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsRunner.seq, seq, "r1's late exit launches nothing")
+    reply(p2, eventsReply(attemptEvents(5, 2), 6, 6), 0)
+    compare(seqs(store.events), "5,6")
+    compare(store.eventsRunner.seq, seq, "no follow-up: the queue went with r1")
+    compare(store.eventsRunner.busy, false)
+
+    store.selectedRunId = "r1"
+    var p3 = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.selectedRunId = ""
+    compare(store.eventsRunner.busy, false)
+    seq = store.eventsRunner.seq
+    reply(p3, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsRunner.seq, seq, "nothing is launched after leaving")
+    compare(store.eventsStatus, "idle")
+    store.selectedRunId = "r1"
+    var p4 = store.eventsRunner.current
+    seq = store.eventsRunner.seq
+    reply(p4, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(seqs(store.events), "1,2,3")
+    compare(store.eventsRunner.seq, seq, "the queue went with leaving")
+  }
+
+  // 8 and Review Focus 2
+  function test_closing_the_panel_starts_nothing_new() {
+    var store = activeSelected(); if (!store) return
+    var tail = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    compare(tail.running, true, "the fetch in flight is not stopped")
+    verify(store.eventsRunner.current === tail)
+    var seq = store.eventsRunner.seq
+    reply(tail, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(seqs(store.events), "8,9,10", "its reply is applied")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsRunner.seq, seq, "nothing is launched after it")
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq, "a change while closed starts nothing")
+    store.active = true
+    compare(store.eventsRunner.seq, seq, "reopening launches no events fetch")
+    compare(store.eventsRunner.busy, false)
+    compare(seqs(store.events), "8,9,10", "reopening keeps the rows")
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq + 1)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply is applied")
+    compare(store.eventsRunner.seq, seq + 1, "a change queued before a closing does not outlive it")
+  }
+
+  // 8: the queue is cleared on closing, not merely skipped while closed.
+  function test_a_change_queued_before_a_closing_is_gone_after_reopening() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    store.active = true
+    var seq = store.eventsRunner.seq
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply is applied")
+    compare(store.eventsRunner.seq, seq, "the follow-up queued before the closing is not launched")
+    compare(store.eventsRunner.busy, false)
+  }
+
+  // ---- Run detail's tab (4.3)
+
+  // 1
+  function test_the_detail_tab_starts_on_output() {
+    var store = make(); if (!store) return
+    compare(store.detailTab, "output")
+  }
+
+  // 2
+  function test_set_detail_tab_takes_output_and_events_only() {
+    var store = make(); if (!store) return
+    compare(store.setDetailTab("events"), true)
+    compare(store.detailTab, "events")
+    compare(store.setDetailTab("output"), true)
+    compare(store.detailTab, "output")
+    store.setDetailTab("events")
+    var bad = ["Events", "", undefined, "logs", null, 1]
+    for (var i = 0; i < bad.length; i++) {
+      compare(store.setDetailTab(bad[i]), false, String(bad[i]))
+      compare(store.detailTab, "events", "unchanged by " + String(bad[i]))
+    }
+  }
+
+  // 3
+  function test_toggle_detail_tab_alternates() {
+    var store = make(); if (!store) return
+    store.toggleDetailTab()
+    compare(store.detailTab, "events")
+    store.toggleDetailTab()
+    compare(store.detailTab, "output")
+  }
+
+  // 4
+  function test_a_selection_change_puts_the_tab_back_on_output() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    store.setDetailTab("events")
+    store.selectedRunId = "r2"
+    compare(store.detailTab, "output", "another run")
+    store.setDetailTab("events")
+    store.selectedRunId = ""
+    compare(store.detailTab, "output", "no run")
+  }
+
+  // 5
+  function test_nothing_else_moves_the_detail_tab() {
+    var store = opened(); if (!store) return
+    store.setDetailTab("events")
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "done")]), 0)
+    compare(store.selectedRunId, "r1", "the snapshot kept the selection")
+    compare(store.detailTab, "events", "a snapshot")
+    store.eventsFilter = "Failures"
+    compare(store.detailTab, "events", "the filter")
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    reply(store.logsRunner.current, logsReply("3 passed\n"), 0)
+    compare(store.detailTab, "events", "an attempt and its logs")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.detailTab, "events", "an events reply")
+    // synthetic: rows as a reply would leave them.
+    store.events = [{ seq: 4 }]
+    store.runsNudged(["r1"])
+    compare(store.detailTab, "events", "rows and a nudge")
   }
 }

@@ -12,15 +12,19 @@ import "../theme" as T
 // (StopReasonBlock: Runs.stopReport, am's note from the open project's
 // comments, Open card and Relaunch); its story > subtask > phase > attempt
 // tree, with the orchestrator's own Integrate / Bases / Base rows when it has
-// them; and an output pane holding ONE attempt's `am logs` snapshot --
-// labelled with its age, never presented as a live tail. Run state always
-// comes from am (the run store), never from a brd status; brd's board only
-// lends titles, dims the cards it has closed and holds the card Relaunch
-// opens. It reads the run store and asks it to show another attempt, fetch
-// again or open a relaunch; it owns no state of its own. A run outside the
-// open project shows no note, and its Open card and Relaunch are disabled with
-// the reason. Ages are read against the clock when a logs reply lands or a
-// snapshot replaces the runs: no timer.
+// them; and a bottom area of two tabs, app.runs.detailTab, chosen by the
+// Output / Events chips. Output holds ONE attempt's `am logs` snapshot --
+// labelled with its age, never presented as a live tail. Events is the run's
+// event timeline (EventsPane over app.runs.events); its filter chips set
+// app.runs.eventsFilter, and a row naming an attempt selects that attempt and
+// shows Output. The Events chip counts the rows held plus
+// app.runs.eventsDropped. Run state always comes from am (the run store), never
+// from a brd status; brd's board only lends titles, dims the cards it has
+// closed and holds the card Relaunch opens. It reads the run store and asks it
+// to show another attempt or tab, fetch again or open a relaunch; it owns no
+// state of its own. A run outside the open project shows no note, and its Open
+// card and Relaunch are disabled with the reason. Ages are read against the
+// clock when a logs reply lands or a snapshot replaces the runs: no timer.
 Column {
   id: screen
   objectName: "runDetailView"
@@ -46,6 +50,8 @@ Column {
   readonly property var stopNoteFound: screen.noteOf(screen.run, screen.stopReport, screen.inOpenProject)
   readonly property var stopNote: screen.stopNoteFound.note
   readonly property string stopNoteCardId: screen.stopNoteFound.cardId
+  // The rows the store holds; 0 when `events` is not an array.
+  readonly property int eventsHeld: Array.isArray(screen.app.runs.events) ? screen.app.runs.events.length : 0
 
   visible: screen.app.nav.viewMode === "run"
   spacing: Style.space(6)
@@ -309,10 +315,22 @@ Column {
       delegate: SyntheticRow {}
     }
 
+    UI.ChipRow {
+      objectName: "runTabs"
+      width: parent.width
+      theme: screen.theme
+      chipPrefix: "runTab"
+      active: screen.app.runs.detailTab
+      model: [{ id: "output", label: "Output" },
+              { id: "events", label: "Events", count: screen.eventsHeld + screen.app.runs.eventsDropped }]
+      onChosen: function(id) { screen.app.runs.setDetailTab(id) }
+    }
+
     Column {
       objectName: "runOutputPane"
       width: parent.width
       spacing: Style.space(4)
+      visible: screen.app.runs.detailTab === "output"
 
       Row {
         width: parent.width
@@ -374,6 +392,22 @@ Column {
         text: screen.app.runs.logsText
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
+      }
+    }
+
+    UI.EventsPane {
+      width: parent.width
+      visible: screen.app.runs.detailTab === "events"
+      theme: screen.theme
+      rows: screen.app.runs.events
+      filter: screen.app.runs.eventsFilter
+      dropped: screen.app.runs.eventsDropped
+      status: screen.app.runs.eventsStatus
+      errorMessage: screen.app.runs.eventsError
+      onFilterRequested: function(f) { screen.app.runs.eventsFilter = f }
+      onAttemptRequested: function(card, phase, attempt) {
+        screen.app.runs.selectAttempt(card, phase, attempt)
+        screen.app.runs.setDetailTab("output")
       }
     }
 

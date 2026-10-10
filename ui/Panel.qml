@@ -402,12 +402,14 @@ Panel {
       Math.max(Style.space(620), 0.8 * panel.screenH))
 
     // The Ctrl chords, then the run keys (p / r / c on the Runs list and Run
-    // detail), then d (the dispatch, on the board list and a card). An
-    // accepted key is not typed into the search field.
+    // detail), then d (the dispatch, on the board list and a card), then e
+    // (Output / Events on Run detail). An accepted key is not typed into the
+    // search field.
     Item {
       id: globalKeys
       Keys.onPressed: function(event) {
-        if (sc.handleGlobalKey(event) || sc.handleRunKey(event) || sc.handleDispatchKey(event)) event.accepted = true
+        if (sc.handleGlobalKey(event) || sc.handleRunKey(event) || sc.handleDispatchKey(event)
+            || sc.handleEventsKey(event)) event.accepted = true
       }
     }
 

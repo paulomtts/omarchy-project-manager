@@ -864,4 +864,75 @@ TestCase {
     compare(s.app.nav.viewMode, "entry", "no Back")
     compare(tc.calls.indexOf("close"), -1, "no panel close")
   }
+
+  // ---- e: Run detail's Output / Events tabs (4.3)
+
+  // 15
+  function test_e_toggles_the_tabs_on_run_detail() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.app.nav.viewMode, "run")
+    compare(s.app.runs.detailTab, "output")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), true)
+    compare(s.app.runs.detailTab, "events")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), true)
+    compare(s.app.runs.detailTab, "output")
+  }
+
+  // 16
+  function test_only_a_bare_e_is_the_events_key() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.handleEventsKey(shift(Qt.Key_E)), false, "Shift+E")
+    compare(s.handleEventsKey(ctrl(Qt.Key_E)), false, "Ctrl+E is the memory edit chord")
+    compare(s.handleEventsKey(plain(Qt.Key_X)), false, "another letter")
+    compare(s.app.runs.detailTab, "output")
+  }
+
+  // 17
+  function test_e_does_nothing_off_run_detail() {
+    var s = inRunKeys(); if (!s) return
+    s.app.runs.setDetailTab("events")
+    compare(s.app.nav.viewMode, "runs")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "runs")
+    s.navigator.showSection("board")
+    compare(s.app.nav.viewMode, "board")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "board")
+    s.app.board.applyTreeData([card("m1", "Milestone", "todo")])
+    wait(20)
+    s.navigator.openCard("m1")
+    compare(s.app.nav.viewMode, "entry")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "entry")
+    compare(s.app.runs.detailTab, "events", "unchanged")
+  }
+
+  // 18
+  function test_a_modal_or_the_dropdown_swallows_e() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.app.runs.openCancel("run-0000000000a1"), true)
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "the cancel confirmation")
+    s.app.runs.closeCancel()
+    s.app.runs.dispatchState = "ready"
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "an open dispatch")
+    s.app.runs.dispatchState = "idle"
+    s.navigator.toggleDropdown()
+    compare(s.app.nav.dropdownOpen, true)
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "the dropdown")
+    compare(s.app.runs.detailTab, "output")
+  }
+
+  // Review Focus 5
+  function test_e_with_no_run_selected_toggles_harmlessly() {
+    failOnWarning(/TypeError|ReferenceError|is not a function/)
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    s.app.runs.selectedRunId = ""
+    compare(s.app.nav.viewMode, "run")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), true)
+    compare(s.app.runs.detailTab, "events")
+    s.navigator.goBack()
+    s.navigator.openRun("run-0000000000b2")
+    compare(s.app.runs.detailTab, "output", "the next run opens on Output")
+  }
 }

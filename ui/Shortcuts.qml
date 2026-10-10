@@ -2,8 +2,8 @@ import QtQuick
 import qs.Commons
 
 // Every key the panel reacts to, in one place: the Ctrl chords, the run keys
-// (p / r / c), the dispatch key (d), the Escape chain, the arrows the key
-// catcher reports, and the search field's own keys.
+// (p / r / c), the dispatch key (d), the events key (e), the Escape chain, the
+// arrows the key catcher reports, and the search field's own keys.
 // The ORDER of the guards here is load bearing -- a modal must swallow the
 // global shortcuts, and Escape must unwind the modals before it unwinds the
 // navigation -- so nothing in this file may be reordered.
@@ -95,6 +95,17 @@ QtObject {
     var id = card && typeof card.id === "string" ? card.id : ""
     if (id === "") return false
     keys.actions.openDispatch(id)
+    return true
+  }
+
+  // e with no modifier at all switches Run detail's bottom area between
+  // Output and Events. Returns true when it did. Anywhere but Run detail,
+  // under a modal or the open dropdown, the letter is left alone; Run detail
+  // shows no search field, so no text field has the keys there.
+  function handleEventsKey(event) {
+    if (event.modifiers !== Qt.NoModifier || event.key !== Qt.Key_E) return false
+    if (keys.app.nav.viewMode !== "run" || keys.modalOpen() || keys.app.nav.dropdownOpen) return false
+    keys.app.runs.toggleDetailTab()
     return true
   }
 

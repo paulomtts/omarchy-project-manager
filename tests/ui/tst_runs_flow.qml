@@ -1219,4 +1219,106 @@ TestCase {
     reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}', 0)
     compare(H.find(p, "dispatchBase").text, "release", "the run's base is kept over the default branch")
   }
+
+  // ---- the Output / Events tabs (4.3)
+
+  // A complete row as RunEvents.eventRow returns it; `fields` overrides.
+  function eventRow(seq, fields) {
+    var row = { seq: seq, time: "12:00:00", level: "attempt", label: "row " + seq, status: "done",
+                glyph: "done", duration: "", detail: "", card: "card-" + seq, phase: "implement",
+                attempt: 1 }
+    for (var key in fields) row[key] = fields[key]
+    return row
+  }
+
+  // The run's events fetch is disarmed and `rows` held, as a reply would
+  // leave them. synthetic: the rows are the test's.
+  function holdRows(p, rows) {
+    p.app.runs.eventsRunner.cancel()
+    p.app.runs.events = rows
+    p.app.runs.eventsStatus = "ok"
+  }
+
+  // 19
+  function test_e_switches_run_detail_to_events_and_back() {
+    var p = openDetail(); if (!p) return
+    H.find(p, "keyCatcher").forceActiveFocus()
+    keyClick("e")
+    compare(p.app.runs.detailTab, "events")
+    compare(H.find(p, "eventsPane").visible, true)
+    compare(H.find(p, "runOutputPane").visible, false)
+    keyClick("e")
+    compare(p.app.runs.detailTab, "output")
+    compare(H.find(p, "eventsPane").visible, false)
+    compare(H.find(p, "runOutputPane").visible, true)
+  }
+
+  // 20
+  function test_e_in_the_runs_search_types() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    var field = H.find(p, "searchField")
+    field.forceActiveFocus()
+    keyClick("e")
+    compare(field.text, "e")
+    compare(p.app.nav.searchQuery, "e")
+    compare(p.app.runs.detailTab, "output")
+  }
+
+  // 21. The panel's popup is a test stub, so the row's own activated() stands
+  // in for the click; the screen tier clicks it.
+  function test_an_event_row_click_loads_that_attempt_and_shows_output() {
+    var p = openDetail(); if (!p) return
+    compare(p.app.runs.selectedAttempt.attempt, 2, "the default attempt")
+    holdRows(p, [eventRow(5, { card: "t1", phase: "implement", attempt: 1 })])
+    p.app.runs.setDetailTab("events")
+    wait(50)
+    var row = H.find(p, "eventsRow5")
+    verify(row, "the row is drawn")
+    row.activated()
+    compare(p.app.runs.logsRunner.current.command.slice(2).join("|"), "/home/u/a|run-0000000000e5|t1|implement|1")
+    compare(JSON.stringify(p.app.runs.selectedAttempt), JSON.stringify({ card_id: "t1", phase: "implement", attempt: 1 }))
+    compare(p.app.runs.detailTab, "output")
+    compare(H.find(p, "runOutputPane").visible, true)
+    compare(H.find(p, "runOutputHeading").text, "Output · t1 implement.1")
+  }
+
+  // 22. The events fetch is left in flight: leaving must stop it.
+  function test_leaving_run_detail_clears_the_events_and_resets_the_tab_data() {
+    return [{ tag: "escape" }, { tag: "left-arrow" }, { tag: "crumb" }]
+  }
+
+  function test_leaving_run_detail_clears_the_events_and_resets_the_tab(data) {
+    var p = openDetail(); if (!p) return
+    compare(p.app.runs.eventsRunner.busy, true, "the run's events are being fetched")
+    // synthetic: rows as a reply would leave them.
+    p.app.runs.events = [eventRow(5, {}), eventRow(6, {})]
+    p.app.runs.setDetailTab("events")
+    if (data.tag === "escape") p.shortcuts.closeRequested()
+    else if (data.tag === "left-arrow") p.shortcuts.handleMove(-1, 0)
+    else p.navigator.activateCrumb(0)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.app.runs.events.length, 0)
+    compare(p.app.runs.eventsStatus, "idle")
+    compare(p.app.runs.eventsRunner.busy, false, "no events fetch in flight")
+    compare(p.app.runs.detailTab, "output")
+    p.navigator.openRun("run-0000000000e5")
+    wait(50)
+    compare(H.find(p, "runOutputPane").visible, true)
+    compare(H.find(p, "eventsPane").visible, false)
+  }
+
+  // Review Focus 4
+  function test_e_typed_into_the_cancel_confirmation_on_run_detail_types() {
+    var p = openDetail(); if (!p) return
+    H.find(p, "keyCatcher").forceActiveFocus()
+    keyClick("c")
+    compare(p.app.runs.cancelOpen, true)
+    wait(50)
+    compare(p.focusItem.objectName, "runCancelField")
+    keyClick("e")
+    compare(p.app.runs.cancelText, "e")
+    compare(p.app.runs.detailTab, "output")
+  }
 }

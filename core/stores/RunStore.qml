@@ -2,6 +2,7 @@ import QtQml
 import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
+import "../domain/runEvents.js" as RunEvents
 
 // The am run monitor's data. One list snapshot covers every registered
 // project: runs-snapshot-all.py with each usable root of `projectRoots`, in
@@ -27,7 +28,11 @@ import "../domain/runs.js" as Runs
 // seen (storeId); the first store_id seen resets nothing. watchCursor is
 // the watch's last cursor, held in memory only. Logs are fetched on a
 // selection, on Refresh and when a snapshot changes the selected attempt's
-// status -- never on a timer.
+// status -- never on a timer. The selected run's events (runs-events.py RUN
+// --tail 200) are fetched on a selection and on refreshEvents(), and, while
+// `active`, the ones after eventsCursor (RUN --since eventsCursor) on each
+// runsNudged naming the selected run -- never on a timer, and a project
+// switch leaves them alone.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
@@ -116,6 +121,23 @@ Scope {
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
   property string logsRunState: ""    // the run's Runs.runState when its opening attempt was chosen; "" when not in the snapshot
+
+  // The selected run's event timeline (3.1). `titles` is the open project's
+  // card id -> title map, handed in by App. `events` is RunEvents.eventRow
+  // rows, ascending seq, at most 500, replaced, never changed in place.
+  // A selection empties them and fetches the run's last 200 events; leaving
+  // Run detail empties them and fetches nothing. While active, a runsNudged
+  // naming the selected run fetches the events after eventsCursor.
+  property var titles: ({})
+  property var events: []
+  property int eventsDropped: 0       // the selected run's events not held
+  property int eventsCursor: 0        // the highest seq seen for the selected run
+  property string eventsStatus: "idle" // idle | loading | ok | error
+  property string eventsError: ""     // why the last fetch failed; "" after a good one and after a reset
+  property string eventsFilter: "All" // All | Phases | Failures, read by RunEvents.filterRows; the store never sets it
+  // Run detail's bottom area: output | events. Every selectedRunId change
+  // sets it to output; only setDetailTab and toggleDetailTab change it otherwise.
+  property string detailTab: "output"
 
   // Run controls (S2 4.1). `pending` holds the requests not yet settled,
   // {runId: action}; `stillWaiting` the pending ones 30 s or more old,
@@ -206,6 +228,7 @@ Scope {
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
+  readonly property alias eventsRunner: eventsRunner
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
@@ -371,12 +394,14 @@ Scope {
   // The panel closed: no process and no timer is left running, and no toast
   // or dispatch outlives the opening (a start in flight runs to its end). The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
-  // and is applied. The project filter is back to All projects, with no
-  // projectFilterToggled. The runs, the selection, the chip and amStatus stay
-  // for the next opening.
+  // and is applied. The queued events follow-up is dropped; an events fetch
+  // in flight runs to its end and is applied. The project filter is back to
+  // All projects, with no projectFilterToggled. The runs, the selection, the
+  // events, the chip and amStatus stay for the next opening.
   function stopLive() {
     store.projectFilter = ""
     snapshotState.pending = null
+    eventsState.followUp = false
     store.stopWatch()
     debounceTimer.stop()
     store.nudges = {}
@@ -649,7 +674,7 @@ Scope {
   }
 
   // Another project was opened, or none. The run list, the selection, the
-  // logs, the watch, the coverage, the requests (pending, stillWaiting,
+  // logs, the events, the watch, the coverage, the requests (pending, stillWaiting,
   // controlRunners), the control error, the cancel dialog, the footer flash,
   // the alerts, the toasts and the notify switch belong to every registered
   // project and stay, and no snapshot is launched. Reset: the run settings
@@ -855,11 +880,190 @@ Scope {
     if (status !== store.logsStatus) store.fetchLogs()
   }
 
-  // Another run (or none): the pane starts over, and a selected run opens on
-  // its opening attempt.
+  // Another run (or none): the pane starts over, a selected run opens on its
+  // opening attempt, the events start over (selectEvents) and the tab is
+  // Output.
   onSelectedRunIdChanged: {
     store.clearLogs()
     if (store.selectedRunId !== "") store.openDefaultAttempt()
+    store.selectEvents()
+    store.detailTab = "output"
+  }
+
+  // "output" or "events": sets detailTab and returns true; anything else
+  // leaves it and returns false.
+  function setDetailTab(tab) {
+    if (tab !== "output" && tab !== "events") return false
+    store.detailTab = tab
+    return true
+  }
+
+  // output -> events, events -> output.
+  function toggleDetailTab() {
+    store.detailTab = store.detailTab === "events" ? "output" : "events"
+  }
+
+  // ---- the selected run's events (3.1)
+
+  // No events held and no follow-up queued; then the selected run's last 200
+  // are fetched, or, with no run selected, the fetch in flight is stopped and
+  // the status is idle.
+  function selectEvents() {
+    eventsState.followUp = false
+    store.events = []
+    store.eventsDropped = 0
+    store.eventsCursor = 0
+    store.eventsError = ""
+    if (store.selectedRunId === "") {
+      eventsRunner.cancel()
+      store.eventsStatus = "idle"
+      return
+    }
+    store.fetchEvents()
+  }
+
+  // The selected run fetched again; the rows, eventsDropped, eventsCursor and
+  // eventsError stay until the reply. Nothing without a selected run.
+  function refreshEvents() {
+    if (store.selectedRunId === "") return
+    store.fetchEvents()
+  }
+
+  // runs-events.py RUN --tail 200 for the selected run, guarded by its id.
+  function fetchEvents() {
+    store.eventsStatus = "loading"
+    eventsRunner.guard = store.selectedRunId
+    eventsState.kind = "tail"
+    eventsRunner.run([store.selectedRunId, "--tail", "200"])
+  }
+
+  // A debounce window's run ids (runsNudged). While active, with ids an array
+  // holding selectedRunId: the change fetch (fetchNewEvents), or, while a
+  // fetch is in flight, one follow-up queued behind it (followUpEvents); the
+  // fetch in flight is left alone. The run's status is never read.
+  function nudgeEvents(ids) {
+    if (!store.active || store.selectedRunId === "" || !Array.isArray(ids)) return
+    if (ids.indexOf(store.selectedRunId) < 0) return
+    if (eventsRunner.busy) {
+      eventsState.followUp = true
+      return
+    }
+    store.fetchNewEvents()
+  }
+
+  onRunsNudged: function(ids) { store.nudgeEvents(ids) }
+
+  // The change fetch: runs-events.py RUN --since eventsCursor, guarded by the
+  // run id; with eventsCursor 0, fetchEvents (--tail 200). The rows,
+  // eventsDropped, eventsCursor and eventsError stay until the reply.
+  function fetchNewEvents() {
+    if (store.eventsCursor <= 0) {
+      store.fetchEvents()
+      return
+    }
+    store.eventsStatus = "loading"
+    eventsRunner.guard = store.selectedRunId
+    eventsState.kind = "since"
+    eventsRunner.run([store.selectedRunId, "--since", String(store.eventsCursor)])
+  }
+
+  // The fetch in flight ended and its reply is applied: a queued follow-up is
+  // taken and, while active with a run selected, the change fetch launches
+  // from the state that reply left.
+  function followUpEvents() {
+    if (!eventsState.followUp) return
+    eventsState.followUp = false
+    if (store.active && store.selectedRunId !== "") store.fetchNewEvents()
+  }
+
+  // The labels for an events reply, a fresh object: every own key of
+  // `titles` holding a non-empty string, then, for each story of the
+  // selected run's tree with a string card_id and a non-empty string title,
+  // that title where `titles` has none. `titles` is never modified.
+  function eventTitles() {
+    var out = {}
+    var own = store.titles
+    if (own !== null && typeof own === "object" && !Array.isArray(own)) {
+      for (var key in own) {
+        if (store.hasKey(own, key) && typeof own[key] === "string" && own[key] !== "") out[key] = own[key]
+      }
+    }
+    var run = store.runById(store.selectedRunId)
+    var tree = run !== null && typeof run === "object" && run.tree !== null && typeof run.tree === "object" ? run.tree : {}
+    var stories = Array.isArray(tree.stories) ? tree.stories : []
+    for (var i = 0; i < stories.length; i++) {
+      var s = stories[i]
+      if (s === null || typeof s !== "object") continue
+      if (typeof s.card_id !== "string" || typeof s.title !== "string" || s.title === "") continue
+      if (!store.hasKey(out, s.card_id)) out[s.card_id] = s.title
+    }
+    return out
+  }
+
+  // One events reply, applied only while `launchedGuard` is still the
+  // selected run. ok true with an events array: foldReply, unless its
+  // last_seq is a non-negative integer below eventsCursor, which keeps
+  // events, eventsDropped and eventsCursor. Either way ok, no error. ok
+  // false: error with Runs.errorText. Anything else: error, "no usable
+  // result". A failure keeps events, eventsDropped and eventsCursor. Never
+  // touches any other state.
+  function applyEvents(stdout, exitCode, launchedGuard) {
+    if (launchedGuard !== store.selectedRunId) return
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true && Array.isArray(envelope.events)) {
+      if (store.isSeq(envelope.last_seq) && envelope.last_seq < store.eventsCursor) {
+        store.eventsStatus = "ok"
+        store.eventsError = ""
+        return
+      }
+      store.foldReply(envelope)
+      return
+    }
+    store.eventsStatus = "error"
+    if (envelope !== null && envelope.ok === false) store.eventsError = Runs.errorText(envelope)
+    else store.eventsError = "The events snapshot gave no usable result (exit " + exitCode + ")."
+  }
+
+  // A good reply. Its events become RunEvents.eventRow rows, labelled from
+  // eventTitles() at the local UTC offset (null rows skipped), folded into
+  // the held rows, at most 500.
+  // eventsDropped, after a --tail launch: (total - received) less the held
+  // rows below the reply's lowest seq, at least 0, plus the rows the cap
+  // removed; total is the reply's when an integer >= received, else
+  // received. After a --since launch: its value plus the rows the cap
+  // removed. eventsCursor: the highest of itself, a non-negative integer
+  // last_seq and the held rows' seqs.
+  function foldReply(envelope) {
+    var list = envelope.events
+    var titles = store.eventTitles()
+    var offset = -new Date().getTimezoneOffset()
+    var fresh = []
+    var lowest = null
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i]
+      if (e !== null && typeof e === "object" && typeof e.seq === "number" && isFinite(e.seq)
+          && (lowest === null || e.seq < lowest)) lowest = e.seq
+      var row = RunEvents.eventRow(e, titles, offset)
+      if (row !== null) fresh.push(row)
+    }
+    var held = store.events
+    var priorBelow = 0
+    for (var h = 0; h < held.length; h++) {
+      if (lowest !== null && held[h].seq < lowest) priorBelow += 1
+    }
+    var fold = RunEvents.foldEvents(held, fresh, 500)
+    var received = list.length
+    var total = Number.isInteger(envelope.total) && envelope.total >= received ? envelope.total : received
+    var cursor = store.eventsCursor
+    if (store.isSeq(envelope.last_seq) && envelope.last_seq > cursor) cursor = envelope.last_seq
+    var rows = fold.rows
+    if (rows.length > 0 && rows[rows.length - 1].seq > cursor) cursor = rows[rows.length - 1].seq
+    store.events = rows
+    if (eventsState.kind === "since") store.eventsDropped = store.eventsDropped + fold.dropped
+    else store.eventsDropped = Math.max(0, total - received - priorBelow) + fold.dropped
+    store.eventsCursor = cursor
+    store.eventsStatus = "ok"
+    store.eventsError = ""
   }
 
   // One logs reply. ok:true replaces the text with its last 200 lines; any
@@ -1926,6 +2130,19 @@ Scope {
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
   }
 
+  // The selected run's events helper. Guard: the run id a fetch was launched
+  // for, never the open project. A newer fetch wins over an older one, and a
+  // reply is applied only while its run is still the selected one; then a
+  // queued follow-up launches (followUpEvents).
+  HelperRunner {
+    id: eventsRunner
+    script: store.backendDir + "runs/runs-events.py"
+    onFinished: function(stdout, exitCode, launchedGuard) {
+      store.applyEvents(stdout, exitCode, launchedGuard)
+      store.followUpEvents()
+    }
+  }
+
   // get-global-settings, once per opening (startLive); latest wins. No guard:
   // the switch is viewer-wide, and a reply that lands after the panel closed
   // is still applied.
@@ -2066,6 +2283,16 @@ Scope {
     id: snapshotState
     property var roots: []
     property var pending: null
+  }
+
+  // The selected run's events fetches' own state; kept apart so consumers
+  // cannot write it. `kind` is the newest launch's: "tail" (RUN --tail 200)
+  // or "since" (RUN --since eventsCursor). `followUp`: one change fetch
+  // waits behind the fetch in flight.
+  QtObject {
+    id: eventsState
+    property string kind: "tail"
+    property bool followUp: false
   }
 
   // The control requests' own state; kept apart so consumers cannot write it.
