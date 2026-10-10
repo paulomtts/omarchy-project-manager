@@ -588,6 +588,78 @@ TestCase {
     compare(s.screen.chipLabel("finished"), "Finished")
   }
 
+  // ---- the Finished chip's rows (4.3)
+
+  function test_the_state_row_shows_under_finished_and_the_age_row_under_finished_and_all() {
+    var s = make(sample()); if (!s) return
+    var cases = [["", false, true], ["attention", false, false], ["live", false, false],
+                 ["parked", false, false], ["finished", true, true]]
+    for (var c = 0; c < cases.length; c++) {
+      s.runs.runFilter = cases[c][0]
+      wait(20)
+      compare(shown(s, "runStateChips"), cases[c][1], "the state row under '" + cases[c][0] + "'")
+      compare(shown(s, "runAgeChips"), cases[c][2], "the age row under '" + cases[c][0] + "'")
+      compare(H.find(s.screen, "runChipsFooter").visible, cases[c][2], "the slot under '" + cases[c][0] + "'")
+    }
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(shown(s, "runStateChips"), false, "am missing")
+    compare(shown(s, "runAgeChips"), false, "am missing")
+  }
+
+  function test_the_state_row_reads_and_toggles_the_finished_state() {
+    var s = make(sample()); if (!s) return
+    s.runs.toggleRunFilter("finished")
+    wait(20)
+    var ids = ["all", "done", "escalated", "cancelled"]
+    var labels = ["All finished", "Done", "Escalated", "Cancelled"]
+    for (var i = 0; i < ids.length; i++) compare(H.find(s.screen, "runStateChip" + ids[i]).text, labels[i])
+    compare(H.find(s.screen, "runStateChips").model.length, 4)
+    compare(H.find(s.screen, "runStateChipall").active, true, "\"\" is All finished")
+    s.runs.finishedState = "escalated"
+    compare(H.find(s.screen, "runStateChipescalated").active, true)
+    compare(H.find(s.screen, "runStateChipall").active, false)
+    s.runs.finishedState = ""
+    tap(H.find(s.screen, "runStateChipdone"))
+    compare(s.runs.finishedCalls.join(","), "state|done")
+    compare(s.runs.finishedState, "done")
+    compare(H.find(s.screen, "runStateChipdone").active, true)
+    tap(H.find(s.screen, "runStateChipall"))
+    compare(s.runs.finishedCalls.join(","), "state|done,state|all", "the chip id goes to the store unchanged")
+    compare(s.runs.finishedState, "")
+  }
+
+  function test_the_age_row_reads_and_toggles_the_finished_age() {
+    var s = make(sample()); if (!s) return
+    var ids = ["today", "week", "all"]
+    var labels = ["Today", "7 days", "All time"]
+    for (var i = 0; i < ids.length; i++) compare(H.find(s.screen, "runAgeChip" + ids[i]).text, labels[i])
+    compare(H.find(s.screen, "runAgeChips").model.length, 3)
+    compare(H.find(s.screen, "runAgeChipall").active, true, "All time by default")
+    s.runs.finishedAge = "today"
+    compare(H.find(s.screen, "runAgeChiptoday").active, true)
+    compare(H.find(s.screen, "runAgeChipall").active, false)
+    s.runs.finishedAge = "bogus"
+    compare(H.find(s.screen, "runAgeChipall").active, true, "anything else is All time")
+    s.runs.finishedAge = "all"
+    tap(H.find(s.screen, "runAgeChipweek"))
+    compare(s.runs.finishedCalls.join(","), "age|week")
+    compare(s.runs.finishedAge, "week")
+    compare(H.find(s.screen, "runAgeChipweek").active, true)
+  }
+
+  function test_the_finished_rows_sit_under_the_status_chips_and_above_the_list() {
+    var s = make([run("run-x-live0001", "started", true, {})]); if (!s) return
+    s.runs.toggleRunFilter("finished")
+    wait(20)
+    verify(topOf(s, "runChips") < topOf(s, "runStateChips"), "under the status chips")
+    verify(topOf(s, "runStateChips") < topOf(s, "runAgeChips"), "the state row first")
+    verify(topOf(s, "runAgeChips") < topOf(s, "runsMessage"), "above the status line")
+    s.runs.toggleRunFilter("all")
+    wait(20)
+    verify(topOf(s, "runAgeChips") < topOf(s, "runRow0"), "above the first row")
+  }
+
   function test_each_chip_filters_its_rows_and_the_active_one_returns_to_all() {
     var s = make(sample()); if (!s) return
     tap(H.find(s.screen, "runChipattention"))

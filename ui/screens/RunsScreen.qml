@@ -57,6 +57,24 @@ Column {
   // The project chip row's model (projectChipsOf).
   readonly property var projectChips: screen.projectChipsOf(screen.allGroups, screen.openRoot)
 
+  // The Finished chip's state row and age row, scalar values only.
+  readonly property var finishedStateChips: [
+    { id: "all", label: "All finished", tint: screen.theme.dim },
+    { id: "done", label: "Done", tint: screen.theme.dim },
+    { id: "escalated", label: "Escalated", tint: screen.theme.dim },
+    { id: "cancelled", label: "Cancelled", tint: screen.theme.dim }
+  ]
+  readonly property var finishedAgeChips: [
+    { id: "today", label: "Today", tint: screen.theme.dim },
+    { id: "week", label: "7 days", tint: screen.theme.dim },
+    { id: "all", label: "All time", tint: screen.theme.dim }
+  ]
+  // The state row shows under Finished, the age row under Finished and All;
+  // neither while am is missing.
+  readonly property bool stateRowShown: !screen.amMissing && screen.app.runs.runFilter === "finished"
+  readonly property bool ageRowShown: !screen.amMissing
+    && (screen.app.runs.runFilter === "finished" || screen.app.runs.runFilter === "")
+
   // What the list draws, in order (entriesOf).
   readonly property var entries: screen.entriesOf(screen.app.runs.groups, screen.app.runs.filteredRuns,
     screen.app.runs.projectRoots, screen.app.runs.projectErrors, screen.app.runs.projectFilter,
@@ -170,6 +188,12 @@ Column {
   // for All projects, the open project for This project, else the chip's root.
   function chooseProject(id) {
     screen.app.runs.toggleProjectFilter(id === "all" ? "" : id === "this" ? screen.app.runs.project : id)
+  }
+
+  // The age chip `age` (the store's finishedAge) makes active: "today" and
+  // "week" themselves, "all" for anything else.
+  function activeAgeChipOf(age) {
+    return age === "today" || age === "week" ? age : "all"
   }
 
   // The first entry of the registry `list` ({root_path, name} objects, in
@@ -317,6 +341,37 @@ Column {
     })
     activeChip: screen.app.runs.runFilter === "" ? "all" : screen.app.runs.runFilter
     onChipToggled: function(id) { screen.app.runs.toggleRunFilter(id) }
+
+    // Under the status chips: the state row, then the age row; the store
+    // toggles each with the chip's id.
+    chipsFooterShown: screen.ageRowShown
+    chipsFooter: Component {
+      Column {
+        spacing: Style.space(6)
+
+        UI.ChipRow {
+          objectName: "runStateChips"
+          width: parent.width
+          theme: screen.theme
+          chipPrefix: "runStateChip"
+          visible: screen.stateRowShown
+          model: screen.finishedStateChips
+          active: screen.app.runs.finishedState === "" ? "all" : screen.app.runs.finishedState
+          onChosen: function(id) { screen.app.runs.toggleFinishedState(id) }
+        }
+
+        UI.ChipRow {
+          objectName: "runAgeChips"
+          width: parent.width
+          theme: screen.theme
+          chipPrefix: "runAgeChip"
+          visible: screen.ageRowShown
+          model: screen.finishedAgeChips
+          active: screen.activeAgeChipOf(screen.app.runs.finishedAge)
+          onChosen: function(id) { screen.app.runs.toggleFinishedAge(id) }
+        }
+      }
+    }
 
     error: screen.amMissing ? "am is not installed or not on PATH" : ""
     empty: screen.app.runs.filteredRuns.length === 0

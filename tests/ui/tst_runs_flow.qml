@@ -125,6 +125,22 @@ TestCase {
     compare(p.app.runs.selectedRunId, "")
   }
 
+  function test_the_finished_chip_and_its_rows_set_the_real_store() {
+    var p = make(); if (!p) return
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    H.find(p, "runChipfinished").clicked()
+    compare(p.app.runs.runFilter, "finished")
+    wait(20)
+    compare(H.find(p, "runStateChips").visible, true)
+    H.find(p, "runStateChipdone").clicked()
+    compare(p.app.runs.finishedState, "done")
+    compare(H.find(p, "runStateChipdone").active, true)
+    H.find(p, "runAgeChipweek").clicked()
+    compare(p.app.runs.finishedAge, "week")
+    compare(H.find(p, "runAgeChipweek").active, true)
+  }
+
   // A different chip is a different list: the panel scrolls back to its top.
   // The list stays taller than the panel either way, so nothing but that
   // scroll can bring the content back up.
