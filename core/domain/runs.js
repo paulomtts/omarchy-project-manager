@@ -8,10 +8,11 @@
 //   raw = {
 //     row:    one `am runs` entry without its `status`:
 //             { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
-//               milestone_id, card_id, lease, progress, project: { id, repo_dir } }
+//               milestone_id, card_id, story_id, lease, progress, project: { id, repo_dir } }
 //     status: `am status` data, may be absent:
 //             { as_of_seq, store_id,
-//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at },
+//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
+//                      card_id, story_id },
 //               stories: [{ card_id, title, level, status, tip_branch,
 //                           subtasks: [{ card_id, branch, base_branch, status, worktree_path,
 //                                        phases: [{ name, kind, status, started_at, ended_at, detail,
@@ -23,7 +24,8 @@
 //   }
 // Output scalars: id, repo_dir, started_at, base_branch, branch_prefix and
 // workflow are the row's, else the am status run's; status and milestone_id are
-// the am status run's, else the row's. `lease` keeps pid, host, heartbeat_at,
+// the am status run's, else the row's; card_id and story_id are the row's, else
+// the am status run's. `lease` keeps pid, host, heartbeat_at,
 // accepting and live. `requests` are am's control requests in the order made;
 // handled_at "" means the run has not acted on it yet.
 // `project` is the row's { id, repo_dir }: id a finite number else null,
@@ -133,6 +135,8 @@ function normalizeRun(raw) {
     base_branch: firstText(row.base_branch, run.base_branch),
     branch_prefix: firstText(row.branch_prefix, run.branch_prefix),
     workflow: firstText(row.workflow, run.workflow),
+    card_id: firstText(row.card_id, run.card_id),
+    story_id: firstText(row.story_id, run.story_id),
     lease: lease,
     project: project,
     requests: requests,
@@ -353,6 +357,15 @@ function _trimSlashes(path) {
   return path.substring(0, end)
 }
 
+// A project's name: `name` trimmed when that is a non-empty string, else
+// root's last "/"-separated segment ("/" for "/", "" for ""). `root` is a
+// _trimSlashes result.
+function _projectName(root, name) {
+  var n = typeof name === "string" ? name.trim() : ""
+  if (n !== "") return n
+  return root === "/" ? "/" : root.substring(root.lastIndexOf("/") + 1)
+}
+
 // A copy of `run` whose `project` is { root, name }, the registered project it
 // belongs to; whatever `project` it held before is dropped. root: `root` with
 // every trailing "/" removed ("/" for a root of only slashes), else "" when not
@@ -364,9 +377,7 @@ function withProject(run, root, name) {
   if (!_isObject(run)) return run
   var out = _copyOf(run)
   var r = _trimSlashes(root)
-  var n = typeof name === "string" ? name.trim() : ""
-  if (n === "") n = r === "/" ? "/" : r.substring(r.lastIndexOf("/") + 1)
-  out.project = { root: r, name: n }
+  out.project = { root: r, name: _projectName(r, name) }
   return out
 }
 
@@ -459,6 +470,78 @@ function displayOrder(groups) {
     for (var j = 0; j < group.runs.length; j++) out.push(group.runs[j])
   }
   return out
+}
+
+// The entries of a board-tree.py --probe result: `probe` itself when an array,
+// else its `projects` when `probe` is a plain object whose `projects` is an
+// array, else [].
+function _probeEntries(probe) {
+  if (Array.isArray(probe)) return probe
+  return _isObject(probe) ? _arrayOr(probe.projects) : []
+}
+
+// The first probe entry for `root`: a plain object whose `root` is a string
+// equal to `root` with trailing "/" removed. null when there is none.
+function _probeEntryFor(entries, root) {
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    if (_isObject(e) && typeof e.root === "string" && _trimSlashes(e.root) === root) return e
+  }
+  return null
+}
+
+// Order of two dispatch rows: the open row first, then name lower-cased, then
+// root, both by plain string comparison. Roots are distinct, so no two rows tie.
+function _compareDispatchRows(a, b) {
+  if (a.open !== b.open) return a.open ? -1 : 1
+  var na = a.name.toLowerCase(), nb = b.name.toLowerCase()
+  if (na !== nb) return na < nb ? -1 : 1
+  if (a.root !== b.root) return a.root < b.root ? -1 : 1
+  return 0
+}
+
+// The projects step 1 of the dispatch dialog offers, one row per registered
+// project: { root, name, open, enabled, reason }.
+// projectRoots: [{ root, name }]. An entry that is not a plain object with a
+// string root is skipped. root: with every trailing "/" removed ("/" for a root
+// of only slashes); an entry whose root is then "" is skipped, and only the
+// first entry for a root gives a row. name: `name` trimmed when that is
+// non-empty, else root's last "/"-separated segment ("/" for "/").
+// open: root equals `openRoot` with trailing "/" removed. A non-string or ""
+// openRoot marks no row open.
+// probe: board-tree.py --probe output { ok, projects: [{ root, ok, reason }] }
+// or its projects array; anything else has no entries. An entry counts when it
+// is a plain object with a string root; it matches the row whose root equals
+// its root with trailing "/" removed, the first match winning. A row whose
+// entry has ok === false is enabled false, reason the entry's reason trimmed
+// when that is a non-empty string, else "unreachable". Every other row is
+// enabled true, reason "".
+// Order: the open row first, then name lower-cased, then root, by plain string
+// comparison. Returns new rows in a new array. Never mutates, never throws.
+function dispatchProjects(projectRoots, probe, openRoot) {
+  var list = _arrayOr(projectRoots)
+  var entries = _probeEntries(probe)
+  var open = typeof openRoot === "string" && openRoot !== "" ? _trimSlashes(openRoot) : null
+  var rows = []
+  for (var i = 0; i < list.length; i++) {
+    var p = list[i]
+    if (!_isObject(p) || typeof p.root !== "string") continue
+    var root = _trimSlashes(p.root)
+    if (root === "") continue
+    var seen = false
+    for (var j = 0; j < rows.length && !seen; j++) seen = rows[j].root === root
+    if (seen) continue
+    var row = { root: root, name: _projectName(root, p.name), open: root === open, enabled: true, reason: "" }
+    var entry = _probeEntryFor(entries, root)
+    if (entry !== null && entry.ok === false) {
+      var reason = typeof entry.reason === "string" ? entry.reason.trim() : ""
+      row.enabled = false
+      row.reason = reason !== "" ? reason : "unreachable"
+    }
+    rows.push(row)
+  }
+  rows.sort(_compareDispatchRows)
+  return rows
 }
 
 // String(v), trimmed. null/undefined, and values String() cannot convert (e.g. a
@@ -731,11 +814,20 @@ function _syntheticLabel(id) {
   return id.length > 5 ? "Base " + id.slice(5) : "Base"
 }
 
+// am's phase statuses other than pending: the phase has started or finished.
+var _STARTED_OR_FINISHED = ["started", "done", "failed", "escalated", "stopped", "cancelled", "canceled"]
+
+// A phase am runs itself: kind exactly "deterministic".
+function _isStepPhase(p) { return _isObject(p) && p.kind === "deterministic" }
+
 // One subtask as the detail tree shows it. Its own status, else its last am
-// row's; phases with a name only; every attempt object (attempt 0 when it has
-// no number). The current phase is the first started one, else the last one
-// with a numbered attempt, else the last; the current attempt is that phase's
-// newest number, 0 when it has none.
+// row's; phases with a name only. Attempts in phase order: for a step phase
+// (kind "deterministic") that has started or finished, one step entry
+// {phase, attempt: 0, step: true, status}; then every attempt object of the
+// phase as {phase, attempt, status} (attempt 0 when it has no number). The
+// current phase is the first started one, else the last one with a numbered
+// attempt, else the last; the current attempt is that phase's newest number,
+// 0 when it has none.
 function _subtaskNode(run, subtask) {
   var phases = [], attempts = []
   var started = null, numbered = null, last = null
@@ -747,6 +839,8 @@ function _subtaskNode(run, subtask) {
     if (started === null && p.status === "started") started = p
     if (_newestAttempt(p) > 0) numbered = p
     last = p
+    if (_isStepPhase(p) && _STARTED_OR_FINISHED.indexOf(p.status) >= 0)
+      attempts.push({ phase: p.name, attempt: 0, step: true, status: p.status })
     var tries = _arrayOr(p.attempts)
     for (var k = 0; k < tries.length; k++) {
       if (_isObject(tries[k])) attempts.push({ phase: p.name, attempt: _attemptNumber(tries[k]), status: _stringOr(tries[k].status) })
@@ -817,10 +911,12 @@ function runTree(run) {
   return { stories: out, synthetic: synthetic }
 }
 
-// The attempt the output pane opens on: the newest numbered attempt of the
-// first started phase (in subtask order) that has one; else, walking the flat
-// rows from the last, the newest attempt of a real card's row phase (the row's
-// own number or the tree's, whichever is higher); else null.
+// The selection the output pane opens on: the first started phase, in subtask
+// and phase order, that is a step ({card_id, phase, attempt: 0, step: true})
+// or an agent phase with a numbered attempt ({card_id, phase, attempt}, its
+// newest number); else, walking the flat rows from the last, the newest
+// attempt of a real card's row phase (the row's own number or the tree's,
+// whichever is higher); else null.
 function defaultAttempt(run) {
   var subtasks = _subtasksOf(run)
   for (var i = 0; i < subtasks.length; i++) {
@@ -830,6 +926,7 @@ function defaultAttempt(run) {
     for (var j = 0; j < phases.length; j++) {
       var p = phases[j]
       if (!_isObject(p) || p.status !== "started" || typeof p.name !== "string" || p.name === "") continue
+      if (_isStepPhase(p)) return { card_id: t.card_id, phase: p.name, attempt: 0, step: true }
       var n = _newestAttempt(p)
       if (n > 0) return { card_id: t.card_id, phase: p.name, attempt: n }
     }
@@ -857,6 +954,28 @@ function attemptStatus(run, cardId, phase, attempt) {
   return ""
 }
 
+// The status of the card's first phase named `phase`, step or agent; "" when
+// there is none or its status is not a string.
+function phaseStatus(run, cardId, phase) {
+  if (!_isCardId(cardId)) return ""
+  var p = _findPhase(_findByCardId(_subtasksOf(run), cardId), phase)
+  return _isObject(p) ? _stringOr(p.status) : ""
+}
+
+// Whether a selection is in flight: the run is running and the selection names
+// a real card and a phase, and, with `step: true`, the card's first phase of
+// that name is started (`attempt` is not read), else the attempt
+// {card_id, phase, attempt} is started. Always a boolean.
+function isLiveSelection(run, sel) {
+  if (runState(run) !== "running" || !_isObject(sel)) return false
+  if (!_isCardId(sel.card_id) || typeof sel.phase !== "string" || sel.phase === "") return false
+  if (sel.step === true) {
+    var p = _findPhase(_findByCardId(_subtasksOf(run), sel.card_id), sel.phase)
+    return p !== null && p.status === "started"
+  }
+  return attemptStatus(run, sel.card_id, sel.phase, sel.attempt) === "started"
+}
+
 // ---- Run controls (S2 1.1) ---------------------------------------------------------------
 //
 // Which of pause / resume / cancel a run allows, and the sentence for an am
@@ -869,6 +988,7 @@ var _REASON_UNKNOWN = "The run's state is unknown"
 var _REASON_PAUSE_NOT_RUNNING = "Only a running run can be paused"
 var _REASON_RESUME_RUNNING = "The run is still running"
 var _REASON_RESUME_CANCELLED = "A cancelled run cannot be resumed"
+var _REASON_RESUME_ESCALATED_CARD = "An escalated card run cannot be resumed; relaunch it"
 var _REASON_CANCEL_CANCELLED = "The run is already cancelled"
 
 // A fresh {enabled, reason}: enabled exactly when there is no reason.
@@ -882,8 +1002,9 @@ function _inIntegrate(run) {
 
 // {pause, resume, cancel}, each a fresh {enabled, reason}; reason is "" when
 // enabled. Pause needs a running run outside Integrate; resume needs dead,
-// parked or escalated and never looks at accepting; cancel needs a run that has
-// not finished and is not in Integrate. The state's reason wins over Integrate's.
+// parked or escalated, except an escalated card run (workflow "task", trimmed),
+// and never looks at accepting; cancel needs a run that has not finished and is
+// not in Integrate. The state's reason wins over Integrate's.
 function controls(run) {
   var state = runState(run)
   var integrate = _inIntegrate(run)
@@ -894,7 +1015,7 @@ function controls(run) {
     cancel = integrate ? _REASON_INTEGRATE : ""
   } else if (state === "dead" || state === "parked" || state === "escalated") {
     pause = _REASON_PAUSE_NOT_RUNNING
-    resume = ""
+    resume = state === "escalated" && _textOf(run.workflow) === "task" ? _REASON_RESUME_ESCALATED_CARD : ""
     cancel = integrate ? _REASON_INTEGRATE : ""
   } else if (state === "cancelled") {
     pause = _REASON_FINISHED
@@ -917,26 +1038,328 @@ function controls(run) {
 var _CONTROL_ERRORS = [
   ["UnknownRunError", "The run no longer exists"],
   ["NotRunningError", "The run is not running"],
-  ["DeadRunError", "The run's process has died; resume it instead"],
+  ["DeadRunError", "The run's process has died, so nobody can act on this request. Resume picks the run up."],
   ["NotAcceptingError", _REASON_INTEGRATE],
-  ["RunIsLiveError", "The run is still live; only a dead run can be resumed"],
-  ["NotResumableError", "The run cannot be resumed"],
+  ["RunIsLiveError", "Another am process is still driving this run. Wait for it to stop, or pause it; resume only takes over a run whose process died."],
+  ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
+  ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
   ["ClaimedError", "Another run has already claimed this work"],
   ["LockTimeoutError", "am is busy; try again in a moment"]
 ]
 
-// The sentence for a failed pause / resume / cancel. Reads the type the way
-// errorText does (envelope or bare, trimmed, case-sensitive); a known type gives
-// its sentence without am's message, anything else gives errorText(error).
+// The trimmed, case-sensitive type of an am control error, envelope or bare, the
+// way errorText reads it; "" when error is not an object or is ok:true.
+function _controlErrorType(error) {
+  if (!_isObject(error) || error.ok === true) return ""
+  var e = _isObject(error.error) ? error.error : error
+  return _textOf(e.type)
+}
+
+// The sentence for a failed pause / resume / cancel. A known type gives its
+// sentence without am's message; anything else gives errorText(error).
 function controlError(error) {
-  if (_isObject(error) && error.ok !== true) {
-    var e = _isObject(error.error) ? error.error : error
-    var type = _textOf(e.type)
-    for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
-      if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
-    }
+  var type = _controlErrorType(error)
+  for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
+    if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
   }
   return errorText(error)
+}
+
+// Whether a failed control call is answered by relaunching: true exactly when
+// its type (read as controlError reads it) is NotResumableError or
+// CheckpointMismatchError, false for anything else.
+function offersRelaunch(error) {
+  var type = _controlErrorType(error)
+  return type === "NotResumableError" || type === "CheckpointMismatchError"
+}
+
+
+// ---- Why it stopped (RR 1.2) -------------------------------------------------------------
+//
+// What Run detail says about a stopped run: its state, one headline, the card,
+// story and phase it names, the attempt the output pane opens, the parked cards
+// and the relaunch target. Reads only the normalised run, never brd status.
+// Pure and never throwing, like the rest of this file.
+
+var _HEADLINE_ESCALATED = "Escalated"
+var _HEADLINE_DEAD = "The run's process died"
+var _HEADLINE_PARKED = "Paused at a phase boundary"
+var _HEADLINE_CANCELLED = "Cancelled. A cancelled run cannot be resumed, only relaunched; cards keep their status"
+
+// The run's real subtasks: the objects in tree.subtasks with a real card id, in tree order.
+function _realSubtasksOf(run) {
+  var subtasks = _subtasksOf(run)
+  var out = []
+  for (var i = 0; i < subtasks.length; i++) {
+    if (_isObject(subtasks[i]) && _isCardId(subtasks[i].card_id)) out.push(subtasks[i])
+  }
+  return out
+}
+
+// The trimmed title of the tree story whose card_id is storyId; "" when storyId
+// is "", no story has it or its title is not a string.
+function _storyTitleOf(run, storyId) {
+  if (storyId === "") return ""
+  var story = _findByCardId(_treeOf(run).stories, storyId)
+  return story !== null && typeof story.title === "string" ? story.title.trim() : ""
+}
+
+// A fresh subject that names nothing.
+function _noSubject() {
+  return { cardId: "", storyId: "", storyTitle: "", phase: "", detail: "", attempt: null }
+}
+
+// A fresh subject for a real subtask at `phase` ("" for none): attempt is
+// {card_id, phase, attempt} when phase is not "", else null.
+function _subtaskSubject(run, subtask, phase, detail, attempt) {
+  var storyId = _stringOr(subtask.story_id)
+  return {
+    cardId: subtask.card_id,
+    storyId: storyId,
+    storyTitle: _storyTitleOf(run, storyId),
+    phase: phase,
+    detail: detail,
+    attempt: phase !== "" ? { card_id: subtask.card_id, phase: phase, attempt: attempt } : null
+  }
+}
+
+// Does the subtask have a phase object whose status is `failed`?
+function _hasFailedPhase(subtask) {
+  var phases = _arrayOr(subtask.phases)
+  for (var i = 0; i < phases.length; i++) {
+    if (_isObject(phases[i]) && phases[i].status === "failed") return true
+  }
+  return false
+}
+
+// The subtask's first phase whose status is `failed` and whose name is a
+// non-empty string, or null.
+function _failedPhaseOf(subtask) {
+  var phases = _arrayOr(subtask.phases)
+  for (var i = 0; i < phases.length; i++) {
+    var p = phases[i]
+    if (_isObject(p) && p.status === "failed" && typeof p.name === "string" && p.name !== "") return p
+  }
+  return null
+}
+
+// The first real subtask whose status is `escalated`, else the first with a
+// failed phase, else null.
+function _escalatedSubtaskOf(subtasks) {
+  for (var i = 0; i < subtasks.length; i++) {
+    if (subtasks[i].status === "escalated") return subtasks[i]
+  }
+  for (var j = 0; j < subtasks.length; j++) {
+    if (_hasFailedPhase(subtasks[j])) return subtasks[j]
+  }
+  return null
+}
+
+// The last row of cardId whose status is in _FAILURE_STATUSES and whose phase
+// is a non-empty string, or null.
+function _lastFailedRowOf(run, cardId) {
+  var rows = _isObject(run) ? _arrayOr(run.rows) : []
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var row = rows[i]
+    if (_isObject(row) && row.card_id === cardId && _FAILURE_STATUSES.indexOf(row.status) >= 0 &&
+        _stringOr(row.phase) !== "") return row
+  }
+  return null
+}
+
+// A phase's trimmed detail, else the first non-empty trimmed detail of its
+// attempts from the last back; "" when there is none or phase is not an object.
+function _phaseDetailOf(phase) {
+  if (!_isObject(phase)) return ""
+  var detail = _textOf(phase.detail)
+  var attempts = _arrayOr(phase.attempts)
+  for (var k = attempts.length - 1; detail === "" && k >= 0; k--) {
+    if (_isObject(attempts[k])) detail = _textOf(attempts[k].detail)
+  }
+  return detail
+}
+
+// The synthetic node an escalated run stopped at: {id, phase} of the last row
+// whose card_id is synthetic and whose status is in _FAILURE_STATUSES, else
+// {id, phase: ""} of the first tree story whose card_id is synthetic and whose
+// status is in _FAILURE_STATUSES; null when neither.
+function _escalatedNodeOf(run) {
+  var rows = _isObject(run) ? _arrayOr(run.rows) : []
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var row = rows[i]
+    if (_isObject(row) && _isSynthetic(row.card_id) && _FAILURE_STATUSES.indexOf(row.status) >= 0) {
+      return { id: row.card_id, phase: _stringOr(row.phase) }
+    }
+  }
+  var stories = _arrayOr(_treeOf(run).stories)
+  for (var j = 0; j < stories.length; j++) {
+    var s = stories[j]
+    if (_isObject(s) && _isSynthetic(s.card_id) && _FAILURE_STATUSES.indexOf(s.status) >= 0) return { id: s.card_id, phase: "" }
+  }
+  return null
+}
+
+// What an escalated run names: its escalated subtask at the failed phase (from
+// the tree, else from the subtask's last failed row), else a synthetic node by
+// its runTree label, else nothing.
+function _escalatedSubject(run, subtasks) {
+  var subtask = _escalatedSubtaskOf(subtasks)
+  if (subtask !== null) {
+    var failed = _failedPhaseOf(subtask)
+    var row = failed === null ? _lastFailedRowOf(run, subtask.card_id) : null
+    var phase = failed !== null ? failed.name : row !== null ? row.phase : ""
+    var inTree = failed !== null ? failed : _findPhase(subtask, phase)
+    var attempt = Math.max(_newestAttempt(inTree), row !== null ? _attemptNumber(row) : 0)
+    return _subtaskSubject(run, subtask, phase, _phaseDetailOf(inTree), attempt)
+  }
+  var node = _escalatedNodeOf(run)
+  if (node === null) return _noSubject()
+  return { cardId: "", storyId: node.id, storyTitle: _syntheticLabel(node.id), phase: node.phase, detail: "", attempt: null }
+}
+
+// What a dead run names: the first real subtask with a `started` phase whose
+// name is a non-empty string, at that phase's newest attempt (0 when it has
+// none); else nothing.
+function _inFlightSubject(run, subtasks) {
+  for (var i = 0; i < subtasks.length; i++) {
+    var phases = _arrayOr(subtasks[i].phases)
+    for (var j = 0; j < phases.length; j++) {
+      var p = phases[j]
+      if (_isObject(p) && p.status === "started" && typeof p.name === "string" && p.name !== "") {
+        return _subtaskSubject(run, subtasks[i], p.name, "", _newestAttempt(p))
+      }
+    }
+  }
+  return _noSubject()
+}
+
+// The card_id of every real subtask whose status is `stopped`, in tree order.
+function _parkedCardsOf(subtasks) {
+  var out = []
+  for (var i = 0; i < subtasks.length; i++) {
+    if (subtasks[i].status === "stopped") out.push(subtasks[i].card_id)
+  }
+  return out
+}
+
+// What Relaunch starts again, a fresh {level, cardId, prefix, base}: workflow
+// (trimmed, case-sensitive) `task` is the run's card_id, `story` its story_id,
+// anything else its milestone_id. null when that id is not a string or,
+// trimmed, not a real card id.
+function _relaunchOf(run) {
+  var workflow = _textOf(run.workflow)
+  var level = workflow === "task" ? "card" : workflow === "story" ? "story" : "milestone"
+  var id = level === "card" ? run.card_id : level === "story" ? run.story_id : run.milestone_id
+  if (typeof id !== "string" || !_isCardId(id.trim())) return null
+  return { level: level, cardId: id.trim(), prefix: _textOf(run.branch_prefix), base: _textOf(run.base_branch) }
+}
+
+// Why a run stopped: null unless runState(run) is escalated, parked, dead or
+// cancelled; else a fresh {state, headline, cardId, storyId, storyTitle, phase,
+// detail, heartbeatAt, attempt, parked, relaunch}. Escalated names its
+// escalated subtask, else a synthetic node; dead names its in-flight phase and
+// the lease's heartbeat_at; parked and cancelled name no card. parked and
+// relaunch are given for every state. Never mutates the run.
+function stopReport(run) {
+  var state = runState(run)
+  if (state !== "escalated" && state !== "parked" && state !== "dead" && state !== "cancelled") return null
+  var subtasks = _realSubtasksOf(run)
+  var subject = state === "escalated" ? _escalatedSubject(run, subtasks)
+              : state === "dead" ? _inFlightSubject(run, subtasks) : _noSubject()
+  var headline
+  if (state === "escalated") {
+    var at = subject.cardId !== "" ? subject.phase : subject.storyTitle
+    headline = at !== "" ? _HEADLINE_ESCALATED + " at " + at : _HEADLINE_ESCALATED
+  } else {
+    headline = state === "dead" ? _HEADLINE_DEAD : state === "parked" ? _HEADLINE_PARKED : _HEADLINE_CANCELLED
+  }
+  return {
+    state: state,
+    headline: headline,
+    cardId: subject.cardId,
+    storyId: subject.storyId,
+    storyTitle: subject.storyTitle,
+    phase: subject.phase,
+    detail: subject.detail,
+    heartbeatAt: state === "dead" && _isObject(run.lease) ? _textOf(run.lease.heartbeat_at) : "",
+    attempt: subject.attempt,
+    parked: _parkedCardsOf(subtasks),
+    relaunch: _relaunchOf(run)
+  }
+}
+
+var _NOTE_AUTHOR = "am"
+var _NOTE_KEY_PREFIX = "am-key: "
+var _NOTE_KIND_PREFIX = "am \u00b7 "
+var _NOTE_SEPARATOR = " \u00b7 "
+var _NOTE_FIELD_KEYS = ["reason", "detail", "next", "why"]
+
+// A note body's lines: split on "\n", each trimmed (a trailing "\r" with it),
+// blank lines dropped.
+function _noteLinesOf(body) {
+  var parts = body.split("\n")
+  var out = []
+  for (var i = 0; i < parts.length; i++) {
+    var line = parts[i].trim()
+    if (line !== "") out.push(line)
+  }
+  return out
+}
+
+// The body lines of entry when it is am's note for run id: an object whose
+// trimmed author is "am" and whose string body's last line is
+// "am-key: <id>/..."; else null.
+function _noteLinesFor(entry, id) {
+  if (!_isObject(entry) || typeof entry.author !== "string" || entry.author.trim() !== _NOTE_AUTHOR) return null
+  if (typeof entry.body !== "string") return null
+  var lines = _noteLinesOf(entry.body)
+  if (lines.length === 0) return null
+  var last = lines[lines.length - 1]
+  if (last.indexOf(_NOTE_KEY_PREFIX) !== 0) return null
+  return last.substring(_NOTE_KEY_PREFIX.length).indexOf(id + "/") === 0 ? lines : null
+}
+
+// The kind a note's first line names: after "am \u00b7 ", up to the next " \u00b7 " or
+// the line's end, trimmed; "" when the line does not start with "am \u00b7 ".
+function _noteKindOf(first) {
+  if (first.indexOf(_NOTE_KIND_PREFIX) !== 0) return ""
+  var rest = first.substring(_NOTE_KIND_PREFIX.length)
+  var end = rest.indexOf(_NOTE_SEPARATOR)
+  return (end >= 0 ? rest.substring(0, end) : rest).trim()
+}
+
+// A fresh [{key, value}] in _NOTE_FIELD_KEYS order: for each key, the first
+// line other than the first and the last that starts with "<key>:", its rest
+// with every backtick removed, trimmed. Keys with no line or an empty value
+// are left out.
+function _noteFieldsOf(lines) {
+  var out = []
+  for (var k = 0; k < _NOTE_FIELD_KEYS.length; k++) {
+    var key = _NOTE_FIELD_KEYS[k]
+    for (var i = 1; i < lines.length - 1; i++) {
+      if (lines[i].indexOf(key + ":") !== 0) continue
+      var value = lines[i].substring(key.length + 1).split("`").join("").trim()
+      if (value !== "") out.push({ key: key, value: value })
+      break
+    }
+  }
+  return out
+}
+
+// am's note for run runId among one card's comments (oldest first, as
+// ExtrasStore.commentsFor gives them): a fresh {createdAt, kind, fields} from
+// the newest entry by author "am" whose last body line is
+// "am-key: <runId>/...", else null. null when comments is not an array or
+// runId, trimmed, is not a non-empty string. Never mutates its inputs.
+function stopComment(comments, runId) {
+  var id = typeof runId === "string" ? _textOf(runId) : ""
+  if (id === "" || !Array.isArray(comments)) return null
+  for (var i = comments.length - 1; i >= 0; i--) {
+    var lines = _noteLinesFor(comments[i], id)
+    if (lines === null) continue
+    return { createdAt: _stringOr(comments[i].createdAt), kind: _noteKindOf(lines[0]), fields: _noteFieldsOf(lines) }
+  }
+  return null
 }
 
 
@@ -1097,6 +1520,41 @@ function dispatchLabel(card, cardMap) {
   }
   if (_isWholeNumber(card.depth) && card.depth >= 2) return "Subtask \"" + title + "\""
   return "\"" + title + "\""
+}
+
+// The dispatch dialog's step-2 rows for one project's brd tree:
+// { key, level, card, label, depth }. roots: brd tree's top-level cards after
+// Board.indexTree; cardMap: its {id: card} map, passed to dispatchPlan and
+// dispatchLabel and not read otherwise.
+// Row 0 is always { key: "board", level: "board", card: "board", label:
+// "Whole board", depth: 0 }. Then the forest depth-first, pre-order, roots and
+// children in array order (non-array roots or children count as none). A node
+// that is not a plain object gives no row and no children; a node object
+// reached again is skipped with its subtree. A node gives a row when
+// dispatchPlan offers it at level milestone or story, or at level subtask with
+// status exactly "todo", and no earlier row has its id. Children are walked
+// whether or not their parent gives a row.
+// key "card:" + id; level the plan's level; card the node itself; label
+// dispatchLabel(card, cardMap); depth the card's depth.
+// Returns new rows in a new array. Never mutates, never throws.
+function dispatchTargets(roots, cardMap) {
+  var rows = [{ key: "board", level: dispatchPlan("board").level, card: "board", label: dispatchLabel("board"), depth: 0 }]
+  var visited = []
+  var ids = []
+  var stack = _arrayOr(roots).slice().reverse()
+  while (stack.length > 0) {
+    var card = stack.pop()
+    if (!_isObject(card) || visited.indexOf(card) >= 0) continue
+    visited.push(card)
+    var children = _arrayOr(card.children)
+    for (var i = children.length - 1; i >= 0; i--) stack.push(children[i])
+    var plan = dispatchPlan(card, cardMap)
+    if (!plan.offered || (plan.level === "subtask" && card.status !== "todo")) continue
+    if (ids.indexOf(card.id) >= 0) continue
+    ids.push(card.id)
+    rows.push({ key: "card:" + card.id, level: plan.level, card: card, label: dispatchLabel(card, cardMap), depth: card.depth })
+  }
+  return rows
 }
 
 // The branch-prefix stem of a milestone title: lower-case [a-z0-9] tokens; a
@@ -1368,4 +1826,40 @@ function copyMap(map) {
     if (hasKey(map, key)) out[key] = map[key]
   }
   return out
+}
+
+// The registry's usable entries, {root, name}, in registry order: an object
+// whose root is a non-empty string not starting with "-" (runs-snapshot-all.py
+// refuses any other), each root once, at its first position with its first
+// name. [] when `projectRoots` has no numeric length.
+function usableRoots(projectRoots) {
+  var list = projectRoots
+  var n = list !== null && typeof list === "object" && typeof list.length === "number" ? list.length : 0
+  var out = []
+  var seen = {}
+  for (var i = 0; i < n; i++) {
+    var p = list[i]
+    if (p === null || typeof p !== "object" || Array.isArray(p)) continue
+    var root = p.root
+    if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || hasKey(seen, root)) continue
+    seen[root] = true
+    out.push({ root: root, name: p.name })
+  }
+  return out
+}
+
+// The form's verify commands that are non-blank strings, verbatim, in order;
+// [] when form.verify is not an array.
+function verifyCommands(form) {
+  var list = form !== null && typeof form === "object" && Array.isArray(form.verify) ? form.verify : []
+  return list.filter(function(c) { return typeof c === "string" && c.trim() !== "" })
+}
+
+// A fresh {milestone id: prefix} map: stored's own entries when stored is
+// an object that is not an array, then entry's, which override them, as
+// set-run-settings merges prefixByMilestone.
+function mergedPrefixes(stored, entry) {
+  var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? copyMap(stored) : {}
+  for (var id in entry) merged[id] = entry[id]
+  return merged
 }

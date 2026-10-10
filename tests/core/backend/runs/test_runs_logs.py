@@ -48,6 +48,16 @@ FIXTURES = os.path.join(ROOT, "tests", "fixtures", "am")
 # synthetic: am's error envelope for an unknown run; no capture holds one.
 UNKNOWN_RUN = {"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": False}
 
+# The fake am, plus real am's resolution rule: it answers UnknownRunError (exit 3)
+# unless the value after --repo-dir is FAKE_AM_REPO. It still logs every call.
+REPO_CHECK = '''repo = args[args.index("--repo-dir") + 1] if "--repo-dir" in args[:-1] else None
+if repo != os.environ["FAKE_AM_REPO"]:
+    sys.stdout.write(json.dumps({"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": False}) + "\\n")
+    sys.exit(3)
+'''
+REPO_CHECKING_AM = FAKE_AM.replace('name = "logs"', REPO_CHECK + 'name = "logs"', 1)
+assert REPO_CHECKING_AM != FAKE_AM
+
 
 def fixture(name):
     """A fresh json.load of tests/fixtures/am/<name>, so an edit never reaches
@@ -102,11 +112,12 @@ def env_for(world, drop=(), **extra):
     return e
 
 
-def run(world, args=None, drop=(), **extra):
-    """Run the helper; assert stdout is exactly one JSON line; return (exit, payload)."""
+def run(world, args=None, drop=(), cwd=None, **extra):
+    """Run the helper (in `cwd` when given); assert stdout is exactly one JSON line;
+    return (exit, payload)."""
     argv = default_args(world) if args is None else args
     p = subprocess.run([sys.executable, SCRIPT, *argv], capture_output=True, text=True,
-                       env=env_for(world, drop, **extra), timeout=60)
+                       env=env_for(world, drop, **extra), cwd=cwd, timeout=60)
     lines = p.stdout.splitlines()
     assert len(lines) == 1, (p.stdout, p.stderr)
     return p.returncode, json.loads(lines[0])
@@ -159,6 +170,71 @@ def test_exact_am_argv(world):
     assert made == [["logs", "r1", "c1", "--phase", "implement", "--attempt", "2",
                      "--repo-dir", str(world["proj"])]]
     assert "--pretty" not in made[0]
+
+
+# --- attempt 0: the phase's newest output ------------------------------------
+
+@pytest.mark.parametrize("phase", ["verify", "implement"])
+def test_attempt_zero_sends_no_attempt_flag(world, phase):
+    # Attempt 0 means "no --attempt": am returns the phase's newest recorded output,
+    # the only way to read a step, which records no attempts in `am status`.
+    proj = str(world["proj"])
+    envelope = {"ok": True, "data": logs_data()}
+    set_logs(world, envelope)
+    code, out = run(world, [proj, "r1", "c1", phase, "0"])
+    assert code == 0
+    assert out == envelope
+    made = calls(world)
+    assert made == [["logs", "r1", "c1", "--phase", phase, "--repo-dir", proj]]
+    assert "--attempt" not in made[0]
+    assert "0" not in made[0]
+
+
+@pytest.mark.parametrize("attempt", ["2", "1"])
+def test_nonzero_attempt_is_sent_verbatim(world, attempt):
+    proj = str(world["proj"])
+    set_logs(world, {"ok": True, "data": logs_data()})
+    code, _ = run(world, [proj, "r1", "c1", "verify", attempt])
+    assert code == 0
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "verify", "--attempt", attempt,
+                             "--repo-dir", proj]]
+
+
+@pytest.mark.parametrize("attempt", ["00", "-0", " 0", "", "+0", "0 ", "0\n"],
+                         ids=["double-zero", "minus-zero", "leading-space", "empty",
+                              "plus-zero", "trailing-space", "trailing-newline"])
+def test_only_exact_zero_is_special(world, attempt):
+    # Only the exact string "0" drops --attempt: the helper parses no integers and
+    # strips nothing, so am refuses these itself.
+    proj = str(world["proj"])
+    set_logs(world, {"ok": True, "data": logs_data()})
+    code, _ = run(world, [proj, "r1", "c1", "verify", attempt])
+    assert code == 0
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "verify", "--attempt", attempt,
+                             "--repo-dir", proj]]
+
+
+def test_attempt_zero_refusal_passed_through(world):
+    proj = str(world["proj"])
+    # synthetic: am's refusal when the phase has no recorded output; no capture holds one.
+    refusal = {"ok": False, "error": {"type": "NotFoundError",
+                                      "message": "no output recorded for phase verify"}}
+    set_logs(world, refusal, code=3)
+    code, out = run(world, [proj, "r1", "c1", "verify", "0"])
+    assert code == 0
+    assert out == refusal
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "verify", "--repo-dir", proj]]
+
+
+def test_attempt_zero_bad_output_is_am_bad_output(world):
+    # synthetic: am output that is not JSON.
+    set_raw(world, "not json\n", 1)
+    code, out = run(world, [str(world["proj"]), "r1", "c1", "verify", "0"])
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert "am logs" in out["error"]["message"]
+    assert "(exit 1)" in out["error"]["message"]
 
 
 def test_args_reach_am_verbatim(world):
@@ -289,6 +365,76 @@ def test_am_does_not_inherit_stdin(world):
     assert code == 0
     assert len(lines) == 1
     assert json.loads(lines[0]) == envelope
+
+
+# --- a step, and the repository decides -----------------------------------------
+
+def test_attempt_0_omits_attempt(world):
+    envelope = {"ok": True, "data": logs_data()}
+    set_logs(world, envelope)
+    proj = str(world["proj"])
+    code, out = run(world, [proj, "r1", "c1", "verify", "0"])
+    assert code == 0
+    assert out == envelope
+    made = calls(world)
+    assert made == [["logs", "r1", "c1", "--phase", "verify", "--repo-dir", proj]]
+    assert "--attempt" not in made[0]
+
+
+@pytest.mark.parametrize("attempt", ["00", " 0", ""], ids=["double-zero", "space-zero", "empty"])
+def test_only_the_literal_0_is_a_step(world, attempt):
+    # The helper never parses ATTEMPT: anything but the string "0" goes to am as is.
+    set_logs(world, {"ok": True, "data": logs_data()})
+    proj = str(world["proj"])
+    code, _ = run(world, [proj, "r1", "c1", "verify", attempt])
+    assert code == 0
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "verify", "--attempt", attempt,
+                             "--repo-dir", proj]]
+
+
+def test_a_step_refusal_passes_through(world):
+    # synthetic: am's refusal of a step that records no log yet; no capture holds one.
+    refusal = {"ok": False, "error": {"type": "UnknownAttemptError",
+                                      "message": "phase 'worktree' has no recorded attempt yet"}}
+    set_logs(world, refusal, code=3)
+    proj = str(world["proj"])
+    code, out = run(world, [proj, "r1", "c1", "worktree", "0"])
+    assert code == 0
+    assert out == refusal
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "worktree", "--repo-dir", proj]]
+
+
+@pytest.mark.parametrize("attempt", ["2", "0"], ids=["attempt", "step"])
+@pytest.mark.parametrize("where", ["elsewhere", "root"])
+def test_a_cwd_outside_the_repo_still_reaches_it(world, attempt, where):
+    # am resolves the run against --repo-dir only; the helper's cwd never matters.
+    write_exec(world["bin"] / "am", REPO_CHECKING_AM)
+    envelope = {"ok": True, "data": logs_data()}
+    set_logs(world, envelope)
+    proj = str(world["proj"])
+    if where == "elsewhere":
+        cwd = world["tmp"] / "elsewhere"
+        cwd.mkdir()
+    else:
+        cwd = "/"
+    assert str(cwd) != proj
+    code, out = run(world, [proj, "r1", "c1", "implement", attempt], cwd=str(cwd),
+                    FAKE_AM_REPO=proj)
+    assert code == 0
+    assert out == envelope
+    made = calls(world)
+    assert len(made) == 1
+    assert made[0][-2:] == ["--repo-dir", proj]
+    assert ("--attempt" in made[0]) == (attempt != "0")
+
+
+def test_the_repo_checking_am_refuses_another_repo(world):
+    # The check above is real: a --repo-dir other than FAKE_AM_REPO is an unknown run.
+    write_exec(world["bin"] / "am", REPO_CHECKING_AM)
+    set_logs(world, {"ok": True, "data": logs_data()})
+    code, out = run(world, FAKE_AM_REPO=str(world["tmp"] / "other"))
+    assert code == 0
+    assert out == UNKNOWN_RUN
 
 
 # --- bad output, am missing, usage, catch-all ---------------------------------
