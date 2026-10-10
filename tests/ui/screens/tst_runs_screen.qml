@@ -873,6 +873,7 @@ TestCase {
     s.app.projects = { selectedProject: null }
     compare(s.screen.visible, true, "no project: the Runs list still shows")
     compare(H.find(s.screen, "runsNotifyRow").visible, true, "and so does the notify switch")
+    compare(H.find(s.screen, "runsNotifyCaption").visible, true, "and its caption")
   }
 
   // ---- run controls (S2 4.2)
@@ -994,16 +995,20 @@ TestCase {
     compare(footer.visible, false)
   }
 
-  // ---- the Notify on escalation switch (S2 4.4)
+  // ---- the Desktop notifications switch (S2 4.4, alerts 3.1)
 
   // 25
   function test_the_notify_switch_reads_and_asks_the_store() {
     var s = make(sample()); if (!s) return
     var row = H.find(s.screen, "runsNotifyRow")
     var toggle = H.find(s.screen, "runsNotifyToggle")
+    var caption = H.find(s.screen, "runsNotifyCaption")
     verify(row, "the switch row")
     verify(toggle, "the switch")
-    compare(H.find(s.screen, "runsNotifyLabel").text, "Notify on escalation")
+    verify(caption, "the switch's caption")
+    compare(H.find(s.screen, "runsNotifyLabel").text, "Desktop notifications")
+    compare(caption.text, "From the background, panel open or closed")
+    compare(caption.visible, true)
     compare(toggle.checked, false)
     s.control.notifyOnEscalation = true
     compare(toggle.checked, true)
@@ -1017,6 +1022,28 @@ TestCase {
     s.runs.amStatus = "missing"
     wait(20)
     compare(row.visible, true, "the setting is the project's, not am's")
+    compare(caption.visible, true, "and so is its caption")
+  }
+
+  // 3.1
+  function test_the_notify_caption_sits_under_the_label() {
+    var s = make(sample()); if (!s) return
+    var toggle = H.find(s.screen, "runsNotifyToggle")
+    var label = H.find(s.screen, "runsNotifyLabel")
+    var caption = H.find(s.screen, "runsNotifyCaption")
+    verify(label, "the switch's label")
+    verify(caption, "the switch's caption")
+    var t = toggle.mapToItem(s.screen, 0, 0)
+    var l = label.mapToItem(s.screen, 0, 0)
+    var c = caption.mapToItem(s.screen, 0, 0)
+    verify(c.y > l.y, "the caption is under the label")
+    verify(l.x >= t.x + toggle.width, "the label is not over the toggle")
+    verify(c.x >= t.x + toggle.width, "the caption is not over the toggle")
+    var text = caption.text
+    s.control.notifyOnEscalation = true
+    compare(caption.text, text, "the caption does not follow the switch on")
+    s.control.notifyOnEscalation = false
+    compare(caption.text, text, "nor off")
   }
 
   // ---- project chips (4.3)
