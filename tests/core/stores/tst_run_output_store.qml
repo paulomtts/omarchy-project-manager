@@ -482,6 +482,26 @@ TestCase {
     compare(store.followStatus, "connecting")
   }
 
+  // B2 step 5: back on the same key after it stopped being live off Run detail
+  function test_returning_to_a_key_that_is_no_longer_live_clears() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    store.inRunDetail = false
+    store.run = exploreOkRun()
+    compare(store.liveText, "stub claude ok phase=review", "off Run detail the buffer stays")
+    compare(store.followStatus, "following")
+    store.inRunDetail = true
+    compare(seen.length, 0, "nothing starts")
+    compare(store.followProc, null)
+    compare(store.followKey, null)
+    compare(store.liveText, "")
+    compare(store.hasOutput, false)
+    compare(store.followStatus, "idle")
+  }
+
   // T10
   function test_at_most_one_follow_process_runs() {
     var store = make(); if (!store) return
