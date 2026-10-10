@@ -2,6 +2,7 @@ import QtQml
 import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
+import "../domain/results.js" as Results
 
 // The plugin's `service` entry point (manifest.json entryPoints.service). The
 // shell creates one per shell, with no parent, while the plugin is enabled,
@@ -24,10 +25,14 @@ Scope {
   readonly property alias lastError: alertsState.lastError  // "" until the first failure
   readonly property alias helperProc: alertsState.proc      // the current launch's Process while watching, else null
   readonly property alias retryTimer: retryTimer
+  readonly property alias alertRunners: pipelineState.alertRunners    // per-alert settings / snapshot runners in flight, oldest first
+  readonly property alias notifyRunners: pipelineState.notifyRunners  // notify.py runners in flight, oldest first
 
   // One emission per valid alert line of the current launch: the parsed
   // {run_id, root, project, state, ...} object, untouched.
   signal alertReceived(var alert)
+
+  onAlertReceived: function(alert) { service.startAlert(alert) }
 
   Component.onCompleted: service.launch()
 
@@ -96,6 +101,35 @@ Scope {
     }
   }
 
+  // One alert's pipeline, on a HelperRunner of its own: get-global-settings,
+  // read at each alert.
+  function startAlert(alert) {
+    var runner = alertC.createObject(service, { alert: alert, script: service.backendDir + "projects/viewer-state.py" })
+    pipelineState.alertRunners = pipelineState.alertRunners.concat([runner])
+    runner.run(["get-global-settings"])
+  }
+
+  // The newest run of an alert's runner finished; its step says which run it
+  // was. Settings: the alert goes on only on exit 0 with notifyOnEscalation
+  // exactly true, else it is dropped. Never throws.
+  function alertStepFinished(runner, stdout, exitCode) {
+    if (runner.step === "settings") {
+      var settings = exitCode === 0 ? Results.parseEnvelope(stdout) : null
+      if (settings === null || settings.notifyOnEscalation !== true) {
+        service.dropAlertRunner(runner)
+        return
+      }
+    }
+  }
+
+  // The runner leaves alertRunners; its step becomes "" so no later exit
+  // advances it.
+  function dropAlertRunner(runner) {
+    runner.step = ""
+    pipelineState.alertRunners = pipelineState.alertRunners.filter(function(r) { return r !== runner })
+    runner.destroy()
+  }
+
   Timer {
     id: retryTimer
     objectName: "retryTimer"
@@ -111,6 +145,26 @@ Scope {
     property string lastError: ""
     property var proc: null
     property int launchSeq: 0
+  }
+
+  // The runners in flight; kept apart so consumers cannot write them.
+  QtObject {
+    id: pipelineState
+    property var alertRunners: []
+    property var notifyRunners: []
+  }
+
+  // One HelperRunner per alert: settings first, then the snapshot. Guard "".
+  Component {
+    id: alertC
+
+    HelperRunner {
+      id: ar
+      property var alert: null
+      property string step: "settings"   // "settings" | "snapshot"; "" once dropped
+      guard: ""
+      onFinished: function(stdout, exitCode) { service.alertStepFinished(ar, stdout, exitCode) }
+    }
   }
 
   // One Process per launch, so each carries its launch number and envelope.

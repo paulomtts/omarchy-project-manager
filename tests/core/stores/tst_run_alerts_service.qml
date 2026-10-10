@@ -5,9 +5,13 @@
 // It keeps runs-alerts.py running under the restart policy and turns its alert
 // lines into alertReceived. The stub Process spawns nothing: each test plays
 // the helper by emitting stdout.read(line) and exited(code) on helperProc.
+// Each alert runs its own pipeline: get-global-settings, then (switch on) one
+// runs-snapshot.py of the alert's root, then one notify.py. Tests play each
+// HelperRunner's process with reply(proc, stdout, code).
 import QtQuick
 import QtTest
 import Qt.labs.folderlistmodel
+import "../../../core/domain/runs.js" as Runs
 
 TestCase {
   id: tc
@@ -420,6 +424,80 @@ TestCase {
     compare(spy.count, 2)
     compare(spy.signalArguments[0][0].run_id, "r1")
     compare(spy.signalArguments[1][0].run_id, "r2")
+    s.destroy()
+  }
+
+  // ---- the per-alert pipeline (2.3)
+
+  property string runId: "20261010T025704Z-aaaaaaaa"
+
+  // A process's argv, joined with "|".
+  function argv(proc) { return proc.command.join("|") }
+
+  // A stubbed process's reply: its stdout, then its exit code.
+  function reply(proc, text, code) {
+    proc.outText = text
+    proc.exited(code)
+  }
+
+  // A get-global-settings reply with the switch at `on`.
+  function settingsReply(on) { return JSON.stringify({ notifyOnEscalation: on }) }
+
+  // An escalated alert for runId in /p/alpha, with `fields` laid over it.
+  function alertOf(fields) {
+    var a = { run_id: tc.runId, root: "/p/alpha", project: "alpha", state: "escalated" }
+    for (var k in fields) a[k] = fields[k]
+    return a
+  }
+
+  // One alert line of the current launch.
+  function sendAlert(s, alert) { line(s, { alert: alert }) }
+
+  function settingsCmd(s) {
+    return "python3|" + s.backendDir + "projects/viewer-state.py|get-global-settings"
+  }
+
+  function test_an_alert_reads_the_global_settings_first() {
+    var s = make(); if (!s) return
+    compare(s.alertRunners.length, 0)
+    compare(s.notifyRunners.length, 0)
+    sendAlert(s, alertOf({}))
+    compare(s.alertRunners.length, 1)
+    var r = s.alertRunners[0]
+    compare(r.step, "settings")
+    compare(r.guard, "")
+    compare(r.alert.run_id, tc.runId)
+    compare(argv(r.current), settingsCmd(s))
+    compare(r.current.running, true)
+    compare(s.notifyRunners.length, 0)
+    s.destroy()
+  }
+
+  function test_switch_off_sends_nothing_data() {
+    return [
+      { tag: "false", text: settingsReply(false), code: 0 },
+      { tag: "absent", text: "{}", code: 0 },
+      { tag: "the string true", text: settingsReply("true"), code: 0 },
+      { tag: "one", text: settingsReply(1), code: 0 },
+      { tag: "garbage", text: "garbage", code: 0 },
+      { tag: "empty", text: "", code: 0 },
+      { tag: "true but exit 1", text: settingsReply(true), code: 1 }
+    ]
+  }
+
+  function test_switch_off_sends_nothing(data) {
+    var s = make(); if (!s) return
+    failOnWarning(/./)
+    sendAlert(s, alertOf({}))
+    var r = s.alertRunners[0]
+    var settingsProc = r.current
+    reply(settingsProc, data.text, data.code)
+    compare(s.alertRunners.length, 0)
+    compare(s.notifyRunners.length, 0)
+    // The runner's destroy() is deferred: in this block it still shows it never ran again.
+    compare(r.seq, 1, "a second process was launched")
+    compare(r.current, settingsProc)
+    compare(r.step, "")
     s.destroy()
   }
 }
