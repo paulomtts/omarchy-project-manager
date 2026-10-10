@@ -102,14 +102,26 @@ QtObject {
 
   // The run store never imports the project or board store: App hands it the
   // registry's roots and names in registry order, the selected project's root
-  // path (never the project object) and the panel-open flag that starts and
-  // stops its watch.
+  // path (never the project object), the panel-open flag that starts and
+  // stops its watch, the run history's pages flattened root by root and the
+  // run titles' map.
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
     projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
     project: app.projects.selectedProject ? app.projects.selectedProject.root_path : ""
     active: app.panelOpen
     searchQuery: app.nav.searchQuery
+    historyRuns: {
+      var byProject = app.runHistory.historyByProject
+      var roots = Object.keys(byProject)
+      var out = []
+      for (var i = 0; i < roots.length; i++) {
+        var entry = byProject[roots[i]]
+        if (entry !== null && typeof entry === "object" && Array.isArray(entry.runs)) out = out.concat(entry.runs)
+      }
+      return out
+    }
+    titlesByRoot: app.runTitles.titlesByRoot
     onRunFilterToggled: {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
@@ -165,13 +177,15 @@ QtObject {
   }
 
   // The run history never imports the run store: App hands it the backend
-  // directory, the panel-open flag, the run store's per-project snapshot and
-  // its chip. App routes no signal from it.
+  // directory, the panel-open flag, the run store's per-project snapshot, its
+  // chip and its finished rows. App routes no signal from it.
   readonly property RunHistoryStore runHistory: RunHistoryStore {
     backendDir: app.backendDir
     active: app.panelOpen
     snapshotByProject: app.runs.runsByProject
     runFilter: app.runs.runFilter
+    finishedState: app.runs.finishedState
+    finishedAge: app.runs.finishedAge
   }
 
   // The dispatch never imports the run store or run control: App hands it the

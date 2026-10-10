@@ -31,9 +31,16 @@ import "../domain/runs.js" as Runs
 // status -- never on a timer.
 // Each applied list snapshot reply is announced per project
 // (snapshotReplied).
-// The registry, the open project's root and the backend directory are handed
-// to it from outside -- it never reaches for another store. App composes it
-// as `app.runs` and binds `active` to the panel being open.
+// The Runs screen's list (groups, filteredRuns) is listedRuns -- `runs`, then
+// the ids of `historyRuns` that `runs` lacks -- past the chip, the
+// finished-state and age rows, the search (titles from `titlesByRoot`) and
+// the project filter, each project's history after its snapshot runs;
+// runById falls back to the listed history. History changes no snapshot
+// member.
+// The registry, the open project's root, the history, the titles and the
+// backend directory are handed to it from outside -- it never reaches for
+// another store. App composes it as `app.runs` and binds `active` to the
+// panel being open.
 Scope {
   id: store
 
@@ -710,7 +717,7 @@ Scope {
   function listed(runs, history) {
     if (!Array.isArray(history)) return runs
     var out = runs.slice()
-    var ids = runs.map(function(run) { return run.id })
+    var ids = runs.map(function(run) { return run === null || typeof run !== "object" ? undefined : run.id })
     for (var i = 0; i < history.length; i++) {
       var run = history[i]
       if (run === null || typeof run !== "object" || Array.isArray(run) || ids.indexOf(run.id) >= 0) continue
