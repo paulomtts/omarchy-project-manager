@@ -10,12 +10,12 @@ import "../domain/runs.js" as Runs
 // file:// scheme, derived from this file's own URL -- the same string
 // ui/Panel.qml hands App as backendDir.
 // From creation to destruction it keeps runs-alerts.py running as a plain
-// Process (helperProc). `status` is "watching" while a launched helper has not
-// exited, "waiting" between a retryable failure and the relaunch 300 s later
-// (retryTimer, which runs only then), "stopped" after exit 0 or a
-// SchemaMismatch / CorruptJournal failure; "stopped" is final for this
-// instance. `lastError` is the most recent failure's text; each failure is
-// one console.warn line.
+// Process (helperProc) and emits alertReceived(alert) for each alert line.
+// `status` is "watching" while a launched helper has not exited, "waiting"
+// between a retryable failure and the relaunch 300 s later (retryTimer, which
+// runs only then), "stopped" after exit 0 or a SchemaMismatch /
+// CorruptJournal failure; "stopped" is final for this instance. `lastError`
+// is the most recent failure's text; each failure is one console.warn line.
 Scope {
   id: service
 
@@ -24,6 +24,10 @@ Scope {
   readonly property alias lastError: alertsState.lastError  // "" until the first failure
   readonly property alias helperProc: alertsState.proc      // the current launch's Process while watching, else null
   readonly property alias retryTimer: retryTimer
+
+  // One emission per valid alert line of the current launch: the parsed
+  // {run_id, root, project, state, ...} object, untouched.
+  signal alertReceived(var alert)
 
   Component.onCompleted: service.launch()
 
@@ -50,7 +54,9 @@ Scope {
   }
 
   // One stdout line of the current launch. {"ok": false, ...} is kept as the
-  // envelope its exit explains. Anything else is ignored. Never throws.
+  // envelope its exit explains. {"alert": {run_id: non-empty string, state:
+  // "escalated" | "dead", ...}} emits alertReceived with that object.
+  // Anything else is ignored. Never throws.
   function helperLine(proc, data) {
     if (!service.isCurrent(proc)) return
     var text = String(data || "").trim()
@@ -58,7 +64,12 @@ Scope {
     var value = null
     try { value = JSON.parse(text) } catch (e) { return }
     if (value === null || typeof value !== "object" || Array.isArray(value)) return
-    if (value.ok === false) proc.envelope = value
+    if (value.ok === false) { proc.envelope = value; return }
+    var alert = value.alert
+    if (alert === null || typeof alert !== "object" || Array.isArray(alert)) return
+    if (typeof alert.run_id !== "string" || alert.run_id === "") return
+    if (alert.state !== "escalated" && alert.state !== "dead") return
+    service.alertReceived(alert)
   }
 
   // The current launch ended. Exit 0: stopped, no warning. Otherwise the last

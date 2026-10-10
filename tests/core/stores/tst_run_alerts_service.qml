@@ -2,9 +2,9 @@
 // The service entry point: it builds as the shell's ensureService builds it
 // (createObject(null), no properties), declares none of the properties the
 // shell injects, and its backendDir is the plugin's real core/backend/.
-// It keeps runs-alerts.py running under the restart policy. The stub Process
-// spawns nothing: each test plays the helper by emitting stdout.read(line)
-// and exited(code) on helperProc.
+// It keeps runs-alerts.py running under the restart policy and turns its alert
+// lines into alertReceived. The stub Process spawns nothing: each test plays
+// the helper by emitting stdout.read(line) and exited(code) on helperProc.
 import QtQuick
 import QtTest
 import Qt.labs.folderlistmodel
@@ -16,6 +16,7 @@ TestCase {
   width: 400; height: 400
 
   Component { id: hostC; Item { width: 400; height: 400 } }
+  Component { id: spyC; SignalSpy { signalName: "alertReceived" } }
 
   // A directory listing is the only filesystem read QML offers here.
   FolderListModel { id: folder; showDirs: true; showFiles: true; showDotAndDotDot: false }
@@ -111,6 +112,10 @@ TestCase {
 
   function stopWarning(type) {
     return "RunAlertsService: " + type + ": the " + type + " message -- stopped"
+  }
+
+  function alertSpy(s) {
+    return createTemporaryObject(spyC, tc, { target: s })
   }
 
   function test_it_launches_the_helper_on_creation() {
@@ -354,5 +359,67 @@ TestCase {
     verify(b.helperProc !== null, "b lost its process")
     a.destroy()
     b.destroy()
+  }
+
+  function test_an_alert_line_emits_alert_received() {
+    var s = make(); if (!s) return
+    var spy = alertSpy(s)
+    line(s, { alert: { run_id: "r1", root: "/p/one", project: "one", state: "escalated" } })
+    line(s, { alert: { run_id: "r2", root: "/p/two", project: "two", state: "dead", gseq: 7 } })
+    compare(spy.count, 2)
+    compare(spy.signalArguments[0][0], { run_id: "r1", root: "/p/one", project: "one", state: "escalated" })
+    compare(spy.signalArguments[1][0], { run_id: "r2", root: "/p/two", project: "two", state: "dead", gseq: 7 })
+    compare(s.status, "watching")
+    s.destroy()
+  }
+
+  function test_other_lines_are_ignored() {
+    var s = make(); if (!s) return
+    var spy = alertSpy(s)
+    failOnWarning(/./)
+    var lines = ["", "   ", "not json", "[1]", "null", "42", "\"x\"",
+                 { cursor: 3 }, { alert: null }, { alert: [] }, { alert: "r" },
+                 { alert: { state: "escalated" } },
+                 { alert: { run_id: "", state: "dead" } },
+                 { alert: { run_id: 5, state: "dead" } },
+                 { alert: { run_id: "r", state: "running" } },
+                 { alert: { run_id: "r" } },
+                 { hello: {} }, { ok: true }]
+    for (var i = 0; i < lines.length; i++) line(s, lines[i])
+    compare(spy.count, 0)
+    compare(s.status, "watching")
+    compare(s.lastError, "")
+    // A valid line afterwards still counts: the handler survived all of the above.
+    line(s, { alert: { run_id: "r", state: "dead" } })
+    compare(spy.count, 1)
+    s.destroy()
+  }
+
+  // In one synchronous block, so p1's deferred destroy() has not run yet.
+  function test_a_replaced_launch_emits_no_alert() {
+    var s = make(); if (!s) return
+    var spy = alertSpy(s)
+    ignoreWarning(retryWarning("AmMissing"))
+    var p1 = s.helperProc
+    line(s, envelope("AmMissing"))
+    p1.exited(1)
+    s.retryTimer.triggered()
+    p1.stdout.read(JSON.stringify({ alert: { run_id: "old", state: "escalated" } }))
+    compare(spy.count, 0)
+    line(s, { alert: { run_id: "new", state: "escalated" } })
+    compare(spy.count, 1)
+    compare(spy.signalArguments[0][0].run_id, "new")
+    s.destroy()
+  }
+
+  function test_an_alert_line_with_surrounding_whitespace_is_read() {
+    var s = make(); if (!s) return
+    var spy = alertSpy(s)
+    line(s, "  " + JSON.stringify({ alert: { run_id: "r1", state: "escalated" } }) + "\r")
+    line(s, "\t" + JSON.stringify({ alert: { run_id: "r2", state: "dead" } }) + "  ")
+    compare(spy.count, 2)
+    compare(spy.signalArguments[0][0].run_id, "r1")
+    compare(spy.signalArguments[1][0].run_id, "r2")
+    s.destroy()
   }
 }
