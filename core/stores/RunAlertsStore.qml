@@ -45,11 +45,11 @@ Scope {
   onProjectRootsChanged: alerts.pruneArmed()
 
   // One project's snapshot reply. "ok" while active: when `root` is armed,
-  // Runs.newAlerts(previousRuns, runs, titlesByRoot) is raised (a non-array previousRuns
-  // counts as []), each alert with `project` the project.name of its run in
-  // `runs` ("" when it has none); then `root` is armed. "missing" disarms
-  // every root and keeps the toasts. "ok" while closed, "failed" and any other
-  // outcome change nothing.
+  // Runs.newAlerts(previousRuns, runs, titlesByRoot) is raised (a non-array
+  // previousRuns counts as []), each alert with `project` the project.name of
+  // its run in `runs` ("" when it has none); then `root` is armed. "missing"
+  // disarms every root and keeps the toasts. "ok" while closed, "failed" and
+  // any other outcome change nothing.
   function snapshotReplied(root, outcome, previousRuns, runs) {
     if (outcome === "missing") {
       alerts.armedRoots = {}
