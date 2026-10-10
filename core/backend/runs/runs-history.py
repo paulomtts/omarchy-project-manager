@@ -121,5 +121,17 @@ def main(argv):
     return emit(result)
 
 
+def guarded(argv):
+    """The store parses stdout for exactly one JSON line, so no path - not even an
+    unexpected exception (a timeout, an am that cannot start) - may end without one."""
+    try:
+        return main(argv)
+    except SystemExit:
+        raise
+    except BaseException as e:  # noqa: BLE001 - deliberate catch-all
+        reason = str(e) or e.__class__.__name__
+        return failure("HelperError", "The runs history failed: " + reason)
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(guarded(sys.argv[1:]))

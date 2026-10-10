@@ -7,11 +7,13 @@ calls.log; HOME and XDG_DATA_HOME are temp. The real `am` and real data are
 never touched.
 """
 import datetime
+import importlib.util
 import json
 import os
 import stat
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -524,3 +526,64 @@ def test_status_data_not_an_object_is_bad_output(world):
     assert out == {"ok": False, "error": {"type": "AmBadOutput",
                                           "message": "am status d0 data is not an object."}}
     assert calls(world) == [LIST(root), STATUS("d0")]
+
+
+# --- catch-all -------------------------------------------------------------------
+
+def load_helper():
+    """The script as a module (its name has a hyphen, so no plain import)."""
+    spec = importlib.util.spec_from_file_location("runs_history", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def use_world(world, monkeypatch):
+    for key, value in env_for(world).items():
+        monkeypatch.setenv(key, value)
+
+
+def one_line(capsys):
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, lines
+    return json.loads(lines[0])
+
+
+def test_unexpected_exception_is_helper_error(world, monkeypatch, capsys):
+    helper = load_helper()
+    use_world(world, monkeypatch)
+
+    def boom(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(helper, "call_am", boom)
+    code = helper.guarded(args_for(world))
+    assert code == 1
+    assert one_line(capsys) == {"ok": False, "error": {
+        "type": "HelperError", "message": "The runs history failed: boom"}}
+
+
+def test_timeout_is_helper_error(world, monkeypatch, capsys):
+    # An am that hangs is cut off after AM_TIMEOUT (shortened here from 60 s).
+    write_exec(world["bin"] / "am", "#!/bin/sh\nexec sleep 10\n")
+    helper = load_helper()
+    monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
+    use_world(world, monkeypatch)
+    start = time.monotonic()
+    code = helper.guarded(args_for(world))
+    assert time.monotonic() - start < 5
+    assert code == 1
+    out = one_line(capsys)
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The runs history failed: ")
+
+
+def test_am_that_cannot_start_is_helper_error(world):
+    # An am that cannot be executed at all: OSError from subprocess, still one line.
+    write_exec(world["bin"] / "am", "#!/nonexistent/interpreter\n")
+    code, out = run(world, args_for(world))
+    assert code == 1
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The runs history failed: ")
