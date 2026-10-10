@@ -298,7 +298,7 @@ TestCase {
     var many = make({ rows: mixedRows(), dropped: 37 })
     compare(H.find(many, "eventsEarlier").text, "… 37 earlier events")
     verify(Qt.colorEqual(H.find(many, "eventsEarlier").color, testTheme.dim))
-    verify(H.find(many, "eventsEarlier").y < listOf(many).y, "above the list")
+    verify(H.find(many, "eventsEarlier").mapToItem(many, 0, 0).y < listOf(many).mapToItem(many, 0, 0).y, "above the list")
     many.filter = "Failures"
     wait(30)
     compare(H.find(many, "eventsEarlier").visible, true, "independent of the filter")
@@ -352,7 +352,7 @@ TestCase {
     verify(Qt.colorEqual(H.find(pane, "eventsErrorText").color, testTheme.urgent))
     compare(listOf(pane).visible, true, "the rows held stay")
     compare(listOf(pane).count, 5)
-    verify(block.y < listOf(pane).y, "the error sits above the rows")
+    verify(block.mapToItem(pane, 0, 0).y < listOf(pane).mapToItem(pane, 0, 0).y, "the error sits above the rows")
     pane.errorText = "events unreadable"
     compare(H.find(pane, "eventsErrorText").text, "events unreadable")
 
