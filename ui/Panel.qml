@@ -99,14 +99,20 @@ Panel {
   Connections {
     target: appStores.runs
     function onRunFilterToggled() { Qt.callLater(root.scrollToTop) }
+    function onRunsChanged() { navi.openAwaitedRun() }
+  }
+  Connections {
+    target: appStores.runControl
     function onCancelOpenChanged() { root.focusForView() }
-    function onDispatchStepChanged() { if (root.dispatchOpen) root.focusForView() }
     function onResumeRunIdChanged() { root.focusForView() }
+  }
+  Connections {
+    target: appStores.runDispatch
+    function onDispatchStepChanged() { if (root.dispatchOpen) root.focusForView() }
     function onDispatchStarted(runId) {
-      appStores.runs.closeDispatch()
+      appStores.runDispatch.closeDispatch()
       navi.openStartedRun(runId)
     }
-    function onRunsChanged() { navi.openAwaitedRun() }
   }
 
   // The dialog picks one of the project's Markdown documents, so the documents
@@ -184,8 +190,8 @@ Panel {
     : appStores.memories.newMemoryOpen ? newMemoryDialog.focusItem
     : appStores.milestones.dialogOpen ? newMilestoneDialog.focusItem
     : root.dispatchOpen ? dispatchDialog.focusItem
-    : appStores.runs.cancelOpen ? runCancelModal.focusItem
-    : appStores.runs.resumeRunId !== "" ? resumeDialog.focusItem
+    : appStores.runControl.cancelOpen ? runCancelModal.focusItem
+    : appStores.runControl.resumeRunId !== "" ? resumeDialog.focusItem
     : (appStores.nav.viewMode === "memory" && appStores.memories.memoryEditing) ? memoryNoteScreen.editorItem
     : appStores.nav.dropdownOpen ? sidebar.filterItem
     : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "run" || appStores.nav.viewMode === "graph" || (!appStores.projects.selectedProject && appStores.nav.viewMode !== "runs")) ? keyCatcher
@@ -241,10 +247,10 @@ Panel {
   // the cursor it is opened from). A run that has left the snapshot cannot
   // open -- openRun would refuse silently -- so the list says why instead.
   function openToastRun(key, runId) {
-    appStores.runs.dismissToast(key)
+    appStores.runAlerts.dismissToast(key)
     navi.showSection("runs")
     if (appStores.runs.runById(runId) === null) {
-      appStores.runs.flash("This run is no longer in the snapshot")
+      appStores.runControl.flash("This run is no longer in the snapshot")
       return
     }
     navi.openRun(runId, "runs")
@@ -271,17 +277,17 @@ Panel {
   // list or a card open it on a card (openDispatch); a refused plan does not
   // say which card it was for, and the dialog needs the card's title, story
   // and blockers, so the card is kept here. Start run and d on the Runs list
-  // open it at RunStore's project step (dispatchOpenFromRuns); there the card
+  // open it at RunDispatchStore's project step (dispatchOpenFromRuns); there the card
   // is the target row picked (pickRunsTarget).
   property string dispatchCardId: ""   // the target card's id; "" for the board
   // A dispatch in any state but idle, or a Runs dispatch at any step.
-  readonly property bool dispatchOpen: appStores.runs.dispatchState !== "idle" || appStores.runs.dispatchStep !== ""
+  readonly property bool dispatchOpen: appStores.runDispatch.dispatchState !== "idle" || appStores.runDispatch.dispatchStep !== ""
   // The target step's heading: the name of dispatchRoot's project row, else
   // the root itself; "" with no dispatchRoot.
   readonly property string dispatchProjectName: {
-    var picked = appStores.runs.dispatchRoot
+    var picked = appStores.runDispatch.dispatchRoot
     if (picked === "") return ""
-    var rows = appStores.runs.dispatchProjectRows
+    var rows = appStores.runDispatch.dispatchProjectRows
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].root !== picked) continue
       return typeof rows[i].name === "string" && rows[i].name !== "" ? rows[i].name : picked
@@ -291,12 +297,12 @@ Panel {
   // The card map the dispatched card, its story, its blockers and the
   // milestone offer are read from: a Runs dispatch's picked tree
   // (dispatchTargetCardMap, {} before its read), else the open board's.
-  readonly property var dispatchCardMap: appStores.runs.dispatchStep !== ""
-    ? (appStores.runs.dispatchTargetCardMap || {}) : appStores.board.cardMap
+  readonly property var dispatchCardMap: appStores.runDispatch.dispatchStep !== ""
+    ? (appStores.runDispatch.dispatchTargetCardMap || {}) : appStores.board.cardMap
   readonly property var dispatchCard: root.dispatchCardId !== ""
     ? (root.dispatchCardMap[root.dispatchCardId] || null) : null
-  readonly property bool dispatchSubtask: !!appStores.runs.dispatchTarget
-    && appStores.runs.dispatchTarget.level === "subtask"
+  readonly property bool dispatchSubtask: !!appStores.runDispatch.dispatchTarget
+    && appStores.runDispatch.dispatchTarget.level === "subtask"
   // am has no dry run for one subtask, so its story and blockers are said
   // here instead; "" for any other target, and for a card the map dropped.
   readonly property string dispatchStoryTitle: {
@@ -313,7 +319,7 @@ Panel {
   }
   // A refused story's milestone, offered only while it is in the card map.
   readonly property var dispatchSuggestion: {
-    var suggest = appStores.runs.dispatchSuggest
+    var suggest = appStores.runDispatch.dispatchSuggest
     return suggest && typeof suggest.id === "string" && root.dispatchCardMap[suggest.id] ? suggest : null
   }
 
@@ -321,7 +327,7 @@ Panel {
   // status, an issue of the open board with its state while the dispatch is
   // for the open project, anything else by its id.
   function blockerText(id) {
-    var issues = appStores.runs.dispatchRoot === appStores.runs.project ? appStores.board.issueMap : {}
+    var issues = appStores.runDispatch.dispatchRoot === appStores.runs.project ? appStores.board.issueMap : {}
     var resolved = Board.resolvedCard(id, root.dispatchCardMap, issues)
     if (resolved.inBoard) return "\"" + resolved.title + "\" (" + appStores.board.statusText(resolved.status) + ")"
     if (resolved.kind === "issue") return "\"" + resolved.title + "\" (" + Board.issueBlockerLabel(resolved.status) + ")"
@@ -329,27 +335,25 @@ Panel {
   }
 
   // The dialog takes the focus when it opens (and at each Runs step, see the
-  // runs Connections) and gives it back when it closes, never on a
+  // runDispatch Connections) and gives it back when it closes, never on a
   // re-preview, which would pull the caret out of the field being typed in.
-  // Closing the panel does not close it: RunStore keeps an open dispatch
-  // across it.
   onDispatchOpenChanged: root.focusForView()
 
   // A card id or "board": the card detail's Dispatch and d on the board list
   // or a card. The store refuses a re-open while a start is in flight; the
   // card kept here must then stay the one being started.
   function openDispatch(target) {
-    if (appStores.runs.dispatchState === "starting") return
+    if (appStores.runDispatch.dispatchState === "starting") return
     var board = target === "board"
     root.dispatchCardId = board ? "" : String(target)
-    appStores.runs.openDispatch(board ? "board" : appStores.board.cardMap[target], appStores.board.cardMap)
+    appStores.runDispatch.openDispatch(board ? "board" : appStores.board.cardMap[target], appStores.board.cardMap)
   }
 
   // A row picked at the Runs target step: the store opens the form on it, and
   // only then is its card the dispatched one ("" for the board row).
   function pickRunsTarget(key) {
-    if (!appStores.runs.dispatchTargetPick(key)) return
-    var rows = appStores.runs.dispatchTargetRows
+    if (!appStores.runDispatch.dispatchTargetPick(key)) return
+    var rows = appStores.runDispatch.dispatchTargetRows
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].key !== key) continue
       var card = rows[i].card
@@ -561,7 +565,7 @@ Panel {
             text: "Start run"
             tooltipText: appStores.runs.amStatus === "missing" ? "am is not installed or not on PATH"
               : appStores.runs.usableRoots().length === 0 ? "No projects registered" : "Start an am run"
-            onClicked: appStores.runs.dispatchOpenFromRuns()
+            onClicked: appStores.runDispatch.dispatchOpenFromRuns()
           }
 
           // The am run strip, last in the row, over every registered project's
@@ -731,7 +735,7 @@ Panel {
             navigator: navi
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
-            onCancelRequested: function(runId) { appStores.runs.openCancel(runId) }
+            onCancelRequested: function(runId) { appStores.runControl.openCancel(runId) }
             onDispatchRequested: function(cardId) { root.openDispatch(cardId) }
           }
 
@@ -757,7 +761,7 @@ Panel {
             navigator: navi
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
-            onCancelRequested: function(runId) { appStores.runs.openCancel(runId) }
+            onCancelRequested: function(runId) { appStores.runControl.openCancel(runId) }
           }
 
           RunDetailScreen {
@@ -766,7 +770,7 @@ Panel {
             navigator: navi
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
-            onCancelRequested: function(runId) { appStores.runs.openCancel(runId) }
+            onCancelRequested: function(runId) { appStores.runControl.openCancel(runId) }
           }
         }
       }
@@ -782,8 +786,8 @@ Panel {
         anchors.margins: Style.space(12)
         z: 50
         theme: panelTheme
-        toasts: appStores.runs.toasts
-        onDismissRequested: function(key) { appStores.runs.dismissToast(key) }
+        toasts: appStores.runAlerts.toasts
+        onDismissRequested: function(key) { appStores.runAlerts.dismissToast(key) }
         onOpenRequested: function(key, runId) { root.openToastRun(key, runId) }
       }
 
@@ -832,36 +836,36 @@ Panel {
         backdropObjectName: "runCancelBackdrop"
         cardObjectName: "runCancelCard"
         fieldObjectName: "runCancelField"
-        shown: appStores.runs.cancelOpen
+        shown: appStores.runControl.cancelOpen
         confirmWord: "cancel"
-        message: "Cancel run " + Runs.shortId({ id: appStores.runs.cancelRunId }) + "? Cancel is final. The run cannot be resumed, only relaunched; cards keep their current status. A phase in flight finishes first."
-        detail: appStores.runs.runById(appStores.runs.cancelRunId) ? Runs.runTitle(appStores.runs.runById(appStores.runs.cancelRunId)) : ""
+        message: "Cancel run " + Runs.shortId({ id: appStores.runControl.cancelRunId }) + "? Cancel is final. The run cannot be resumed, only relaunched; cards keep their current status. A phase in flight finishes first."
+        detail: appStores.runs.runById(appStores.runControl.cancelRunId) ? Runs.runTitle(appStores.runs.runById(appStores.runControl.cancelRunId)) : ""
         confirmLabel: "Cancel run"
         dismissLabel: "Keep running"
-        error: appStores.runs.cancelError
-        typedText: appStores.runs.cancelText
+        error: appStores.runControl.cancelError
+        typedText: appStores.runControl.cancelText
         theme: panelTheme
-        onTypedEdited: function(text) { appStores.runs.cancelText = text }
-        onConfirmRequested: appStores.runs.confirmCancel()
-        onCancelRequested: appStores.runs.closeCancel()
+        onTypedEdited: function(text) { appStores.runControl.cancelText = text }
+        onConfirmRequested: appStores.runControl.confirmCancel()
+        onCancelRequested: appStores.runControl.closeCancel()
       }
 
       // The Resume dialog: a milestone resume with no stored verify set asks
-      // for the commands through the run store; only its confirm resumes.
+      // for the commands through run control; only its confirm resumes.
       ResumeVerifyDialog {
         id: resumeDialog
         objectName: "resumeVerifyDialog"
         anchors.fill: parent
-        shown: appStores.runs.resumeRunId !== ""
-        runLabel: Runs.shortId({ id: appStores.runs.resumeRunId })
-        commands: appStores.runs.resumeVerify
-        allowNoVerification: appStores.runs.resumeAllowNoVerification
-        error: appStores.runs.resumeError
+        shown: appStores.runControl.resumeRunId !== ""
+        runLabel: Runs.shortId({ id: appStores.runControl.resumeRunId })
+        commands: appStores.runControl.resumeVerify
+        allowNoVerification: appStores.runControl.resumeAllowNoVerification
+        error: appStores.runControl.resumeError
         theme: panelTheme
-        onCommandsEdited: function(commands) { appStores.runs.resumeVerify = commands }
-        onAllowNoVerificationEdited: function(on) { appStores.runs.resumeAllowNoVerification = on }
-        onConfirmRequested: appStores.runs.resumeConfirm()
-        onCancelRequested: appStores.runs.resumeClose()
+        onCommandsEdited: function(commands) { appStores.runControl.resumeVerify = commands }
+        onAllowNoVerificationEdited: function(on) { appStores.runControl.resumeAllowNoVerification = on }
+        onConfirmRequested: appStores.runControl.resumeConfirm()
+        onCancelRequested: appStores.runControl.resumeClose()
       }
 
       NewMemoryDialog {
@@ -922,38 +926,38 @@ Panel {
         anchors.fill: parent
         shown: root.dispatchOpen
         theme: panelTheme
-        step: appStores.runs.dispatchStep
+        step: appStores.runDispatch.dispatchStep
         projectName: root.dispatchProjectName
-        projectRows: appStores.runs.dispatchProjectRows
-        targetRows: appStores.runs.dispatchTargetRows
-        targetLoading: appStores.runs.dispatchTargetLoading
-        targetKey: appStores.runs.dispatchTargetKey
-        dispatchState: appStores.runs.dispatchState
-        target: appStores.runs.dispatchTarget
+        projectRows: appStores.runDispatch.dispatchProjectRows
+        targetRows: appStores.runDispatch.dispatchTargetRows
+        targetLoading: appStores.runDispatch.dispatchTargetLoading
+        targetKey: appStores.runDispatch.dispatchTargetKey
+        dispatchState: appStores.runDispatch.dispatchState
+        target: appStores.runDispatch.dispatchTarget
         targetTitle: root.dispatchCard ? String(root.dispatchCard.title || "") : ""
-        targetLabel: appStores.runs.dispatchTargetLabel
-        form: appStores.runs.dispatchForm
-        preview: appStores.runs.dispatchPreview
-        error: appStores.runs.dispatchError
-        logPath: appStores.runs.dispatchLog
-        logTail: appStores.runs.dispatchLogTail
-        exitCode: appStores.runs.dispatchExitCode
+        targetLabel: appStores.runDispatch.dispatchTargetLabel
+        form: appStores.runDispatch.dispatchForm
+        preview: appStores.runDispatch.dispatchPreview
+        error: appStores.runDispatch.dispatchError
+        logPath: appStores.runDispatch.dispatchLog
+        logTail: appStores.runDispatch.dispatchLogTail
+        exitCode: appStores.runDispatch.dispatchExitCode
         storyTitle: root.dispatchStoryTitle
         blockedText: root.dispatchBlockedText
         confirmFirst: root.dispatchSubtask
         suggestion: root.dispatchSuggestion
-        onProjectChosen: function(projectRoot) { appStores.runs.dispatchProjectPick(projectRoot) }
+        onProjectChosen: function(projectRoot) { appStores.runDispatch.dispatchProjectPick(projectRoot) }
         onTargetPicked: function(key) { root.pickRunsTarget(key) }
-        onBackRequested: appStores.runs.dispatchBack()
-        onFieldEdited: function(name, value) { appStores.runs.setDispatchField(name, value) }
-        onStartRequested: appStores.runs.dispatchStart()
-        onCancelRequested: appStores.runs.closeDispatch()
+        onBackRequested: appStores.runDispatch.dispatchBack()
+        onFieldEdited: function(name, value) { appStores.runDispatch.setDispatchField(name, value) }
+        onStartRequested: appStores.runDispatch.dispatchStart()
+        onCancelRequested: appStores.runDispatch.closeDispatch()
         // The store reopens on the milestone and clears its suggestion; the
         // card follows only when it did.
         onSuggestionRequested: {
           if (!root.dispatchSuggestion) return
           var milestoneId = root.dispatchSuggestion.id
-          if (appStores.runs.retargetToMilestone()) root.dispatchCardId = milestoneId
+          if (appStores.runDispatch.retargetToMilestone()) root.dispatchCardId = milestoneId
         }
       }
     }

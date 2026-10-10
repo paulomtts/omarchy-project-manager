@@ -448,10 +448,10 @@ TestCase {
     wait(50)
     compare(s.app.runs.project, "/home/u/a", "control() refuses without a project")
     mouseClick(rc(s, 0, "Pause"))
-    compare(s.app.runs.pending["run-0000000000a1"], "pause")
-    compare(s.app.runs.controlRunners.length, 1)
-    compare(s.app.runs.controlRunners[0].action, "pause")
-    compare(s.app.runs.controlRunners[0].runId, "run-0000000000a1")
+    compare(s.app.runControl.pending["run-0000000000a1"], "pause")
+    compare(s.app.runControl.controlRunners.length, 1)
+    compare(s.app.runControl.controlRunners[0].action, "pause")
+    compare(s.app.runControl.controlRunners[0].runId, "run-0000000000a1")
     compare(s.app.nav.viewMode, "entry", "the button is not the row")
     compare(rc(s, 0, "Pause").text, "Pause requested…")
     compare(rc(s, 0, "Pause").enabled, false)
@@ -467,8 +467,8 @@ TestCase {
     mouseClick(rc(s, 0, "Cancel"))
     compare(cancelSpy.count, 1)
     compare(cancelSpy.signalArguments[0][0], "run-0000000000a1")
-    compare(s.app.runs.controlRunners.length, 0)
-    compare(Object.keys(s.app.runs.pending).length, 0)
+    compare(s.app.runControl.controlRunners.length, 0)
+    compare(Object.keys(s.app.runControl.pending).length, 0)
     compare(s.app.nav.viewMode, "entry")
   }
 
@@ -499,7 +499,7 @@ TestCase {
     mouseClick(button)
     compare(dispatchSpy.count, 1)
     compare(dispatchSpy.signalArguments[0][0], data.id)
-    compare(s.app.runs.dispatchState, "idle", "the screen opens nothing itself")
+    compare(s.app.runDispatch.dispatchState, "idle", "the screen opens nothing itself")
   }
 
   // 17

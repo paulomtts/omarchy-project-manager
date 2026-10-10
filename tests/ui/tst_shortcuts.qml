@@ -472,19 +472,19 @@ TestCase {
   function test_c_r_and_p_act_on_the_cursor_run_while_the_search_is_empty() {
     var s = inRunKeys(); if (!s) return
     compare(s.handleRunKey(plain(Qt.Key_R)), true, "a refused key is still handled")
-    compare(s.app.runs.flashText, "The run is still running")
-    compare(Object.keys(s.app.runs.pending).length, 0)
+    compare(s.app.runControl.flashText, "The run is still running")
+    compare(Object.keys(s.app.runControl.pending).length, 0)
     compare(s.handleRunKey(plain(Qt.Key_C)), true)
-    compare(s.app.runs.cancelOpen, true)
-    compare(s.app.runs.cancelRunId, "run-0000000000a1")
-    compare(Object.keys(s.app.runs.pending).length, 0, "c only asks")
-    s.app.runs.closeCancel()
+    compare(s.app.runControl.cancelOpen, true)
+    compare(s.app.runControl.cancelRunId, "run-0000000000a1")
+    compare(Object.keys(s.app.runControl.pending).length, 0, "c only asks")
+    s.app.runControl.closeCancel()
     compare(s.handleRunKey(plain(Qt.Key_P)), true)
-    compare(s.app.runs.pending["run-0000000000a1"], "pause")
-    compare(s.app.runs.controlRunners.length, 1)
+    compare(s.app.runControl.pending["run-0000000000a1"], "pause")
+    compare(s.app.runControl.controlRunners.length, 1)
     compare(s.handleRunKey(plain(Qt.Key_C)), true)
-    compare(s.app.runs.cancelOpen, false, "a run with a request pending gets no dialog")
-    compare(s.app.runs.flashText, "A request for this run is pending")
+    compare(s.app.runControl.cancelOpen, false, "a run with a request pending gets no dialog")
+    compare(s.app.runControl.flashText, "A request for this run is pending")
   }
 
   // 9
@@ -495,9 +495,9 @@ TestCase {
     compare(s.handleRunKey(plain(Qt.Key_P)), false)
     compare(s.handleRunKey(plain(Qt.Key_C)), false)
     compare(s.handleRunKey(plain(Qt.Key_R)), false)
-    compare(Object.keys(s.app.runs.pending).length, 0)
-    compare(s.app.runs.cancelOpen, false)
-    compare(s.app.runs.flashText, "")
+    compare(Object.keys(s.app.runControl.pending).length, 0)
+    compare(s.app.runControl.cancelOpen, false)
+    compare(s.app.runControl.flashText, "")
   }
 
   // 10
@@ -508,9 +508,9 @@ TestCase {
     compare(s.handleRunKey(ctrl(Qt.Key_C)), false)
     compare(s.handleGlobalKey(ctrl(Qt.Key_C)), false, "and Ctrl+C is no chord either")
     compare(s.handleRunKey(plain(Qt.Key_X)), false)
-    compare(Object.keys(s.app.runs.pending).length, 0)
-    compare(s.app.runs.cancelOpen, false)
-    compare(s.app.runs.flashText, "")
+    compare(Object.keys(s.app.runControl.pending).length, 0)
+    compare(s.app.runControl.cancelOpen, false)
+    compare(s.app.runControl.flashText, "")
   }
 
   // 11
@@ -519,7 +519,7 @@ TestCase {
     s.navigator.openRun("run-0000000000b2")
     compare(s.app.nav.viewMode, "run")
     compare(s.handleRunKey(plain(Qt.Key_R)), true)
-    compare(s.app.runs.pending["run-0000000000b2"], "resume")
+    compare(s.app.runControl.pending["run-0000000000b2"], "resume")
     s.navigator.goBack()
     s.navigator.showSection("board")
     compare(s.app.nav.viewMode, "board")
@@ -529,21 +529,21 @@ TestCase {
     s.navigator.openCard("m1")
     compare(s.app.nav.viewMode, "entry")
     compare(s.handleRunKey(plain(Qt.Key_P)), false, "entry")
-    compare(s.app.runs.pending["run-0000000000a1"], undefined)
-    compare(s.app.runs.flashText, "")
+    compare(s.app.runControl.pending["run-0000000000a1"], undefined)
+    compare(s.app.runControl.flashText, "")
   }
 
   // 12
   function test_the_cancel_dialog_swallows_the_keys_and_escape_closes_only_it() {
     var s = inRunKeys(); if (!s) return
     s.navigator.openRun("run-0000000000a1")
-    compare(s.app.runs.openCancel("run-0000000000a1"), true)
+    compare(s.app.runControl.openCancel("run-0000000000a1"), true)
     compare(s.handleGlobalKey(ctrl(Qt.Key_6)), false)
     compare(s.app.nav.viewMode, "run")
     compare(s.handleRunKey(plain(Qt.Key_P)), false)
-    compare(Object.keys(s.app.runs.pending).length, 0)
+    compare(Object.keys(s.app.runControl.pending).length, 0)
     s.closeRequested()
-    compare(s.app.runs.cancelOpen, false)
+    compare(s.app.runControl.cancelOpen, false)
     compare(s.app.nav.viewMode, "run", "Escape closed the dialog only")
     s.closeRequested()
     compare(s.app.nav.viewMode, "runs", "the next Escape goes back as before")
@@ -559,8 +559,8 @@ TestCase {
     s.app.runs.runs = []
     s.app.nav.cursorIndex = 0
     compare(s.handleRunKey(plain(Qt.Key_P)), false, "an empty list")
-    compare(Object.keys(s.app.runs.pending).length, 0)
-    compare(s.app.runs.flashText, "")
+    compare(Object.keys(s.app.runControl.pending).length, 0)
+    compare(s.app.runControl.flashText, "")
   }
 
   function test_the_open_dropdown_swallows_the_run_keys() {
@@ -568,7 +568,7 @@ TestCase {
     s.navigator.toggleDropdown()
     compare(s.app.nav.dropdownOpen, true)
     compare(s.handleRunKey(plain(Qt.Key_P)), false)
-    compare(Object.keys(s.app.runs.pending).length, 0)
+    compare(Object.keys(s.app.runControl.pending).length, 0)
   }
 
   // A run key needs no project: a run carries its own repository.
@@ -580,15 +580,15 @@ TestCase {
     s.app.nav.cursorIndex = 0
     compare(s.app.nav.viewMode, "runs")
     compare(s.handleRunKey(plain(Qt.Key_R)), true, "a refused key is still handled")
-    compare(s.app.runs.flashText, "The run is still running")
-    compare(Object.keys(s.app.runs.pending).length, 0)
+    compare(s.app.runControl.flashText, "The run is still running")
+    compare(Object.keys(s.app.runControl.pending).length, 0)
     compare(s.handleRunKey(plain(Qt.Key_C)), true)
-    compare(s.app.runs.cancelOpen, true)
-    compare(s.app.runs.cancelRunId, "run-0000000000a1")
-    s.app.runs.closeCancel()
+    compare(s.app.runControl.cancelOpen, true)
+    compare(s.app.runControl.cancelRunId, "run-0000000000a1")
+    s.app.runControl.closeCancel()
     compare(s.handleRunKey(plain(Qt.Key_P)), true)
-    compare(s.app.runs.pending["run-0000000000a1"], "pause")
-    compare(s.app.runs.controlRunners.length, 1)
+    compare(s.app.runControl.pending["run-0000000000a1"], "pause")
+    compare(s.app.runControl.controlRunners.length, 1)
   }
 
   // K2
@@ -598,8 +598,8 @@ TestCase {
     s.navigator.openRun("run-0000000000b2")
     compare(s.app.nav.viewMode, "run")
     compare(s.handleRunKey(plain(Qt.Key_R)), true)
-    compare(s.app.runs.pending["run-0000000000b2"], "resume")
-    compare(s.app.runs.pending["run-0000000000a1"], undefined, "not the cursor row")
+    compare(s.app.runControl.pending["run-0000000000b2"], "resume")
+    compare(s.app.runControl.pending["run-0000000000a1"], undefined, "not the cursor row")
   }
 
   // Review Focus 2
@@ -613,9 +613,9 @@ TestCase {
     compare(s.handleRunKey(plain(Qt.Key_C)), false)
     s.handleActivate()
     compare(s.app.nav.viewMode, "runs", "Enter opens nothing")
-    compare(Object.keys(s.app.runs.pending).length, 0)
-    compare(s.app.runs.cancelOpen, false)
-    compare(s.app.runs.flashText, "")
+    compare(Object.keys(s.app.runControl.pending).length, 0)
+    compare(s.app.runControl.cancelOpen, false)
+    compare(s.app.runControl.flashText, "")
   }
 
   // Review Focus 3
@@ -623,12 +623,12 @@ TestCase {
     var s = inRunKeys(); if (!s) return
     s.app.projects.selectedProject = null
     s.navigator.openRun("run-0000000000a1")
-    compare(s.app.runs.openCancel("run-0000000000a1"), true)
+    compare(s.app.runControl.openCancel("run-0000000000a1"), true)
     compare(s.handleGlobalKey(ctrl(Qt.Key_6)), false)
     compare(s.app.nav.viewMode, "run")
     compare(s.handleRunKey(plain(Qt.Key_P)), false)
-    compare(Object.keys(s.app.runs.pending).length, 0)
-    compare(s.app.runs.cancelOpen, true)
+    compare(Object.keys(s.app.runControl.pending).length, 0)
+    compare(s.app.runControl.cancelOpen, true)
   }
 
   // ---- run toasts (S2 4.4)
@@ -640,10 +640,10 @@ TestCase {
     var s = inRunKeys(); if (!s) return
     s.navigator.openRun("run-0000000000a1")
     compare(s.app.nav.viewMode, "run")
-    s.app.runs.raiseAlerts([alertOf("run-0000000000a1"), alertOf("run-0000000000b2")])
-    compare(s.app.runs.toasts.length, 2)
+    s.app.runAlerts.raiseAlerts([alertOf("run-0000000000a1"), alertOf("run-0000000000b2")])
+    compare(s.app.runAlerts.toasts.length, 2)
     s.closeRequested()
-    compare(s.app.runs.toasts.length, 0)
+    compare(s.app.runAlerts.toasts.length, 0)
     compare(s.app.nav.viewMode, "run", "that Escape went to the toasts")
     s.closeRequested()
     compare(s.app.nav.viewMode, "runs", "the next one goes back as before")
@@ -654,9 +654,9 @@ TestCase {
   function test_escape_on_the_board_dismisses_the_toasts_and_keeps_the_panel_open() {
     var s = inRunKeys(); if (!s) return
     s.navigator.showSection("board")
-    s.app.runs.raiseAlerts([alertOf("run-0000000000a1")])
+    s.app.runAlerts.raiseAlerts([alertOf("run-0000000000a1")])
     s.closeRequested()
-    compare(s.app.runs.toasts.length, 0)
+    compare(s.app.runAlerts.toasts.length, 0)
     compare(tc.calls.indexOf("close"), -1, "the panel stays open")
     compare(s.app.nav.viewMode, "board")
     s.closeRequested()
@@ -666,13 +666,13 @@ TestCase {
   // 22
   function test_the_cancel_dialog_closes_before_the_toasts() {
     var s = inRunKeys(); if (!s) return
-    s.app.runs.raiseAlerts([alertOf("run-0000000000b2")])
-    compare(s.app.runs.openCancel("run-0000000000a1"), true)
+    s.app.runAlerts.raiseAlerts([alertOf("run-0000000000b2")])
+    compare(s.app.runControl.openCancel("run-0000000000a1"), true)
     s.closeRequested()
-    compare(s.app.runs.cancelOpen, false)
-    compare(s.app.runs.toasts.length, 1, "the toasts stay")
+    compare(s.app.runControl.cancelOpen, false)
+    compare(s.app.runAlerts.toasts.length, 1, "the toasts stay")
     s.closeRequested()
-    compare(s.app.runs.toasts.length, 0)
+    compare(s.app.runAlerts.toasts.length, 0)
     compare(s.app.nav.viewMode, "runs")
     compare(tc.calls.indexOf("close"), -1)
   }
@@ -681,21 +681,21 @@ TestCase {
   function test_escape_in_the_search_field_dismisses_the_toasts_first() {
     var s = inRunKeys(); if (!s) return
     s.app.nav.searchQuery = "x"
-    s.app.runs.raiseAlerts([alertOf("run-0000000000a1")])
+    s.app.runAlerts.raiseAlerts([alertOf("run-0000000000a1")])
     var e = plain(Qt.Key_Escape)
     s.handleSearchKey(e)
     compare(e.accepted, true)
-    compare(s.app.runs.toasts.length, 0)
+    compare(s.app.runAlerts.toasts.length, 0)
     compare(s.app.nav.searchQuery, "x", "the search is kept")
     compare(tc.calls.indexOf("close"), -1)
     s.handleSearchKey(plain(Qt.Key_Escape))
     compare(s.app.nav.searchQuery, "", "the next Escape clears the search")
     compare(tc.calls.indexOf("close"), -1)
-    s.app.runs.raiseAlerts([alertOf("run-0000000000a1")])
+    s.app.runAlerts.raiseAlerts([alertOf("run-0000000000a1")])
     var e2 = plain(Qt.Key_Escape)
     s.handleSearchKey(e2)
     compare(e2.accepted, true)
-    compare(s.app.runs.toasts.length, 0)
+    compare(s.app.runAlerts.toasts.length, 0)
     compare(tc.calls.indexOf("close"), -1, "an empty search with toasts showing does not close the panel")
   }
 
@@ -703,14 +703,14 @@ TestCase {
   function test_toasts_are_not_a_modal() {
     var s = inRunKeys(); if (!s) return
     s.navigator.showSection("board")
-    s.app.runs.raiseAlerts([alertOf("run-0000000000a1")])
+    s.app.runAlerts.raiseAlerts([alertOf("run-0000000000a1")])
     compare(s.modalOpen(), false)
     compare(s.handleGlobalKey(ctrl(Qt.Key_6)), true)
     compare(s.app.nav.viewMode, "runs")
     s.app.nav.cursorIndex = 0
     compare(s.handleRunKey(plain(Qt.Key_P)), true)
-    compare(s.app.runs.pending["run-0000000000a1"], "pause")
-    compare(s.app.runs.toasts.length, 1, "the keys leave the toasts alone")
+    compare(s.app.runControl.pending["run-0000000000a1"], "pause")
+    compare(s.app.runAlerts.toasts.length, 1, "the keys leave the toasts alone")
   }
 
   // ---- d: the dispatch dialog (S3 4.2)
@@ -746,7 +746,7 @@ TestCase {
     compare(s.app.board.boardCards.map(function(c) { return c.id }).indexOf("s1"), -1, "a story is never a board-list row")
     compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
     compare(dispatched().join(","), "dispatch:m1")
-    compare(s.app.runs.dispatchState, "idle", "the key only asks the panel")
+    compare(s.app.runDispatch.dispatchState, "idle", "the key only asks the panel")
   }
 
   // 7 (and Review Focus 1)
@@ -774,8 +774,8 @@ TestCase {
       s.app.runs.amStatus = "missing"
       break
     case "dropdown": s.navigator.toggleDropdown(); break
-    case "modal": s.app.runs.cancelRunId = "run-0000000000a1"; break
-    case "dispatch-open": s.app.runs.dispatchState = "ready"; break
+    case "modal": s.app.runControl.cancelRunId = "run-0000000000a1"; break
+    case "dispatch-open": s.app.runDispatch.dispatchState = "ready"; break
     case "graph": s.navigator.showSection("graph"); break
     case "documents": s.navigator.showSection("documents"); break
     case "empty-board": s.app.board.applyTreeData([]); break
@@ -809,7 +809,7 @@ TestCase {
     compare(s.app.board.cardMap[data.id].depth, 1, "a story")
     compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
     compare(dispatched().join(","), "dispatch:" + data.id)
-    compare(s.app.runs.dispatchState, "idle", "the key only asks the panel")
+    compare(s.app.runDispatch.dispatchState, "idle", "the key only asks the panel")
   }
 
   // S7: the board list holds roots only, so a story is reached through its
@@ -832,7 +832,7 @@ TestCase {
   function test_an_open_dispatch_is_a_modal() {
     var s = onBoard(); if (!s) return
     compare(s.modalOpen(), false)
-    s.app.runs.dispatchState = "ready"
+    s.app.runDispatch.dispatchState = "ready"
     compare(s.modalOpen(), true)
     compare(s.handleGlobalKey(ctrl(Qt.Key_1)), false)
     compare(s.handleGlobalKey(ctrl(Qt.Key_6)), false)
@@ -843,10 +843,10 @@ TestCase {
   function test_escape_closes_an_open_dispatch_before_anything_else() {
     var s = onBoard(); if (!s) return
     s.navigator.openCard("s1")
-    compare(s.app.runs.openDispatch(s.app.board.cardMap["s1"], s.app.board.cardMap), true, "a story opens on itself")
-    compare(s.app.runs.dispatchState, "previewing")
+    compare(s.app.runDispatch.openDispatch(s.app.board.cardMap["s1"], s.app.board.cardMap), true, "a story opens on itself")
+    compare(s.app.runDispatch.dispatchState, "previewing")
     s.closeRequested()
-    compare(s.app.runs.dispatchState, "idle")
+    compare(s.app.runDispatch.dispatchState, "idle")
     compare(s.app.nav.viewMode, "entry", "that Escape closed the dialog only")
     compare(tc.calls.indexOf("close"), -1)
     s.closeRequested()
@@ -857,9 +857,9 @@ TestCase {
   function test_escape_while_a_start_is_in_flight_does_nothing() {
     var s = onBoard(); if (!s) return
     s.navigator.openCard("s1")
-    s.app.runs.dispatchState = "starting"
+    s.app.runDispatch.dispatchState = "starting"
     s.closeRequested()
-    compare(s.app.runs.dispatchState, "starting")
+    compare(s.app.runDispatch.dispatchState, "starting")
     compare(s.app.nav.viewMode, "entry", "no Back")
     compare(tc.calls.indexOf("close"), -1, "no panel close")
   }
@@ -871,11 +871,11 @@ TestCase {
     var s = inRuns(); if (!s) return
     compare(s.app.nav.searchQuery, "")
     compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
-    compare(s.app.runs.dispatchStep, "project")
-    compare(s.app.runs.dispatchState, "idle")
-    compare(s.app.runs.dispatchRoot, "")
+    compare(s.app.runDispatch.dispatchStep, "project")
+    compare(s.app.runDispatch.dispatchState, "idle")
+    compare(s.app.runDispatch.dispatchRoot, "")
     compare(dispatched().length, 0, "no card dispatch is asked for")
-    s.app.runs.dispatchProjectRunner.cancel()
+    s.app.runDispatch.dispatchProjectRunner.cancel()
   }
 
   // 8
@@ -885,9 +885,9 @@ TestCase {
     s.app.nav.viewMode = "runs"
     compare(s.app.runs.usableRoots().length, 2, "the registry still lists A and B")
     compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
-    compare(s.app.runs.dispatchStep, "project")
+    compare(s.app.runDispatch.dispatchStep, "project")
     compare(dispatched().length, 0)
-    s.app.runs.dispatchProjectRunner.cancel()
+    s.app.runDispatch.dispatchProjectRunner.cancel()
   }
 
   // 9
@@ -909,8 +909,8 @@ TestCase {
       s.navigator.toggleDropdown()
       compare(s.app.nav.dropdownOpen, true)
       break
-    case "modal": s.app.runs.cancelRunId = "run-0000000000a1"; break
-    case "dispatch-open": s.app.runs.dispatchStep = "project"; break
+    case "modal": s.app.runControl.cancelRunId = "run-0000000000a1"; break
+    case "dispatch-open": s.app.runDispatch.dispatchStep = "project"; break
     case "am-missing": s.app.runs.amStatus = "missing"; break
     case "empty-registry":
       s.app.runs.projectRoots = []
@@ -922,9 +922,9 @@ TestCase {
       compare(s.app.nav.viewMode, "run")
       break
     }
-    var before = s.app.runs.dispatchStep
+    var before = s.app.runDispatch.dispatchStep
     compare(s.handleDispatchKey(e), false)
-    compare(s.app.runs.dispatchStep, before, "nothing opened")
+    compare(s.app.runDispatch.dispatchStep, before, "nothing opened")
     compare(dispatched().length, 0)
   }
 
@@ -936,15 +936,15 @@ TestCase {
   function test_a_runs_dispatch_at_a_step_is_a_modal(data) {
     var s = inRuns(); if (!s) return
     compare(s.modalOpen(), false)
-    s.app.runs.dispatchStep = data.step
-    compare(s.app.runs.dispatchState, "idle")
+    s.app.runDispatch.dispatchStep = data.step
+    compare(s.app.runDispatch.dispatchState, "idle")
     compare(s.modalOpen(), true)
     compare(s.handleGlobalKey(ctrl(Qt.Key_1)), false)
     compare(s.app.nav.viewMode, "runs", "no chord acted")
     compare(s.handleRunKey(plain(Qt.Key_P)), false)
-    compare(s.app.runs.flashText, "", "no run key acted")
+    compare(s.app.runControl.flashText, "", "no run key acted")
     s.closeRequested()
-    compare(s.app.runs.dispatchStep, "")
+    compare(s.app.runDispatch.dispatchStep, "")
     compare(s.app.nav.viewMode, "runs", "that Escape closed the dialog only")
     compare(tc.calls.indexOf("close"), -1, "the panel stays open")
   }
@@ -954,7 +954,7 @@ TestCase {
     var s = onBoard(); if (!s) return
     compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
     compare(dispatched().join(","), "dispatch:m1")
-    compare(s.app.runs.dispatchStep, "")
+    compare(s.app.runDispatch.dispatchStep, "")
   }
 
   // ---- e: Run detail's Output / Events tabs (4.3)
@@ -1002,12 +1002,12 @@ TestCase {
   function test_a_modal_or_the_dropdown_swallows_e() {
     var s = inRunKeys(); if (!s) return
     s.navigator.openRun("run-0000000000a1")
-    compare(s.app.runs.openCancel("run-0000000000a1"), true)
+    compare(s.app.runControl.openCancel("run-0000000000a1"), true)
     compare(s.handleEventsKey(plain(Qt.Key_E)), false, "the cancel confirmation")
-    s.app.runs.closeCancel()
-    s.app.runs.dispatchState = "ready"
+    s.app.runControl.closeCancel()
+    s.app.runDispatch.dispatchState = "ready"
     compare(s.handleEventsKey(plain(Qt.Key_E)), false, "an open dispatch")
-    s.app.runs.dispatchState = "idle"
+    s.app.runDispatch.dispatchState = "idle"
     s.navigator.toggleDropdown()
     compare(s.app.nav.dropdownOpen, true)
     compare(s.handleEventsKey(plain(Qt.Key_E)), false, "the dropdown")

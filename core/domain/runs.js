@@ -1789,3 +1789,77 @@ function previewSummary(dryRunData, level) {
   var branch = _isObject(integrate) && typeof integrate.branch === "string" ? _textOf(integrate.branch) : ""
   return { board: false, integrate: branch !== "" ? "Integrate \u2192 " + branch : "", summary: summary }
 }
+
+// ---- Store helpers (split-runstore 2.1) --------------------------------------------------
+
+// The first entry of `runs`, in order, that is truthy and whose `id` is ===
+// `id`; null when there is none or `runs` is not an array. The entry itself,
+// not a copy.
+function runById(runs, id) {
+  if (!Array.isArray(runs)) return null
+  for (var i = 0; i < runs.length; i++) {
+    if (runs[i] && runs[i].id === id) return runs[i]
+  }
+  return null
+}
+
+// `run.project.root` when `run` is a non-null object whose `project` is a
+// non-null object whose `root` is a string (returned as it is, so "" stays
+// ""); "" otherwise.
+function runRoot(run) {
+  var p = run !== null && typeof run === "object" ? run.project : null
+  if (p === null || typeof p !== "object" || typeof p.root !== "string") return ""
+  return p.root
+}
+
+// Whether `map` has `key` as an own property; false for a null or undefined map.
+function hasKey(map, key) {
+  if (map === null || map === undefined) return false
+  return Object.prototype.hasOwnProperty.call(map, key)
+}
+
+// A new plain object with every own enumerable key of `map` and its value
+// (a shallow copy); {} for null or undefined.
+function copyMap(map) {
+  var out = {}
+  for (var key in map) {
+    if (hasKey(map, key)) out[key] = map[key]
+  }
+  return out
+}
+
+// The registry's usable entries, {root, name}, in registry order: an object
+// whose root is a non-empty string not starting with "-" (runs-snapshot-all.py
+// refuses any other), each root once, at its first position with its first
+// name. [] when `projectRoots` has no numeric length.
+function usableRoots(projectRoots) {
+  var list = projectRoots
+  var n = list !== null && typeof list === "object" && typeof list.length === "number" ? list.length : 0
+  var out = []
+  var seen = {}
+  for (var i = 0; i < n; i++) {
+    var p = list[i]
+    if (p === null || typeof p !== "object" || Array.isArray(p)) continue
+    var root = p.root
+    if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || hasKey(seen, root)) continue
+    seen[root] = true
+    out.push({ root: root, name: p.name })
+  }
+  return out
+}
+
+// The form's verify commands that are non-blank strings, verbatim, in order;
+// [] when form.verify is not an array.
+function verifyCommands(form) {
+  var list = form !== null && typeof form === "object" && Array.isArray(form.verify) ? form.verify : []
+  return list.filter(function(c) { return typeof c === "string" && c.trim() !== "" })
+}
+
+// A fresh {milestone id: prefix} map: stored's own entries when stored is
+// an object that is not an array, then entry's, which override them, as
+// set-run-settings merges prefixByMilestone.
+function mergedPrefixes(stored, entry) {
+  var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? copyMap(stored) : {}
+  for (var id in entry) merged[id] = entry[id]
+  return merged
+}

@@ -7,7 +7,7 @@ import "../theme" as T
 
 // The dispatch modal over a dimmed backdrop: what will run, the form the store
 // checks, what am would do, and what it costs. Renders and emits only -- the
-// owner passes RunStore's dispatch values in and maps fieldEdited,
+// owner passes RunDispatchStore's dispatch values in and maps fieldEdited,
 // startRequested and cancelRequested onto setDispatchField, dispatchStart and
 // closeDispatch. Only a click on Start starts a run: Return never does. The
 // owner may pass a ready target label (targetLabel), a row of targets
@@ -28,19 +28,19 @@ Item {
   // The one input for every colour and font: Panel passes its Theme down,
   // and a standalone instance renders with the shell defaults.
   property var theme: T.Theme {}
-  // RunStore's dispatchState. Not `state`: Item already has one.
+  // RunDispatchStore's dispatchState. Not `state`: Item already has one.
   property string dispatchState: "idle"
-  // RunStore's dispatchTarget: {command, flags, level, offered, reason, suggest}.
+  // RunDispatchStore's dispatchTarget: {command, flags, level, offered, reason, suggest}.
   property var target: null
   // The target card's title; "" for the board.
   property string targetTitle: ""
-  // The owner's ready-made target text (RunStore's dispatchTargetLabel); ""
+  // The owner's ready-made target text (RunDispatchStore's dispatchTargetLabel); ""
   // builds it from the level and targetTitle. Only the target line reads it.
   property string targetLabel: ""
-  // RunStore's dispatchForm: {base, prefix, verify, parallelism,
+  // RunDispatchStore's dispatchForm: {base, prefix, verify, parallelism,
   // allowNoVerification}; null for a target refused at open.
   property var form: null
-  // RunStore's dispatchPreview: {board, integrate, summary}.
+  // RunDispatchStore's dispatchPreview: {board, integrate, summary}.
   property var preview: null
   property string error: ""
   property string logPath: ""
@@ -60,21 +60,21 @@ Item {
   // so ready alone is not an explicit confirm).
   property bool confirmFirst: false
   readonly property bool armed: arming.armed
-  // RunStore's dispatchStep. "project" shows the project list and "target"
+  // RunDispatchStore's dispatchStep. "project" shows the project list and "target"
   // the target list, each in place of the target line, the form, the preview,
   // the warning and Start; any other value shows those.
   property string step: ""
   // The picked project's name, for the target step's heading.
   property string projectName: ""
-  // RunStore's dispatchProjectRows, [{root, name, open, enabled, reason}];
+  // RunDispatchStore's dispatchProjectRows, [{root, name, open, enabled, reason}];
   // anything not array-like reads as [].
   property var projectRows: []
-  // RunStore's dispatchTargetRows, [{key, level, card, label, depth}];
+  // RunDispatchStore's dispatchTargetRows, [{key, level, card, label, depth}];
   // anything not array-like reads as [].
   property var targetRows: []
-  // RunStore's dispatchTargetLoading: the tree is still being read.
+  // RunDispatchStore's dispatchTargetLoading: the tree is still being read.
   property bool targetLoading: false
-  // RunStore's dispatchTargetKey: the row the cursor lands on when the target
+  // RunDispatchStore's dispatchTargetKey: the row the cursor lands on when the target
   // step is entered.
   property string targetKey: ""
   readonly property bool atProject: dialog.step === "project"

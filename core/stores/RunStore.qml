@@ -1,8 +1,8 @@
 import QtQml
 import Quickshell
 import Quickshell.Io
+import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
-import "../domain/board.js" as Board
 import "../domain/runEvents.js" as RunEvents
 
 // The am run monitor's data. One list snapshot covers every registered
@@ -11,13 +11,11 @@ import "../domain/runEvents.js" as RunEvents
 // run domain model and tagged with their project; `projectErrors` the roots
 // whose latest entry failed; `runs` every root's runs merged in registry
 // order, a run id listed once, under the first root that lists it. A project
-// switch leaves the run list alone: `project`, the open project, decides only
-// the run settings; the dispatch is for `dispatchRoot`, which a card entry
-// sets to `project`; the run controls and the attempt logs act on each run's
-// own repo_dir and project root. Plus the selected run, the attempt or step
-// the Run detail pane shows and its `am logs` snapshot (runs-logs.py; a step
-// is fetched with attempt "0"), and whether `am` could be
-// asked at all. One list snapshot is in flight at a time, plus at most one
+// switch leaves the run list alone: `project`, the open project's root, is an
+// input App hands on to the other run stores; the attempt logs act on each
+// run's own repo_dir. Plus the selected run, the attempt or step the Run
+// detail pane shows and its `am logs` snapshot (runs-logs.py; a step is
+// fetched with attempt "0"), and whether `am` could be asked at all. One list snapshot is in flight at a time, plus at most one
 // pending request (requestSnapshot): a request never stops the snapshot in
 // flight, and when that one ends its reply is applied and the pending
 // request launches. While `active` (the panel is open) a long-lived
@@ -35,16 +33,8 @@ import "../domain/runEvents.js" as RunEvents
 // `active`, the ones after eventsCursor (RUN --since eventsCursor) on each
 // runsNudged naming the selected run -- never on a timer, and a project
 // switch leaves them alone.
-// Pause, resume and cancel (control()) each get a HelperRunner of their own.
-// Dispatch (openDispatch, dispatchOpenFor .. dispatchStart) previews a run
-// for dispatchRoot with dispatch-preview.py and starts it with start-run.py,
-// one HelperRunner per Start. It also opens from Runs with no root
-// (dispatchOpenFromRuns): a probe of every usable root (board-tree.py
-// --probe) gives the project step's rows; dispatchProjectPick sets
-// dispatchRoot and reads its tree (board-tree.py ROOT, guarded by
-// dispatchRoot), whose target rows dispatchTargetPick opens S3's form on;
-// a failed tree read disables that project's row. A dispatch opened from
-// Runs survives a project switch.
+// Each applied list snapshot reply is announced per project
+// (snapshotReplied).
 // The registry, the open project's root and the backend directory are handed
 // to it from outside -- it never reaches for another store. App composes it
 // as `app.runs` and binds `active` to the panel being open.
@@ -148,92 +138,17 @@ Scope {
   // sets it to output; only setDetailTab and toggleDetailTab change it otherwise.
   property string detailTab: "output"
 
-  // Run controls (S2 4.1). `pending` holds the requests not yet settled,
-  // {runId: action}; `stillWaiting` the pending ones 30 s or more old,
-  // {runId: true}. Both are replaced, never changed in place, so bindings see
-  // every change. The control error is its own pair of fields: a snapshot never
-  // touches it, and the snapshot's lastError never carries a control refusal.
-  property var pending: ({})
-  property var stillWaiting: ({})
-  readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
-  property string lastControlError: ""      // Runs.controlError sentence of the last failed request
-  property string lastControlErrorRunId: "" // the run that sentence is about
-  property string lastControlErrorType: ""  // am's error type of that failure; "" when it carried none
-
-  // The cancel confirmation (S2 4.3). Panel renders it; the store keeps the
-  // run it asks about ("" = closed), the typed word and why the last confirm
-  // was refused.
-  property string cancelRunId: ""
-  readonly property bool cancelOpen: store.cancelRunId !== ""
-  property string cancelText: ""
-  property string cancelError: ""
-  // The footer flash: why a run key was refused. flashTimer clears it.
-  property string flashText: ""
-
-  // Alerts (S2 4.4): a toast for every run of any registered project that
-  // newly needs a human while the panel is open. `armedRoots` is {root: true}
-  // of every usable root whose runs may be compared against, and is replaced,
-  // never changed in place: a root's first good entry after an opening, a
-  // store change, an am-missing spell or its return to the registry only arms
-  // it, so history is never replayed. `alertsArmed`: some root is armed.
-  // `toasts` is {key, id, title, state, reason, project, expiresMs}, oldest
-  // first, at most 3, and is replaced, never changed in place; `project` is
-  // the name of the run's project.
-  property var armedRoots: ({})
-  readonly property bool alertsArmed: Object.keys(store.armedRoots).length > 0
-  property var toasts: []
-  property int toastMs: 8000
-  // "Notify on escalation", viewer-wide and off until read: the switch's
-  // value, the last value read from or written to viewer-state.py's global
-  // settings, and whether the user changed it since this opening's load was
-  // launched (a late load reply then changes nothing). A project switch
-  // never changes them.
-  property bool notifyOnEscalation: false
-  property bool notifySaved: false
-  property bool notifyTouched: false
-  // The open project's last get-run-settings object (runSettingsRunner), as
-  // it was read: {} until its reply, when the reply is unreadable, and after
-  // a project switch. The dispatch form starts from it; its
-  // notifyOnEscalation is never read.
-  property var runSettings: ({})
-
-  // Dispatch (S3 3.1): starting an am run for dispatchRoot. The UI opens it
-  // for a target (openDispatch for a card of the open project,
-  // dispatchOpenFor for the current dispatchRoot), edits the form
-  // (setDispatchField) and presses Start (dispatchStart); the store checks
-  // the form, previews it with dispatch-preview.py and starts it with
-  // start-run.py. `dispatchState` is idle | previewing | ready | refused |
-  // starting | started | failed. Every object here is replaced, never
-  // changed in place.
-  property string dispatchState: "idle"
-  // The project root the dispatch is for; every dispatch launch carries it;
-  // "" while no dispatch has been opened since the last close or project
-  // switch, and at the Runs dialog's project step.
-  property string dispatchRoot: ""
-  // dispatchRoot's get-run-settings object as the dispatch read it, while
-  // dispatchRoot is not `project`: {} until its reply, when the reply is
-  // unreadable, and after every reset.
-  property var dispatchRunSettings: ({})
-  property var dispatchTarget: null     // Runs.dispatchPlan of the opened target; null while idle
-  property string dispatchTargetLabel: "" // Runs.dispatchLabel of the opened target; "" while idle
-  property var dispatchForm: null       // {base, prefix, verify, parallelism, allowNoVerification}; null while idle
-  property var dispatchPreview: null    // Runs.previewSummary of the latest good preview
-  property string dispatchError: ""     // the sentence for refused / failed
-  property string dispatchErrorType: "" // am's or the helper's error.type, "Form", "Target" or ""
-  property var dispatchErrors: []       // Runs.validateDispatch errors of a form refusal
-  property var dispatchSuggest: null    // a blocked story's milestone {id, title}, which retargetToMilestone() opens; else null
-  property string dispatchRunId: ""     // the started run's id; "" when none (yet)
-  property string dispatchMessage: ""   // start-run.py's message after a start
-  property string dispatchLog: ""       // a failed start's log path
-  property string dispatchLogTail: ""   // the end of that log
-  property var dispatchExitCode: null   // a failed start's exit code, when a number
-  // A start for `dispatchRoot` went: the run id, or null while am does not
-  // list it yet.
-  signal dispatchStarted(var runId)
   // A debounce window's nudged run ids, each once, in first-nudge order,
   // known to the store or not. Never for a snapshot the store started itself.
   // (`runs` already owns the runsChanged name.)
   signal runsNudged(var ids)
+  // One project's list snapshot reply, once its state is applied: per usable
+  // root with a matched entry, in registry order, whether or not `active`.
+  // `outcome` is "ok", "failed" or "missing" (AmMissing, and a start-over);
+  // `previousRuns` are the root's runs before the reply ([] when it had none);
+  // `runs` are, for "ok", the root's runs that the merged `runs` lists under
+  // it, else [].
+  signal snapshotReplied(var root, var outcome, var previousRuns, var runs)
 
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
@@ -248,19 +163,6 @@ Scope {
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
   readonly property alias eventsRunner: eventsRunner
-  readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
-  readonly property alias pendingTimer: pendingTimer
-  readonly property alias flashTimer: flashTimer
-  readonly property alias toastTimer: toastTimer
-  readonly property alias settingsLoadRunner: settingsLoadRunner
-  readonly property alias settingsSaveRunner: settingsSaveRunner
-  readonly property alias runSettingsRunner: runSettingsRunner
-  readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
-  readonly property alias dispatchDefaultsRunner: dispatchDefaultsRunner
-  readonly property alias dispatchPreviewRunner: dispatchPreviewRunner
-  readonly property alias dispatchSettingsRunner: dispatchSettingsRunner
-  readonly property alias dispatchDebounceTimer: dispatchDebounceTimer
-  readonly property alias dispatchStartRunners: dispatchBook.runners // in-flight start runners, oldest first
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -398,21 +300,15 @@ Scope {
     else store.stopLive()
   }
 
-  // The panel opened: fetch now and read the notify switch (get-global-settings;
-  // notifyTouched is cleared first unless a save is in flight); the first good
-  // snapshot starts the watch and arms every root that answers in it, and the
-  // stale clock counts from now.
+  // The panel opened: fetch now; the first good snapshot starts the watch,
+  // and the stale clock counts from now.
   function startLive() {
     store.watchTried = false
-    store.armedRoots = {}
-    if (!settingsSaveRunner.busy) store.notifyTouched = false
-    settingsLoadRunner.run(["get-global-settings"])
     store.restartStale()
     store.refresh()
   }
 
-  // The panel closed: no process and no timer is left running, and no toast
-  // or dispatch outlives the opening (a start in flight runs to its end). The
+  // The panel closed: no process and no timer is left running. The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
   // and is applied. The queued events follow-up is dropped; an events fetch
   // in flight runs to its end and is applied. The project filter is back to
@@ -429,10 +325,6 @@ Scope {
     staleTimer.stop()
     store.stale = false
     store.watchWarning = ""
-    store.armedRoots = {}
-    store.toasts = []
-    // A start in flight refuses and lands normally.
-    store.closeDispatch()
   }
 
   // Nothing is stale yet; the 30 s clock starts again while the panel is open.
@@ -486,11 +378,11 @@ Scope {
     var out = []
     var seen = {}
     for (var i = 0; i < usable.length; i++) {
-      var list = store.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
+      var list = Runs.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
       for (var j = 0; j < list.length; j++) {
         var run = list[j]
         var id = run !== null && typeof run === "object" && typeof run.id === "string" ? run.id : ""
-        if (id === "" || id.charAt(0) === "-" || id.charAt(0) === "/" || store.hasKey(seen, id)) continue
+        if (id === "" || id.charAt(0) === "-" || id.charAt(0) === "/" || Runs.hasKey(seen, id)) continue
         seen[id] = true
         out.push(id)
       }
@@ -540,7 +432,7 @@ Scope {
       store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
       var changed = store.seeStore(value.hello.storeId)
       if (changed || value.hello.cursorReset === true) store.resetCursor()
-    } else if (store.hasKey(value, "cursor")) {
+    } else if (Runs.hasKey(value, "cursor")) {
       if (store.isSeq(value.cursor)) store.watchCursor = value.cursor
     }
   }
@@ -554,8 +446,8 @@ Scope {
       var e = entries[i]
       if (e === null || typeof e !== "object" || Array.isArray(e)) continue
       if (typeof e.run !== "string" || e.run === "" || !store.isSeq(e.seq) || e.seq < 1) continue
-      if (next === null) next = store.copyMap(store.nudges)
-      if (!store.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
+      if (next === null) next = Runs.copyMap(store.nudges)
+      if (!Runs.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
     }
     if (next === null) return
     store.nudges = next
@@ -591,7 +483,7 @@ Scope {
 
   // root's runsByProject list holds a run with this id.
   function listsRun(root, id) {
-    var list = store.hasKey(store.runsByProject, root) ? store.runsByProject[root] : []
+    var list = Runs.hasKey(store.runsByProject, root) ? store.runsByProject[root] : []
     for (var i = 0; i < list.length; i++) {
       if (list[i] !== null && typeof list[i] === "object" && list[i].id === id) return true
     }
@@ -604,7 +496,7 @@ Scope {
     var usable = store.usableRoots()
     var roots = []
     for (var i = 0; i < usable.length; i++) {
-      var list = store.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
+      var list = Runs.hasKey(store.runsByProject, usable[i].root) ? store.runsByProject[usable[i].root] : []
       for (var j = 0; j < list.length; j++) {
         if (Runs.runState(list[j]) === "running") {
           roots.push(usable[i].root)
@@ -628,16 +520,20 @@ Scope {
   }
 
   // The live state of the store last seen is forgotten: the cursor, the
-  // nudges and their debounce, the runs and every root's list of them, and
-  // the alerts (the next list snapshot only arms). Selection, logs, controls
-  // and dispatch stay.
+  // nudges and their debounce, the runs and every root's list of them. Then
+  // snapshotReplied(root, "missing", previousRuns, []) for every usable root,
+  // in registry order. Selection, logs, controls and dispatch stay.
   function forgetLive() {
+    var prev = store.runsByProject
     store.watchCursor = 0
     store.nudges = {}
     debounceTimer.stop()
     store.runs = []
     store.runsByProject = {}
-    store.armedRoots = {}
+    var usable = store.usableRoots()
+    var outcomes = {}
+    for (var i = 0; i < usable.length; i++) outcomes[usable[i].root] = "missing"
+    store.emitReplied(usable, outcomes, prev, {})
   }
 
   // A store id seen in a hello. A non-empty string is recorded as storeId;
@@ -693,46 +589,12 @@ Scope {
     store.watchSchemaError = ""
   }
 
-  // Another project was opened, or none. The run list, the selection, the
-  // logs, the events, the watch, the coverage, the requests (pending, stillWaiting,
-  // controlRunners), the control error, the cancel dialog, the footer flash,
-  // the alerts, the toasts and the notify switch belong to every registered
-  // project and stay, and no snapshot is launched. Reset: the run settings
-  // (loaded for the new project on runSettingsRunner) and, when dispatchStep
-  // is "", the dispatch and dispatchRoot (""). A dispatch opened from Runs
-  // keeps its step, root, probe and state.
-  function projectSwitched() {
-    store.runSettings = {}
-    // A card dispatch is the old project's, even mid-start: a start already
-    // launched still runs, and its reply is no longer this dispatch's.
-    if (store.dispatchStep === "") {
-      store.resetDispatch()
-      store.dispatchRoot = ""
-    }
-    runSettingsRunner.guard = store.project
-    if (store.project !== "") runSettingsRunner.run(["get-run-settings", store.project])
-  }
-
-  onProjectChanged: store.projectSwitched()
-
   // The registry's usable entries, {root, name}, in registry order: an object
   // whose root is a non-empty string not starting with "-" (runs-snapshot-all.py
   // refuses any other), each root once, at its first position with its first
   // name.
   function usableRoots() {
-    var list = store.projectRoots
-    var n = list !== null && typeof list === "object" && typeof list.length === "number" ? list.length : 0
-    var out = []
-    var seen = {}
-    for (var i = 0; i < n; i++) {
-      var p = list[i]
-      if (p === null || typeof p !== "object" || Array.isArray(p)) continue
-      var root = p.root
-      if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || store.hasKey(seen, root)) continue
-      seen[root] = true
-      out.push({ root: root, name: p.name })
-    }
-    return out
+    return Runs.usableRoots(store.projectRoots)
   }
 
   // byProject cut to the usable roots, each run carrying its root's current
@@ -742,7 +604,7 @@ Scope {
     var out = {}
     for (var i = 0; i < usable.length; i++) {
       var p = usable[i]
-      if (!store.hasKey(byProject, p.root)) continue
+      if (!Runs.hasKey(byProject, p.root)) continue
       var tag = Runs.withProject({}, p.root, p.name).project
       out[p.root] = byProject[p.root].map(function(run) {
         var cur = run !== null && typeof run === "object" ? run.project : null
@@ -762,12 +624,12 @@ Scope {
     var owner = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
-      var list = store.hasKey(byProject, root) ? byProject[root] : []
+      var list = Runs.hasKey(byProject, root) ? byProject[root] : []
       for (var j = 0; j < list.length; j++) {
         var run = list[j]
         var id = run !== null && typeof run === "object" && typeof run.id === "string" ? run.id : ""
         if (id !== "") {
-          if (store.hasKey(owner, id)) continue
+          if (Runs.hasKey(owner, id)) continue
           owner[id] = root
         }
         out.push(run)
@@ -776,27 +638,22 @@ Scope {
     return { runs: out, owner: owner }
   }
 
-  // The registry changed. First the roots no longer usable lose their runs,
-  // their errors and their arming (armedRoots is replaced only when a root
-  // went), and `runs` is merged again in the new order with the new names;
-  // no alert is raised. Then every usable root is snapshotted, and the
-  // dispatch's target step follows the registry (dispatchRegistryChanged).
+  // The registry changed. First the roots no longer usable lose their runs
+  // and their errors, and `runs` is merged again in the new order with the
+  // new names; no snapshotReplied is emitted. Then every usable root is
+  // snapshotted.
   function registryChanged() {
     var usable = store.usableRoots()
     var errors = {}
-    var armed = {}
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
-      if (store.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
-      if (store.hasKey(store.armedRoots, root)) armed[root] = true
+      if (Runs.hasKey(store.projectErrors, root)) errors[root] = store.projectErrors[root]
     }
     var byProject = store.taggedByProject(store.runsByProject, usable)
     store.runsByProject = byProject
     store.projectErrors = errors
-    if (Object.keys(armed).length !== Object.keys(store.armedRoots).length) store.armedRoots = armed
     store.runs = store.mergedRuns(byProject, usable).runs
     store.refresh()
-    store.dispatchRegistryChanged()
   }
 
   onProjectRootsChanged: store.registryChanged()
@@ -805,18 +662,12 @@ Scope {
 
   // The run with this id in the snapshot, or null.
   function runById(id) {
-    var list = store.runs
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] && list[i].id === id) return list[i]
-    }
-    return null
+    return Runs.runById(store.runs, id)
   }
 
   // The run's project root when it is a non-empty string, else "".
   function runRoot(run) {
-    var p = run !== null && typeof run === "object" ? run.project : null
-    if (p === null || typeof p !== "object" || typeof p.root !== "string") return ""
-    return p.root
+    return Runs.runRoot(run)
   }
 
   // Shows (and fetches) one attempt or one step of the selected run. A step is
@@ -1028,7 +879,7 @@ Scope {
     var own = store.titles
     if (own !== null && typeof own === "object" && !Array.isArray(own)) {
       for (var key in own) {
-        if (store.hasKey(own, key) && typeof own[key] === "string" && own[key] !== "") out[key] = own[key]
+        if (Runs.hasKey(own, key) && typeof own[key] === "string" && own[key] !== "") out[key] = own[key]
       }
     }
     var run = store.runById(store.selectedRunId)
@@ -1038,7 +889,7 @@ Scope {
       var s = stories[i]
       if (s === null || typeof s !== "object") continue
       if (typeof s.card_id !== "string" || typeof s.title !== "string" || s.title === "") continue
-      if (!store.hasKey(out, s.card_id)) out[s.card_id] = s.title
+      if (!Runs.hasKey(out, s.card_id)) out[s.card_id] = s.title
     }
     return out
   }
@@ -1052,7 +903,7 @@ Scope {
   // touches any other state.
   function applyEvents(stdout, exitCode, launchedGuard) {
     if (launchedGuard !== store.selectedRunId) return
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true && Array.isArray(envelope.events)) {
       if (store.isSeq(envelope.last_seq) && envelope.last_seq < store.eventsCursor) {
         store.eventsStatus = "ok"
@@ -1119,7 +970,7 @@ Scope {
   function applyLogs(stdout, exitCode) {
     store.logsLoading = false
     store.logsNote = ""
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var tail = Runs.logTail(envelope.data, 200)
       store.logsText = tail.text
@@ -1172,7 +1023,7 @@ Scope {
   function rowOf(entry) {
     var row = {}
     for (var key in entry) {
-      if (key !== "status" && Object.prototype.hasOwnProperty.call(entry, key)) row[key] = entry[key]
+      if (key !== "status" && Runs.hasKey(entry, key)) row[key] = entry[key]
     }
     return row
   }
@@ -1188,7 +1039,7 @@ Scope {
   // projectErrors and only reports why this one failed. Never reads a
   // store_id. Never throws.
   function applySnapshot(stdout, exitCode, launched) {
-    var envelope = store.parseEnvelope(stdout)
+    var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       store.applyProjects(Array.isArray(envelope.projects) ? envelope.projects : [], exitCode, launched)
       return
@@ -1202,21 +1053,21 @@ Scope {
   // roots by exact root: the first entry of a root counts, any other entry is
   // ignored. No matched entry at all is a reply with no usable result --
   // unless none of the roots it was launched for (`launched`) is usable any
-  // more, when it changes nothing. Every
+  // more, when it changes nothing; neither emits snapshotReplied. Every
   // matched entry AmMissing: the runs, runsByProject, projectErrors and the
-  // coverage are emptied and amStatus is "missing", and every root is disarmed.
-  // Otherwise an ok entry replaces its root's runs and clears its error
-  // (entries that are not objects are skipped); a failed one keeps its
-  // root's runs ([] when it had none) and records Runs.errorText of its
-  // error; a usable root with no entry keeps both. `runs` is merged again,
-  // and asOfSeq is 0 and appliedSeq {id: 0} for every run in it. With an
-  // entry ok, everything after a good snapshot follows, and while active a
-  // running watch whose roots are no longer the usable "/" roots is started
-  // again, the alerts of every armed root with an ok entry are raised
-  // (alertsOf) and every root with an ok entry is armed. With none, amStatus
-  // is "error" with the first failed entry's sentence, and armedRoots and
-  // `stale` stay as they are. A failed entry, a root with no entry and a
-  // closed panel never change armedRoots.
+  // coverage are emptied and amStatus is "missing". Otherwise an ok entry
+  // replaces its root's runs and clears its error (entries that are not
+  // objects are skipped); a failed one keeps its root's runs ([] when it had
+  // none) and records Runs.errorText of its error; a usable root with no
+  // entry keeps both. `runs` is merged again, and asOfSeq is 0 and appliedSeq
+  // {id: 0} for every run in it. With an entry ok, everything after a good
+  // snapshot follows, and while active a running watch whose roots are no
+  // longer the usable "/" roots is started again. With none, amStatus is
+  // "error" with the first failed entry's sentence, and `stale` stays as it
+  // is. Last, once the state is applied, each root with a matched entry gets
+  // snapshotReplied in registry order (emitReplied): "missing" for each in an
+  // AmMissing reply, else "ok" for an ok entry, with the runs the merged list
+  // attributes to it (ownedRuns), and "failed" for any other, with [].
   function applyProjects(entries, exitCode, launched) {
     var usable = store.usableRoots()
     var names = {}
@@ -1226,7 +1077,7 @@ Scope {
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i]
       if (e === null || typeof e !== "object" || Array.isArray(e)) continue
-      if (typeof e.root !== "string" || !store.hasKey(names, e.root) || store.hasKey(seen, e.root)) continue
+      if (typeof e.root !== "string" || !Runs.hasKey(names, e.root) || Runs.hasKey(seen, e.root)) continue
       seen[e.root] = true
       matched.push(e)
     }
@@ -1234,7 +1085,7 @@ Scope {
       var gone = true
       var roots = Array.isArray(launched) ? launched : []
       for (var g = 0; g < roots.length; g++) {
-        if (store.hasKey(names, roots[g])) gone = false
+        if (Runs.hasKey(names, roots[g])) gone = false
       }
       if (gone && roots.length > 0) return
       store.amStatus = "error"
@@ -1247,6 +1098,8 @@ Scope {
       var type = err !== null && typeof err === "object" ? err.type : ""
       if (matched[m].ok === true || type !== "AmMissing") missing = false
     }
+    var prev = store.runsByProject
+    var outcomes = {}
     if (missing) {
       store.runs = []
       store.runsByProject = {}
@@ -1255,14 +1108,12 @@ Scope {
       store.asOfSeq = 0
       store.amStatus = "missing"
       store.lastError = Runs.errorText(matched[0].error)
-      // Every root is disarmed: comparing its next good entry against []
-      // would alert every escalated run again.
-      store.armedRoots = {}
+      for (var mr = 0; mr < matched.length; mr++) outcomes[matched[mr].root] = "missing"
+      store.emitReplied(usable, outcomes, prev, {})
       return
     }
-    var prev = store.runsByProject
-    var byProject = store.copyMap(store.runsByProject)
-    var errors = store.copyMap(store.projectErrors)
+    var byProject = Runs.copyMap(store.runsByProject)
+    var errors = Runs.copyMap(store.projectErrors)
     var anyOk = false
     var okRoots = {}
     var firstError = ""
@@ -1272,6 +1123,7 @@ Scope {
       if (entry.ok === true) {
         anyOk = true
         okRoots[root] = true
+        outcomes[root] = "ok"
         var list = Array.isArray(entry.runs) ? entry.runs : []
         var out = []
         for (var r = 0; r < list.length; r++) {
@@ -1282,7 +1134,8 @@ Scope {
         byProject[root] = out
         delete errors[root]
       } else {
-        if (!store.hasKey(byProject, root)) byProject[root] = []
+        outcomes[root] = "failed"
+        if (!Runs.hasKey(byProject, root)) byProject[root] = []
         errors[root] = Runs.errorText(entry.error)
         if (firstError === "") firstError = errors[root]
       }
@@ -1292,8 +1145,8 @@ Scope {
     var applied = {}
     var ids = Object.keys(merged.owner)
     for (var d = 0; d < ids.length; d++) applied[ids[d]] = 0
-    // Compared before the runs are replaced; raised below only while open.
-    var alerts = store.active ? store.alertsOf(prev, byProject, merged.owner, okRoots, usable) : []
+    var after = {}
+    for (var o in okRoots) after[o] = store.ownedRuns(byProject[o], merged.owner, o)
     store.runsByProject = byProject
     store.projectErrors = errors
     store.asOfSeq = 0
@@ -1302,9 +1155,9 @@ Scope {
     if (!anyOk) {
       store.amStatus = "error"
       store.lastError = firstError
+      store.emitReplied(usable, outcomes, prev, after)
       return
     }
-    store.settleAfterSnapshot()
     store.logsAfterSnapshot()
     if (pollTimer.running && store.watchSchemaError !== "") {
       // The watch's schema banner outlives the polling snapshots.
@@ -1322,1141 +1175,28 @@ Scope {
         store.stopWatch()
         store.startWatch()
       }
-      store.raiseAlerts(alerts)
-      var armed = store.copyMap(store.armedRoots)
-      for (var ok in okRoots) armed[ok] = true
-      store.armedRoots = armed
     }
+    store.emitReplied(usable, outcomes, prev, after)
   }
 
-  // One list reply's alerts, in registry order, then each root's order: for
-  // every armed root in okRoots, Runs.newAlerts of its runs before the reply
-  // (prev; [] when it had none) against the runs of byProject it owns in the
-  // merged list (owner), each with `project`, the name Runs.withProject gives
-  // that root. A run id is raised at most once.
-  function alertsOf(prev, byProject, owner, okRoots, usable) {
-    var out = []
-    var raised = {}
+  // snapshotReplied for each root of `usable` that `outcomes` ({root:
+  // outcome}) names, in registry order: previousRuns is prev[root] ([] when it
+  // had none), runs is after[root] ([] when it has none).
+  function emitReplied(usable, outcomes, prev, after) {
     for (var i = 0; i < usable.length; i++) {
       var root = usable[i].root
-      if (!store.hasKey(okRoots, root) || !store.hasKey(store.armedRoots, root)) continue
-      var mine = byProject[root].filter(function(run) {
-        return run !== null && typeof run === "object" && store.hasKey(owner, run.id) && owner[run.id] === root
-      })
-      var name = Runs.withProject({}, root, usable[i].name).project.name
-      var found = Runs.newAlerts(store.hasKey(prev, root) ? prev[root] : [], mine)
-      for (var j = 0; j < found.length; j++) {
-        if (store.hasKey(raised, found[j].id)) continue
-        raised[found[j].id] = true
-        found[j].project = name
-        out.push(found[j])
-      }
-    }
-    return out
-  }
-
-  // ---- run controls (S2 4.1)
-
-  // A copy of a {key: value} map, so a change is a new object.
-  function copyMap(map) {
-    var out = {}
-    for (var key in map) {
-      if (Object.prototype.hasOwnProperty.call(map, key)) out[key] = map[key]
-    }
-    return out
-  }
-
-  function hasKey(map, key) {
-    return Object.prototype.hasOwnProperty.call(map, key)
-  }
-
-  // A new request for runId, a run in `runs`: the control error is dismissed,
-  // the request is recorded with the run's state as its baseline, pending is
-  // set, and its runner (repo_dir and project.root of the run, not launched
-  // yet) joins controlRunners and is returned.
-  function startRequest(action, runId) {
-    var run = store.runById(runId)
-    store.dismissControlError()
-    controlState.nextToken += 1
-    var requests = store.copyMap(controlState.requests)
-    requests[runId] = { token: controlState.nextToken, action: action, baseline: Runs.runState(run),
-                        launchedMs: Date.now(), acknowledged: false, requestedAt: "" }
-    controlState.requests = requests
-    var p = store.copyMap(store.pending)
-    p[runId] = action
-    store.pending = p
-    var runner = controlC.createObject(store, { runId: runId, action: action, token: controlState.nextToken,
-                                                repoDir: run.repo_dir, projectRoot: store.runRoot(run) })
-    controlState.runners = controlState.runners.concat([runner])
-    return runner
-  }
-
-  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
-  // returns whether it started: only when refusalOf(action, runId) is "".
-  // The request acts on the run's repo_dir; a milestone resume reads the run
-  // settings of the run's project.root. Confirming a cancel is the caller's job.
-  function control(action, runId) {
-    if (store.refusalOf(action, runId) !== "") return false
-    var run = store.runById(runId)
-    var runner = store.startRequest(action, runId)
-    if (action === "resume" && run.workflow !== "task") {
-      // A milestone resume reuses its project's stored verify set: read it first.
-      runner.settingsStep = true
-      runner.script = store.backendDir + "projects/viewer-state.py"
-      runner.run(["get-run-settings", runner.projectRoot])
-    } else {
-      store.launchControl(runner, [])
-    }
-    return true
-  }
-
-  // The request's run-control.py launch on its own runner: ACTION RUN REPO,
-  // REPO the repo_dir the request was made with, then `extra` (a resume's
-  // verify arguments).
-  function launchControl(runner, extra) {
-    runner.script = store.backendDir + "runs/run-control.py"
-    runner.run([runner.action, runner.runId, runner.repoDir].concat(extra))
-  }
-
-  // The request this runner was launched for, while it is still the one
-  // pending for its run; null once it was settled or replaced by a newer
-  // request.
-  function requestOf(runner) {
-    if (!store.hasKey(controlState.requests, runner.runId)) return null
-    var req = controlState.requests[runner.runId]
-    return req.token === runner.token ? req : null
-  }
-
-  // The request for runId is over: its pending entry, its still-waiting mark
-  // and its bookkeeping go.
-  function settle(runId) {
-    if (store.hasKey(store.pending, runId)) {
-      var p = store.copyMap(store.pending)
-      delete p[runId]
-      store.pending = p
-    }
-    if (store.hasKey(store.stillWaiting, runId)) {
-      var w = store.copyMap(store.stillWaiting)
-      delete w[runId]
-      store.stillWaiting = w
-    }
-    if (store.hasKey(controlState.requests, runId)) {
-      var r = store.copyMap(controlState.requests)
-      delete r[runId]
-      controlState.requests = r
+      if (!Runs.hasKey(outcomes, root)) continue
+      store.snapshotReplied(root, outcomes[root], Runs.hasKey(prev, root) ? prev[root] : [],
+                            Runs.hasKey(after, root) ? after[root] : [])
     }
   }
 
-  // A request ended without am taking it: the buttons come back and the
-  // sentence shows under that run. `type` is am's error type when a string,
-  // else "".
-  function failControl(runId, sentence, type) {
-    store.settle(runId)
-    store.lastControlError = sentence
-    store.lastControlErrorRunId = runId
-    store.lastControlErrorType = typeof type === "string" ? type : ""
-  }
-
-  function dismissControlError() {
-    store.lastControlError = ""
-    store.lastControlErrorRunId = ""
-    store.lastControlErrorType = ""
-  }
-
-  // A runner's request is over: it leaves controlRunners and is destroyed.
-  function dropRunner(runner) {
-    controlState.runners = controlState.runners.filter(function(r) { return r !== runner })
-    runner.destroy()
-  }
-
-  // One run-control.py reply, whatever project is open. ok:true
-  // means am has the request: pending stays until a snapshot settles it, and
-  // the requested_at am gave it is remembered. Anything else ends it with a
-  // sentence. Either way the runs are fetched again. A reply for a request that
-  // is no longer the pending one changes nothing.
-  function controlReplied(runner, stdout, exitCode) {
-    var req = store.requestOf(runner)
-    if (req === null) {
-      store.dropRunner(runner)
-      return
-    }
-    if (runner.settingsStep) {
-      runner.settingsStep = false
-      store.resumeWithSettings(runner, stdout, exitCode)
-      return
-    }
-    var envelope = store.parseEnvelope(stdout)
-    if (envelope !== null && envelope.ok === true) {
-      var data = envelope.data
-      var requestedAt = data !== null && typeof data === "object" && typeof data.requested_at === "string" ? data.requested_at : ""
-      var requests = store.copyMap(controlState.requests)
-      requests[runner.runId] = { token: req.token, action: req.action, baseline: req.baseline,
-                                 launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
-      controlState.requests = requests
-    } else if (envelope !== null && envelope.ok === false) {
-      var err = envelope.error
-      var type = err !== null && typeof err === "object" && typeof err.type === "string" ? err.type : ""
-      store.failControl(runner.runId, Runs.controlError(envelope), type)
-    } else {
-      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").", "")
-    }
-    store.dropRunner(runner)
-    store.refresh()
-  }
-
-  // The run settings' reply for a milestone resume. A stored verify set (a
-  // non-empty list of strings) goes to run-control as --verify pairs in its
-  // order; otherwise the stored opt-out as --allow-no-verification. With
-  // neither, the request is settled and the Resume dialog opens for the run;
-  // with no readable reply, the request ends with a sentence. In both,
-  // run-control is never launched and there is no re-snapshot.
-  function resumeWithSettings(runner, stdout, exitCode) {
-    var settings = store.parseEnvelope(stdout)
-    if (settings === null) {
-      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").", "")
-      store.dropRunner(runner)
-      return
-    }
-    var verify = Array.isArray(settings.verify) ? settings.verify : []
-    var usable = verify.length > 0
-    for (var i = 0; i < verify.length; i++) {
-      if (typeof verify[i] !== "string") usable = false
-    }
-    if (usable) {
-      var extra = []
-      for (var j = 0; j < verify.length; j++) extra.push("--verify", verify[j])
-      store.launchControl(runner, extra)
-    } else if (settings.allowNoVerification === true) {
-      store.launchControl(runner, ["--allow-no-verification"])
-    } else {
-      var runId = runner.runId
-      store.settle(runId)
-      store.dropRunner(runner)
-      store.resumeOpenFor(runId)
-    }
-  }
-
-  // After every good snapshot: an acknowledged request is settled when its run
-  // is gone, when the run's state moved since the request started, or (pause,
-  // cancel) when am marks its request handled. A request still in flight is
-  // never settled by a snapshot: its buttons stay off until the reply.
-  function settleAfterSnapshot() {
-    var ids = Object.keys(store.pending)
-    for (var i = 0; i < ids.length; i++) {
-      var id = ids[i]
-      if (!store.hasKey(controlState.requests, id)) continue
-      var req = controlState.requests[id]
-      if (!req.acknowledged) continue
-      var run = store.runById(id)
-      if (run === null || Runs.runState(run) !== req.baseline
-          || (req.action !== "resume" && store.isHandled(run, req))) store.settle(id)
-    }
-  }
-
-  // The run's am request row for this request has a handled_at: the row with
-  // the requested_at am's reply gave, else the last row of the same command.
-  function isHandled(run, req) {
-    var list = Array.isArray(run.requests) ? run.requests : []
-    var match = null
-    for (var i = 0; i < list.length; i++) {
-      var row = list[i]
-      if (req.requestedAt !== "" ? row.requested_at === req.requestedAt : row.command === req.action) match = row
-    }
-    return match !== null && match.handled_at !== ""
-  }
-
-  // Marks the pending requests launched 30 s or more before nowMs (the timer
-  // passes Date.now()); the UI shows stillWaitingText for them.
-  function checkWaiting(nowMs) {
-    var out = {}
-    var ids = Object.keys(store.pending)
-    for (var i = 0; i < ids.length; i++) {
-      var id = ids[i]
-      if (store.hasKey(controlState.requests, id) && nowMs - controlState.requests[id].launchedMs >= 30000) out[id] = true
-    }
-    store.stillWaiting = out
-  }
-
-  // ---- cancel confirmation and the footer flash (S2 4.3)
-
-  // "" when control(action, runId) would start a request; otherwise why not:
-  // a run that is not in the snapshot, then a run with no repo_dir, then a
-  // resume (not of a task run) of a run with no project root, then a request
-  // already pending for it, then the reason Runs.controls gives. Changes nothing.
-  function refusalOf(action, runId) {
-    if (action !== "pause" && action !== "resume" && action !== "cancel") return "Unknown control"
-    var run = typeof runId !== "string" || runId === "" ? null : store.runById(runId)
-    if (run === null) return "This run is no longer in the snapshot"
-    if (typeof run.repo_dir !== "string" || run.repo_dir === "") return "This run has no repository"
-    if (action === "resume" && run.workflow !== "task" && store.runRoot(run) === "") return "This run's project is not known"
-    if (store.hasKey(store.pending, runId)) return "A request for this run is pending"
-    return Runs.controls(run)[action].reason
-  }
-
-  // Shows text in the footers for 3 s; a new flash replaces it and restarts
-  // the clock, flash("") clears it.
-  function flash(text) {
-    store.flashText = String(text || "")
-    if (store.flashText === "") flashTimer.stop()
-    else flashTimer.restart()
-  }
-
-  // Opens the cancel confirmation for a run that can be cancelled now;
-  // otherwise flashes why not and leaves any dialog as it is.
-  function openCancel(runId) {
-    var reason = store.refusalOf("cancel", runId)
-    if (reason !== "") {
-      store.flash(reason)
-      return false
-    }
-    store.cancelText = ""
-    store.cancelError = ""
-    store.cancelRunId = runId
-    return true
-  }
-
-  function closeCancel() {
-    store.cancelRunId = ""
-    store.cancelText = ""
-    store.cancelError = ""
-  }
-
-  // The dialog's confirm. The typed word is checked again here (the dialog
-  // gates it too), then the run is checked again: one that changed under the
-  // open dialog keeps it open with the reason. A started cancel closes it.
-  function confirmCancel() {
-    if (store.cancelRunId === "") return false
-    if (String(store.cancelText).trim().toLowerCase() !== "cancel") return false
-    var reason = store.refusalOf("cancel", store.cancelRunId)
-    if (reason !== "") {
-      store.cancelError = reason
-      return false
-    }
-    if (!store.control("cancel", store.cancelRunId)) {
-      store.cancelError = "The run could not be cancelled"
-      return false
-    }
-    store.closeCancel()
-    return true
-  }
-
-  // ---- resume dialog
-
-  // The Resume dialog: a milestone resume with no stored verify set asks for
-  // the commands here. `resumeRunId` is the run it asks about ("" = closed),
-  // `resumeVerify` the commands as typed (blanks allowed),
-  // `resumeAllowNoVerification` the opt-out, and `resumeError` why the last
-  // confirm was refused.
-  property string resumeRunId: ""
-  property var resumeVerify: []
-  property bool resumeAllowNoVerification: false
-  property string resumeError: ""
-
-  // Opens the dialog for runId with empty fields, replacing any open one, and
-  // returns true. Returns false and changes nothing when runId is not a
-  // non-empty string, its run is not in the snapshot, or it is a task run.
-  function resumeOpenFor(runId) {
-    if (typeof runId !== "string" || runId === "") return false
-    var run = store.runById(runId)
-    if (run === null || run.workflow === "task") return false
-    store.resumeVerify = []
-    store.resumeAllowNoVerification = false
-    store.resumeError = ""
-    store.resumeRunId = runId
-    return true
-  }
-
-  function resumeClose() {
-    store.resumeRunId = ""
-    store.resumeVerify = []
-    store.resumeAllowNoVerification = false
-    store.resumeError = ""
-  }
-
-  // The dialog's confirm. Refused, with resumeError and the dialog left open,
-  // when the form has no non-blank command and no opt-out, or when the run
-  // cannot be resumed now (refusalOf). Otherwise the resume starts as
-  // control() starts one and launches run-control at once: the non-blank
-  // commands as --verify pairs in order, else --allow-no-verification. The
-  // set is saved for the run's project without waiting for the reply, the
-  // dialog closes, and true is returned.
-  function resumeConfirm() {
-    if (store.resumeRunId === "") return false
-    var form = { verify: store.resumeVerify, allowNoVerification: store.resumeAllowNoVerification }
-    var missing = Runs.validateDispatch(form).errors.filter(function(e) { return e.field === "verify" })
-    if (missing.length > 0) {
-      store.resumeError = missing[0].message
-      return false
-    }
-    var runId = store.resumeRunId
-    var reason = store.refusalOf("resume", runId)
-    if (reason !== "") {
-      store.resumeError = reason
-      return false
-    }
-    var commands = store.dispatchCommands(form)
-    var extra = []
-    for (var i = 0; i < commands.length; i++) extra.push("--verify", commands[i])
-    if (commands.length === 0) extra = ["--allow-no-verification"]
-    var runner = store.startRequest("resume", runId)
-    store.launchControl(runner, extra)
-    resumeSaveRunner.run(["set-run-settings", runner.projectRoot,
-                          JSON.stringify({ verify: commands, allowNoVerification: store.resumeAllowNoVerification === true })])
-    store.resumeClose()
-    return true
-  }
-
-  // set-run-settings: {"ok": true} changes nothing; anything else flashes.
-  // Never touches the request, the control error or the dialog.
-  function resumeSaveReplied(stdout, exitCode) {
-    var reply = store.parseEnvelope(stdout)
-    if (reply !== null && reply.ok === true) return
-    store.flash("The verify commands could not be saved")
-  }
-
-  // set-run-settings for a confirmed resume; latest wins. No guard: the save
-  // is for the run's project, whatever project is open.
-  HelperRunner {
-    id: resumeSaveRunner
-    script: store.backendDir + "projects/viewer-state.py"
-    onFinished: function(stdout, exitCode) { store.resumeSaveReplied(stdout, exitCode) }
-  }
-  readonly property alias resumeSaveRunner: resumeSaveRunner
-
-  // ---- alerts (S2 4.4)
-
-  // One toast per alert, newest last: a run's older toast goes first, then the
-  // oldest beyond three. With the setting on, each alert also notifies.
-  // Called from applySnapshot only while active.
-  function raiseAlerts(alerts) {
-    var list = Array.isArray(alerts) ? alerts : []
-    for (var i = 0; i < list.length; i++) {
-      var a = list[i]
-      toastState.nextKey += 1
-      var next = store.toasts.filter(function(t) { return t.id !== a.id })
-      next.push({ key: toastState.nextKey, id: a.id, title: a.title, state: a.state, reason: a.reason,
-                  project: typeof a.project === "string" ? a.project : "", expiresMs: Date.now() + store.toastMs })
-      while (next.length > 3) next.shift()
-      store.toasts = next
-      if (store.notifyOnEscalation) store.notify(a)
-    }
-  }
-
-  // Drops every toast whose time is up at nowMs (the timer passes Date.now()).
-  function expireToasts(nowMs) {
-    var next = store.toasts.filter(function(t) { return t.expiresMs > nowMs })
-    if (next.length !== store.toasts.length) store.toasts = next
-  }
-
-  // The toast with this key goes; an unknown key changes nothing.
-  function dismissToast(key) {
-    var next = store.toasts.filter(function(t) { return t.key !== key })
-    if (next.length !== store.toasts.length) store.toasts = next
-  }
-
-  function dismissAllToasts() {
-    if (store.toasts.length > 0) store.toasts = []
-  }
-
-  // One notify.py launch for an alert, on a runner of its own so two never
-  // stop each other. The reply is not read: a failed or skipped notification
-  // changes nothing here.
-  function notify(alert) {
-    var runner = notifyC.createObject(store)
-    notifyState.runners = notifyState.runners.concat([runner])
-    runner.run([String(alert.title), String(alert.reason)])
-  }
-
-  function dropNotifyRunner(runner) {
-    notifyState.runners = notifyState.runners.filter(function(r) { return r !== runner })
-    runner.destroy()
-  }
-
-  // The switch changed: shown at once, written to the global settings in the
-  // background. Always works, with or without a project, and returns true.
-  function setNotifyOnEscalation(on) {
-    var value = !!on
-    store.notifyOnEscalation = value
-    store.notifyTouched = true
-    settingsSaveRunner.sent = value
-    settingsSaveRunner.run(["set-global-settings", JSON.stringify({ notifyOnEscalation: value })])
-    return true
-  }
-
-  // get-global-settings: only a real true turns the switch on; an unreadable
-  // reply leaves it off. Too late once the user changed the switch in this
-  // opening.
-  function applyGlobalSettings(stdout, exitCode) {
-    if (store.notifyTouched) return
-    var settings = store.parseEnvelope(stdout)
-    var on = settings !== null && settings.notifyOnEscalation === true
-    store.notifyOnEscalation = on
-    store.notifySaved = on
-  }
-
-  // get-run-settings: one bare object, kept whole as runSettings ({} when
-  // unreadable) on every reply. Never touches the notify switch.
-  function applyRunSettings(stdout, exitCode) {
-    var settings = store.parseEnvelope(stdout)
-    store.runSettings = settings !== null ? settings : {}
-  }
-
-  // set-global-settings: {"ok": true} means `sent` is stored; anything else puts
-  // the switch back to what is stored and says so.
-  function notifySaveReplied(stdout, exitCode, sent) {
-    var reply = store.parseEnvelope(stdout)
-    if (reply !== null && reply.ok === true) {
-      store.notifySaved = sent
-      return
-    }
-    store.notifyOnEscalation = store.notifySaved
-    store.flash("Notify on escalation could not be saved")
-  }
-
-  // ---- dispatch (S3 3.1)
-
-  // No refusal, failure or suggestion to show.
-  function clearDispatchError() {
-    store.dispatchError = ""
-    store.dispatchErrorType = ""
-    store.dispatchErrors = []
-    store.dispatchLog = ""
-    store.dispatchLogTail = ""
-    store.dispatchExitCode = null
-    store.dispatchSuggest = null
-  }
-
-  // Every dispatch field back to its "none" value and dispatchRunSettings
-  // {}; runSettings and dispatchRoot stay. The pending check, the preview,
-  // the defaults lookup and the settings read are dropped; a start already
-  // launched runs on, but its reply is no longer this dispatch's.
-  function resetDispatch() {
-    dispatchDebounceTimer.stop()
-    dispatchPreviewRunner.cancel()
-    dispatchDefaultsRunner.cancel()
-    dispatchSettingsRunner.cancel()
-    dispatchBook.startRunner = null
-    dispatchBook.touched = {}
-    dispatchBook.defaultsPending = false
-    dispatchBook.settingsPending = false
-    dispatchBook.card = null
-    dispatchBook.cardMap = null
-    dispatchBook.milestone = null
-    store.dispatchRunSettings = {}
-    store.dispatchState = "idle"
-    store.dispatchTarget = null
-    store.dispatchTargetLabel = ""
-    store.dispatchForm = null
-    store.dispatchPreview = null
-    store.clearDispatchError()
-    store.dispatchRunId = ""
-    store.dispatchMessage = ""
-  }
-
-  // The card entry: clears the steps (a card entry has no step), opens the
-  // dispatch for the open project (dispatchRoot = project) and returns
-  // dispatchOpenFor's result. Refused (false, nothing changes) without a
-  // project or while a start is in flight.
-  function openDispatch(card, cardMap) {
-    if (store.project === "" || store.dispatchState === "starting") return false
-    store.dispatchClearSteps()
-    store.dispatchRoot = store.project
-    return store.dispatchOpenFor(card, cardMap)
-  }
-
-  // The run settings the dispatch reads and, after a start, merges into:
-  // runSettings when dispatchRoot is the open project, else
-  // dispatchRunSettings.
-  function dispatchSettingsSource() {
-    return store.dispatchRoot === store.project ? store.runSettings : store.dispatchRunSettings
-  }
-
-  // Runs.dispatchDefaults for the opened card with `settings` (a
-  // get-run-settings object), read against dispatchRoot's runs only.
-  function dispatchDefaultsFor(settings) {
-    return Runs.dispatchDefaults({ defaultBranch: "", settings: settings }, dispatchBook.card, dispatchBook.cardMap,
-                                 Runs.filterByProject(store.runs, store.dispatchRoot))
-  }
-
-  // Opens the dispatch for dispatchRoot on a brd card (as Board.indexTree()
-  // leaves it) or "board", with its {id: card} map, and returns whether it
-  // may be started. Refused (false, nothing changes) without a dispatchRoot
-  // or while a start is in flight. Every opening sets dispatchTargetLabel
-  // and records the card, cardMap and cardMap's entry for the target's
-  // milestone (Runs.dispatchMilestone), or null. A target dispatchPlan does
-  // not offer is `refused` at once and launches nothing; any other starts
-  // from dispatchDefaultsFor(dispatchSettingsSource()) and looks up
-  // dispatchRoot's default branch. When dispatchRoot is not `project`,
-  // dispatchRoot's run settings are read too (dispatchSettingsRunner).
-  // Nothing is checked before every launched lookup has replied.
-  function dispatchOpenFor(card, cardMap) {
-    if (store.dispatchRoot === "" || store.dispatchState === "starting") return false
-    store.resetDispatch()
-    var plan = Runs.dispatchPlan(card, cardMap)
-    var milestone = Runs.dispatchMilestone(card, cardMap)
-    var isMap = cardMap !== null && typeof cardMap === "object"
-    dispatchBook.card = card
-    dispatchBook.cardMap = cardMap
-    dispatchBook.milestone = milestone !== null && isMap && store.hasKey(cardMap, milestone.id) ? cardMap[milestone.id] : null
-    store.dispatchTarget = plan
-    store.dispatchTargetLabel = Runs.dispatchLabel(card, cardMap)
-    if (!plan.offered) {
-      store.dispatchState = "refused"
-      store.dispatchError = plan.reason
-      store.dispatchErrorType = "Target"
-      return false
-    }
-    var d = store.dispatchDefaultsFor(store.dispatchSettingsSource())
-    store.dispatchForm = { base: d.base, prefix: d.prefix, verify: d.verify, parallelism: d.parallelism,
-                           allowNoVerification: d.allowNoVerification }
-    store.dispatchState = "previewing"
-    dispatchBook.defaultsPending = true
-    dispatchBook.settingsPending = store.dispatchRoot !== store.project
-    dispatchDefaultsRunner.run(["--defaults", store.dispatchRoot])
-    if (dispatchBook.settingsPending) dispatchSettingsRunner.run(["get-run-settings", store.dispatchRoot])
-    return true
-  }
-
-  // Back to idle, dispatchRoot back to "" and the steps cleared
-  // (dispatchClearSteps). Refused (false, nothing changes) while a start is
-  // in flight: its outcome must land in a dialog that still shows what was
-  // started.
-  function closeDispatch() {
-    if (store.dispatchState === "starting") return false
-    store.resetDispatch()
-    store.dispatchRoot = ""
-    store.dispatchClearSteps()
-    return true
-  }
-
-  // The milestone a StoryBlockedError refusal offers: the recorded milestone
-  // card as Runs.dispatchMilestone's {id, title} when the target is a story
-  // and its milestone is known, else null.
-  function blockedSuggest() {
-    if (store.dispatchTarget === null || store.dispatchTarget.level !== "story" || dispatchBook.milestone === null) return null
-    return Runs.dispatchMilestone(dispatchBook.milestone, dispatchBook.cardMap)
-  }
-
-  // From a blocked story's refusal (`refused` with a dispatchSuggest), opens
-  // the dispatch afresh for the same dispatchRoot on the milestone card and
-  // cardMap recorded at the story's opening and returns dispatchOpenFor's
-  // result. Refused (false, nothing changes) in any other state or refusal.
-  function retargetToMilestone() {
-    if (store.dispatchState !== "refused" || store.dispatchSuggest === null) return false
-    return store.dispatchOpenFor(dispatchBook.milestone, dispatchBook.cardMap)
-  }
-
-  // A copy of the form with one field set as given; verify is copied as a
-  // fresh array when it is one. The store converts nothing else.
-  function withField(form, name, value) {
-    var next = store.copyMap(form)
-    next[name] = name === "verify" && Array.isArray(value) ? value.slice() : value
-    return next
-  }
-
-  // The helpers' target words: milestone ID, card ID or board.
-  function dispatchTargetArgs() {
-    var plan = store.dispatchTarget
-    return plan.command === "board" ? ["board"] : [plan.command, plan.flags[1]]
-  }
-
-  // The form's verify commands that are non-blank strings, verbatim, in order.
-  function dispatchCommands(form) {
-    var list = Array.isArray(form.verify) ? form.verify : []
-    return list.filter(function(c) { return typeof c === "string" && c.trim() !== "" })
-  }
-
-  // The options the preview and the start share. A blank base is left out, so
-  // am uses its own default; each verify command is one argument.
-  function dispatchOptionArgs() {
-    var form = store.dispatchForm
-    var args = []
-    var base = typeof form.base === "string" ? form.base.trim() : ""
-    if (base !== "") args.push("--base-branch", base)
-    args.push("--branch-prefix", form.prefix.trim(), "--max-concurrent", String(form.parallelism))
-    var commands = store.dispatchCommands(form)
-    for (var i = 0; i < commands.length; i++) args.push("--verify", commands[i])
-    if (form.allowNoVerification === true) args.push("--allow-no-verification")
-    return args
-  }
-
-  // The --defaults reply: a non-blank default branch becomes base unless the
-  // user set base since the opening; anything else leaves base as it is.
-  // Then the form is checked at once.
-  function dispatchDefaultsReplied(stdout) {
-    if (!dispatchBook.defaultsPending || store.dispatchState !== "previewing") return
-    dispatchBook.defaultsPending = false
-    var envelope = store.parseEnvelope(stdout)
-    var data = envelope !== null && envelope.ok === true ? envelope.data : null
-    var branch = data !== null && typeof data === "object" && typeof data.default_branch === "string"
-        ? data.default_branch.trim() : ""
-    if (branch !== "" && !store.hasKey(dispatchBook.touched, "base")) store.dispatchForm = store.withField(store.dispatchForm, "base", branch)
-    store.checkDispatch()
-  }
-
-  // dispatchRoot's get-run-settings reply, while dispatchRoot is not
-  // `project`: the bare object becomes dispatchRunSettings ({} when
-  // unreadable); prefix, verify and parallelism are taken from
-  // dispatchDefaultsFor with it, except a field the user set since the
-  // opening; base and allowNoVerification stay. Then the form is checked.
-  // Dropped unless previewing with the read still pending.
-  function dispatchSettingsReplied(stdout) {
-    if (!dispatchBook.settingsPending || store.dispatchState !== "previewing") return
-    dispatchBook.settingsPending = false
-    var parsed = store.parseEnvelope(stdout)
-    var settings = parsed !== null ? parsed : {}
-    store.dispatchRunSettings = settings
-    var d = store.dispatchDefaultsFor(settings)
-    var form = store.dispatchForm
-    var fields = ["prefix", "verify", "parallelism"]
-    for (var i = 0; i < fields.length; i++) {
-      if (!store.hasKey(dispatchBook.touched, fields[i])) form = store.withField(form, fields[i], d[fields[i]])
-    }
-    store.dispatchForm = form
-    store.checkDispatch()
-  }
-
-  // The form is checked: an invalid one is refused and launches nothing, a
-  // subtask is ready (am has no dry run for one card), a milestone, a story
-  // or the board is previewed. Waits for the defaults lookup and the
-  // settings read; whichever replies last checks.
-  function checkDispatch() {
-    if (dispatchBook.defaultsPending || dispatchBook.settingsPending || store.dispatchState !== "previewing") return
-    dispatchDebounceTimer.stop()
-    var result = Runs.validateDispatch(store.dispatchForm)
-    if (!result.ok) {
-      store.dispatchState = "refused"
-      store.dispatchErrors = result.errors
-      store.dispatchError = result.errors[0].message
-      store.dispatchErrorType = "Form"
-      return
-    }
-    if (store.dispatchTarget.level === "subtask") {
-      store.dispatchState = "ready"
-      return
-    }
-    dispatchPreviewRunner.run([store.dispatchRoot].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
-  }
-
-  // The newest preview's reply for this dispatchRoot and these values (a form
-  // change cancels the runner). ok: ready with Runs.previewSummary for the
-  // target's level, except a story with nothing left, refused as `Nothing
-  // left to run` (Empty); am's refusal: its message verbatim, and for a
-  // StoryBlockedError the blockedSuggest() milestone; anything else cannot
-  // be read.
-  function dispatchPreviewReplied(stdout) {
-    if (store.dispatchState !== "previewing") return
-    var envelope = store.parseEnvelope(stdout)
-    if (envelope !== null && envelope.ok === true) {
-      var level = store.dispatchTarget.level
-      var preview = Runs.previewSummary(envelope.data, level)
-      if (level === "story" && preview.summary === "Nothing left to run") {
-        store.dispatchState = "refused"
-        store.dispatchError = preview.summary
-        store.dispatchErrorType = "Empty"
-        return
-      }
-      store.dispatchPreview = preview
-      store.dispatchState = "ready"
-      return
-    }
-    var err = envelope !== null && envelope.ok === false ? envelope.error : null
-    var message = err !== null && typeof err === "object" && typeof err.message === "string" ? err.message : ""
-    store.dispatchState = "refused"
-    if (message.trim() !== "") {
-      store.dispatchError = message
-      store.dispatchErrorType = typeof err.type === "string" ? err.type : ""
-      if (store.dispatchErrorType === "StoryBlockedError") store.dispatchSuggest = store.blockedSuggest()
-    } else {
-      store.dispatchError = "The preview could not be read"
-      store.dispatchErrorType = ""
-    }
-  }
-
-  // One form field changed (name one of base, prefix, verify, parallelism,
-  // allowNoVerification) while the form may be edited: back to previewing,
-  // the preview, any refusal or failure and any preview in flight dropped,
-  // and the 400 ms check restarted, so a burst of changes costs one check.
-  // Refused (false, nothing changes) for another name, without a form, and
-  // while idle, starting or started.
-  function setDispatchField(name, value) {
-    if (["base", "prefix", "verify", "parallelism", "allowNoVerification"].indexOf(name) < 0) return false
-    var state = store.dispatchState
-    if (state !== "previewing" && state !== "ready" && state !== "refused" && state !== "failed") return false
-    if (store.dispatchForm === null) return false
-    store.dispatchForm = store.withField(store.dispatchForm, name, value)
-    var touched = store.copyMap(dispatchBook.touched)
-    touched[name] = true
-    dispatchBook.touched = touched
-    store.dispatchState = "previewing"
-    store.dispatchPreview = null
-    store.clearDispatchError()
-    dispatchPreviewRunner.cancel()
-    dispatchDebounceTimer.restart()
-    return true
-  }
-
-  // A fresh {milestone id: prefix} map: stored's own entries when stored is
-  // an object that is not an array, then entry's, which override them, as
-  // set-run-settings merges prefixByMilestone.
-  function mergedPrefixes(stored, entry) {
-    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? store.copyMap(stored) : {}
-    for (var id in entry) merged[id] = entry[id]
-    return merged
-  }
-
-  // Start: only from ready. start-run.py <dispatchRoot> runs on a
-  // HelperRunner of its own (guard "", madeFor dispatchRoot), which no
-  // preview, project switch or other Start stops. The settings a successful
-  // start saves are fixed now, from dispatchSettingsSource(): the non-blank
-  // verify commands sent, the opt-out, the prefix sent followed by the
-  // stored history without it (at most 20), the parallelism and, for a story
-  // or milestone whose milestone card is known, prefixByMilestone
-  // {<milestone id>: prefix sent}.
-  function dispatchStart() {
-    if (store.dispatchState !== "ready") return false
-    var form = store.dispatchForm
-    var prefix = form.prefix.trim()
-    var history = [prefix]
-    var source = store.dispatchSettingsSource()
-    var stored = Array.isArray(source.prefixHistory) ? source.prefixHistory : []
-    for (var i = 0; i < stored.length && history.length < 20; i++) {
-      var p = stored[i]
-      if (typeof p === "string" && p.trim() !== "" && p !== prefix) history.push(p)
-    }
-    var saved = { verify: store.dispatchCommands(form), allowNoVerification: form.allowNoVerification === true,
-                  prefixHistory: history, parallelism: form.parallelism }
-    var level = store.dispatchTarget.level
-    if ((level === "story" || level === "milestone") && dispatchBook.milestone !== null) {
-      var keyed = {}
-      keyed[dispatchBook.milestone.id] = prefix
-      saved.prefixByMilestone = keyed
-    }
-    var runner = dispatchStartC.createObject(store, { madeFor: store.dispatchRoot, savedJson: JSON.stringify(saved) })
-    dispatchBook.runners = dispatchBook.runners.concat([runner])
-    dispatchBook.startRunner = runner
-    store.dispatchState = "starting"
-    runner.run([store.dispatchRoot].concat(store.dispatchTargetArgs(), store.dispatchOptionArgs()))
-    return true
-  }
-
-  // A start runner's reply is this dispatch's: it was made for the current
-  // dispatchRoot and is the runner that put the store into `starting` (an
-  // idle reset, and so a project switch, forgets it).
-  function isHereStart(runner) {
-    return runner.madeFor === store.dispatchRoot && dispatchBook.startRunner === runner
-  }
-
-  // start-run.py's reply. When it is this dispatch's: ok gives `started`,
-  // the run id and message, the saved values merged into
-  // dispatchSettingsSource()'s object (runSettings only when dispatchRoot is
-  // `project`; prefixByMilestone merged per milestone id), a snapshot of
-  // [dispatchRoot] only -- requestSnapshot([dispatchRoot]), never refresh()
-  // -- and dispatchStarted(id or null); a StoryBlockedError gives `refused`
-  // with am's message, no log fields and the blockedSuggest() milestone;
-  // anything else gives `failed` with what the helper said. After any
-  // successful start, wherever it was made, the same runner writes the saved
-  // values for the root it was made for (madeFor).
-  function dispatchStartReplied(runner, stdout) {
-    if (runner.saving) {
-      store.dispatchSaveReplied(runner, stdout)
-      return
-    }
-    var here = store.isHereStart(runner)
-    var envelope = store.parseEnvelope(stdout)
-    if (envelope !== null && envelope.ok === true) {
-      if (here) {
-        store.dispatchRunId = typeof envelope.run_id === "string" ? envelope.run_id : ""
-        store.dispatchMessage = typeof envelope.message === "string" ? envelope.message : ""
-        var settings = store.copyMap(store.dispatchSettingsSource())
-        // Parsed from the JSON that is written: a var property hands back a
-        // list Runs.dispatchDefaults does not take for an array.
-        var saved = JSON.parse(runner.savedJson)
-        for (var key in saved) {
-          settings[key] = key === "prefixByMilestone" ? store.mergedPrefixes(settings.prefixByMilestone, saved[key]) : saved[key]
-        }
-        if (store.dispatchRoot === store.project) store.runSettings = settings
-        else store.dispatchRunSettings = settings
-        store.dispatchState = "started"
-        store.requestSnapshot([store.dispatchRoot])
-        store.dispatchStarted(store.dispatchRunId !== "" ? store.dispatchRunId : null)
-      }
-      runner.saving = true
-      runner.script = store.backendDir + "projects/viewer-state.py"
-      runner.run(["set-run-settings", runner.madeFor, runner.savedJson])
-      return
-    }
-    if (here) {
-      var failure = envelope !== null && envelope.ok === false ? envelope : {}
-      var err = failure.error
-      var isErr = err !== null && err !== undefined && typeof err === "object"
-      var message = isErr && typeof err.message === "string" ? err.message : ""
-      var type = isErr && typeof err.type === "string" ? err.type : ""
-      var blocked = type === "StoryBlockedError"
-      store.dispatchState = blocked ? "refused" : "failed"
-      store.dispatchError = message.trim() !== "" ? message : "The launch could not be read"
-      store.dispatchErrorType = type
-      store.dispatchLog = !blocked && typeof failure.log === "string" ? failure.log : ""
-      store.dispatchLogTail = !blocked && typeof failure.log_tail === "string" ? failure.log_tail : ""
-      store.dispatchExitCode = !blocked && typeof failure.exit_code === "number" ? failure.exit_code : null
-      store.dispatchSuggest = blocked ? store.blockedSuggest() : null
-    }
-    store.dropStartRunner(runner)
-  }
-
-  // set-run-settings after a start: a failure is said only while the
-  // dispatch is still this one. The runner then goes.
-  function dispatchSaveReplied(runner, stdout) {
-    var reply = store.parseEnvelope(stdout)
-    if (store.isHereStart(runner) && !(reply !== null && reply.ok === true)) store.flash("Dispatch settings could not be saved")
-    store.dropStartRunner(runner)
-  }
-
-  // A start runner's work is over: it leaves dispatchStartRunners and is destroyed.
-  function dropStartRunner(runner) {
-    dispatchBook.runners = dispatchBook.runners.filter(function(r) { return r !== runner })
-    if (dispatchBook.startRunner === runner) dispatchBook.startRunner = null
-    runner.destroy()
-  }
-
-  // ---- dispatch: project and target steps
-
-  // The Runs dialog's step: project | target | form; "" when the dispatch
-  // was not opened from Runs (idle or a card entry).
-  property string dispatchStep: ""
-  // The latest board-tree.py --probe envelope ({ok: true, projects}) while a
-  // step is open; null before its reply, when the reply is unreadable and
-  // whenever the steps are cleared.
-  property var dispatchProjectProbe: null
-  // The project step's rows: Runs.dispatchProjects over the usable roots,
-  // the probe entries (dispatchProbeEntries) and the open project while a
-  // step is open, else [].
-  readonly property var dispatchProjectRows: store.dispatchStep !== ""
-    ? Runs.dispatchProjects(store.usableRoots(), store.dispatchProbeEntries(), store.project) : []
-  readonly property alias dispatchProjectRunner: dispatchProjectRunner
-  // The picked root's brd tree as Board.indexTree's {id: card} map: set by a
-  // good tree read for dispatchRoot and kept at the target and form steps;
-  // else null.
-  property var dispatchTargetCardMap: null
-  // The target step's rows, Runs.dispatchTargets over that tree: set and
-  // kept with dispatchTargetCardMap; else [].
-  property var dispatchTargetRows: []
-  // A tree read is in flight: from its launch until its reply or a cancel.
-  readonly property bool dispatchTargetLoading: dispatchTargetRunner.busy
-  // The key of the row dispatchTargetPick took; kept by Back from the form,
-  // "" whenever the target data is cleared.
-  property string dispatchTargetKey: ""
-  readonly property alias dispatchTargetRunner: dispatchTargetRunner
-  // {root: message} for each root whose tree read failed since the dialog
-  // was opened from Runs, the root as dispatchRoot held it. Its row is
-  // disabled with the message as its reason, whatever the probe says.
-  property var dispatchProjectFailures: ({})
-
-  // The probe entries the project rows read: {root, ok: false, reason} for
-  // each dispatchProjectFailures root, then the probe's own entries; the
-  // first entry for a root wins.
-  function dispatchProbeEntries() {
-    var failures = store.dispatchProjectFailures
-    var entries = Object.keys(failures).map(function(root) { return { root: root, ok: false, reason: failures[root] } })
-    var probe = store.dispatchProjectProbe
-    return probe !== null ? entries.concat(probe.projects) : entries
-  }
-
-  // Opens the dispatch from Runs at the project step with no root, no
-  // failures and the target data cleared, and probes every usable root, in
-  // registry order. Refused (false, nothing changes) while a start is in
-  // flight; else true, from any state or step: a second call starts the
-  // step over. With no usable root nothing is launched and the rows are [].
-  function dispatchOpenFromRuns() {
-    if (store.dispatchState === "starting") return false
-    store.resetDispatch()
-    store.dispatchRoot = ""
-    store.dispatchStep = "project"
-    store.dispatchProjectProbe = null
-    store.dispatchProjectFailures = {}
-    store.dispatchClearTarget()
-    var roots = store.usableRoots().map(function(p) { return p.root })
-    if (roots.length > 0) dispatchProjectRunner.run(["--probe"].concat(roots))
-    else dispatchProjectRunner.cancel()
-    return true
-  }
-
-  // The probe's reply: dispatchProjectProbe is its envelope when that is
-  // {ok: true, projects: [...]}, else null (every row enabled). The exit code
-  // is not read. Applied only while a step is open.
-  function dispatchProjectReplied(stdout) {
-    if (store.dispatchStep === "") return
-    var reply = store.parseEnvelope(stdout)
-    store.dispatchProjectProbe = reply !== null && reply.ok === true && Array.isArray(reply.projects) ? reply : null
-  }
-
-  // Takes the project step's enabled row for `root`: dispatchRoot is the
-  // row's root, the step is target, the target data is cleared and the
-  // root's tree is read (board-tree.py ROOT); no defaults, settings or
-  // preview is launched. Refused (false, nothing changes) at any other step
-  // and for a root with no enabled row.
-  function dispatchProjectPick(root) {
-    if (store.dispatchStep !== "project") return false
-    var rows = store.dispatchProjectRows
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].root !== root || rows[i].enabled !== true) continue
-      store.dispatchRoot = rows[i].root
-      store.dispatchStep = "target"
-      store.dispatchClearTarget()
-      dispatchTargetRunner.run([store.dispatchRoot])
-      return true
-    }
-    return false
-  }
-
-  // The tree read's reply, applied only at the target step. {ok: true,
-  // data: [...]} that Board.indexTree walks gives dispatchTargetCardMap and
-  // dispatchTargetRows. Anything else records dispatchRoot in
-  // dispatchProjectFailures with error.message trimmed (else "The board
-  // could not be read"), clears the target data and goes back to the
-  // project step with dispatchRoot "". The exit code is not read.
-  function dispatchTargetReplied(stdout) {
-    if (store.dispatchStep !== "target") return
-    var envelope = store.parseEnvelope(stdout)
-    var data = envelope !== null && envelope.ok === true && Array.isArray(envelope.data) ? envelope.data : null
-    var cardMap = null
-    if (data !== null) {
-      try { cardMap = Board.indexTree(data).cardMap } catch (e) { cardMap = null }
-    }
-    if (cardMap !== null) {
-      store.dispatchTargetCardMap = cardMap
-      store.dispatchTargetRows = Runs.dispatchTargets(data, cardMap)
-      return
-    }
-    var err = envelope !== null && envelope.ok !== true ? envelope.error : null
-    var message = err !== null && typeof err === "object" && typeof err.message === "string" ? err.message.trim() : ""
-    var failures = store.copyMap(store.dispatchProjectFailures)
-    failures[store.dispatchRoot] = message !== "" ? message : "The board could not be read"
-    store.dispatchProjectFailures = failures
-    store.dispatchClearTarget()
-    store.dispatchStep = "project"
-    store.dispatchRoot = ""
-  }
-
-  // Takes the target step's row with this key: dispatchOpenFor(row.card,
-  // dispatchTargetCardMap) opens S3's form for dispatchRoot, the step is
-  // form and dispatchTargetKey the key; the rows and the card map stay.
-  // Refused (false, nothing changes) at any other step and for a key no row
-  // has. When dispatchOpenFor refuses, the dispatch is reset, the step stays
-  // target and it returns false.
-  function dispatchTargetPick(key) {
-    if (store.dispatchStep !== "target") return false
-    var rows = store.dispatchTargetRows
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].key !== key) continue
-      if (!store.dispatchOpenFor(rows[i].card, store.dispatchTargetCardMap)) {
-        store.resetDispatch()
-        return false
-      }
-      store.dispatchTargetKey = key
-      store.dispatchStep = "form"
-      return true
-    }
-    return false
-  }
-
-  // From the target step back to the project step: dispatchRoot "" and the
-  // target data cleared; the probe, its rows and the failures stay and
-  // nothing is relaunched. From the form back to the target step: the
-  // dispatch reset (resetDispatch), dispatchRoot, the rows, the card map and
-  // dispatchTargetKey kept, nothing relaunched; refused while starting.
-  // Refused (false, nothing changes) at any other step.
-  function dispatchBack() {
-    if (store.dispatchStep === "form") {
-      if (store.dispatchState === "starting") return false
-      store.resetDispatch()
-      store.dispatchStep = "target"
-      return true
-    }
-    if (store.dispatchStep !== "target") return false
-    store.dispatchClearTarget()
-    store.dispatchStep = "project"
-    store.dispatchRoot = ""
-    return true
-  }
-
-  // The target data cleared: the tree read cancelled, dispatchTargetCardMap
-  // null, dispatchTargetRows [] and dispatchTargetKey "".
-  function dispatchClearTarget() {
-    dispatchTargetRunner.cancel()
-    store.dispatchTargetCardMap = null
-    store.dispatchTargetRows = []
-    store.dispatchTargetKey = ""
-  }
-
-  // The steps cleared: the probe cancelled, the target data cleared,
-  // dispatchStep "", dispatchProjectProbe null and dispatchProjectFailures {}.
-  function dispatchClearSteps() {
-    dispatchProjectRunner.cancel()
-    store.dispatchClearTarget()
-    store.dispatchStep = ""
-    store.dispatchProjectProbe = null
-    store.dispatchProjectFailures = {}
-  }
-
-  // The registry changed: at the target step, and at the form unless a
-  // start is in flight, a dispatchRoot that is no longer a usable root
-  // (trailing "/" removed) goes back to the project step with dispatchRoot
-  // "" and the target data cleared; at the form the dispatch is reset too.
-  // Any other step, and the form while starting, is left alone.
-  function dispatchRegistryChanged() {
-    var step = store.dispatchStep
-    if (step !== "target" && step !== "form") return
-    if (step === "form" && store.dispatchState === "starting") return
-    var rows = Runs.dispatchProjects(store.usableRoots(), null, "")
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].root === store.dispatchRoot) return
-    }
-    if (step === "form") store.resetDispatch()
-    store.dispatchClearTarget()
-    store.dispatchStep = "project"
-    store.dispatchRoot = ""
-  }
-
-  // board-tree.py --probe ROOT... for the project step; latest wins. No
-  // guard: the probe depends on no root. dispatchClearSteps() cancels it.
-  HelperRunner {
-    id: dispatchProjectRunner
-    script: store.backendDir + "boards/board-tree.py"
-    onFinished: function(stdout, exitCode) { store.dispatchProjectReplied(stdout) }
-  }
-
-  // board-tree.py ROOT for the target step; latest wins. Guarded by
-  // dispatchRoot: a reply whose launch root is no longer dispatchRoot is
-  // dropped. Back, any step clear and the registry fallback cancel it.
-  HelperRunner {
-    id: dispatchTargetRunner
-    script: store.backendDir + "boards/board-tree.py"
-    guard: store.dispatchRoot
-    onFinished: function(stdout, exitCode) { store.dispatchTargetReplied(stdout) }
-  }
-
-  // ---- relaunch
-
-  // Opens the dispatch for card as openDispatch does and returns its result;
-  // when it opens, relaunch.prefix and relaunch.base (Runs.stopReport's
-  // relaunch), each when a non-blank string, are set trimmed over the
-  // defaults, and a base set so is kept over the default branch (recorded as
-  // touched). Refused (false, nothing changes) when card or relaunch is not
-  // an object.
-  function relaunchOpenFor(card, cardMap, relaunch) {
-    var isObject = function(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
-    if (!isObject(card) || !isObject(relaunch)) return false
-    if (!store.openDispatch(card, cardMap)) return false
-    if (typeof relaunch.prefix === "string" && relaunch.prefix.trim() !== "")
-      store.dispatchForm = store.withField(store.dispatchForm, "prefix", relaunch.prefix.trim())
-    if (typeof relaunch.base === "string" && relaunch.base.trim() !== "") {
-      store.dispatchForm = store.withField(store.dispatchForm, "base", relaunch.base.trim())
-      var touched = store.copyMap(dispatchBook.touched)
-      touched.base = true
-      dispatchBook.touched = touched
-    }
-    return true
+  // The runs of `list`, in its order, that `owner` (mergedRuns' {id: root})
+  // attributes to `root`; a run without an owned id is no root's.
+  function ownedRuns(list, owner, root) {
+    return list.filter(function(run) {
+      return run !== null && typeof run === "object" && Runs.hasKey(owner, run.id) && owner[run.id] === root
+    })
   }
 
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is
@@ -2489,64 +1229,6 @@ Scope {
       store.applyEvents(stdout, exitCode, launchedGuard)
       store.followUpEvents()
     }
-  }
-
-  // get-global-settings, once per opening (startLive); latest wins. No guard:
-  // the switch is viewer-wide, and a reply that lands after the panel closed
-  // is still applied.
-  HelperRunner {
-    id: settingsLoadRunner
-    script: store.backendDir + "projects/viewer-state.py"
-    onFinished: function(stdout, exitCode) { store.applyGlobalSettings(stdout, exitCode) }
-  }
-
-  // get-run-settings on a project switch, for runSettings only. Its guard is
-  // set by projectSwitched() itself rather than bound to `project`:
-  // projectSwitched() runs from onProjectChanged, before a binding here is
-  // sure to have followed the project, and this launch must carry the NEW
-  // project.
-  HelperRunner {
-    id: runSettingsRunner
-    script: store.backendDir + "projects/viewer-state.py"
-    onFinished: function(stdout, exitCode) { store.applyRunSettings(stdout, exitCode) }
-  }
-
-  // set-global-settings on a change of the switch; latest wins. No guard: a
-  // project switch never drops its reply. `sent` is the value the latest
-  // launch writes.
-  HelperRunner {
-    id: settingsSaveRunner
-    property bool sent: false
-    script: store.backendDir + "projects/viewer-state.py"
-    onFinished: function(stdout, exitCode) { store.notifySaveReplied(stdout, exitCode, settingsSaveRunner.sent) }
-  }
-
-  // dispatch-preview.py --defaults, once per opening. Guarded by
-  // dispatchRoot: a reply for a root the dispatch has left is dropped.
-  HelperRunner {
-    id: dispatchDefaultsRunner
-    script: store.backendDir + "runs/dispatch-preview.py"
-    guard: store.dispatchRoot
-    onFinished: function(stdout, exitCode) { store.dispatchDefaultsReplied(stdout) }
-  }
-
-  // The dispatch preview; latest wins, and every form change cancels it.
-  // Guarded by dispatchRoot.
-  HelperRunner {
-    id: dispatchPreviewRunner
-    script: store.backendDir + "runs/dispatch-preview.py"
-    guard: store.dispatchRoot
-    onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
-  }
-
-  // viewer-state.py get-run-settings for dispatchRoot, once per opening, only
-  // while dispatchRoot is not `project`; latest wins. Guarded by
-  // dispatchRoot: a reply for a root the dispatch has left is dropped.
-  HelperRunner {
-    id: dispatchSettingsRunner
-    script: store.backendDir + "projects/viewer-state.py"
-    guard: store.dispatchRoot
-    onFinished: function(stdout, exitCode) { store.dispatchSettingsReplied(stdout) }
   }
 
   // A burst of changed lines is taken in one go (triggerNudges).
@@ -2587,45 +1269,6 @@ Scope {
     onTriggered: store.refresh()
   }
 
-  // Only while the panel is open and a control request is pending: closing the
-  // panel keeps `pending` but leaves no timer running.
-  Timer {
-    id: pendingTimer
-    objectName: "pendingTimer"
-    interval: 1000
-    repeat: true
-    running: store.active && Object.keys(store.pending).length > 0
-    onTriggered: store.checkWaiting(Date.now())
-  }
-
-  // Clears the footer flash 3 s after the last flash().
-  Timer {
-    id: flashTimer
-    objectName: "flashTimer"
-    interval: 3000
-    repeat: false
-    onTriggered: store.flashText = ""
-  }
-
-  // Only while the panel is open and a toast shows: no timer while idle.
-  Timer {
-    id: toastTimer
-    objectName: "toastTimer"
-    interval: 250
-    repeat: true
-    running: store.active && store.toasts.length > 0
-    onTriggered: store.expireToasts(Date.now())
-  }
-
-  // only while a change waits to be checked.
-  Timer {
-    id: dispatchDebounceTimer
-    objectName: "dispatchDebounceTimer"
-    interval: 400
-    repeat: false
-    onTriggered: store.checkDispatch()
-  }
-
   // What the watch Process aliases read; kept apart so consumers cannot write it.
   // `roots` are the roots the current watch was launched with.
   QtObject {
@@ -2652,100 +1295,6 @@ Scope {
     id: eventsState
     property string kind: "tail"
     property bool followUp: false
-  }
-
-  // The control requests' own state; kept apart so consumers cannot write it.
-  // `requests` is {runId: {token, action, baseline, launchedMs, acknowledged,
-  // requestedAt}}: the run's state when the request started, when it started,
-  // whether am acknowledged it, and the requested_at am gave it.
-  QtObject {
-    id: controlState
-    property var runners: []
-    property var requests: ({})
-    property int nextToken: 0
-  }
-
-  // The toast keys only grow, so a stale Dismiss never removes a newer toast.
-  QtObject {
-    id: toastState
-    property int nextKey: 0
-  }
-
-  // The notify.py runners in flight; kept apart so consumers cannot write it.
-  QtObject {
-    id: notifyState
-    property var runners: []
-  }
-
-  // The dispatch's own bookkeeping; kept apart so consumers cannot write it.
-  // `startRunner` is the runner that put the store into `starting`, forgotten
-  // by an idle reset (and so by a project switch); `touched` is {field: true}
-  // for each form field the user set since the opening; `defaultsPending`
-  // says the --defaults lookup has not replied yet, `settingsPending` that
-  // dispatchRoot's get-run-settings read has not; `card`, `cardMap` and
-  // `milestone` are the opening's card, card map and its entry for the
-  // target's milestone card (null when unknown).
-  QtObject {
-    id: dispatchBook
-    property var runners: []
-    property var startRunner: null
-    property var touched: ({})
-    property bool defaultsPending: false
-    property bool settingsPending: false
-    property var card: null
-    property var cardMap: null
-    property var milestone: null
-  }
-
-  // One HelperRunner per control request, so requests for different runs never
-  // stop each other. No guard: a reply is applied whatever project is open.
-  // A milestone resume uses its runner twice: viewer-state.py, then
-  // run-control.py.
-  Component {
-    id: controlC
-
-    HelperRunner {
-      id: cr
-      property string runId: ""
-      property string action: ""
-      property int token: 0
-      property string repoDir: ""         // the run's repo_dir when the request was made
-      property string projectRoot: ""     // the run's project.root then; "" when it had none
-      property bool settingsStep: false   // reading the run settings; run-control comes next
-      onFinished: function(stdout, exitCode) { store.controlReplied(cr, stdout, exitCode) }
-    }
-  }
-
-  // One HelperRunner per notification. Guard "": a project switch does not
-  // stop a notification already launched. It goes when its process exits.
-  Component {
-    id: notifyC
-
-    HelperRunner {
-      id: nr
-      script: store.backendDir + "runs/notify.py"
-      guard: ""
-      onFinished: store.dropNotifyRunner(nr)
-    }
-  }
-
-  // One HelperRunner per Start. Guard "": start-run.py may take ~20 s, and
-  // neither a preview, a project switch nor a Start for another root may
-  // stop it. After a successful start the same runner writes the settings
-  // for `madeFor`; it goes when that write replies, or at once after a
-  // failed start.
-  Component {
-    id: dispatchStartC
-
-    HelperRunner {
-      id: sr
-      property string madeFor: ""     // the dispatchRoot the start was made for
-      property string savedJson: ""   // `saved` as set-run-settings takes it
-      property bool saving: false     // the settings write is in flight
-      script: store.backendDir + "runs/start-run.py"
-      guard: ""
-      onFinished: function(stdout, exitCode) { store.dispatchStartReplied(sr, stdout) }
-    }
   }
 
   // One Process per watch launch, so each carries what it was launched with.

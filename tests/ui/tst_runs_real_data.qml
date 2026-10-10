@@ -46,8 +46,8 @@ TestCase {
     }
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
     return p
   }
 

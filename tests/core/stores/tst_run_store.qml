@@ -2,8 +2,14 @@
 // The run monitor's store: the snapshot helper's exact argv, how its one JSON
 // line becomes every registered root's normalized runs and an amStatus, the
 // one-in-flight-plus-one-pending rule, what a registry change does and what a
-// project switch leaves alone. Built directly and driven through stubbed
-// Process objects.
+// project switch leaves alone, and the snapshotReplied it emits. Built
+// directly, wired to a RunControlStore and a RunAlertsStore the way App wires
+// app.runControl and app.runAlerts (and, where a test needs it, a
+// RunDispatchStore the way App wires app.runDispatch), and driven through
+// stubbed Process objects. The run controls and the notify switch are tested in
+// tst_run_control_store.qml, the alerts in tst_run_alerts_store.qml. The
+// dispatch is tested in tst_run_dispatch_store.qml, the run settings load
+// and save in tst_run_control_store.qml.
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
@@ -31,10 +37,126 @@ TestCase {
 
   Component { id: spyC; SignalSpy {} }
 
+  // A RunStore wired to its own RunControlStore (wireControl), then to its
+  // own RunAlertsStore (wireAlerts): App's snapshotReplied order.
   function make() {
     var comp = Qt.createComponent("../../../core/stores/RunStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
-    return comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
+    var store = comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
+    wireControl(store)
+    wireAlerts(store)
+    return store
+  }
+
+  // Every {store, control} pair wireControl made.
+  property var controlPairs: []
+
+  // A RunControlStore wired to `store` the way App wires app.runControl:
+  // backendDir copied; project, active and runs bound to the run store's own;
+  // an ok snapshotReplied settles its requests; its refreshRequested goes to
+  // refresh() ("all") or requestSnapshot(roots).
+  function wireControl(store) {
+    var comp = Qt.createComponent("../../../core/stores/RunControlStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
+    var c = comp.createObject(tc, { backendDir: store.backendDir })
+    c.project = Qt.binding(function() { return store.project })
+    c.active = Qt.binding(function() { return store.active })
+    c.runs = Qt.binding(function() { return store.runs })
+    store.snapshotReplied.connect(function(root, outcome) { if (outcome === "ok") c.settleAfterSnapshot() })
+    c.refreshRequested.connect(function(roots) {
+      if (roots === "all") store.refresh()
+      else store.requestSnapshot(roots)
+    })
+    tc.controlPairs = tc.controlPairs.concat([{ store: store, control: c }])
+    return c
+  }
+
+  // The RunControlStore wireControl paired with `store`; null when none.
+  function controlOf(store) {
+    for (var i = 0; i < tc.controlPairs.length; i++) {
+      if (tc.controlPairs[i].store === store) return tc.controlPairs[i].control
+    }
+    return null
+  }
+
+  // Every {store, alerts} pair wireAlerts made.
+  property var alertsPairs: []
+
+  // A RunAlertsStore wired to `store` the way App wires app.runAlerts:
+  // backendDir copied; active and projectRoots bound to the run store's own,
+  // notifyOnEscalation bound to the paired control store's; snapshotReplied
+  // routed to it.
+  function wireAlerts(store) {
+    var comp = Qt.createComponent("../../../core/stores/RunAlertsStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
+    var a = comp.createObject(tc, { backendDir: store.backendDir })
+    a.active = Qt.binding(function() { return store.active })
+    a.notifyOnEscalation = Qt.binding(function() { var c = controlOf(store); return c ? c.notifyOnEscalation : false })
+    a.projectRoots = Qt.binding(function() { return store.projectRoots })
+    store.snapshotReplied.connect(a.snapshotReplied)
+    tc.alertsPairs = tc.alertsPairs.concat([{ store: store, alerts: a }])
+    return a
+  }
+
+  // The RunAlertsStore wireAlerts paired with `store`; null when none.
+  function alerts(store) {
+    for (var i = 0; i < tc.alertsPairs.length; i++) {
+      if (tc.alertsPairs[i].store === store) return tc.alertsPairs[i].alerts
+    }
+    return null
+  }
+
+  // Every {store, dispatch} pair wireDispatch made.
+  property var dispatchPairs: []
+
+  // A RunDispatchStore with backendDir copied. When `bound`, it is wired the
+  // way App wires app.runDispatch: project, active and runs bound to the run
+  // store's own, runSettings to the paired control store's
+  // runSettingsOf(project); refreshRequested to refresh() ("all") or
+  // requestSnapshot(roots); noticeRequested to the paired control store's
+  // flash; runSettingsWanted and runSettingsSaveRequested to its
+  // loadRunSettings and saveRunSettings, and its runSettingsSaveFailed back to
+  // dispatchSaveFailed. Otherwise nothing is bound or routed.
+  function wireDispatch(store, bound) {
+    var comp = Qt.createComponent("../../../core/stores/RunDispatchStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
+    var d = comp.createObject(tc, { backendDir: store.backendDir })
+    if (bound) {
+      d.project = Qt.binding(function() { return store.project })
+      d.active = Qt.binding(function() { return store.active })
+      d.runs = Qt.binding(function() { return store.runs })
+      d.runSettings = Qt.binding(function() { return controlOf(store).runSettingsOf(store.project) })
+      d.refreshRequested.connect(function(roots) {
+        if (roots === "all") store.refresh()
+        else store.requestSnapshot(roots)
+      })
+      d.noticeRequested.connect(function(text) { controlOf(store).flash(text) })
+      var c = controlOf(store)
+      d.runSettingsWanted.connect(function(root) { c.loadRunSettings(root) })
+      d.runSettingsSaveRequested.connect(function(root, patch) { c.saveRunSettings(root, patch) })
+      c.runSettingsSaveFailed.connect(function(root, patch) { d.dispatchSaveFailed(root, patch) })
+    }
+    tc.dispatchPairs = tc.dispatchPairs.concat([{ store: store, dispatch: d }])
+    return d
+  }
+
+  // The RunDispatchStore wireDispatch paired with `store`; null when none.
+  function dispatchOf(store) {
+    for (var i = 0; i < tc.dispatchPairs.length; i++) {
+      if (tc.dispatchPairs[i].store === store) return tc.dispatchPairs[i].dispatch
+    }
+    return null
+  }
+
+  // A milestone, its story, the story's subtask and a done milestone, as
+  // Board.indexTree() leaves them; the object is also their {id: card} map.
+  function dispatchCards() {
+    return {
+      m1: { id: "m1", title: "M3 Document runs", status: "todo", parentId: "", depth: 0 },
+      s1: { id: "s1", title: "Dispatch store", status: "todo", parentId: "m1", depth: 1 },
+      t1: { id: "t1", title: "RunStore dispatch", status: "todo", parentId: "s1", depth: 2 },
+      d1: { id: "d1", title: "M2 Monitor runs", status: "done", parentId: "", depth: 0 }
+    }
   }
 
   // A root's registry entry: rootA is "alpha", rootB "beta", any other "proj".
@@ -229,8 +351,8 @@ TestCase {
   function test_a_failing_root_keeps_its_runs_and_says_why() {
     var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("escalated")])]), 0)
-    compare(store.alertsArmed, true)
-    compare(store.toasts.length, 0)
+    compare(alerts(store).alertsArmed, true)
+    compare(alerts(store).toasts.length, 0)
     store.refresh()
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started"), rec("done-integrate")]),
                                                   failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
@@ -241,11 +363,11 @@ TestCase {
     compare(Object.keys(store.projectErrors).join(","), tc.rootB)
     compare(store.amStatus, "ok", "A answered")
     compare(store.lastError, "")
-    compare(store.toasts.length, 0, "a failed entry raises nothing")
+    compare(alerts(store).toasts.length, 0, "a failed entry raises nothing")
     store.refresh()
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("escalated")])]), 0)
     compare(Object.keys(store.projectErrors).length, 0, "a good entry clears B's error")
-    compare(store.toasts.length, 0, "B's recovery replays no alert")
+    compare(alerts(store).toasts.length, 0, "B's recovery replays no alert")
 
     var first = makeWithRoots([tc.rootA, tc.rootB]); if (!first) return
     reply(first.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]),
@@ -270,12 +392,12 @@ TestCase {
     compare(ids(store.runs), tc.startedRun + "," + tc.doneRun, "the previous runs stay")
     compare(store.projectErrors[tc.rootA], "StoreBusyError: the am store is busy; try again")
     compare(store.projectErrors[tc.rootB], "SchemaMismatch: the plugin needs the newer am")
-    compare(store.alertsArmed, true, "the armed state is unchanged")
+    compare(alerts(store).alertsArmed, true, "the armed state is unchanged")
     compare(store.stale, true, "stale is unchanged")
 
     var closed = makeWithRoots([tc.rootA]); if (!closed) return
     reply(closed.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmTimeout", "am did not answer within 60 s.")]), 0)
-    compare(closed.alertsArmed, false, "a disarmed store stays disarmed")
+    compare(alerts(closed).alertsArmed, false, "a disarmed store stays disarmed")
     compare(closed.amStatus, "error")
   }
 
@@ -284,7 +406,7 @@ TestCase {
     var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]),
                                                   failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
-    compare(store.alertsArmed, true)
+    compare(alerts(store).alertsArmed, true)
     store.refresh()
     reply(store.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmMissing", "am is not installed."),
                                                   failEntry(tc.rootB, "AmMissing", "am is not installed.")]), 0)
@@ -295,7 +417,7 @@ TestCase {
     compare(store.asOfSeq, 0)
     compare(store.amStatus, "missing")
     compare(store.lastError, "AmMissing: am is not installed.")
-    compare(store.alertsArmed, false)
+    compare(alerts(store).alertsArmed, false)
     store.refresh()
     // synthetic: AmMissing beside another failure is not "am is missing".
     reply(store.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmMissing", "am is not installed."),
@@ -374,7 +496,7 @@ TestCase {
     compare(Object.keys(store.runsByProject).join(","), tc.rootA)
     compare(Object.keys(store.projectErrors).length, 0, "and so does its error")
     compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA, "then A alone is snapshotted")
-    compare(store.toasts.length, 0, "the registry change raises nothing")
+    compare(alerts(store).toasts.length, 0, "the registry change raises nothing")
     store.projectRoots = [{ root: tc.rootA, name: "renamed" }]
     compare(store.runs[0].project.name, "renamed", "a renamed project's runs carry the new name at once")
     compare(store.runsByProject[tc.rootA][0].project.name, "renamed")
@@ -395,23 +517,24 @@ TestCase {
   // 10
   function test_a_project_switch_leaves_the_run_list_and_the_live_state_alone() {
     var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
+    if (!wireDispatch(store, true)) return
     store.project = tc.rootA
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [treeEntry("r1", "started"), running("r2")]),
                                                   okEntry(tc.rootB, [rec("done")])]), 0)
     store.selectedRunId = "r1"
     reply(store.logsRunner.current, logsReply("kept\n"), 0)
-    compare(store.control("pause", "r2"), true)
-    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(controlOf(store).control("pause", "r2"), true)
+    reply(controlOf(store).controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [treeEntry("r1", "started"), running("r2"), escalated("r3")]),
                                                   okEntry(tc.rootB, [rec("done")])]), 0)
-    compare(store.toasts.length, 1, "r3 escalated")
-    compare(store.pending.r2, "pause", "acknowledged, not yet settled")
+    compare(alerts(store).toasts.length, 1, "r3 escalated")
+    compare(controlOf(store).pending.r2, "pause", "acknowledged, not yet settled")
     store.toggleRunFilter("live")
     var watch = store.watchProc
     var runs = store.runs
     var applied = store.appliedSeq
     var attempt = store.selectedAttempt
-    var toasts = store.toasts
+    var toasts = alerts(store).toasts
     var seq = store.snapshotRunner.seq
     var targets = [tc.rootB, ""]
     for (var i = 0; i < targets.length; i++) {
@@ -426,9 +549,9 @@ TestCase {
       verify(store.watchProc === watch, label + ": the watch")
       compare(watch.running, true, label)
       compare(store.watching, true, label)
-      verify(store.toasts === toasts, label + ": the toasts")
-      compare(store.pending.r2, "pause", label)
-      compare(store.alertsArmed, true, label)
+      verify(alerts(store).toasts === toasts, label + ": the toasts")
+      compare(controlOf(store).pending.r2, "pause", label)
+      compare(alerts(store).alertsArmed, true, label)
       compare(store.amStatus, "ok", label)
       compare(store.snapshotRunner.seq, seq, label + ": no snapshot")
     }
@@ -436,9 +559,7 @@ TestCase {
     compare(store.debounceTimer.running, true, "a watch line after the switch is still handled")
     compare(store.nudges.r2, 7)
     store.project = tc.rootB
-    compare(argv(store.runSettingsRunner.current), tc.viewerCmd + "get-run-settings|" + tc.rootB,
-            "the new project's run settings still load")
-    compare(store.dispatchState, "idle", "and the dispatch is still reset")
+    compare(dispatchOf(store).dispatchState, "idle", "and the dispatch is still reset")
   }
 
   // 10
@@ -463,7 +584,7 @@ TestCase {
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [rec("started")]), okEntry(tc.rootB, [rec("done")])]), 0)
     verify(store.watchProc, "a good reply starts the watch")
     compare(store.watching, true)
-    compare(store.alertsArmed, true)
+    compare(alerts(store).alertsArmed, true)
     compare(store.staleTimer.running, true)
   }
 
@@ -773,8 +894,8 @@ TestCase {
     compare(store.runs.length, 0, "its late reply applies nothing")
     compare(store.snapshotRunner.seq, seq, "and launches nothing")
     reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "escalated", false)]), okEntry(tc.rootB, [])]), 0)
-    compare(store.toasts.length, 0, "the new store's first list only arms")
-    compare(store.alertsArmed, true)
+    compare(alerts(store).toasts.length, 0, "the new store's first list only arms")
+    compare(alerts(store).alertsArmed, true)
     compare(store.snapshotRunner.seq, seq, "no follow-up")
   }
 
@@ -1023,21 +1144,6 @@ TestCase {
     compare(store.staleTimer.running, false, "and the clock is untouched")
   }
 
-  // Kept behaviour: a refresh that escalates a run raises one toast.
-  function test_a_nudge_refresh_that_escalates_a_run_raises_one_toast() {
-    var store = threeRoots(); if (!store) return
-    nudge(store, ["b1", 5])
-    fire(store.debounceTimer)
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "escalated", false, tc.rootB)])]), 0)
-    compare(store.toasts.length, 1)
-    compare(store.toasts[0].id, "b1")
-    compare(store.toasts[0].state, "escalated")
-    nudge(store, ["b1", 6])
-    fire(store.debounceTimer)
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "escalated", false, tc.rootB)])]), 0)
-    compare(store.toasts.length, 1, "still escalated: no second toast")
-  }
-
   // Kept behaviour: a refresh that moves the selected attempt refetches its logs.
   function test_a_nudge_refresh_that_moves_the_selected_attempt_fetches_its_logs() {
     var store = capturedStore(); if (!store) return
@@ -1058,15 +1164,15 @@ TestCase {
   // Kept behaviour: a refresh that moves a run settles its pending request.
   function test_a_nudge_refresh_that_moves_the_run_settles_its_pending_request() {
     var store = capturedStore(); if (!store) return
-    compare(store.control("cancel", tc.startedRun), true)
-    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    compare(controlOf(store).control("cancel", tc.startedRun), true)
+    reply(controlOf(store).controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
     reply(store.snapshotRunner.current, capturedList(), 0)
-    compare(store.pending[tc.startedRun], "cancel", "acknowledged, not yet settled")
+    compare(controlOf(store).pending[tc.startedRun], "cancel", "acknowledged, not yet settled")
     nudge(store, [tc.startedRun, 1005])
     fire(store.debounceTimer)
     // synthetic: status-escalated.json's data under the started run's id.
     reply(store.snapshotRunner.current, capturedList([], true), 0)
-    compare(store.pending[tc.startedRun], undefined, "the refresh settled it")
+    compare(controlOf(store).pending[tc.startedRun], undefined, "the refresh settled it")
   }
 
   // Kept behaviour: a nudge after a project switch is still handled.
@@ -1095,7 +1201,7 @@ TestCase {
     compare(store.runs.length, 0)
     compare(Object.keys(store.runsByProject).length, 0, "A's and C's runs go too")
     compare(Object.keys(store.projectErrors).length, 0)
-    compare(store.alertsArmed, false)
+    compare(alerts(store).alertsArmed, false)
   }
 
   // The plan's Review Focus 3
@@ -2628,12 +2734,12 @@ TestCase {
       var o = store.data[i]
       if (o && typeof o.interval === "number" && typeof o.repeat === "boolean") timers.push(o.objectName)
     }
-    compare(timers.sort().join(","), "debounceTimer,dispatchDebounceTimer,flashTimer,livenessTimer,pendingTimer,pollTimer,staleTimer,toastTimer", "the logs add no timer")
+    compare(timers.sort().join(","), "debounceTimer,livenessTimer,pollTimer,staleTimer", "the logs add no timer")
     compare(store.debounceTimer.running, false)
     compare(store.livenessTimer.running, false)
     compare(store.staleTimer.running, false)
     compare(store.pollTimer.running, false)
-    compare(store.pendingTimer.running, false)
+    compare(controlOf(store).pendingTimer.running, false)
   }
 
   // The next snapshot of project A lists `entries`.
@@ -2685,6 +2791,15 @@ TestCase {
     verify(store.selectedAttempt, "the first attempt is picked once it exists")
     compare(store.selectedAttempt.attempt, 1)
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+  }
+
+  property string bRepo: "/home/u/b-work"
+
+  // `e` with its repo_dir moved to bRepo: a run of rootB whose repository is
+  // not the registry root (the store tags it by the entry's root).
+  function bWork(e) {
+    e.repo_dir = tc.bRepo
+    return e
   }
 
   // The logs launch: python3, the script, then the run's repo_dir and the
@@ -3137,9 +3252,7 @@ TestCase {
     compare(store.logsRunState, "escalated")
   }
 
-  // ---- run controls (S2 4.1)
-
-  property string ctlCmd: "python3|/plugin/core/backend/runs/run-control.py|"
+  // ---- run controls (S2 4.1): the helpers the tests here share; the control tests are in tst_run_control_store.qml
 
   // entry() for the control tests: the run's workflow ("milestone" unless
   // given), its am control requests, and whether its lease accepts requests.
@@ -3154,4029 +3267,16 @@ TestCase {
   function running(id) { return ctlEntry(id, "started", true) }
   function dead(id) { return ctlEntry(id, "started", false) }
 
-  // Project A whose first snapshot listed `entries`. Not active: no watch.
-  function ctlStore(entries) {
-    var store = makeWithProject(rootA); if (!store) return null
-    reply(store.snapshotRunner.current, okReply(entries), 0)
-    return store
-  }
-
   function ctlOk(data) { return JSON.stringify({ ok: true, data: data }) + "\n" }
 
   function ctlFail(type, message) {
     return JSON.stringify({ ok: false, error: { type: type, message: message } }) + "\n"
   }
 
-  function test_control_defaults() {
-    var store = make(); if (!store) return
-    compare(Object.keys(store.pending).length, 0)
-    compare(Object.keys(store.stillWaiting).length, 0)
-    compare(store.stillWaitingText, "still waiting — the run may be between phases or dead")
-    compare(store.lastControlError, "")
-    compare(store.lastControlErrorRunId, "")
-    compare(store.lastControlErrorType, "")
-    compare(store.controlRunners.length, 0)
-  }
-
-  function test_pause_and_cancel_launch_the_exact_argv() {
-    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
-    compare(store.control("pause", "r1"), true)
-    compare(store.control("cancel", "r2"), true)
-    compare(store.controlRunners.length, 2)
-    compare(store.controlRunners[0].runId, "r1")
-    compare(store.controlRunners[0].action, "pause")
-    var pause = store.controlRunners[0].current
-    compare(pause.command.length, 5)
-    compare(argv(pause), tc.ctlCmd + "pause|r1|/home/u/my proj")
-    compare(pause.command[4], "/home/u/my proj", "the root with a space is one argument")
-    compare(pause.running, true)
-    compare(pause.launchGuard, "", "no guard")
-    var cancel = store.controlRunners[1].current
-    compare(cancel.command.length, 5)
-    compare(argv(cancel), tc.ctlCmd + "cancel|r2|/home/u/my proj")
-  }
-
-  function test_control_sets_pending_as_a_new_object() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    var before = store.pending
-    var spy = spyC.createObject(tc, { target: store, signalName: "pendingChanged" })
-    compare(store.control("pause", "r1"), true)
-    compare(spy.count, 1)
-    compare(store.pending.r1, "pause")
-    compare(before.r1, undefined, "the old object was not changed in place")
-  }
-
-  function test_an_ok_reply_keeps_pending_and_refreshes() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    store.control("pause", "r1")
-    var snap = store.snapshotRunner.current
-    var seq = store.snapshotRunner.seq
-    reply(store.controlRunners[0].current, ctlOk({ run_id: "r1", command: "pause", effective: true,
-      requested_at: "t1", already_requested: false, message: "pause requested" }), 0)
-    compare(store.pending.r1, "pause", "pending until a snapshot settles it")
-    compare(store.lastControlError, "")
-    compare(store.snapshotRunner.seq, seq + 1, "the runs are fetched again")
-    verify(store.snapshotRunner.current !== snap)
-    compare(store.controlRunners.length, 0)
-  }
-
-  function test_an_ok_false_reply_clears_pending_and_says_why() {
-    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
-    store.control("pause", "r1")
-    var seq = store.snapshotRunner.seq
-    var text = ctlFail("NotAcceptingError", "run r1 is in integrate")
-    reply(store.controlRunners[0].current, text, 0)
-    compare(store.pending.r1, undefined, "the buttons come back")
-    compare(store.lastControlError, Runs.controlError(JSON.parse(text)))
-    compare(store.lastControlError, "Integrate is running; it cannot be paused or cancelled")
-    compare(store.lastControlErrorRunId, "r1")
-    compare(store.lastError, "", "the snapshot banner is not the control error")
-    compare(store.snapshotRunner.seq, seq + 1, "the runs are fetched again")
-
-    store.control("cancel", "r2")
-    var failed = ctlFail("AmFailed", "am: database is locked")
-    reply(store.controlRunners[0].current, failed, 0)
-    compare(store.lastControlError, Runs.controlError(JSON.parse(failed)))
-    verify(store.lastControlError !== "", "AmFailed says something")
-    compare(store.lastControlErrorRunId, "r2")
-  }
-
-  function test_garbled_control_output_names_the_exit_code() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    store.control("cancel", "r1")
-    var seq = store.snapshotRunner.seq
-    reply(store.controlRunners[0].current, "Traceback (most recent call last):\nboom\n", 1)
-    compare(store.pending.r1, undefined)
-    compare(store.lastControlError, "The run control gave no usable result (exit 1).")
-    compare(store.lastControlErrorRunId, "r1")
-    compare(store.snapshotRunner.seq, seq + 1)
-  }
-
-  function test_an_unknown_run_error_survives_the_snapshot_that_drops_the_row() {
-    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
-    store.control("cancel", "r1")
-    reply(store.controlRunners[0].current, ctlFail("UnknownRunError", "no run r1"), 0)
-    compare(store.lastControlError, "The run no longer exists")
-    reply(store.snapshotRunner.current, okReply([running("r2")]), 0)
-    compare(store.runs.length, 1)
-    compare(store.runs[0].id, "r2", "the row is dropped")
-    compare(store.lastControlError, "The run no longer exists", "a snapshot never clears the control error")
-    compare(store.lastControlErrorRunId, "r1")
-    compare(store.lastError, "")
-    snapshot(store, [running("r2")])
-    compare(store.lastControlError, "The run no longer exists")
-    compare(store.lastError, "")
-  }
-
-  function test_control_refusals_launch_nothing() {
-    var bare = make(); if (!bare) return
-    compare(bare.control("pause", "r1"), false, "a run not in the snapshot")
-    compare(bare.controlRunners.length, 0)
-
-    var store = ctlStore([running("r1"), ctlEntry("r2", "stopped", false),
-                          ctlEntry("r3", "started", true, "milestone", [], false)]); if (!store) return
-    compare(store.control("stop", "r1"), false, "unknown action")
-    compare(store.control("Pause", "r1"), false, "actions are exact")
-    compare(store.control("", "r1"), false, "empty action")
-    compare(store.control("pause", ""), false, "empty id")
-    compare(store.control("pause", 7), false, "an id that is not a string")
-    compare(store.control("pause", "nope"), false, "a run not in the snapshot")
-    compare(store.control("pause", "r2"), false, "pause on a parked run is disabled")
-    compare(store.control("cancel", "r3"), false, "cancel during Integrate is disabled")
-    compare(store.control("pause", "r3"), false, "pause during Integrate is disabled")
-    compare(store.controlRunners.length, 0)
-    compare(Object.keys(store.pending).length, 0)
-    compare(store.control("pause", "r1"), true)
-    compare(store.control("pause", "r1"), false, "no double fire")
-    compare(store.control("cancel", "r1"), false, "one request per run at a time")
-    compare(store.controlRunners.length, 1)
-    compare(Object.keys(store.pending).join(","), "r1")
-  }
-
-  function test_two_runs_in_flight_at_once_both_apply() {
-    var store = ctlStore([running("a"), running("b")]); if (!store) return
-    store.control("pause", "a")
-    store.control("cancel", "b")
-    compare(store.controlRunners.length, 2)
-    var ra = store.controlRunners[0], rb = store.controlRunners[1]
-    compare(ra.current.running, true, "cancelling b did not stop a's pause")
-    compare(rb.current.running, true)
-    reply(ra.current, ctlOk({ requested_at: "t1" }), 0)
-    compare(store.controlRunners.length, 1)
-    compare(store.controlRunners[0].runId, "b")
-    compare(store.pending.a, "pause")
-    compare(store.pending.b, "cancel")
-    reply(rb.current, ctlFail("NotRunningError", "not running"), 0)
-    compare(store.controlRunners.length, 0)
-    compare(store.pending.a, "pause")
-    compare(store.pending.b, undefined)
-    compare(store.lastControlError, "The run is not running")
-    compare(store.lastControlErrorRunId, "b")
-  }
-
-  function test_a_finished_request_leaves_control_runners() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    store.control("pause", "r1")
-    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
-    compare(store.controlRunners.length, 0, "an applied reply")
-
-    var other = ctlStore([running("r1")]); if (!other) return
-    other.control("pause", "r1")
-    var proc = other.controlRunners[0].current
-    other.project = rootB
-    compare(other.controlRunners.length, 1, "a launched request still completes in am")
-    var seq = other.snapshotRunner.seq
-    reply(proc, ctlOk({ requested_at: "t1" }), 0)
-    compare(other.controlRunners.length, 0, "a reply after a switch is applied and removes its runner")
-    compare(other.snapshotRunner.seq, seq + 1, "and re-snapshots")
-  }
-
-  function test_a_new_request_and_dismiss_clear_the_control_error() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    store.control("pause", "r1")
-    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
-    compare(store.lastControlError, "am is busy; try again in a moment")
-    compare(store.lastControlErrorType, "LockTimeoutError", "am's error type is kept")
-    compare(store.control("pause", "r1"), true, "the failed request no longer blocks the run")
-    compare(store.lastControlError, "")
-    compare(store.lastControlErrorRunId, "")
-    compare(store.lastControlErrorType, "", "a new request clears the type")
-    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
-    compare(store.lastControlErrorRunId, "r1")
-    compare(store.lastControlErrorType, "LockTimeoutError")
-    store.dismissControlError()
-    compare(store.lastControlError, "")
-    compare(store.lastControlErrorRunId, "")
-    compare(store.lastControlErrorType, "")
-  }
-
-  // Review Focus 1.
-  function test_the_control_error_type_is_empty_without_a_string_type() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    var replies = [JSON.stringify({ ok: false, error: "boom" }) + "\n",
-                   JSON.stringify({ ok: false, error: { type: 5, message: "x" } }) + "\n",
-                   JSON.stringify({ ok: false }) + "\n",
-                   "garbage\n"]
-    for (var i = 0; i < replies.length; i++) {
-      compare(store.control("pause", "r1"), true)
-      reply(store.controlRunners[0].current, replies[i], 1)
-      compare(store.lastControlErrorRunId, "r1", "reply " + i + " failed the request")
-      verify(store.lastControlError !== "", "reply " + i + " says something")
-      compare(store.lastControlErrorType, "", "reply " + i + " carries no string type")
-    }
-  }
-
-  property string settingsCmd: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/my proj"
-
-  // viewer-state.py get-run-settings: one bare object, not an envelope.
-  function settingsReply(verify, allow) {
-    return JSON.stringify({ verify: verify, allowNoVerification: allow, notifyOnEscalation: false }) + "\n"
-  }
-
-  function test_milestone_resume_reads_the_settings_then_passes_the_verify_set() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    compare(store.control("resume", "r1"), true)
-    compare(store.controlRunners.length, 1)
-    var runner = store.controlRunners[0]
-    compare(argv(runner.current), tc.settingsCmd)
-    compare(runner.current.command.length, 4)
-    compare(store.pending.r1, "resume")
-    reply(runner.current, settingsReply(["a", "-b c"], true), 0)
-    compare(store.controlRunners.length, 1, "the same request goes on to run-control")
-    var proc = store.controlRunners[0].current
-    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a|--verify|-b c")
-    compare(proc.command.length, 9, "each verify command is one argument")
-    compare(proc.command[8], "-b c")
-    compare(proc.command.indexOf("--allow-no-verification"), -1, "a stored verify set wins over the opt-out")
-    compare(store.pending.r1, "resume")
-  }
-
-  function test_milestone_resume_with_the_opt_out_passes_allow_no_verification() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    store.control("resume", "r1")
-    reply(store.controlRunners[0].current, settingsReply([], true), 0)
-    var proc = store.controlRunners[0].current
-    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--allow-no-verification")
-    compare(proc.command.length, 6)
-  }
-
-  function test_milestone_resume_with_nothing_stored_launches_nothing() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    store.control("resume", "r1")
-    var runner = store.controlRunners[0]
-    var seq = store.snapshotRunner.seq
-    reply(runner.current, settingsReply([], false), 0)
-    compare(runner.seq, 1, "run-control was never launched")
-    compare(store.controlRunners.length, 0)
-    compare(Object.keys(store.pending).length, 0)
-    compare(store.lastControlError, "")
-    compare(store.lastControlErrorRunId, "")
-    compare(store.resumeRunId, "r1", "the Resume dialog asks for the commands")
-    compare(store.snapshotRunner.seq, seq, "nothing was asked of am, so no snapshot")
-  }
-
-  function test_garbled_run_settings_end_the_resume() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    store.control("resume", "r1")
-    var runner = store.controlRunners[0]
-    reply(runner.current, "oops\n", 2)
-    compare(runner.seq, 1, "run-control was never launched")
-    compare(store.controlRunners.length, 0)
-    compare(Object.keys(store.pending).length, 0)
-    compare(store.lastControlError, "The run settings gave no usable result (exit 2).")
-    compare(store.lastControlErrorRunId, "r1")
-    compare(store.lastControlErrorType, "")
-  }
-
-  function test_a_card_run_resume_skips_the_settings() {
-    var store = ctlStore([ctlEntry("r1", "started", false, "task"),
-                          ctlEntry("r2", "started", false, "orchestrator")]); if (!store) return
-    compare(store.control("resume", "r1"), true)
-    compare(store.controlRunners.length, 1)
-    var runner = store.controlRunners[0]
-    compare(runner.seq, 1, "one launch only")
-    compare(argv(runner.current), tc.ctlCmd + "resume|r1|/home/u/my proj")
-    compare(runner.current.command.length, 5)
-    compare(store.control("resume", "r2"), true)
-    compare(argv(store.controlRunners[1].current), tc.settingsCmd, "any workflow but task follows the milestone rule")
-  }
-
-  // Review Focus 3.
-  function test_a_verify_set_with_a_non_string_is_not_used() {
-    var store = ctlStore([dead("r1"), dead("r2")]); if (!store) return
-    store.control("resume", "r1")
-    var runner = store.controlRunners[0]
-    reply(runner.current, settingsReply(["a", 5], false), 0)
-    compare(runner.seq, 1, "run-control was never launched")
-    compare(store.resumeRunId, "r1", "the dialog opens instead")
-    compare(store.lastControlError, "")
-    store.control("resume", "r2")
-    reply(store.controlRunners[0].current, settingsReply(["a", 5], true), 0)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r2|/home/u/my proj|--allow-no-verification")
-  }
-
-  // One am control request row.
-  function amRequest(command, requestedAt, handledAt) {
-    return { command: command, requested_at: requestedAt, handled_at: handledAt }
-  }
-
-  // A pause of `id` that am acknowledged; requestedAt "" leaves it out of the reply.
-  function pauseAcked(store, id, requestedAt) {
-    compare(store.control("pause", id), true)
-    var data = { run_id: id, command: "pause" }
-    if (requestedAt !== "") data.requested_at = requestedAt
-    reply(store.controlRunners[store.controlRunners.length - 1].current, ctlOk(data), 0)
-  }
-
-  function test_a_pause_settles_when_its_request_is_handled() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    pauseAcked(store, "r1", "t1")
-    snapshot(store, [ctlEntry("r1", "started", true, "milestone", [amRequest("pause", "t1", null)])])
-    compare(store.pending.r1, "pause", "not handled yet")
-    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
-                              [amRequest("pause", "t0", "t0h"), amRequest("pause", "t1", "")])])
-    compare(store.pending.r1, "pause", "an older handled pause is another request")
-    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
-                              [amRequest("pause", "t0", "t0h"), amRequest("pause", "t1", "t1h")])])
-    compare(store.pending.r1, undefined, "handled")
-  }
-
-  function test_without_requested_at_the_last_request_of_that_command_decides() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    pauseAcked(store, "r1", "")
-    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
-      [amRequest("pause", "t0", "t0h"), amRequest("cancel", "t1", "t1h"), amRequest("pause", "t2", null)])])
-    compare(store.pending.r1, "pause", "the last pause is not handled; a handled cancel is another request")
-    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
-      [amRequest("pause", "t0", "t0h"), amRequest("pause", "t2", "t2h")])])
-    compare(store.pending.r1, undefined)
-  }
-
-  // Review Focus 2.
-  function test_a_resume_settles_when_the_run_state_changes() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    store.control("resume", "r1")
-    reply(store.controlRunners[0].current, settingsReply(["make test"], false), 0)
-    reply(store.controlRunners[0].current, ctlOk({ action: "resume", run_id: "r1", detached: true }), 0)
-    compare(store.pending.r1, "resume", "a detached resume is acknowledged, not failed")
-    compare(store.lastControlError, "")
-    snapshot(store, [ctlEntry("r1", "started", false, "milestone", [amRequest("resume", "t1", "t1h")])])
-    compare(store.pending.r1, "resume", "still dead; resume never reads a request row")
-    snapshot(store, [running("r1")])
-    compare(store.pending.r1, undefined, "dead -> running")
-  }
-
-  function test_a_request_settles_when_its_run_vanishes() {
-    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
-    pauseAcked(store, "r1", "t1")
-    snapshot(store, [running("r2")])
-    compare(store.pending.r1, undefined)
-  }
-
-  // D5.
-  function test_a_snapshot_never_settles_a_request_in_flight() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    store.control("pause", "r1")
-    var runner = store.controlRunners[0]
-    snapshot(store, [ctlEntry("r1", "stopped", false)])
-    compare(store.pending.r1, "pause", "the reply has not come back yet")
-    snapshot(store, [])
-    compare(store.pending.r1, "pause", "not even when the run vanished")
-    reply(runner.current, ctlOk({ requested_at: "t1" }), 0)
-    compare(store.pending.r1, "pause")
-    snapshot(store, [ctlEntry("r1", "stopped", false)])
-    compare(store.pending.r1, undefined, "settled once acknowledged")
-  }
-
-  function test_a_failed_snapshot_settles_nothing() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    pauseAcked(store, "r1", "t1")
-    store.refresh()
-    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "AmFailed", message: "boom" } }) + "\n", 0)
-    compare(store.pending.r1, "pause")
-    store.refresh()
-    reply(store.snapshotRunner.current, "garbage\n", 1)
-    compare(store.pending.r1, "pause")
-  }
-
-  // Review Focus 1: A -> B -> A before the old reply lands.
-  function test_a_reply_after_returning_to_the_project_is_applied() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    store.control("pause", "r1")
-    var proc = store.controlRunners[0].current
-    store.project = rootB
-    store.project = rootA
-    compare(store.pending.r1, "pause", "the request is still pending")
-    compare(store.control("pause", "r1"), false, "so the run cannot be asked again")
-    var seq = store.snapshotRunner.seq
-    reply(proc, ctlFail("NotAcceptingError", "x"), 0)
-    compare(store.pending.r1, undefined, "its reply is this project's again and settles it")
-    compare(store.lastControlError, "Integrate is running; it cannot be paused or cancelled")
-    compare(store.snapshotRunner.seq, seq + 1, "and re-snapshots")
-    compare(store.controlRunners.length, 0)
-  }
-
-  function test_a_request_is_still_waiting_after_30_seconds() {
-    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
-    store.control("pause", "r1")
-    store.checkWaiting(Date.now() + 29000)
-    compare(store.stillWaiting.r1, undefined, "29 s is not yet")
-    store.checkWaiting(Date.now() + 30000)
-    compare(store.stillWaiting.r1, true)
-    compare(store.stillWaiting.r2, undefined, "only pending runs")
-    compare(store.stillWaitingText, "still waiting — the run may be between phases or dead")
-    reply(store.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
-    compare(store.stillWaiting.r1, true, "acknowledged but not settled: still waiting")
-    snapshot(store, [ctlEntry("r1", "started", true, "milestone", [amRequest("pause", "t1", "t1h")]), running("r2")])
-    compare(store.stillWaiting.r1, undefined, "settling removes it")
-    compare(Object.keys(store.stillWaiting).length, 0)
-  }
-
-  // Review Focus 5 and D6.
-  function test_the_pending_timer_runs_only_while_active_with_something_pending() {
-    var store = activeStore(rootA); if (!store) return
-    reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
-    compare(store.pendingTimer.running, false, "nothing pending")
-    compare(store.pendingTimer.interval, 1000)
-    compare(store.pendingTimer.repeat, true)
-    store.control("pause", "r1")
-    compare(store.pendingTimer.running, true)
-    store.pendingTimer.triggered()
-    compare(store.stillWaiting.r1, undefined, "a fresh request is not waiting yet")
-    store.active = false
-    compare(store.pendingTimer.running, false, "no timer while the panel is closed")
-    compare(store.pending.r1, "pause", "closing the panel keeps pending")
-    compare(store.controlRunners.length, 1, "and the request in flight")
-    store.active = true
-    compare(store.pendingTimer.running, true, "reopening starts it again")
-    reply(store.controlRunners[0].current, ctlFail("NotRunningError", "x"), 0)
-    compare(store.pendingTimer.running, false, "nothing pending any more")
-
-    var idle = ctlStore([running("r1")]); if (!idle) return
-    idle.control("pause", "r1")
-    compare(idle.pendingTimer.running, false, "an inactive store runs no timer")
-  }
-
-  // ---- cancel confirmation and the footer flash (S2 4.3)
-
-  property string integrateReason: "Integrate is running; it cannot be paused or cancelled"
-
-  // A running run whose lease is not accepting requests: am is in Integrate.
-  function integrate(id) { return ctlEntry(id, "started", true, "milestone", [], false) }
-
-  // 1 (and Review Focus 4)
-  function test_refusal_of_says_why_a_control_would_not_start() {
-    var bare = make(); if (!bare) return
-    compare(bare.refusalOf("pause", "r1"), "This run is no longer in the snapshot", "not in the snapshot")
-    var store = ctlStore([running("r1"), ctlEntry("r2", "stopped", false), integrate("r3"),
-                          ctlEntry("r4", "done", false), running("r5"), running("constructor")]); if (!store) return
-    compare(store.refusalOf("pause", "r1"), "")
-    compare(store.refusalOf("cancel", "r1"), "")
-    compare(store.refusalOf("resume", "r2"), "")
-    compare(store.refusalOf("cancel", "r2"), "")
-    compare(store.refusalOf("pause", "nope"), "This run is no longer in the snapshot")
-    compare(store.refusalOf("pause", ""), "This run is no longer in the snapshot")
-    compare(store.refusalOf("pause", "r3"), tc.integrateReason)
-    compare(store.refusalOf("cancel", "r3"), tc.integrateReason)
-    compare(store.refusalOf("cancel", "r4"), "The run has finished")
-    compare(store.refusalOf("resume", "r1"), "The run is still running")
-    compare(store.refusalOf("bogus", "r1"), "Unknown control")
-    compare(store.refusalOf("pause", "constructor"), "", "an id like constructor is not pending")
-    compare(store.refusalOf("resume", "constructor"), "The run is still running")
-    compare(store.control("pause", "r5"), true)
-    compare(store.refusalOf("pause", "r5"), "A request for this run is pending")
-    compare(store.refusalOf("resume", "r5"), "A request for this run is pending", "pending wins over the state's reason")
-    compare(store.controlRunners.length, 1, "refusalOf starts nothing")
-  }
-
-  // 2
-  function test_a_flash_clears_itself_and_a_new_one_restarts_the_clock() {
-    var store = make(); if (!store) return
-    compare(store.flashText, "")
-    compare(store.flashTimer.interval, 3000)
-    compare(store.flashTimer.repeat, false)
-    compare(store.flashTimer.running, false)
-    store.flashTimer.interval = 500
-    store.flash("first")
-    compare(store.flashText, "first")
-    compare(store.flashTimer.running, true)
-    wait(300)
-    store.flash("second")
-    compare(store.flashText, "second", "the new text replaces the old")
-    wait(300)
-    compare(store.flashText, "second", "the clock restarted with the second flash")
-    tryCompare(store, "flashText", "", 2000)
-    compare(store.flashTimer.running, false)
-    store.flash("third")
-    store.flash("")
-    compare(store.flashText, "")
-    compare(store.flashTimer.running, false, "flash(\"\") stops the clock")
-  }
-
-  // 3
-  function test_open_cancel_opens_only_for_a_cancellable_run() {
-    var store = ctlStore([running("r1"), integrate("r3")]); if (!store) return
-    compare(store.cancelOpen, false)
-    compare(store.cancelRunId, "")
-    compare(store.cancelText, "")
-    compare(store.cancelError, "")
-    store.cancelText = "left over"
-    store.cancelError = "old"
-    compare(store.openCancel("r1"), true)
-    compare(store.cancelOpen, true)
-    compare(store.cancelRunId, "r1")
-    compare(store.cancelText, "", "the dialog opens empty")
-    compare(store.cancelError, "")
-    compare(store.flashText, "")
-    store.closeCancel()
-    compare(store.cancelOpen, false)
-    compare(store.openCancel("r3"), false)
-    compare(store.cancelOpen, false, "an Integrate run gets no dialog")
-    compare(store.flashText, tc.integrateReason)
-    compare(store.controlRunners.length, 0)
-  }
-
-  // 4 (and Review Focus 1)
-  function test_confirm_cancel_needs_the_word_then_starts_the_cancel_and_closes() {
-    var store = ctlStore([running("r1")]); if (!store) return
-    compare(store.confirmCancel(), false, "nothing is open")
-    store.openCancel("r1")
-    store.cancelText = "cancle"
-    compare(store.confirmCancel(), false)
-    compare(store.controlRunners.length, 0)
-    compare(store.cancelOpen, true)
-    compare(store.cancelError, "", "a wrong word is not an error")
-    store.cancelText = " Cancel "
-    compare(store.confirmCancel(), true)
-    compare(store.pending.r1, "cancel")
-    compare(store.controlRunners.length, 1)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "cancel|r1|/home/u/my proj")
-    compare(store.cancelOpen, false)
-    compare(store.cancelRunId, "")
-    compare(store.cancelText, "")
-    compare(store.cancelError, "")
-    compare(store.confirmCancel(), false, "a second confirm finds the dialog closed")
-    compare(store.controlRunners.length, 1)
-  }
-
-  // 5 (D6, Review Focus 2)
-  function test_a_run_that_changed_under_the_open_dialog_refuses_the_confirm() {
-    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
-    store.openCancel("r2")
-    store.cancelText = "cancel"
-    store.control("pause", "r2")
-    compare(store.confirmCancel(), false)
-    compare(store.cancelError, "A request for this run is pending")
-    compare(store.cancelOpen, true)
-    compare(store.controlRunners.length, 1, "only the pause")
-    store.closeCancel()
-
-    store.openCancel("r1")
-    store.cancelText = "cancel"
-    snapshot(store, [ctlEntry("r1", "done", false)])
-    compare(store.confirmCancel(), false)
-    compare(store.cancelError, "The run has finished")
-    compare(store.cancelOpen, true, "the dialog stays for the user to read why")
-    compare(store.cancelRunId, "r1")
-    compare(store.pending.r1, undefined)
-    snapshot(store, [])
-    compare(store.confirmCancel(), false)
-    compare(store.cancelError, "This run is no longer in the snapshot")
-    compare(store.cancelOpen, true)
-    compare(store.controlRunners.length, 1, "no cancel was ever launched")
-  }
-
-  // ---- resume dialog (2.3)
-
-  // Project A listing `entries`, with the Resume dialog opened for `id` by a
-  // milestone resume that found nothing stored.
-  function resumeDialogStore(entries, id) {
-    var store = ctlStore(entries); if (!store) return null
-    compare(store.control("resume", id), true)
-    reply(store.controlRunners[store.controlRunners.length - 1].current, settingsReply([], false), 0)
-    compare(store.resumeRunId, id, "the dialog is open")
-    return store
-  }
-
-  // 1
-  function test_resume_dialog_defaults() {
-    var store = make(); if (!store) return
-    compare(store.resumeRunId, "")
-    compare(store.resumeVerify.length, 0)
-    compare(store.resumeAllowNoVerification, false)
-    compare(store.resumeError, "")
-  }
-
-  // 2
-  function test_nothing_stored_opens_the_dialog_and_leaves_nothing_pending() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    store.control("resume", "r1")
-    var seq = store.snapshotRunner.seq
-    reply(store.controlRunners[0].current, settingsReply([], false), 0)
-    compare(store.resumeRunId, "r1")
-    compare(store.resumeVerify.length, 0)
-    compare(store.resumeAllowNoVerification, false)
-    compare(store.resumeError, "")
-    compare(Object.keys(store.pending).length, 0)
-    compare(Object.keys(store.stillWaiting).length, 0)
-    compare(store.refusalOf("resume", "r1"), "", "no request is left pending, so the confirm can go")
-    compare(store.controlRunners.length, 0)
-    compare(store.snapshotRunner.seq, seq, "no snapshot")
-    compare(store.lastControlError, "")
-    compare(store.lastControlErrorRunId, "")
-    compare(store.lastControlErrorType, "")
-  }
-
-  // 3
-  function test_garbled_settings_open_no_dialog() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    store.control("resume", "r1")
-    reply(store.controlRunners[0].current, "oops\n", 2)
-    compare(store.resumeRunId, "")
-    compare(store.lastControlError, "The run settings gave no usable result (exit 2).")
-    compare(store.lastControlErrorRunId, "r1")
-    compare(store.lastControlErrorType, "")
-  }
-
-  // 4
-  function test_a_task_run_never_opens_the_dialog() {
-    var store = ctlStore([ctlEntry("r1", "started", false, "task")]); if (!store) return
-    compare(store.control("resume", "r1"), true)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r1|/home/u/my proj")
-    compare(store.resumeRunId, "")
-    var other = ctlStore([ctlEntry("r1", "started", false, "task")]); if (!other) return
-    compare(other.resumeOpenFor("r1"), false, "not even when called directly")
-    compare(other.resumeRunId, "")
-  }
-
-  // 5 (and Review Focus 5)
-  function test_open_for_resets_the_fields_and_refuses_unknown_runs() {
-    var store = ctlStore([dead("r1"), dead("r2")]); if (!store) return
-    store.resumeVerify = ["a"]
-    store.resumeAllowNoVerification = true
-    store.resumeError = "old"
-    compare(store.resumeOpenFor("r1"), true)
-    compare(store.resumeRunId, "r1")
-    compare(store.resumeVerify.length, 0)
-    compare(store.resumeAllowNoVerification, false)
-    compare(store.resumeError, "")
-    store.resumeVerify = ["b"]
-    store.resumeAllowNoVerification = true
-    var refused = ["", "nope", 5]
-    for (var i = 0; i < refused.length; i++) {
-      compare(store.resumeOpenFor(refused[i]), false, "refused: " + refused[i])
-      compare(store.resumeRunId, "r1", "unchanged after " + refused[i])
-      compare(JSON.stringify(store.resumeVerify), '["b"]')
-      compare(store.resumeAllowNoVerification, true)
-    }
-    compare(store.resumeOpenFor("r2"), true, "another run replaces the dialog")
-    compare(store.resumeRunId, "r2")
-    compare(store.resumeVerify.length, 0)
-    compare(store.resumeAllowNoVerification, false)
-
-    store.resumeVerify = ["c"]
-    store.control("resume", "r1")
-    reply(store.controlRunners[0].current, settingsReply([], false), 0)
-    compare(store.resumeRunId, "r1", "a resume that finds nothing stored replaces the open dialog")
-    compare(store.resumeVerify.length, 0)
-  }
-
-  // 6
-  function test_close_clears_every_field() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["a"]
-    store.resumeAllowNoVerification = true
-    store.resumeError = "old"
-    store.resumeClose()
-    compare(store.resumeRunId, "")
-    compare(store.resumeVerify.length, 0)
-    compare(store.resumeAllowNoVerification, false)
-    compare(store.resumeError, "")
-    store.resumeClose()
-    compare(store.resumeRunId, "", "closing a closed dialog is harmless")
-  }
-
-  property string resumeSaveCmd: "python3|/plugin/core/backend/projects/viewer-state.py|set-run-settings|/home/u/my proj|"
-  property string resumeSaveFailed: "The verify commands could not be saved"
-
-  // 7
-  function test_confirm_with_the_dialog_closed_does_nothing() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    compare(store.resumeConfirm(), false)
-    compare(store.controlRunners.length, 0)
-    compare(Object.keys(store.pending).length, 0)
-    compare(store.resumeSaveRunner.seq, 0, "nothing saved")
-  }
-
-  // 8
-  function test_confirm_without_commands_or_opt_out_is_refused() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["", "  "]
-    compare(store.resumeConfirm(), false)
-    compare(store.resumeError, "Add a verify command or choose to run without verification")
-    compare(store.resumeRunId, "r1", "the dialog stays open")
-    compare(store.controlRunners.length, 0)
-    compare(Object.keys(store.pending).length, 0)
-    compare(store.resumeSaveRunner.seq, 0)
-  }
-
-  // 9 (and Review Focus 2)
-  function test_confirm_with_commands_passes_them_in_order_dropping_blanks() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["a", "", "  ", "-b c"]
-    compare(store.resumeConfirm(), true)
-    compare(store.controlRunners.length, 1)
-    var runner = store.controlRunners[0]
-    compare(runner.runId, "r1")
-    compare(runner.action, "resume")
-    compare(runner.seq, 1, "run-control directly, no settings read")
-    compare(argv(runner.current), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a|--verify|-b c")
-    compare(runner.current.command.length, 9)
-    compare(store.pending.r1, "resume")
-    compare(store.resumeRunId, "")
-    compare(store.resumeVerify.length, 0)
-    compare(store.resumeError, "")
-    compare(store.resumeConfirm(), false, "a second confirm finds the dialog closed")
-    compare(store.controlRunners.length, 1, "one run-control launch")
-    compare(store.resumeSaveRunner.seq, 1, "one save")
-  }
-
-  // 10
-  function test_confirm_with_the_opt_out_passes_allow_no_verification() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = []
-    store.resumeAllowNoVerification = true
-    compare(store.resumeConfirm(), true)
-    var proc = store.controlRunners[0].current
-    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--allow-no-verification")
-    compare(proc.command.length, 6)
-  }
-
-  // 11
-  function test_commands_win_over_the_opt_out() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["a"]
-    store.resumeAllowNoVerification = true
-    compare(store.resumeConfirm(), true)
-    var proc = store.controlRunners[0].current
-    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
-    compare(proc.command.indexOf("--allow-no-verification"), -1)
-  }
-
-  // 12
-  function test_confirm_saves_the_set_for_the_runs_project() {
-    var store = resumeDialogStore([dead("r1"), dead("r2")], "r1"); if (!store) return
-    store.resumeVerify = ["a", "", "-b c"]
-    store.resumeConfirm()
-    var save = store.resumeSaveRunner.current
-    compare(argv(save), tc.resumeSaveCmd + '{"verify":["a","-b c"],"allowNoVerification":false}')
-    compare(save.command.length, 5, "the root with a space and the JSON are one argument each")
-    compare(save.launchGuard, "", "no guard")
-    compare(store.resumeOpenFor("r2"), true)
-    store.resumeAllowNoVerification = true
-    store.resumeConfirm()
-    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":[],"allowNoVerification":true}')
-  }
-
-  // Review Focus 3.
-  function test_non_string_commands_are_neither_passed_nor_saved() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = [5, "a", null]
-    compare(store.resumeConfirm(), true)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
-    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":["a"],"allowNoVerification":false}')
-    var only = resumeDialogStore([dead("r1")], "r1"); if (!only) return
-    only.resumeVerify = [5]
-    compare(only.resumeConfirm(), false, "a non-string is not a command")
-    compare(only.resumeError, "Add a verify command or choose to run without verification")
-  }
-
-  // Review Focus 4.
-  function test_commands_are_passed_and_saved_verbatim() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["  make test  "]
-    compare(store.resumeConfirm(), true)
-    compare(store.controlRunners[0].current.command[6], "  make test  ")
-    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":["  make test  "],"allowNoVerification":false}')
-  }
-
-  // 13
-  function test_the_resume_does_not_wait_for_the_save() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["a"]
-    compare(store.resumeConfirm(), true)
-    compare(store.resumeSaveRunner.busy, true, "the save has not replied")
-    var proc = store.controlRunners[0].current
-    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
-    compare(proc.running, true)
-    compare(store.pending.r1, "resume")
-    compare(store.resumeRunId, "")
-  }
-
-  // 14
-  function test_a_changed_run_keeps_the_dialog_open() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["a"]
-    snapshot(store, [running("r1")])
-    compare(store.resumeConfirm(), false)
-    compare(store.resumeError, store.refusalOf("resume", "r1"))
-    compare(store.resumeError, "The run is still running")
-    compare(store.resumeRunId, "r1")
-    compare(store.controlRunners.length, 0)
-    compare(store.resumeSaveRunner.seq, 0)
-    snapshot(store, [])
-    compare(store.resumeConfirm(), false)
-    compare(store.resumeError, "This run is no longer in the snapshot")
-    compare(store.resumeRunId, "r1")
-    compare(store.controlRunners.length, 0)
-    compare(store.resumeSaveRunner.seq, 0)
-  }
-
-  // 15
-  function test_a_pending_request_refuses_the_confirm() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    compare(store.control("cancel", "r1"), true)
-    store.resumeVerify = ["a"]
-    compare(store.resumeConfirm(), false)
-    compare(store.resumeError, "A request for this run is pending")
-    compare(store.resumeRunId, "r1")
-    compare(store.controlRunners.length, 1, "only the cancel")
-    compare(store.resumeSaveRunner.seq, 0)
-  }
-
-  // 16
-  function test_a_failed_save_flashes_but_the_resume_runs() {
-    var replies = [[JSON.stringify({ ok: false, error: { type: "X", message: "y" } }) + "\n", 1],
-                   ["garbage\n", 0],
-                   ["", 1]]
-    for (var i = 0; i < replies.length; i++) {
-      var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-      store.resumeVerify = ["a"]
-      store.resumeConfirm()
-      reply(store.resumeSaveRunner.current, replies[i][0], replies[i][1])
-      compare(store.flashText, tc.resumeSaveFailed, "reply " + i)
-      compare(store.controlRunners.length, 1, "the run-control runner is still there")
-      compare(store.pending.r1, "resume")
-      compare(store.lastControlError, "")
-      compare(store.resumeRunId, "")
-    }
-  }
-
-  // 17
-  function test_a_good_save_flashes_nothing() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["a"]
-    store.resumeConfirm()
-    reply(store.resumeSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.flashText, "")
-    compare(store.pending.r1, "resume")
-  }
-
-  // 18
-  function test_the_resume_save_runner_is_not_the_notify_runner() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    var resumeSeq = store.resumeSaveRunner.seq
-    store.setNotifyOnEscalation(true)
-    compare(store.resumeSaveRunner.seq, resumeSeq, "the switch does not use the resume runner")
-    var notifySeq = store.settingsSaveRunner.seq
-    var notifySave = store.settingsSaveRunner.current
-    store.resumeVerify = ["a"]
-    store.resumeConfirm()
-    compare(store.settingsSaveRunner.seq, notifySeq, "the confirm does not use the notify runner")
-    reply(notifySave, "garbage\n", 1)
-    compare(store.flashText, "Notify on escalation could not be saved", "not the resume sentence")
-    reply(store.resumeSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.flashText, "Notify on escalation could not be saved", "a good resume save changes nothing")
-  }
-
-  // 19
-  function test_the_confirmed_resume_clears_the_control_error() {
-    var store = ctlStore([dead("r1")]); if (!store) return
-    compare(store.control("cancel", "r1"), true)
-    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
-    compare(store.lastControlErrorRunId, "r1")
-    compare(store.lastControlErrorType, "LockTimeoutError")
-    compare(store.resumeOpenFor("r1"), true)
-    store.resumeVerify = ["a"]
-    compare(store.resumeConfirm(), true)
-    compare(store.lastControlError, "")
-    compare(store.lastControlErrorRunId, "")
-    compare(store.lastControlErrorType, "")
-  }
-
-  // 20
-  function test_a_refused_confirmed_resume_keeps_ams_error_type() {
-    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
-    store.resumeVerify = ["a"]
-    store.resumeConfirm()
-    var text = ctlFail("NotResumableError", "x")
-    reply(store.controlRunners[0].current, text, 0)
-    compare(store.lastControlError, Runs.controlError(JSON.parse(text)))
-    compare(store.lastControlErrorType, "NotResumableError")
-    compare(store.lastControlErrorRunId, "r1")
-    compare(store.pending.r1, undefined, "the request is settled")
-    compare(store.controlRunners.length, 0)
-  }
-
-  // ---- alerts: the toasts (S2 4.4)
+  // ---- alerts (S2 4.4): the helpers the tests above share; the alerts tests are in tst_run_alerts_store.qml
 
   function escalated(id) { return entry(id, "escalated", false) }
-  function toastIds(store) { return store.toasts.map(function(t) { return t.id }).join(",") }
-
-  // An active store on project A whose first snapshot listed `entries`: that
-  // snapshot only armed the alerts.
-  function armedStore(entries) {
-    var store = activeStore(rootA); if (!store) return null
-    reply(store.snapshotRunner.current, okReply(entries), 0)
-    compare(store.alertsArmed, true, "the first good snapshot while open arms the alerts")
-    compare(store.toasts.length, 0, "and raises nothing")
-    return store
-  }
-
-  // 1
-  function test_no_toast_while_the_panel_is_closed() {
-    var store = makeWithProject(rootA); if (!store) return
-    compare(store.alertsArmed, false)
-    compare(store.toasts.length, 0)
-    reply(store.snapshotRunner.current, okReply([running("a")]), 0)
-    snapshot(store, [escalated("a")])
-    compare(store.toasts.length, 0)
-    compare(store.alertsArmed, false, "a closed panel never arms")
-  }
-
-  // 2
-  function test_a_run_that_turns_escalated_raises_one_toast() {
-    var store = activeStore(rootA); if (!store) return
-    compare(store.toastMs, 8000)
-    reply(store.snapshotRunner.current, okReply([escalated("a"), running("b")]), 0)
-    compare(store.toasts.length, 0, "the first snapshot after opening never replays history")
-    compare(store.alertsArmed, true)
-    var before = Date.now()
-    snapshot(store, [escalated("a"), escalated("b")])
-    compare(store.toasts.length, 1)
-    var t = store.toasts[0]
-    compare(t.id, "b")
-    compare(t.title, "m-b")
-    compare(t.state, "escalated")
-    compare(t.reason, Runs.escalationReason(store.runById("b")))
-    compare(t.reason, "escalated")
-    compare(typeof t.key, "number")
-    verify(t.expiresMs >= before + 8000 && t.expiresMs <= Date.now() + 8000, "it expires 8 s from now")
-  }
-
-  // 3
-  function test_a_run_still_escalated_raises_nothing_again() {
-    var store = armedStore([running("a")]); if (!store) return
-    snapshot(store, [escalated("a")])
-    compare(store.toasts.length, 1)
-    var key = store.toasts[0].key
-    snapshot(store, [escalated("a")])
-    compare(store.toasts.length, 1)
-    compare(store.toasts[0].key, key, "the same toast, not a new one")
-  }
-
-  // 4 (Review focus: reopening never replays history)
-  function test_closing_empties_the_toasts_and_reopening_raises_nothing_at_first() {
-    var store = armedStore([running("a"), running("b")]); if (!store) return
-    snapshot(store, [escalated("a"), running("b")])
-    compare(store.toasts.length, 1)
-    store.active = false
-    compare(store.toasts.length, 0, "a toast never outlives the panel opening")
-    compare(store.alertsArmed, false)
-    store.active = true
-    compare(store.alertsArmed, false)
-    reply(store.snapshotRunner.current, okReply([escalated("a"), dead("b")]), 0)
-    compare(store.toasts.length, 0, "b died while the panel was closed: not replayed")
-    compare(store.alertsArmed, true)
-    snapshot(store, [escalated("a"), dead("b"), escalated("c")])
-    compare(toastIds(store), "c")
-  }
-
-  // Review Focus 1 (D3)
-  function test_a_snapshot_landing_after_the_panel_closed_raises_nothing_and_does_not_arm() {
-    var store = armedStore([running("a")]); if (!store) return
-    store.refresh()
-    var late = store.snapshotRunner.current
-    store.active = false
-    reply(late, okReply([escalated("a")]), 0)
-    compare(store.runs[0].status, "escalated", "the snapshot itself is still applied")
-    compare(store.toasts.length, 0)
-    compare(store.alertsArmed, false)
-  }
-
-  // 5
-  function test_am_missing_disarms_and_a_failed_snapshot_does_not() {
-    var store = armedStore([running("a")]); if (!store) return
-    store.refresh()
-    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmMissing", "am is not installed")]), 0)
-    compare(store.runs.length, 0)
-    compare(store.alertsArmed, false)
-    snapshot(store, [escalated("a")])
-    compare(store.toasts.length, 0, "the first good snapshot after am came back raises nothing")
-    compare(store.alertsArmed, true)
-    snapshot(store, [escalated("a"), escalated("b")])
-    compare(toastIds(store), "b", "the one after that compares normally")
-
-    var other = armedStore([running("x")]); if (!other) return
-    other.refresh()
-    reply(other.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }) + "\n", 1)
-    compare(other.alertsArmed, true, "a failed snapshot keeps the baseline")
-    other.refresh()
-    reply(other.snapshotRunner.current, "garbage\n", 1)
-    compare(other.alertsArmed, true)
-    snapshot(other, [escalated("x")])
-    compare(toastIds(other), "x")
-  }
-
-  // 6
-  function test_five_alerts_in_one_snapshot_leave_the_last_three_toasts() {
-    var store = armedStore([]); if (!store) return
-    snapshot(store, [escalated("r1"), escalated("r2"), dead("r3"), escalated("r4"), dead("r5")])
-    compare(toastIds(store), "r3,r4,r5")
-    verify(store.toasts[0].key < store.toasts[1].key && store.toasts[1].key < store.toasts[2].key, "keys only grow")
-    compare(store.toasts[0].state, "dead")
-    compare(store.toasts[0].reason, "process died")
-  }
-
-  // 7
-  function test_a_run_that_alerts_again_replaces_its_own_toast() {
-    var store = armedStore([running("a"), running("b")]); if (!store) return
-    snapshot(store, [escalated("a"), escalated("b")])
-    compare(toastIds(store), "a,b")
-    var oldKey = store.toasts[0].key
-    snapshot(store, [dead("a"), escalated("b")])
-    compare(toastIds(store), "b,a", "a's old toast went and its new one is the newest")
-    compare(store.toasts[1].state, "dead")
-    compare(store.toasts[1].reason, "process died")
-    verify(store.toasts[1].key > oldKey, "a new key")
-  }
-
-  // 8
-  function test_toasts_expire_and_the_timer_runs_only_while_open_with_toasts() {
-    var store = armedStore([running("a"), running("b")]); if (!store) return
-    var timer = store.toastTimer
-    compare(timer.objectName, "toastTimer")
-    compare(timer.interval, 250)
-    compare(timer.repeat, true)
-    compare(timer.running, false, "no toast: no timer")
-    snapshot(store, [escalated("a"), running("b")])
-    compare(timer.running, true)
-    var aExpires = store.toasts[0].expiresMs
-    store.toastMs = 60000
-    snapshot(store, [escalated("a"), escalated("b")])
-    compare(toastIds(store), "a,b")
-    store.expireToasts(aExpires - 1)
-    compare(toastIds(store), "a,b", "not yet")
-    store.expireToasts(aExpires)
-    compare(toastIds(store), "b", "expiresMs <= now goes")
-    store.dismissAllToasts()
-    compare(timer.running, false, "nothing left: no timer")
-    store.toastMs = 50
-    snapshot(store, [escalated("a"), dead("b")])
-    compare(store.toasts.length, 1)
-    tryVerify(function() { return store.toasts.length === 0 }, 2000, "the timer dropped the expired toast")
-    compare(timer.running, false)
-  }
-
-  // 9 (and Review Focus 2)
-  function test_dismiss_removes_one_toast_by_key_and_dismiss_all_empties() {
-    var store = armedStore([running("a"), running("b")]); if (!store) return
-    snapshot(store, [escalated("a"), escalated("b")])
-    var keyA = store.toasts[0].key
-    store.dismissToast(-12345)
-    compare(toastIds(store), "a,b", "an unknown key changes nothing")
-    store.dismissToast(keyA)
-    compare(toastIds(store), "b")
-    snapshot(store, [dead("a"), escalated("b")])
-    compare(toastIds(store), "b,a")
-    store.dismissToast(keyA)
-    compare(toastIds(store), "b,a", "a's stale key leaves its newer toast")
-    store.dismissAllToasts()
-    compare(store.toasts.length, 0)
-  }
-
-  // 10 (the toast half; Task 2 pins the setting half)
-  function test_a_project_switch_keeps_the_toasts_and_the_alerts_armed() {
-    var store = armedStore([running("a")]); if (!store) return
-    snapshot(store, [escalated("a")])
-    compare(store.toasts.length, 1)
-    store.project = rootB
-    compare(store.toasts.length, 1)
-    compare(store.alertsArmed, true)
-    snapshot(store, [escalated("a"), escalated("b")])
-    compare(toastIds(store), "a,b", "the next snapshot compares as before")
-  }
-
-  // ---- alerts across projects (3.4)
-
-  // The armed roots of `store`, sorted, comma-joined.
-  function armedKeys(store) { return Object.keys(store.armedRoots).sort().join(",") }
-  function bothRoots() { return [tc.rootA, tc.rootB].sort().join(",") }
-
-  // The next list reply of `store`: a snapshot of every root, answered with `projects`.
-  function answer(store, projects) {
-    store.refresh()
-    reply(store.snapshotRunner.current, allReply(projects), 0)
-  }
-
-  // An active store with A and B registered and no project open, whose first
-  // reply listed `aRuns` under A and `bRuns` under B: both are armed, nothing raised.
-  function armedTwo(aRuns, bRuns) {
-    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return null
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, aRuns), okEntry(tc.rootB, bRuns)]), 0)
-    compare(armedKeys(store), bothRoots(), "the first reply arms both")
-    compare(store.alertsArmed, true)
-    compare(store.toasts.length, 0, "and raises nothing")
-    return store
-  }
-
-  // 1
-  function test_an_escalation_in_another_project_raises_one_toast_with_its_project() {
-    var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
-    compare(store.project, "")
-    store.notifyOnEscalation = true
-    answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1")])])
-    compare(toastIds(store), "b1")
-    compare(store.toasts[0].project, "beta")
-    compare(store.toasts[0].title, "m-b1")
-    compare(store.toasts[0].state, "escalated")
-    compare(store.notifyRunners.length, 1, "one notification")
-    compare(argv(store.notifyRunners[0].current), tc.notifyCmd + "m-b1|escalated", "its text does not change")
-  }
-
-  // 2
-  function test_a_project_that_first_fails_or_joins_later_only_arms_on_its_first_good_entry() {
-    var store = activeRoots([tc.rootA, tc.rootB]); if (!store) return
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]),
-                                                  failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")]), 0)
-    compare(armedKeys(store), tc.rootA, "only A answered")
-    answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1"), dead("b2")])])
-    compare(store.toasts.length, 0, "B's first good entry only arms")
-    compare(armedKeys(store), bothRoots())
-    answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1"), dead("b2"), escalated("b3")])])
-    compare(toastIds(store), "b3", "the entry after that compares normally")
-    compare(store.toasts[0].project, "beta")
-    store.projectRoots = registry([tc.rootA, tc.rootB, tc.rootC])
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]),
-                                                  okEntry(tc.rootB, [escalated("b1"), dead("b2"), escalated("b3")]),
-                                                  okEntry(tc.rootC, [escalated("c1")])]), 0)
-    compare(toastIds(store), "b3", "a project added later: its first entry raises nothing")
-    compare(armedKeys(store), [tc.rootA, tc.rootB, tc.rootC].sort().join(","), "and arms it")
-  }
-
-  // 3
-  function test_a_failing_project_raises_nothing_and_stays_armed() {
-    var store = armedTwo([running("a1")], [running("b1"), escalated("b2")]); if (!store) return
-    answer(store, [okEntry(tc.rootA, [running("a1")]), failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s.")])
-    compare(store.toasts.length, 0, "a failed entry raises nothing")
-    compare(ids(store.runsByProject[tc.rootB]), "b1,b2", "B keeps its runs")
-    compare(armedKeys(store), bothRoots(), "and stays armed")
-    answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1"), escalated("b2")])])
-    compare(toastIds(store), "b1", "the recovery compares against the kept runs: b2 is not replayed")
-    compare(store.toasts[0].project, "beta")
-  }
-
-  // 4
-  function test_an_am_missing_spell_disarms_every_project() {
-    var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
-    answer(store, [failEntry(tc.rootA, "AmMissing", "am is not installed."), failEntry(tc.rootB, "AmMissing", "am is not installed.")])
-    compare(armedKeys(store), "")
-    compare(store.alertsArmed, false)
-    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [escalated("b1")])])
-    compare(store.toasts.length, 0, "the next good reply only arms")
-    compare(armedKeys(store), bothRoots())
-    answer(store, [okEntry(tc.rootA, [escalated("a1")]), failEntry(tc.rootB, "AmMissing", "am is not installed.")])
-    compare(store.amStatus, "ok", "AmMissing beside an ok entry is no spell")
-    compare(ids(store.runsByProject[tc.rootB]), "b1", "B keeps its runs")
-    compare(armedKeys(store), bothRoots(), "and its armed state")
-    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [escalated("b1"), dead("b2")])])
-    compare(toastIds(store), "b2")
-  }
-
-  // 5 and Review Focus 4
-  function test_a_run_listed_under_two_roots_alerts_once_under_the_first() {
-    var store = armedTwo([running("x")], [running("x")]); if (!store) return
-    store.notifyOnEscalation = true
-    // B's entry first: the registry's order decides, not the reply's.
-    answer(store, [okEntry(tc.rootB, [escalated("x")]), okEntry(tc.rootA, [escalated("x")])])
-    compare(toastIds(store), "x")
-    compare(store.toasts[0].project, "alpha")
-    compare(store.notifyRunners.length, 1, "one notification")
-    store.projectRoots = registry([tc.rootB, tc.rootA])
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [escalated("x")]), okEntry(tc.rootB, [escalated("x")])]), 0)
-    compare(store.runs[0].project.root, tc.rootB, "B owns x now")
-    compare(store.toasts.length, 1, "a new owner replays nothing")
-    compare(store.notifyRunners.length, 1)
-  }
-
-  // 5: the owner decides, even when only the other root answers
-  function test_a_run_listed_under_two_roots_alerts_only_from_its_owners_entry() {
-    var store = armedTwo([running("x")], [running("x")]); if (!store) return
-    answer(store, [failEntry(tc.rootA, "AmTimeout", "am did not answer within 60 s."), okEntry(tc.rootB, [escalated("x")])])
-    compare(store.runs[0].project.root, tc.rootA, "A still owns x")
-    compare(store.toasts.length, 0, "B's entry never alerts a run A owns")
-    answer(store, [okEntry(tc.rootA, [escalated("x")]), okEntry(tc.rootB, [escalated("x")])])
-    compare(toastIds(store), "x", "A's own entry does")
-    compare(store.toasts[0].project, "alpha")
-  }
-
-  // Review Focus 1, 2 and 3
-  function test_a_partial_or_failed_reply_leaves_the_other_roots_arming_alone() {
-    // synthetic: a run without an id under B.
-    var store = armedTwo([running("a1")], [running("b1"), entry("", "started", true)]); if (!store) return
-    var armed = store.armedRoots
-    store.refresh()
-    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "Usage", message: "usage" } }) + "\n", 2)
-    verify(store.armedRoots === armed, "a whole-call failure leaves the arming alone")
-    store.refresh()
-    reply(store.snapshotRunner.current, "garbage\n", 1)
-    verify(store.armedRoots === armed, "so does garbage")
-    store.refresh()
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [escalated("b1"), entry("", "escalated", false)])]), 0)
-    compare(toastIds(store), "b1", "a run without an id never alerts")
-    compare(store.toasts[0].project, "beta")
-    compare(armedKeys(store), bothRoots(), "A, with no entry, stays armed")
-    compare(ids(store.runsByProject[tc.rootA]), "a1")
-  }
-
-  // 7
-  function test_a_project_switch_keeps_the_toasts_and_every_projects_arming() {
-    var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
-    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [running("b1")])])
-    compare(toastIds(store), "a1")
-    compare(store.toasts[0].project, "alpha")
-    var toasts = store.toasts
-    var armed = store.armedRoots
-    var targets = [tc.rootA, ""]
-    for (var i = 0; i < targets.length; i++) {
-      var label = "project " + JSON.stringify(targets[i])
-      store.project = targets[i]
-      verify(store.toasts === toasts, label + ": the toasts")
-      verify(store.armedRoots === armed, label + ": the arming")
-    }
-    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [escalated("b1")])])
-    compare(toastIds(store), "a1,b1", "the next escalation still alerts")
-    compare(store.toasts[1].project, "beta")
-  }
-
-  // the closed panel (spec §2)
-  function test_a_reply_while_the_panel_is_closed_raises_nothing_and_arms_nothing() {
-    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [running("b1")])]), 0)
-    compare(armedKeys(store), "", "a closed panel never arms")
-    answer(store, [okEntry(tc.rootA, [escalated("a1")]), okEntry(tc.rootB, [escalated("b1")])])
-    compare(store.toasts.length, 0)
-    compare(armedKeys(store), "")
-    compare(ids(store.runs), "a1,b1", "the runs are still applied")
-  }
-
-  // 6
-  function test_a_root_that_leaves_the_registry_loses_its_arming() {
-    var store = armedTwo([running("a1")], [running("b1")]); if (!store) return
-    store.projectRoots = registry([tc.rootA])
-    compare(armedKeys(store), tc.rootA, "B left: its arming goes at once")
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")])]), 0)
-    store.projectRoots = registry([tc.rootA, tc.rootB])
-    compare(armedKeys(store), tc.rootA, "coming back does not re-arm")
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1")])]), 0)
-    compare(store.toasts.length, 0, "its next good entry only arms")
-    compare(armedKeys(store), bothRoots())
-    var armed = store.armedRoots
-    store.projectRoots = [{ root: tc.rootA, name: "renamed" }, rootEntry(tc.rootB)]
-    verify(store.armedRoots === armed, "no root went: the map is not replaced")
-    store.projectRoots = []
-    compare(armedKeys(store), "", "an empty registry arms nothing")
-  }
-  // ---- alerts: the setting and the desktop notifications (S2 4.4)
-
-  property string notifyCmd: "python3|/plugin/core/backend/runs/notify.py|"
-  property string viewerCmd: "python3|/plugin/core/backend/projects/viewer-state.py|"
-
-  function runSettings(notify) {
-    return JSON.stringify({ verify: [], allowNoVerification: false, notifyOnEscalation: notify }) + "\n"
-  }
-
-  // 8 and Review Focus 5
-  function test_the_global_switch_loads_on_each_opening_with_no_project() {
-    var idle = make(); if (!idle) return
-    verify(!idle.settingsLoadRunner.current, "a closed panel loads nothing")
-    idle.project = tc.rootA
-    verify(!idle.settingsLoadRunner.current, "a project switch launches no global load")
-
-    var store = make(); if (!store) return
-    store.active = true
-    var load = store.settingsLoadRunner.current
-    verify(load, "opening the panel loads the switch, with no project and no registry")
-    compare(argv(load), tc.viewerCmd + "get-global-settings")
-    compare(load.command.length, 3)
-    compare(load.launchGuard, "")
-    reply(load, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
-    compare(store.notifyOnEscalation, true)
-    compare(store.notifySaved, true)
-    store.project = tc.rootB
-    compare(store.notifyOnEscalation, true, "a project switch leaves the switch alone")
-    compare(store.notifySaved, true)
-    compare(store.notifyTouched, false)
-    var seq = store.settingsLoadRunner.seq
-    store.project = ""
-    compare(store.settingsLoadRunner.seq, seq, "and launches no global load")
-    store.active = false
-    store.active = true
-    compare(store.settingsLoadRunner.seq, seq + 1, "each opening loads once")
-    reply(store.settingsLoadRunner.current, "Traceback: boom\n", 1)
-    compare(store.notifyOnEscalation, false, "an unreadable reply leaves it off")
-    compare(store.notifySaved, false)
-    store.active = false
-    store.active = true
-    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: "yes" }) + "\n", 0)
-    compare(store.notifyOnEscalation, false, "only a real true turns it on")
-    store.active = false
-    store.active = true
-    reply(store.settingsLoadRunner.current, "{}\n", 0)
-    compare(store.notifyOnEscalation, false)
-    store.active = false
-    store.active = true
-    var late = store.settingsLoadRunner.current
-    store.active = false
-    reply(late, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
-    compare(store.notifyOnEscalation, true, "a reply after the panel closed still lands")
-    store.active = true
-    var older = store.settingsLoadRunner.current
-    store.active = false
-    store.active = true
-    reply(older, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
-    compare(store.notifyOnEscalation, true, "an earlier opening's reply is dropped")
-    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
-    compare(store.notifyOnEscalation, false, "the newest opening's reply lands")
-  }
-
-  // 12
-  function test_run_settings_load_per_project_and_never_set_the_switch() {
-    var store = makeWithProject(rootA); if (!store) return
-    var loadA = store.runSettingsRunner.current
-    verify(loadA, "selecting a project loads its run settings")
-    compare(argv(loadA), tc.viewerCmd + "get-run-settings|/home/u/my proj")
-    compare(loadA.command.length, 4)
-    compare(loadA.launchGuard, "/home/u/my proj")
-    verify(!store.settingsLoadRunner.current, "and no global load")
-    reply(loadA, runSettings(true), 0)
-    compare(store.runSettings.notifyOnEscalation, true, "the object is kept as it was read")
-    compare(store.notifyOnEscalation, false, "a stored per-project value is never the switch")
-    compare(store.notifySaved, false)
-    store.project = rootB
-    compare(Object.keys(store.runSettings).length, 0, "a project switch forgets A's settings")
-    var loadB = store.runSettingsRunner.current
-    verify(loadB !== loadA, "a new load")
-    compare(argv(loadB), tc.viewerCmd + "get-run-settings|/home/u/b")
-    compare(loadB.launchGuard, "/home/u/b", "the launch is guarded by the NEW project")
-    var seq = store.runSettingsRunner.seq
-    store.project = ""
-    compare(store.runSettingsRunner.seq, seq, "no project: nothing is loaded")
-    compare(store.runSettingsRunner.guard, "")
-
-    var other = makeWithProject(rootA); if (!other) return
-    var lateA = other.runSettingsRunner.current
-    other.project = rootB
-    reply(lateA, dispatchSettings(), 0)
-    compare(Object.keys(other.runSettings).length, 0, "a late reply for A is dropped")
-    compare(other.notifyOnEscalation, false)
-  }
-
-  // 12
-  function test_with_the_setting_on_each_alert_launches_its_own_notification() {
-    var store = armedStore([running("a"), running("b")]); if (!store) return
-    compare(store.notifyRunners.length, 0)
-    store.notifyOnEscalation = true
-    snapshot(store, [escalated("a"), dead("b")])
-    compare(store.notifyRunners.length, 2, "one runner per alert")
-    var first = store.notifyRunners[0].current, second = store.notifyRunners[1].current
-    compare(argv(first), tc.notifyCmd + "m-a|escalated")
-    compare(argv(second), tc.notifyCmd + "m-b|process died")
-    compare(first.running, true, "the second launch did not stop the first")
-    compare(second.running, true)
-    compare(first.launchGuard, "")
-    reply(first, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
-    compare(store.notifyRunners.length, 1)
-    reply(second, "garbage\n", 1)
-    compare(store.notifyRunners.length, 0, "a failed notification goes too")
-    compare(toastIds(store), "a,b", "the replies change nothing else")
-    compare(store.flashText, "")
-
-    snapshot(store, [escalated("a"), dead("b"), escalated("c")])
-    compare(store.notifyRunners.length, 1)
-    var proc = store.notifyRunners[0].current
-    store.project = rootB
-    compare(proc.running, true, "a project switch does not stop a launched notification")
-    reply(proc, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
-    compare(store.notifyRunners.length, 0)
-
-    var off = armedStore([running("a")]); if (!off) return
-    snapshot(off, [escalated("a")])
-    compare(off.toasts.length, 1)
-    compare(off.notifyRunners.length, 0, "setting off: toasts only")
-
-    var five = armedStore([]); if (!five) return
-    five.notifyOnEscalation = true
-    snapshot(five, [escalated("r1"), escalated("r2"), dead("r3"), escalated("r4"), dead("r5")])
-    compare(five.toasts.length, 3)
-    compare(five.notifyRunners.length, 5, "every alert notifies, even those whose toast was capped away")
-  }
-
-  // 1 (the notification half)
-  function test_no_notification_while_the_panel_is_closed() {
-    var store = makeWithProject(rootA); if (!store) return
-    store.notifyOnEscalation = true
-    reply(store.snapshotRunner.current, okReply([running("a")]), 0)
-    snapshot(store, [escalated("a")])
-    compare(store.notifyRunners.length, 0)
-    compare(store.toasts.length, 0)
-  }
-
-  // 13
-  function test_the_switch_saves_globally_and_a_failed_save_puts_it_back() {
-    var store = make(); if (!store) return
-    compare(store.notifyOnEscalation, false)
-    compare(store.notifySaved, false)
-    compare(store.notifyTouched, false)
-    compare(store.notifyRunners.length, 0)
-    compare(store.setNotifyOnEscalation(true), true, "no project and no registry: it still works")
-    compare(store.notifyOnEscalation, true, "the switch flips at once")
-    compare(store.notifyTouched, true)
-    var save = store.settingsSaveRunner.current
-    verify(save, "a save was launched")
-    compare(save.command.length, 4)
-    compare(argv(save), tc.viewerCmd + 'set-global-settings|{"notifyOnEscalation":true}')
-    compare(save.launchGuard, "")
-    verify(!store.settingsLoadRunner.current, "a closed panel loads nothing")
-    reply(save, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.notifySaved, true)
-    compare(store.flashText, "")
-    compare(store.setNotifyOnEscalation(false), true)
-    compare(store.notifyOnEscalation, false)
-    compare(argv(store.settingsSaveRunner.current), tc.viewerCmd + 'set-global-settings|{"notifyOnEscalation":false}')
-    reply(store.settingsSaveRunner.current, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
-    compare(store.notifyOnEscalation, true, "back to the value last saved")
-    compare(store.notifySaved, true)
-    compare(store.flashText, "Notify on escalation could not be saved")
-    store.flash("")
-    store.setNotifyOnEscalation(false)
-    reply(store.settingsSaveRunner.current, "garbage\n", 1)
-    compare(store.notifyOnEscalation, true, "an unreadable reply is a failure too")
-    compare(store.flashText, "Notify on escalation could not be saved")
-  }
-
-  // 10
-  function test_a_save_reply_survives_a_project_switch() {
-    var store = makeWithProject(rootA); if (!store) return
-    store.setNotifyOnEscalation(true)
-    var save = store.settingsSaveRunner.current
-    store.project = rootB
-    compare(store.notifyOnEscalation, true, "the switch is viewer-wide")
-    compare(store.notifyTouched, true)
-    reply(save, JSON.stringify({ ok: false, error: "x" }) + "\n", 1)
-    compare(store.notifyOnEscalation, false, "rolled back to the value last saved")
-    compare(store.notifySaved, false)
-    compare(store.flashText, "Notify on escalation could not be saved")
-    store.flash("")
-    store.setNotifyOnEscalation(true)
-    var second = store.settingsSaveRunner.current
-    store.project = ""
-    reply(second, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.notifySaved, true, "an ok reply after a switch is applied")
-    compare(store.notifyOnEscalation, true)
-  }
-
-  // 11
-  function test_a_save_in_flight_survives_a_reopening() {
-    var store = make(); if (!store) return
-    store.active = true
-    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
-    store.setNotifyOnEscalation(true)
-    var save = store.settingsSaveRunner.current
-    store.active = false
-    store.active = true
-    compare(store.notifyTouched, true, "a save is in flight: the touch stays")
-    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
-    compare(store.notifyOnEscalation, true, "the new load cannot undo the user's choice")
-    reply(save, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.notifySaved, true, "the save reply settles notifySaved")
-    store.active = false
-    store.active = true
-    compare(store.notifyTouched, false, "no save in flight: the next opening reads again")
-    reply(store.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
-    compare(store.notifyOnEscalation, false)
-    compare(store.notifySaved, false)
-  }
-
-  // 14
-  function test_a_load_reply_after_the_user_toggled_is_ignored() {
-    var store = makeWithProject(rootA); if (!store) return
-    store.active = true
-    var load = store.settingsLoadRunner.current
-    compare(argv(load), tc.viewerCmd + "get-global-settings")
-    store.setNotifyOnEscalation(true)
-    reply(load, JSON.stringify({ notifyOnEscalation: false }) + "\n", 0)
-    compare(store.notifyOnEscalation, true)
-    compare(store.notifyTouched, true)
-  }
-
-  // ---- dispatch (S3 3.1)
-
-  property string previewCmd: "python3|/plugin/core/backend/runs/dispatch-preview.py|"
-  property string startCmd: "python3|/plugin/core/backend/runs/start-run.py|"
-
-  // get-run-settings with every key, as viewer-state.py prints it.
-  function dispatchSettings() {
-    return JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false, notifyOnEscalation: false,
-                            prefixHistory: ["old"], parallelism: 4, confirmDispatch: true }) + "\n"
-  }
-
-  // 35
-  function test_run_settings_kept_even_after_notify_touched() {
-    var store = makeWithProject(rootA); if (!store) return
-    compare(Object.keys(store.runSettings).length, 0, "{} until the reply")
-    var load = store.runSettingsRunner.current
-    store.setNotifyOnEscalation(true)
-    reply(load, dispatchSettings(), 0)
-    compare(store.notifyOnEscalation, true, "the switch keeps the user's value")
-    compare(store.runSettings.prefixHistory.length, 1)
-    compare(store.runSettings.prefixHistory[0], "old")
-    compare(store.runSettings.parallelism, 4)
-    compare(store.runSettings.confirmDispatch, true)
-    compare(store.runSettings.verify[0], "uv run pytest")
-    compare(store.runSettings.notifyOnEscalation, false, "the object is kept as it was read")
-  }
-
-  function test_run_settings_follow_the_project() {
-    var store = makeWithProject(rootA); if (!store) return
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    compare(store.runSettings.parallelism, 4)
-    store.project = rootB
-    compare(Object.keys(store.runSettings).length, 0, "a project switch forgets A's settings")
-    reply(store.runSettingsRunner.current, "Traceback: boom\n", 1)
-    compare(Object.keys(store.runSettings).length, 0, "an unreadable reply is {}")
-    var other = makeWithProject(rootA); if (!other) return
-    reply(other.runSettingsRunner.current, JSON.stringify({ parallelism: 9 }) + "\n", 0)
-    compare(other.runSettings.parallelism, 9)
-  }
-
-  // A milestone, its story, the story's subtask and a done milestone, as
-  // Board.indexTree() leaves them; the object is also their {id: card} map.
-  function dispatchCards() {
-    return {
-      m1: { id: "m1", title: "M3 Document runs", status: "todo", parentId: "", depth: 0 },
-      s1: { id: "s1", title: "Dispatch store", status: "todo", parentId: "m1", depth: 1 },
-      t1: { id: "t1", title: "RunStore dispatch", status: "todo", parentId: "s1", depth: 2 },
-      d1: { id: "d1", title: "M2 Monitor runs", status: "done", parentId: "", depth: 0 }
-    }
-  }
-
-  // Project A with its run settings read (dispatchSettings).
-  function dispatchStore() {
-    var store = makeWithProject(rootA); if (!store) return null
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    return store
-  }
-
-  // Every dispatch field at its "none" value, no step and no target data.
-  function checkDispatchIdle(store, label) {
-    checkDispatchFieldsIdle(store, label)
-    compare(store.dispatchStep, "", label + ": step")
-    compare(store.dispatchTargetRows.length, 0, label + ": target rows")
-    compare(store.dispatchTargetCardMap, null, label + ": target card map")
-    compare(store.dispatchTargetLoading, false, label + ": target loading")
-    compare(store.dispatchTargetKey, "", label + ": target key")
-  }
-
-  // S3's dispatch fields at their "none" values.
-  function checkDispatchFieldsIdle(store, label) {
-    compare(store.dispatchState, "idle", label + ": state")
-    compare(store.dispatchTarget, null, label + ": target")
-    compare(store.dispatchForm, null, label + ": form")
-    compare(store.dispatchPreview, null, label + ": preview")
-    compare(store.dispatchError, "", label + ": error")
-    compare(store.dispatchErrorType, "", label + ": error type")
-    compare(store.dispatchErrors.length, 0, label + ": errors")
-    compare(store.dispatchSuggest, null, label + ": suggest")
-    compare(store.dispatchRunId, "", label + ": run id")
-    compare(store.dispatchMessage, "", label + ": message")
-    compare(store.dispatchLog, "", label + ": log")
-    compare(store.dispatchLogTail, "", label + ": log tail")
-    compare(store.dispatchExitCode, null, label + ": exit code")
-    compare(store.dispatchTargetLabel, "", label + ": target label")
-  }
-
-  // 1 (dispatchStart() from idle is checked in Task 5's test 21)
-  function test_dispatch_starts_idle() {
-    var store = make(); if (!store) return
-    checkDispatchIdle(store, "fresh")
-    compare(store.dispatchStartRunners.length, 0)
-    compare(store.dispatchDebounceTimer.running, false)
-    verify(!store.dispatchDefaultsRunner.current)
-    verify(!store.dispatchPreviewRunner.current)
-    compare(store.closeDispatch(), true, "closing an idle dispatch is fine")
-    checkDispatchIdle(store, "after close")
-  }
-
-  // 2
-  function test_open_without_project_is_refused() {
-    var store = make(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), false)
-    checkDispatchIdle(store, "no project")
-    verify(!store.dispatchDefaultsRunner.current, "no defaults lookup")
-  }
-
-  // 3
-  function test_open_milestone_goes_previewing_and_asks_defaults() {
-    var store = makeWithProject(rootA); if (!store) return
-    reply(store.runSettingsRunner.current, JSON.stringify({ verify: ["uv run pytest", "  "], allowNoVerification: true,
-      notifyOnEscalation: false, prefixHistory: [], parallelism: 6, confirmDispatch: true }) + "\n", 0)
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchTarget.level, "milestone")
-    compare(store.dispatchTarget.command, "milestone")
-    var proc = store.dispatchDefaultsRunner.current
-    verify(proc, "the default branch is looked up")
-    compare(proc.command.length, 4)
-    compare(argv(proc), tc.previewCmd + "--defaults|/home/u/my proj")
-    compare(proc.command[3], "/home/u/my proj", "the root with a space is one argument")
-    compare(proc.launchGuard, "/home/u/my proj")
-    var form = store.dispatchForm
-    compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify")
-    compare(form.base, "", "no base until the lookup replies")
-    compare(form.prefix, "m3")
-    compare(form.verify.length, 1, "the stored non-blank commands")
-    compare(form.verify[0], "uv run pytest")
-    compare(form.parallelism, 6)
-    compare(form.allowNoVerification, false, "the opt-out is never pre-ticked")
-    verify(!store.dispatchPreviewRunner.current, "no preview before the default branch is known")
-    compare(store.dispatchDebounceTimer.running, false)
-  }
-
-  function test_open_before_the_settings_reply_starts_from_nothing() {
-    var store = makeWithProject(rootA); if (!store) return
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(store.dispatchForm.verify.length, 0)
-    compare(store.dispatchForm.parallelism, 4)
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    compare(store.dispatchForm.verify.length, 0, "a late settings reply does not touch the open form")
-    compare(store.runSettings.verify[0], "uv run pytest", "but it is kept for the next opening")
-  }
-
-  // 4
-  function test_open_story_is_offered_with_the_story_flag() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.s1, cards), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchTarget.level, "story")
-    compare(store.dispatchTarget.command, "story")
-    compare(JSON.stringify(store.dispatchTarget.flags), JSON.stringify(["--story", "s1"]))
-    compare(store.dispatchSuggest, null)
-    compare(store.dispatchError, "")
-    verify(store.dispatchForm, "an offered target has a form")
-    compare(store.dispatchForm.prefix, "old", "the history's first prefix names the story's prefix")
-    var proc = store.dispatchDefaultsRunner.current
-    verify(proc, "the default branch is looked up")
-    compare(proc.running, true)
-  }
-
-  // 5
-  function test_open_done_card_is_refused() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.d1, cards), false)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchError, "The card is done")
-    compare(store.dispatchErrorType, "Target")
-    compare(store.dispatchSuggest, null)
-    compare(store.openDispatch(null, cards), false)
-    compare(store.dispatchError, "No card to dispatch")
-    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
-  }
-
-  function test_close_and_reopen_drop_the_pending_lookup() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    var first = store.dispatchDefaultsRunner.current
-    compare(store.closeDispatch(), true)
-    checkDispatchIdle(store, "closed")
-    compare(first.running, false, "the lookup is stopped")
-    store.openDispatch(cards.d1, cards)
-    compare(store.dispatchState, "refused")
-    compare(store.openDispatch(cards.m1, cards), true, "opening again replaces a refused target")
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchError, "")
-    compare(store.dispatchErrorType, "")
-    compare(store.dispatchSuggest, null)
-    verify(store.dispatchDefaultsRunner.current !== first, "a fresh lookup per opening")
-  }
-
-  function defaultsOk(branch) {
-    return JSON.stringify({ ok: true, data: { default_branch: branch, source: "origin/HEAD" } }) + "\n"
-  }
-
-  function previewOk(data) { return JSON.stringify({ ok: true, data: data }) + "\n" }
-
-  // `am run --milestone m1 --dry-run` data: 2 levels, 3 subtasks, 1 story already done.
-  function dispatchDryRun() {
-    return {
-      max_concurrent: 4,
-      levels: [
-        { level: 0, concurrent: 1, stories: [{ story: "s1", title: "Dispatch store", root: "main", subtasks: [
-          { id: "t1", title: "RunStore dispatch", status: "todo", branch: "m3-t1", base: "main" },
-          { id: "t2", title: "Docs", status: "todo", branch: "m3-t2", base: "m3-t1" }] }] },
-        { level: 1, concurrent: 1, stories: [{ story: "s2", title: "Dialog", root: "m3-s2", subtasks: [
-          { id: "t3", title: "Dialog", status: "todo", branch: "m3-t3", base: "m3-s2" }] }] }
-      ],
-      already_done: [{ kind: "story", id: "s0", title: "Done story" }],
-      integrate: { branch: "m3-integrate", worktree: "/repo/.worktrees/m3-integrate", order: [] }
-    }
-  }
-
-  // Project A with milestone m1 opened and its default branch `main` read: the
-  // first preview is in flight.
-  function previewingStore() {
-    var store = dispatchStore(); if (!store) return null
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    return store
-  }
-
-  property string previewArgs: "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest"
-
-  // 6
-  function test_defaults_reply_sets_base_and_launches_preview() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchForm.base, "main")
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchDebounceTimer.running, false, "the check runs at once, no debounce")
-    var proc = store.dispatchPreviewRunner.current
-    verify(proc, "a preview was launched")
-    compare(argv(proc), tc.previewCmd + tc.previewArgs)
-    compare(proc.command.length, 13)
-    compare(proc.command[2], "/home/u/my proj", "the root with a space is one argument")
-    compare(proc.command[12], "uv run pytest", "a command with spaces is one argument")
-    compare(proc.launchGuard, "/home/u/my proj")
-  }
-
-  // 8 + Review Focus 2
-  function test_defaults_failure_sends_no_base() {
-    var replies = [JSON.stringify({ ok: false, error: { type: "NoDefaultBranch", message: "detached HEAD" } }) + "\n",
-                   "Traceback: boom\n",
-                   defaultsOk("   "),
-                   JSON.stringify({ ok: true, data: { default_branch: null, source: "" } }) + "\n",
-                   JSON.stringify({ ok: true }) + "\n"]
-    for (var i = 0; i < replies.length; i++) {
-      var store = dispatchStore(); if (!store) return
-      var cards = dispatchCards()
-      store.openDispatch(cards.m1, cards)
-      reply(store.dispatchDefaultsRunner.current, replies[i], 1)
-      compare(store.dispatchForm.base, "", "reply " + i + " leaves base blank")
-      var proc = store.dispatchPreviewRunner.current
-      verify(proc, "reply " + i + ": the check still runs")
-      compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest",
-              "reply " + i + ": no --base-branch pair")
-    }
-    var padded = dispatchStore(); if (!padded) return
-    var map = dispatchCards()
-    padded.openDispatch(map.m1, map)
-    reply(padded.dispatchDefaultsRunner.current, defaultsOk("  main \n"), 0)
-    compare(padded.dispatchForm.base, "main", "the branch is trimmed")
-    compare(padded.dispatchPreviewRunner.current.command[6], "main")
-  }
-
-  // 10
-  function test_preview_ok_goes_ready_with_summary() {
-    var store = previewingStore(); if (!store) return
-    compare(store.dispatchPreview, null)
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchPreview.summary, "2 levels · 3 subtasks · 1 story already done")
-    compare(store.dispatchPreview.integrate, "Integrate → m3-integrate")
-    compare(store.dispatchPreview.board, false)
-    compare(store.dispatchError, "")
-    compare(store.dispatchErrorType, "")
-  }
-
-  // 11
-  function test_preview_refusal_goes_refused_verbatim() {
-    var store = previewingStore(); if (!store) return
-    var message = "milestone m1 is claimed by run 20261005T010000Z-abcd (pid 77)"
-    reply(store.dispatchPreviewRunner.current, ctlFail("ClaimedError", message), 0)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchError, message, "am's sentence, verbatim")
-    compare(store.dispatchErrorType, "ClaimedError")
-    compare(store.dispatchPreview, null)
-    var untyped = previewingStore(); if (!untyped) return
-    reply(untyped.dispatchPreviewRunner.current,
-          JSON.stringify({ ok: false, error: { type: 7, message: "dependency cycle: s1 -> s2 -> s1" } }) + "\n", 0)
-    compare(untyped.dispatchState, "refused")
-    compare(untyped.dispatchError, "dependency cycle: s1 -> s2 -> s1")
-    compare(untyped.dispatchErrorType, "", "a type that is not a string is unknown")
-  }
-
-  // 12
-  function test_preview_unreadable_goes_refused() {
-    var replies = ["", "Traceback: boom\n", "[1, 2]\n",
-                   JSON.stringify({ ok: false, error: { type: "X", message: "  " } }) + "\n",
-                   JSON.stringify({ ok: false, error: "boom" }) + "\n",
-                   JSON.stringify({ ok: false, error: null }) + "\n",
-                   JSON.stringify({ ok: "yes" }) + "\n"]
-    for (var i = 0; i < replies.length; i++) {
-      var store = previewingStore(); if (!store) return
-      reply(store.dispatchPreviewRunner.current, replies[i], 1)
-      compare(store.dispatchState, "refused", "reply " + i)
-      compare(store.dispatchError, "The preview could not be read", "reply " + i)
-      compare(store.dispatchErrorType, "", "reply " + i)
-      compare(store.dispatchPreview, null, "reply " + i)
-    }
-  }
-
-  // 14
-  function test_invalid_form_is_refused_without_launch() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.openDispatch("board", cards), true)
-    compare(store.dispatchTarget.level, "board")
-    compare(store.dispatchForm.prefix, "", "the board has no milestone title to stem")
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchErrorType, "Form")
-    compare(store.dispatchErrors.length, 1)
-    compare(store.dispatchErrors[0].field, "prefix")
-    compare(store.dispatchError, "Enter a branch prefix")
-    verify(!store.dispatchPreviewRunner.current, "no preview process")
-  }
-
-  // 20 (the preview half)
-  function test_subtask_goes_ready_without_preview() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.t1, cards), true)
-    compare(store.dispatchTarget.level, "subtask")
-    compare(store.dispatchForm.prefix, "old", "the history's first prefix names the subtask's prefix")
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchPreview, null, "am has no dry run for one card")
-    verify(!store.dispatchPreviewRunner.current, "no preview process")
-  }
-
-  function test_a_closed_dispatch_drops_the_late_defaults_reply() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    var lookup = store.dispatchDefaultsRunner.current
-    store.closeDispatch()
-    reply(lookup, defaultsOk("main"), 0)
-    checkDispatchIdle(store, "after the late reply")
-    verify(!store.dispatchPreviewRunner.current, "no preview")
-  }
-
-  // 7
-  function test_defaults_reply_keeps_a_user_set_base() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    compare(store.setDispatchField("base", "develop"), true)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchForm.base, "develop", "the user's base wins over the lookup")
-    compare(argv(store.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|develop|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest")
-  }
-
-  // 9
-  function test_debounce_waits_for_defaults() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    compare(store.setDispatchField("prefix", "m3b"), true)
-    compare(store.dispatchDebounceTimer.running, true)
-    fire(store.dispatchDebounceTimer)
-    verify(!store.dispatchPreviewRunner.current, "nothing launched before the default branch is known")
-    compare(store.dispatchState, "previewing")
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    var proc = store.dispatchPreviewRunner.current
-    verify(proc, "the defaults reply checks the form")
-    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3b|--max-concurrent|4|--verify|uv run pytest")
-
-    var early = dispatchStore(); if (!early) return
-    early.openDispatch(cards.m1, cards)
-    early.setDispatchField("parallelism", 2)
-    reply(early.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(early.dispatchDebounceTimer.running, false, "the defaults reply's check replaces the pending one")
-    compare(early.dispatchPreviewRunner.current.command[10], "2")
-  }
-
-  // 13
-  function test_board_preview_argv() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch("board", cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchState, "refused", "the board starts with no prefix")
-    compare(store.setDispatchField("prefix", " all "), true)
-    fire(store.dispatchDebounceTimer)
-    var proc = store.dispatchPreviewRunner.current
-    verify(proc, "the board is previewed")
-    compare(argv(proc), tc.previewCmd + "/home/u/my proj|board|--base-branch|main|--branch-prefix|all|--max-concurrent|4|--verify|uv run pytest")
-    compare(proc.command.length, 12)
-    var board = { board: true, levels: [{ level: 0, milestones: [{ milestone_id: "m1", title: "M3", branch_prefix: "m3",
-                                                                   base_branch: "main", plan: dispatchDryRun() }] }] }
-    reply(proc, previewOk(board), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchPreview.summary, "1 milestone, 3 subtasks")
-    compare(store.dispatchPreview.board, true)
-  }
-
-  // 15 + Review Focus 1
-  function test_allow_no_verification_flag() {
-    var store = previewingStore(); if (!store) return
-    store.setDispatchField("verify", [])
-    fire(store.dispatchDebounceTimer)
-    compare(store.dispatchState, "refused", "no command and no opt-out")
-    compare(store.dispatchErrors[0].field, "verify")
-    store.setDispatchField("allowNoVerification", true)
-    fire(store.dispatchDebounceTimer)
-    compare(store.dispatchState, "previewing")
-    var proc = store.dispatchPreviewRunner.current
-    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--allow-no-verification")
-    store.setDispatchField("verify", ["", "  ", "-x make check", "uv run pytest"])
-    fire(store.dispatchDebounceTimer)
-    proc = store.dispatchPreviewRunner.current
-    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|-x make check|--verify|uv run pytest|--allow-no-verification")
-    compare(proc.command[12], "-x make check", "a command that starts with a dash is one verbatim argument")
-    store.setDispatchField("allowNoVerification", "yes")
-    fire(store.dispatchDebounceTimer)
-    compare(store.dispatchPreviewRunner.current.command[store.dispatchPreviewRunner.current.command.length - 1], "uv run pytest",
-            "only a real true sends the opt-out")
-  }
-
-  // Review Focus 4 (the form half)
-  function test_a_verify_value_that_is_not_a_list_is_refused_not_thrown() {
-    var store = previewingStore(); if (!store) return
-    compare(store.setDispatchField("verify", "uv run pytest"), true)
-    fire(store.dispatchDebounceTimer)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchErrors[0].field, "verify")
-    store.setDispatchField("allowNoVerification", true)
-    store.setDispatchField("parallelism", "4")
-    fire(store.dispatchDebounceTimer)
-    compare(store.dispatchState, "refused", "the store converts nothing")
-    compare(store.dispatchErrors[0].field, "parallelism")
-    store.setDispatchField("parallelism", 4)
-    fire(store.dispatchDebounceTimer)
-    compare(argv(store.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--allow-no-verification")
-  }
-
-  // 16
-  function test_change_restarts_400ms_debounce_and_one_preview_per_burst() {
-    var store = previewingStore(); if (!store) return
-    var timer = store.dispatchDebounceTimer
-    compare(timer.objectName, "dispatchDebounceTimer")
-    compare(timer.interval, 400)
-    compare(timer.repeat, false)
-    var first = store.dispatchPreviewRunner.current
-    compare(store.setDispatchField("prefix", "a"), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.setDispatchField("prefix", "ab"), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.setDispatchField("parallelism", 2), true)
-    compare(store.dispatchState, "previewing")
-    compare(timer.running, true)
-    verify(store.dispatchPreviewRunner.current === first, "nothing launched during the burst")
-    compare(first.running, false, "the preview in flight was cancelled")
-    fire(timer)
-    var proc = store.dispatchPreviewRunner.current
-    verify(proc !== first, "one preview for the burst")
-    compare(argv(proc), tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|ab|--max-concurrent|2|--verify|uv run pytest")
-  }
-
-  // 17
-  function test_latest_preview_wins() {
-    var store = previewingStore(); if (!store) return
-    var first = store.dispatchPreviewRunner.current
-    store.setDispatchField("parallelism", 2)
-    fire(store.dispatchDebounceTimer)
-    var second = store.dispatchPreviewRunner.current
-    verify(second !== first, "a second preview")
-    reply(first, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchState, "previewing", "the older preview's reply is dropped")
-    compare(store.dispatchPreview, null)
-    reply(second, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    verify(store.dispatchPreview !== null)
-  }
-
-  // 18
-  function test_change_after_ready_drops_preview_and_goes_previewing() {
-    var store = previewingStore(); if (!store) return
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    var form = store.dispatchForm
-    var list = ["make test"]
-    compare(store.setDispatchField("verify", list), true)
-    list.push("rm -rf /")
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchPreview, null)
-    compare(form.verify[0], "uv run pytest", "the old form was not changed in place")
-    compare(store.dispatchForm.verify.length, 1, "verify is copied")
-    compare(store.dispatchForm.verify[0], "make test")
-    compare(store.dispatchForm.prefix, "old", "the other fields are kept")
-    compare(store.dispatchForm.base, "main")
-    compare(store.dispatchDebounceTimer.running, true)
-  }
-
-  // 19
-  function test_set_unknown_field_or_while_idle_is_refused() {
-    var store = dispatchStore(); if (!store) return
-    compare(store.setDispatchField("prefix", "x"), false, "idle")
-    compare(store.dispatchForm, null)
-    var cards = dispatchCards()
-    store.openDispatch(cards.d1, cards)
-    compare(store.setDispatchField("prefix", "x"), false, "a refused target has no form")
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchError, "The card is done")
-    store.openDispatch(cards.m1, cards)
-    compare(store.setDispatchField("branch", "x"), false, "unknown field")
-    compare(store.setDispatchField("__proto__", {}), false)
-    compare(store.dispatchForm.prefix, "old", "nothing changed")
-    compare(store.dispatchForm.branch, undefined)
-    compare(store.dispatchDebounceTimer.running, false)
-  }
-
-  function startOk(runId, message) {
-    return JSON.stringify({ ok: true, pid: 4242, log: "/home/u/.local/state/am-run.log", started_at: "2026-10-05T02:14:00Z",
-                            run_id: runId, message: message }) + "\n"
-  }
-
-  // Project A with milestone m1's preview landed: Start is allowed.
-  function readyStore() {
-    var store = previewingStore(); if (!store) return null
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    return store
-  }
-
-  property string savedJson: '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4,"prefixByMilestone":{"m1":"old"}}'
-
-  // 20 (the start half)
-  function test_subtask_start_argv_uses_card() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch(cards.t1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchStart(), true)
-    var proc = store.dispatchStartRunners[0].current
-    compare(argv(proc), tc.startCmd + "/home/u/my proj|card|t1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest")
-    compare(proc.command.length, 13)
-  }
-
-  // 21 + Review Focus 3
-  function test_start_refused_unless_ready() {
-    var store = dispatchStore(); if (!store) return
-    compare(store.dispatchStart(), false, "idle")
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    compare(store.dispatchStart(), false, "previewing")
-    store.openDispatch(cards.d1, cards)
-    compare(store.dispatchStart(), false, "refused")
-    compare(store.dispatchStartRunners.length, 0, "no start runner")
-    var fresh = make(); if (!fresh) return
-    compare(fresh.dispatchStart(), false, "a fresh store")
-    var ready = readyStore(); if (!ready) return
-    compare(ready.dispatchStart(), true)
-    compare(ready.dispatchStart(), false, "a second Start while starting")
-    compare(ready.dispatchStartRunners.length, 1, "one launch for a double click")
-  }
-
-  // 22
-  function test_start_argv_and_starting() {
-    var store = readyStore(); if (!store) return
-    compare(store.dispatchStart(), true)
-    compare(store.dispatchState, "starting")
-    compare(store.dispatchStartRunners.length, 1)
-    var runner = store.dispatchStartRunners[0]
-    compare(runner.madeFor, "/home/u/my proj")
-    compare(runner.guard, "", "a preview or a project switch never stops a start")
-    var proc = runner.current
-    compare(argv(proc), tc.startCmd + tc.previewArgs)
-    compare(proc.command.length, 13)
-    compare(proc.running, true)
-    compare(store.dispatchPreview.summary, "2 levels · 3 subtasks · 1 story already done", "the preview stays up while starting")
-  }
-
-  // 23
-  function test_change_and_close_refused_while_starting() {
-    var store = readyStore(); if (!store) return
-    store.dispatchStart()
-    compare(store.setDispatchField("prefix", "x"), false)
-    compare(store.dispatchForm.prefix, "old")
-    compare(store.closeDispatch(), false)
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.t1, cards), false)
-    compare(store.dispatchState, "starting")
-    compare(store.dispatchTarget.level, "milestone")
-    compare(store.dispatchDebounceTimer.running, false)
-  }
-
-  // 24
-  function test_start_ok_with_run_id_emits_and_saves() {
-    var store = readyStore(); if (!store) return
-    reply(store.snapshotRunner.current, okReply([]), 0)
-    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
-    store.dispatchStart()
-    var runner = store.dispatchStartRunners[0]
-    var seq = store.snapshotRunner.seq
-    reply(runner.current, startOk("r-1", ""), 0)
-    compare(store.dispatchState, "started")
-    compare(store.dispatchRunId, "r-1")
-    compare(store.dispatchMessage, "")
-    compare(spy.count, 1)
-    compare(spy.signalArguments[0][0], "r-1")
-    compare(store.snapshotRunner.seq, seq + 1, "the runs are fetched again")
-    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootA)
-    compare(store.dispatchStartRunners.length, 1, "the same runner writes the settings")
-    verify(store.dispatchStartRunners[0] === runner)
-    var save = runner.current
-    compare(save.command.length, 5)
-    compare(argv(save), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson)
-    compare(store.runSettings.prefixHistory.join(","), "old")
-    compare(store.runSettings.verify.join(","), "uv run pytest")
-    compare(store.runSettings.parallelism, 4)
-    compare(store.runSettings.allowNoVerification, false)
-    compare(store.runSettings.confirmDispatch, true, "keys the start does not write are kept")
-    reply(save, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.dispatchStartRunners.length, 0, "the runner goes after the write")
-    compare(store.flashText, "")
-    compare(store.dispatchState, "started")
-  }
-
-  // 25 + Review Focus 5 (run id half)
-  function test_start_ok_without_run_id_emits_null() {
-    var ids = [null, "", 42]
-    for (var i = 0; i < ids.length; i++) {
-      var store = readyStore(); if (!store) return
-      var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
-      store.dispatchStart()
-      reply(store.dispatchStartRunners[0].current, startOk(ids[i], "started, run not visible yet"), 0)
-      compare(store.dispatchState, "started", "run_id " + i)
-      compare(store.dispatchRunId, "", "run_id " + i)
-      compare(store.dispatchMessage, "started, run not visible yet")
-      compare(spy.count, 1)
-      compare(spy.signalArguments[0][0], null, "run_id " + i + ": not visible yet")
-    }
-  }
-
-  // 26 + Review Focus 4 (the history half)
-  function test_prefix_history_dedups_and_caps_at_20() {
-    var store = makeWithProject(rootA); if (!store) return
-    var history = ["a", "m3", "", "  ", 7, "b"]
-    for (var i = 0; i < 25; i++) history.push("p" + i)
-    reply(store.runSettingsRunner.current, JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false,
-      notifyOnEscalation: false, prefixHistory: history, parallelism: 4, confirmDispatch: true }) + "\n", 0)
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    store.setDispatchField("prefix", "  m3 ")
-    fire(store.dispatchDebounceTimer)
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchStart(), true)
-    var runner = store.dispatchStartRunners[0]
-    compare(runner.current.command[8], "m3", "the prefix is sent trimmed")
-    reply(runner.current, startOk("r-1", ""), 0)
-    var expected = ["m3", "a", "b"]
-    for (var j = 0; j < 17; j++) expected.push("p" + j)
-    var saved = JSON.parse(runner.current.command[4])
-    compare(saved.prefixHistory.length, 20)
-    compare(saved.prefixHistory.join(","), expected.join(","))
-    compare(store.runSettings.prefixHistory.join(","), expected.join(","))
-
-    var bare = makeWithProject(rootA); if (!bare) return
-    reply(bare.runSettingsRunner.current, "Traceback: boom\n", 1)
-    bare.openDispatch(cards.m1, cards)
-    reply(bare.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    bare.setDispatchField("verify", ["make test"])
-    fire(bare.dispatchDebounceTimer)
-    reply(bare.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(bare.dispatchStart(), true)
-    var bareRunner = bare.dispatchStartRunners[0]
-    reply(bareRunner.current, startOk("r-2", ""), 0)
-    compare(argv(bareRunner.current), tc.viewerCmd +
-            'set-run-settings|/home/u/my proj|{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["m3"],"parallelism":4,"prefixByMilestone":{"m1":"m3"}}')
-  }
-
-  // 27
-  function test_start_failure_goes_failed_with_log() {
-    var store = readyStore(); if (!store) return
-    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
-    store.dispatchStart()
-    var runner = store.dispatchStartRunners[0]
-    reply(runner.current, JSON.stringify({ ok: false, error: { type: "AmExited", message: "am run exited at once (exit 2)" },
-      log: "/home/u/.local/state/am-run.log", pid: 4242, started_at: "2026-10-05T02:14:00Z", exit_code: 2,
-      log_tail: "error: milestone m1 not found" }) + "\n", 0)
-    compare(store.dispatchState, "failed")
-    compare(store.dispatchError, "am run exited at once (exit 2)")
-    compare(store.dispatchErrorType, "AmExited")
-    compare(store.dispatchLog, "/home/u/.local/state/am-run.log")
-    compare(store.dispatchLogTail, "error: milestone m1 not found")
-    compare(store.dispatchExitCode, 2)
-    compare(spy.count, 0)
-    compare(store.dispatchStartRunners.length, 0, "no settings write after a failed start")
-    compare(store.runSettings.prefixHistory.join(","), "old", "nothing saved")
-    compare(store.dispatchForm.prefix, "old", "the form stays for another try")
-  }
-
-  // 28 + Review Focus 5 (exit code half)
-  function test_start_unreadable_goes_failed() {
-    var replies = ["", "Traceback: boom\n", JSON.stringify({ ok: "maybe" }) + "\n"]
-    for (var i = 0; i < replies.length; i++) {
-      var store = readyStore(); if (!store) return
-      store.dispatchStart()
-      reply(store.dispatchStartRunners[0].current, replies[i], 1)
-      compare(store.dispatchState, "failed", "reply " + i)
-      compare(store.dispatchError, "The launch could not be read", "reply " + i)
-      compare(store.dispatchErrorType, "", "reply " + i)
-      compare(store.dispatchLog, "", "reply " + i)
-      compare(store.dispatchExitCode, null, "reply " + i)
-      compare(store.dispatchStartRunners.length, 0, "reply " + i)
-    }
-    var blank = readyStore(); if (!blank) return
-    blank.dispatchStart()
-    reply(blank.dispatchStartRunners[0].current, JSON.stringify({ ok: false, error: { type: "SpawnFailed", message: " " },
-      log: "/tmp/l", exit_code: "2", log_tail: 5 }) + "\n", 0)
-    compare(blank.dispatchState, "failed")
-    compare(blank.dispatchError, "The launch could not be read")
-    compare(blank.dispatchErrorType, "SpawnFailed")
-    compare(blank.dispatchLog, "/tmp/l")
-    compare(blank.dispatchLogTail, "", "a log tail that is not a string")
-    compare(blank.dispatchExitCode, null, "an exit code that is not a number")
-  }
-
-  // 29
-  function test_failed_then_change_previews_again() {
-    var store = readyStore(); if (!store) return
-    store.dispatchStart()
-    reply(store.dispatchStartRunners[0].current, ctlFail("ClaimedError", "claimed by r-0"), 0)
-    compare(store.dispatchState, "failed")
-    compare(store.dispatchErrorType, "ClaimedError")
-    compare(store.dispatchStart(), false, "a failed start is not retried without a new check")
-    compare(store.setDispatchField("prefix", "m3-retry"), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchError, "")
-    compare(store.dispatchErrorType, "")
-    compare(store.dispatchLog, "")
-    compare(store.dispatchExitCode, null)
-    fire(store.dispatchDebounceTimer)
-    compare(argv(store.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/my proj|milestone|m1|--base-branch|main|--branch-prefix|m3-retry|--max-concurrent|4|--verify|uv run pytest")
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchStart(), true)
-    compare(store.dispatchStartRunners.length, 1)
-  }
-
-  // 30
-  function test_settings_write_failure_flashes() {
-    var replies = [JSON.stringify({ ok: false, error: { type: "Invalid", message: "x" } }) + "\n", "garbage\n"]
-    for (var i = 0; i < replies.length; i++) {
-      var store = readyStore(); if (!store) return
-      store.dispatchStart()
-      var runner = store.dispatchStartRunners[0]
-      reply(runner.current, startOk("r-1", ""), 0)
-      reply(runner.current, replies[i], 1)
-      compare(store.flashText, "Dispatch settings could not be saved", "reply " + i)
-      compare(store.dispatchState, "started", "the run still started")
-      compare(store.dispatchStartRunners.length, 0)
-      compare(store.notifyOnEscalation, false, "the notify switch is untouched")
-      verify(!store.settingsSaveRunner.current, "the notify switch's runner is not used")
-    }
-  }
-
-  function test_started_refuses_changes_and_reopening_starts_over() {
-    var store = readyStore(); if (!store) return
-    store.dispatchStart()
-    reply(store.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
-    compare(store.setDispatchField("prefix", "x"), false, "started")
-    compare(store.dispatchStart(), false, "started")
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(store.dispatchRunId, "")
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchForm.verify[0], "uv run pytest", "the next form starts from the saved values")
-  }
-
-  // 31
-  function test_project_switch_resets_dispatch_and_drops_old_preview() {
-    var store = previewingStore(); if (!store) return
-    var preview = store.dispatchPreviewRunner.current
-    store.project = rootB
-    checkDispatchIdle(store, "after the switch")
-    compare(Object.keys(store.runSettings).length, 0)
-    compare(preview.running, false, "A's preview is stopped")
-    reply(preview, previewOk(dispatchDryRun()), 0)
-    checkDispatchIdle(store, "after A's late preview")
-
-    var pending = previewingStore(); if (!pending) return
-    pending.setDispatchField("prefix", "x")
-    compare(pending.dispatchDebounceTimer.running, true)
-    pending.project = rootB
-    compare(pending.dispatchDebounceTimer.running, false, "no check is left pending")
-    checkDispatchIdle(pending, "switch during a burst")
-
-    var cleared = previewingStore(); if (!cleared) return
-    cleared.project = ""
-    checkDispatchIdle(cleared, "no project")
-  }
-
-  // 32
-  function test_start_result_belongs_to_its_project() {
-    var store = readyStore(); if (!store) return
-    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
-    store.dispatchStart()
-    var runner = store.dispatchStartRunners[0]
-    var startProc = runner.current
-    store.project = rootB
-    checkDispatchIdle(store, "B after the switch from starting")
-    compare(startProc.running, true, "the start is not stopped")
-    compare(store.dispatchStartRunners.length, 1)
-    var seq = store.snapshotRunner.seq
-    reply(startProc, startOk("r-1", ""), 0)
-    checkDispatchIdle(store, "B after A's start landed")
-    compare(spy.count, 0)
-    compare(store.snapshotRunner.seq, seq, "no refresh for B")
-    compare(Object.keys(store.runSettings).length, 0, "B's settings do not take A's values")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "recorded against A")
-    reply(runner.current, "garbage\n", 1)
-    compare(store.flashText, "", "no flash about A in B")
-    compare(store.dispatchStartRunners.length, 0)
-  }
-
-  // 32b
-  function test_start_reply_after_switching_away_and_back_is_not_here() {
-    var store = readyStore(); if (!store) return
-    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
-    store.dispatchStart()
-    var runner = store.dispatchStartRunners[0]
-    store.project = rootB
-    store.project = rootA
-    checkDispatchIdle(store, "back in A")
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(store.dispatchState, "previewing")
-    reply(runner.current, startOk("r-1", ""), 0)
-    compare(store.dispatchState, "previewing", "the new dialog is not overwritten")
-    compare(store.dispatchRunId, "")
-    compare(spy.count, 0)
-    compare(store.runSettings.prefixHistory.join(","), "old")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + tc.savedJson, "still recorded for A")
-  }
-
-  // 33
-  function test_start_in_other_project_does_not_stop_the_first() {
-    var store = readyStore(); if (!store) return
-    store.dispatchStart()
-    var procA = store.dispatchStartRunners[0].current
-    store.project = rootB
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true, "B's dispatch opens while A's start is in flight")
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchStart(), true)
-    compare(store.dispatchStartRunners.length, 2)
-    compare(store.dispatchStartRunners[0].madeFor, "/home/u/my proj")
-    compare(store.dispatchStartRunners[1].madeFor, "/home/u/b")
-    compare(procA.running, true, "A's start is still running")
-    var procB = store.dispatchStartRunners[1].current
-    compare(argv(procB), tc.startCmd + "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest")
-    reply(procA, startOk("r-a", ""), 0)
-    compare(store.dispatchState, "starting", "A's reply does not land in B's dialog")
-    reply(procB, startOk("r-b", ""), 0)
-    compare(store.dispatchState, "started")
-    compare(store.dispatchRunId, "r-b")
-  }
-
-  // 34
-  function test_panel_close_closes_dispatch_but_not_a_start() {
-    var store = activeStore(rootA); if (!store) return
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    var cards = dispatchCards()
-    store.openDispatch(cards.m1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    store.active = false
-    checkDispatchIdle(store, "closed from ready")
-
-    store.active = true
-    store.openDispatch(cards.m1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    store.setDispatchField("prefix", "x")
-    compare(store.dispatchDebounceTimer.running, true)
-    store.active = false
-    compare(store.dispatchDebounceTimer.running, false, "no timer while idle")
-    checkDispatchIdle(store, "closed during a burst")
-
-    store.active = true
-    store.openDispatch(cards.m1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    store.dispatchStart()
-    var proc = store.dispatchStartRunners[0].current
-    store.active = false
-    compare(store.dispatchState, "starting", "a start in flight is not closed")
-    compare(proc.running, true)
-    reply(proc, startOk("r-1", ""), 0)
-    compare(store.dispatchState, "started", "it lands normally")
-    compare(store.dispatchRunId, "r-1")
-  }
-
-  // ---- dispatch: story target, retarget and keyed prefix (2.1)
-
-  // get-run-settings like dispatchSettings(), with prefixByMilestone set to map.
-  function keyedSettings(map) {
-    return JSON.stringify({ verify: ["uv run pytest"], allowNoVerification: false, notifyOnEscalation: false,
-                            prefixHistory: ["old"], parallelism: 4, confirmDispatch: true, prefixByMilestone: map }) + "\n"
-  }
-
-  // 2.1 test 3
-  function test_open_sets_the_target_label() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch(cards.s1, cards)
-    compare(store.dispatchTargetLabel, 'Story "Dispatch store" (milestone "M3 Document runs")')
-    store.openDispatch(cards.m1, cards)
-    compare(store.dispatchTargetLabel, 'Milestone "M3 Document runs"')
-    store.openDispatch(cards.t1, cards)
-    compare(store.dispatchTargetLabel, 'Subtask "RunStore dispatch"')
-    store.openDispatch("board", cards)
-    compare(store.dispatchTargetLabel, "Whole board")
-    store.openDispatch(null, cards)
-    compare(store.dispatchTargetLabel, "No card", "a refused opening is labelled too")
-    compare(store.closeDispatch(), true)
-    checkDispatchIdle(store, "closed")
-  }
-
-  // 2.1 test 5
-  function test_story_prefix_reads_the_snapshot_then_the_keyed_map() {
-    var store = makeWithProject(rootA); if (!store) return
-    reply(store.runSettingsRunner.current, keyedSettings({ m9: "m9-map" }), 0)
-    var a = { root: tc.rootA, name: "alpha" }
-    store.runs = [{ id: "r-old", milestone_id: "m1", branch_prefix: "m3-old", started_at: "2026-10-01T00:00:00Z", project: a },
-                  { id: "r-live", milestone_id: "m1", branch_prefix: " m3-live ", started_at: "2026-10-06T00:00:00Z", project: a },
-                  { id: "r-other", milestone_id: "m2", branch_prefix: "m2-x", started_at: "2026-10-07T00:00:00Z", project: a }]
-    var cards = dispatchCards()
-    store.openDispatch(cards.s1, cards)
-    compare(store.dispatchForm.prefix, "m3-live", "the milestone's newest snapshot run wins")
-    store.openDispatch(cards.m1, cards)
-    compare(store.dispatchForm.prefix, "m3-live", "the same default serves the milestone")
-
-    var keyed = makeWithProject(rootA); if (!keyed) return
-    reply(keyed.runSettingsRunner.current, keyedSettings({ m1: "m3-map" }), 0)
-    keyed.openDispatch(cards.s1, cards)
-    compare(keyed.dispatchForm.prefix, "m3-map", "the keyed map beats the prefix history")
-    keyed.openDispatch(cards.t1, cards)
-    compare(keyed.dispatchForm.prefix, "m3-map", "a subtask reads its root milestone's entry")
-  }
-
-  // 2.1 test 12 (the done story)
-  function test_a_done_story_is_refused_and_labelled() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    cards.s1 = { id: "s1", title: "Dispatch store", status: "done", parentId: "m1", depth: 1 }
-    compare(store.openDispatch(cards.s1, cards), false)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchError, "The card is done")
-    compare(store.dispatchErrorType, "Target")
-    compare(store.dispatchSuggest, null)
-    compare(store.dispatchTargetLabel, 'Story "Dispatch store" (milestone "M3 Document runs")')
-    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
-  }
-
-  // `am run --story s1 --dry-run` data: one level, story s1 with 2 subtasks rooted on main.
-  function storyDryRun() {
-    return {
-      max_concurrent: 4,
-      levels: [{ level: 0, concurrent: 1, stories: [{ story: "s1", title: "Dispatch store", root: "main", subtasks: [
-        { id: "t1", title: "RunStore dispatch", status: "todo", branch: "old-t1", base: "main" },
-        { id: "t2", title: "Docs", status: "todo", branch: "old-t2", base: "old-t1" }] }] }],
-      already_done: [],
-      integrate: null
-    }
-  }
-
-  // Project A with story s1 opened and its default branch `main` read: the
-  // first preview is in flight.
-  function storyPreviewingStore() {
-    var store = dispatchStore(); if (!store) return null
-    var cards = dispatchCards()
-    store.openDispatch(cards.s1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    return store
-  }
-
-  property string storyPreviewArgs: "/home/u/my proj|story|s1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest"
-
-  // 2.1 test 4
-  function test_story_preview_argv_and_story_summary() {
-    var store = storyPreviewingStore(); if (!store) return
-    var proc = store.dispatchPreviewRunner.current
-    verify(proc, "a story is previewed")
-    compare(argv(proc), tc.previewCmd + tc.storyPreviewArgs)
-    reply(proc, previewOk(storyDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchPreview.summary, "2 subtasks · rooted on main")
-    compare(store.dispatchPreview.integrate, "")
-    compare(store.dispatchPreview.board, false)
-    compare(store.dispatchError, "")
-    compare(store.dispatchErrorType, "")
-  }
-
-  // 2.1 test 12 (the preview half)
-  function test_a_finished_story_preview_is_refused() {
-    var store = storyPreviewingStore(); if (!store) return
-    reply(store.dispatchPreviewRunner.current, previewOk({ max_concurrent: 4, levels: [],
-      already_done: [{ kind: "story", id: "s1", title: "Dispatch store" }], integrate: null }), 0)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchError, "Nothing left to run")
-    compare(store.dispatchErrorType, "Empty")
-    compare(store.dispatchPreview, null)
-    compare(store.dispatchSuggest, null)
-    compare(store.dispatchStart(), false, "Start only works from ready")
-    compare(store.dispatchStartRunners.length, 0)
-
-    var milestone = previewingStore(); if (!milestone) return
-    reply(milestone.dispatchPreviewRunner.current, previewOk({ max_concurrent: 4, levels: [], already_done: [], integrate: null }), 0)
-    compare(milestone.dispatchState, "ready", "a milestone with nothing left keeps its behaviour")
-    compare(milestone.dispatchPreview.summary, "0 levels · 0 subtasks")
-  }
-
-  // 2.1 test 11 (the preview half)
-  function test_a_claimed_story_preview_names_the_other_run() {
-    var store = storyPreviewingStore(); if (!store) return
-    var message = "story s1 is claimed by run r-other (pid 77)"
-    reply(store.dispatchPreviewRunner.current, ctlFail("ClaimedError", message), 0)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchError, message, "am's sentence, verbatim")
-    compare(store.dispatchErrorType, "ClaimedError")
-    compare(store.dispatchSuggest, null)
-    compare(store.dispatchPreview, null)
-  }
-
-  property string blockedMessage: "story s1 is blocked by s0 (todo); dispatch milestone m1 instead"
-
-  // Every dispatch field, as one string to compare before and after.
-  function dispatchFields(store) {
-    return JSON.stringify([store.dispatchState, store.dispatchTarget, store.dispatchTargetLabel, store.dispatchForm,
-                           store.dispatchPreview, store.dispatchError, store.dispatchErrorType, store.dispatchErrors,
-                           store.dispatchSuggest, store.dispatchRunId, store.dispatchMessage, store.dispatchLog,
-                           store.dispatchLogTail, store.dispatchExitCode])
-  }
-
-  // retargetToMilestone() returns false, changes no dispatch field and launches no lookup.
-  function checkRetargetRefused(store, label) {
-    var before = dispatchFields(store)
-    var lookup = store.dispatchDefaultsRunner.current
-    compare(store.retargetToMilestone(), false, label)
-    compare(dispatchFields(store), before, label + ": nothing changed")
-    verify(store.dispatchDefaultsRunner.current === lookup, label + ": no lookup")
-  }
-
-  // 2.1 test 8
-  function test_retarget_from_a_blocked_preview() {
-    var store = storyPreviewingStore(); if (!store) return
-    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchError, tc.blockedMessage, "am's sentence, verbatim")
-    compare(store.dispatchErrorType, "StoryBlockedError")
-    compare(JSON.stringify(store.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}')
-    compare(store.dispatchStart(), false, "Start stays refused")
-    var storyLookup = store.dispatchDefaultsRunner.current
-    compare(store.retargetToMilestone(), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchTarget.level, "milestone")
-    compare(JSON.stringify(store.dispatchTarget.flags), JSON.stringify(["--milestone", "m1"]))
-    compare(store.dispatchTargetLabel, 'Milestone "M3 Document runs"')
-    compare(store.dispatchSuggest, null)
-    compare(store.dispatchError, "")
-    compare(store.dispatchErrorType, "")
-    var lookup = store.dispatchDefaultsRunner.current
-    verify(lookup !== storyLookup, "a fresh --defaults lookup")
-    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/my proj")
-    reply(lookup, defaultsOk("main"), 0)
-    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs, "the milestone is previewed")
-  }
-
-  // 2.1 test 10
-  function test_retarget_refused_outside_a_blocked_refusal() {
-    var cards = dispatchCards()
-    var idle = dispatchStore(); if (!idle) return
-    checkRetargetRefused(idle, "idle")
-    checkDispatchIdle(idle, "idle after the refusal")
-
-    var ready = readyStore(); if (!ready) return
-    checkRetargetRefused(ready, "ready")
-
-    var claimed = storyPreviewingStore(); if (!claimed) return
-    reply(claimed.dispatchPreviewRunner.current, ctlFail("ClaimedError", "story s1 is claimed by run r-other"), 0)
-    checkRetargetRefused(claimed, "ClaimedError")
-
-    var form = dispatchStore(); if (!form) return
-    form.openDispatch("board", cards)
-    reply(form.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(form.dispatchErrorType, "Form")
-    checkRetargetRefused(form, "Form")
-
-    var target = dispatchStore(); if (!target) return
-    var doneCards = dispatchCards()
-    doneCards.s1 = { id: "s1", title: "Dispatch store", status: "done", parentId: "m1", depth: 1 }
-    target.openDispatch(doneCards.s1, doneCards)
-    compare(target.dispatchErrorType, "Target")
-    checkRetargetRefused(target, "Target")
-
-    var failed = readyStore(); if (!failed) return
-    failed.dispatchStart()
-    reply(failed.dispatchStartRunners[0].current, ctlFail("AmExited", "am run exited at once (exit 2)"), 0)
-    compare(failed.dispatchState, "failed")
-    checkRetargetRefused(failed, "failed")
-
-    var orphan = dispatchStore(); if (!orphan) return
-    var orphanCards = dispatchCards()
-    orphanCards.o1 = { id: "o1", title: "Orphan", status: "todo", parentId: "", depth: 1 }
-    orphan.openDispatch(orphanCards.o1, orphanCards)
-    reply(orphan.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(argv(orphan.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/my proj|story|o1|--base-branch|main|--branch-prefix|old|--max-concurrent|4|--verify|uv run pytest")
-    reply(orphan.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", "story o1 is blocked"), 0)
-    compare(orphan.dispatchState, "refused")
-    compare(orphan.dispatchErrorType, "StoryBlockedError")
-    compare(orphan.dispatchSuggest, null, "no milestone to offer")
-    compare(orphan.dispatchTargetLabel, 'Story "Orphan"')
-    checkRetargetRefused(orphan, "a blocked story with no milestone")
-
-    var closed = storyPreviewingStore(); if (!closed) return
-    reply(closed.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
-    compare(closed.closeDispatch(), true)
-    checkRetargetRefused(closed, "closed after a blocked refusal")
-    checkDispatchIdle(closed, "still idle")
-  }
-
-  // 2.1 test 13
-  function test_an_edit_after_a_blocked_refusal_previews_again() {
-    var store = storyPreviewingStore(); if (!store) return
-    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
-    compare(store.setDispatchField("prefix", "x"), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchSuggest, null)
-    compare(store.dispatchError, "")
-    compare(store.dispatchErrorType, "")
-    checkRetargetRefused(store, "previewing after the edit")
-    fire(store.dispatchDebounceTimer)
-    compare(argv(store.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/my proj|story|s1|--base-branch|main|--branch-prefix|x|--max-concurrent|4|--verify|uv run pytest")
-    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
-    compare(store.dispatchState, "refused")
-    compare(JSON.stringify(store.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}', "the action comes back")
-  }
-
-  // 2.1 Review Focus 4 and 5
-  function test_retarget_goes_once_to_the_milestone_recorded_at_the_opening() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.openDispatch(cards.s1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    store.setDispatchField("parallelism", 2)
-    fire(store.dispatchDebounceTimer)
-    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
-    cards.m1 = { id: "m1", title: "M4 Renamed", status: "todo", parentId: "", depth: 0 }
-    compare(store.retargetToMilestone(), true)
-    compare(store.dispatchTargetLabel, 'Milestone "M3 Document runs"', "the milestone recorded at the opening")
-    compare(JSON.stringify(store.dispatchTarget.flags), JSON.stringify(["--milestone", "m1"]))
-    compare(store.dispatchForm.parallelism, 4, "the story's edits are not carried over")
-    compare(store.dispatchForm.prefix, "old")
-    checkRetargetRefused(store, "the second call, while previewing")
-  }
-
-  // Project A with story s1's preview landed: Start is allowed.
-  function storyReadyStore() {
-    var store = storyPreviewingStore(); if (!store) return null
-    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
-    return store
-  }
-
-  // 2.1 test 6
-  function test_a_story_start_saves_the_prefix_under_its_milestone() {
-    var store = makeWithProject(rootA); if (!store) return
-    reply(store.runSettingsRunner.current, keyedSettings({ m9: "x" }), 0)
-    var cards = dispatchCards()
-    store.openDispatch(cards.s1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
-    compare(store.dispatchStart(), true)
-    var runner = store.dispatchStartRunners[0]
-    compare(argv(runner.current), tc.startCmd + tc.storyPreviewArgs)
-    reply(runner.current, startOk("r-1", ""), 0)
-    compare(store.dispatchState, "started")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" +
-            '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4,"prefixByMilestone":{"m1":"old"}}')
-    var map = store.runSettings.prefixByMilestone
-    compare(Object.keys(map).sort().join(","), "m1,m9", "merged locally")
-    compare(map.m9, "x", "the stored entry is kept")
-    compare(map.m1, "old")
-    compare(store.runSettings.prefixHistory.join(","), "old")
-    compare(store.runSettings.confirmDispatch, true, "keys the start does not write are kept")
-  }
-
-  // 2.1 test 7
-  function test_milestone_starts_key_the_prefix_and_subtask_or_board_starts_do_not() {
-    var store = readyStore(); if (!store) return
-    store.dispatchStart()
-    var runner = store.dispatchStartRunners[0]
-    reply(runner.current, startOk("r-1", ""), 0)
-    compare(runner.current.command[4], tc.savedJson, "a milestone start keys its own id")
-    compare(store.runSettings.prefixByMilestone.m1, "old")
-
-    var plain = '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4}'
-    var cards = dispatchCards()
-    var subtask = dispatchStore(); if (!subtask) return
-    subtask.openDispatch(cards.t1, cards)
-    reply(subtask.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(subtask.dispatchStart(), true)
-    var subtaskRunner = subtask.dispatchStartRunners[0]
-    reply(subtaskRunner.current, startOk("r-2", ""), 0)
-    compare(argv(subtaskRunner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + plain, "a subtask start keys nothing")
-    compare(subtask.runSettings.prefixByMilestone, undefined, "nothing keyed locally")
-
-    var board = dispatchStore(); if (!board) return
-    board.openDispatch("board", cards)
-    reply(board.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    board.setDispatchField("prefix", "old")
-    fire(board.dispatchDebounceTimer)
-    reply(board.dispatchPreviewRunner.current, previewOk({ board: true, levels: [] }), 0)
-    compare(board.dispatchState, "ready")
-    compare(board.dispatchStart(), true)
-    var boardRunner = board.dispatchStartRunners[0]
-    reply(boardRunner.current, startOk("r-3", ""), 0)
-    compare(argv(boardRunner.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + plain, "a board start keys nothing")
-  }
-
-  // 2.1 Review Focus 2
-  function test_a_stored_map_that_is_not_an_object_merges_from_nothing() {
-    var stored = [[], "x", ["a"], 7, null]
-    for (var i = 0; i < stored.length; i++) {
-      var store = makeWithProject(rootA); if (!store) return
-      reply(store.runSettingsRunner.current, keyedSettings(stored[i]), 0)
-      var cards = dispatchCards()
-      store.openDispatch(cards.s1, cards)
-      reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-      reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
-      store.dispatchStart()
-      reply(store.dispatchStartRunners[0].current, startOk("r-1", ""), 0)
-      compare(store.dispatchState, "started", "stored " + i)
-      compare(Object.keys(store.runSettings.prefixByMilestone).join(","), "m1", "stored " + i + ": only the new entry")
-      compare(store.runSettings.prefixByMilestone.m1, "old", "stored " + i)
-    }
-  }
-
-  // 2.1 Review Focus 3
-  function test_the_keyed_prefix_is_the_trimmed_one_sent() {
-    var store = storyPreviewingStore(); if (!store) return
-    store.setDispatchField("prefix", "  m3-spaced ")
-    fire(store.dispatchDebounceTimer)
-    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
-    compare(store.dispatchStart(), true)
-    var runner = store.dispatchStartRunners[0]
-    compare(runner.current.command[8], "m3-spaced", "sent trimmed")
-    compare(runner.savedJson, '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["m3-spaced","old"],' +
-                              '"parallelism":4,"prefixByMilestone":{"m1":"m3-spaced"}}')
-    reply(runner.current, startOk("r-1", ""), 0)
-    compare(store.runSettings.prefixByMilestone.m1, "m3-spaced")
-  }
-
-  // A StoryBlockedError start failure, with the log fields start-run.py adds.
-  function startBlocked() {
-    return JSON.stringify({ ok: false, error: { type: "StoryBlockedError", message: tc.blockedMessage },
-      log: "/home/u/.local/state/am-run.log", pid: 4242, started_at: "2026-10-05T02:14:00Z", exit_code: 2,
-      log_tail: "error: story s1 is blocked" }) + "\n"
-  }
-
-  // 2.1 test 9
-  function test_retarget_from_a_blocked_start() {
-    var store = storyReadyStore(); if (!store) return
-    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
-    var settingsBefore = JSON.stringify(store.runSettings)
-    compare(store.dispatchStart(), true)
-    var seq = store.snapshotRunner.seq
-    reply(store.dispatchStartRunners[0].current, startBlocked(), 0)
-    compare(store.dispatchState, "refused", "a blocked story is refused, not failed")
-    compare(store.dispatchError, tc.blockedMessage)
-    compare(store.dispatchErrorType, "StoryBlockedError")
-    compare(store.dispatchLog, "")
-    compare(store.dispatchLogTail, "")
-    compare(store.dispatchExitCode, null)
-    compare(JSON.stringify(store.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}')
-    compare(store.dispatchStartRunners.length, 0, "the runner is dropped: no set-run-settings")
-    compare(JSON.stringify(store.runSettings), settingsBefore, "nothing saved")
-    compare(store.dispatchForm.prefix, "old", "the form stays")
-    compare(spy.count, 0)
-    compare(store.snapshotRunner.seq, seq, "no re-snapshot")
-    compare(store.dispatchStart(), false, "Start stays refused")
-    compare(store.retargetToMilestone(), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchTarget.level, "milestone")
-    compare(JSON.stringify(store.dispatchTarget.flags), JSON.stringify(["--milestone", "m1"]))
-    compare(store.dispatchTargetLabel, 'Milestone "M3 Document runs"')
-    compare(store.dispatchSuggest, null)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs)
-
-    var blank = storyReadyStore(); if (!blank) return
-    blank.dispatchStart()
-    reply(blank.dispatchStartRunners[0].current, ctlFail("StoryBlockedError", "  "), 0)
-    compare(blank.dispatchState, "refused")
-    compare(blank.dispatchError, "The launch could not be read")
-    compare(blank.dispatchErrorType, "StoryBlockedError")
-    compare(JSON.stringify(blank.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}')
-  }
-
-  // 2.1 test 11 (the start half)
-  function test_a_claimed_story_start_fails_with_the_log() {
-    var store = storyReadyStore(); if (!store) return
-    store.dispatchStart()
-    reply(store.dispatchStartRunners[0].current, JSON.stringify({ ok: false,
-      error: { type: "ClaimedError", message: "story s1 is claimed by run r-other" },
-      log: "/home/u/.local/state/am-run.log", exit_code: 1, log_tail: "claimed" }) + "\n", 0)
-    compare(store.dispatchState, "failed")
-    compare(store.dispatchError, "story s1 is claimed by run r-other")
-    compare(store.dispatchErrorType, "ClaimedError")
-    compare(store.dispatchLog, "/home/u/.local/state/am-run.log")
-    compare(store.dispatchLogTail, "claimed")
-    compare(store.dispatchExitCode, 1)
-    compare(store.dispatchSuggest, null)
-    compare(store.retargetToMilestone(), false)
-  }
-
-  // 2.1 Review Focus 1
-  function test_a_late_blocked_start_reply_changes_nothing() {
-    var store = storyReadyStore(); if (!store) return
-    store.dispatchStart()
-    var proc = store.dispatchStartRunners[0].current
-    store.project = rootB
-    checkDispatchIdle(store, "B after the switch")
-    reply(proc, startBlocked(), 0)
-    checkDispatchIdle(store, "B after A's blocked reply")
-    compare(store.dispatchStartRunners.length, 0, "the runner goes")
-
-    var back = storyReadyStore(); if (!back) return
-    back.dispatchStart()
-    var backProc = back.dispatchStartRunners[0].current
-    back.project = rootB
-    back.project = rootA
-    reply(back.runSettingsRunner.current, dispatchSettings(), 0)
-    var cards = dispatchCards()
-    compare(back.openDispatch(cards.m1, cards), true)
-    reply(backProc, startBlocked(), 0)
-    compare(back.dispatchState, "previewing", "the new dialog is not overwritten")
-    compare(back.dispatchError, "")
-    compare(back.dispatchErrorType, "")
-    compare(back.dispatchSuggest, null)
-    compare(back.dispatchTargetLabel, 'Milestone "M3 Document runs"')
-  }
-
-  // ---- dispatch: dispatchRoot (2.1 RunStore dispatch)
-
-  // 2.1 RunStore dispatch test 1
-  function test_dispatch_root_starts_empty_and_card_entry_sets_project() {
-    var fresh = make(); if (!fresh) return
-    compare(fresh.dispatchRoot, "", "fresh")
-    var cards = dispatchCards()
-    compare(fresh.openDispatch(cards.m1, cards), false, "no project")
-    compare(fresh.dispatchRoot, "", "a refused card entry sets no root")
-
-    var store = dispatchStore(); if (!store) return
-    compare(store.dispatchRoot, "", "opening a project opens no dispatch")
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(store.dispatchRoot, tc.rootA, "a card entry dispatches for the open project")
-    compare(store.closeDispatch(), true)
-    compare(store.dispatchRoot, "", "closed")
-    checkDispatchIdle(store, "closed")
-    compare(store.openDispatch(cards.m1, cards), true)
-    store.project = tc.rootB
-    compare(store.dispatchRoot, "", "a project switch forgets the root")
-    checkDispatchIdle(store, "switched")
-
-    var starting = readyStore(); if (!starting) return
-    compare(starting.dispatchStart(), true)
-    compare(starting.closeDispatch(), false)
-    compare(starting.dispatchRoot, tc.rootA, "a refused close keeps the root")
-    compare(starting.openDispatch(cards.t1, cards), false)
-    compare(starting.dispatchRoot, tc.rootA, "a refused card entry keeps the root")
-  }
-
-  // 2.1 RunStore dispatch test 2
-  function test_dispatch_open_for_refuses_without_a_root_or_while_starting() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.dispatchOpenFor(cards.m1, cards), false, "no root")
-    checkDispatchIdle(store, "no root")
-    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
-
-    var starting = readyStore(); if (!starting) return
-    starting.dispatchStart()
-    compare(starting.dispatchOpenFor(cards.t1, cards), false, "starting")
-    compare(starting.dispatchState, "starting")
-    compare(starting.dispatchTarget.level, "milestone")
-    compare(starting.dispatchRoot, tc.rootA)
-  }
-
-  // 2.1 RunStore dispatch: the defaults lookup and a refused target for another root
-  function test_dispatch_open_for_launches_for_the_root() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.dispatchRoot = tc.rootB
-    compare(store.dispatchOpenFor(cards.m1, cards), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchRoot, tc.rootB, "the opening keeps the root")
-    compare(store.project, tc.rootA)
-    var lookup = store.dispatchDefaultsRunner.current
-    verify(lookup, "the default branch is looked up")
-    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/b")
-    compare(lookup.launchGuard, "/home/u/b")
-    compare(store.dispatchPreviewRunner.guard, "/home/u/b")
-
-    var refused = dispatchStore(); if (!refused) return
-    refused.dispatchRoot = tc.rootB
-    compare(refused.dispatchOpenFor(cards.d1, cards), false)
-    compare(refused.dispatchState, "refused")
-    compare(refused.dispatchErrorType, "Target")
-    compare(refused.dispatchRoot, tc.rootB)
-    verify(!refused.dispatchDefaultsRunner.current, "a refused target launches nothing")
-  }
-
-  // Projects A and B registered (their snapshot in flight), A open with its
-  // settings read (dispatchSettings), and the dispatch's root set to B.
-  function otherRootStore() {
-    var store = make(); if (!store) return null
-    store.projectRoots = registry([tc.rootA, tc.rootB])
-    store.project = tc.rootA
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    store.dispatchRoot = tc.rootB
-    return store
-  }
-
-  // B's get-run-settings: differs from A's in every value the form reads.
-  function bSettings() {
-    return JSON.stringify({ verify: ["make test"], parallelism: 2, prefixHistory: ["bpre", "bold"], confirmDispatch: false }) + "\n"
-  }
-
-  property string bPreviewArgs: "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test"
-
-  // Opens milestone m1 for the store's dispatchRoot (B) and lands the
-  // defaults (main), B's settings (bSettings) and the preview: Start is allowed.
-  function readyForB(store) {
-    var cards = dispatchCards()
-    store.dispatchOpenFor(cards.m1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-  }
-
-  // 2.1 RunStore dispatch test 3
-  function test_dispatch_open_for_other_root_argv() {
-    var store = otherRootStore(); if (!store) return
-    var aLoad = store.runSettingsRunner.current
-    var cards = dispatchCards()
-    compare(store.dispatchOpenFor(cards.m1, cards), true)
-    compare(store.dispatchState, "previewing")
-    var lookup = store.dispatchDefaultsRunner.current
-    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/b")
-    var read = store.dispatchSettingsRunner.current
-    verify(read, "B's run settings are read")
-    compare(argv(read), tc.viewerCmd + "get-run-settings|/home/u/b")
-    compare(read.command.length, 4)
-    compare(read.launchGuard, "/home/u/b")
-    verify(store.runSettingsRunner.current === aLoad, "A's run settings are not read again")
-    compare(Object.keys(store.dispatchRunSettings).length, 0, "{} until the reply")
-    compare(store.dispatchForm.verify.length, 0, "the form opens from {} settings")
-    compare(store.dispatchForm.parallelism, 4)
-    compare(store.dispatchForm.prefix, "m3", "the milestone's stem")
-    reply(lookup, defaultsOk("main"), 0)
-    compare(store.dispatchForm.base, "main")
-    compare(store.dispatchState, "previewing")
-    verify(!store.dispatchPreviewRunner.current, "no preview while B's settings are pending")
-    reply(read, bSettings(), 0)
-    compare(store.dispatchRunSettings.prefixHistory[0], "bpre")
-    compare(store.dispatchRunSettings.confirmDispatch, false, "the object is kept as it was read")
-    compare(store.dispatchForm.verify.join(","), "make test")
-    compare(store.dispatchForm.parallelism, 2)
-    compare(store.dispatchForm.prefix, "bpre")
-    compare(store.dispatchForm.base, "main", "base is not touched by the settings reply")
-    compare(store.dispatchForm.allowNoVerification, false)
-    var proc = store.dispatchPreviewRunner.current
-    verify(proc, "the last reply checks the form")
-    compare(argv(proc), tc.previewCmd + tc.bPreviewArgs)
-    compare(proc.launchGuard, "/home/u/b")
-    compare(store.runSettings.prefixHistory[0], "old", "A's settings are untouched")
-    compare(store.runSettings.verify[0], "uv run pytest")
-
-    var settingsFirst = otherRootStore(); if (!settingsFirst) return
-    settingsFirst.dispatchOpenFor(cards.m1, cards)
-    reply(settingsFirst.dispatchSettingsRunner.current, bSettings(), 0)
-    verify(!settingsFirst.dispatchPreviewRunner.current, "no preview while the defaults are pending")
-    reply(settingsFirst.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(argv(settingsFirst.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "whichever replies last checks")
-
-    var refused = otherRootStore(); if (!refused) return
-    compare(refused.dispatchOpenFor(cards.d1, cards), false)
-    verify(!refused.dispatchDefaultsRunner.current, "a refused target: no defaults lookup")
-    verify(!refused.dispatchSettingsRunner.current, "a refused target: no settings read")
-  }
-
-  // 2.1 RunStore dispatch test 4 + Review Focus 1, 2 and 3
-  function test_dispatch_settings_reply_keeps_user_edits_and_unreadable_is_empty() {
-    var cards = dispatchCards()
-    var edited = otherRootStore(); if (!edited) return
-    edited.dispatchOpenFor(cards.m1, cards)
-    compare(edited.setDispatchField("prefix", "mine"), true)
-    compare(edited.setDispatchField("parallelism", 3), true)
-    reply(edited.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    fire(edited.dispatchDebounceTimer)
-    verify(!edited.dispatchPreviewRunner.current, "the debounced check waits for B's settings")
-    reply(edited.dispatchSettingsRunner.current, bSettings(), 0)
-    compare(edited.dispatchForm.prefix, "mine", "the user's prefix is kept")
-    compare(edited.dispatchForm.parallelism, 3, "the user's parallelism is kept")
-    compare(edited.dispatchForm.verify.join(","), "make test", "verify takes B's")
-    compare(argv(edited.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|mine|--max-concurrent|3|--verify|make test")
-
-    var replies = ["Traceback: boom\n", "[1, 2]\n", ""]
-    for (var i = 0; i < replies.length; i++) {
-      var bad = otherRootStore(); if (!bad) return
-      bad.dispatchOpenFor(cards.m1, cards)
-      reply(bad.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-      reply(bad.dispatchSettingsRunner.current, replies[i], 1)
-      compare(Object.keys(bad.dispatchRunSettings).length, 0, "reply " + i + ": unreadable is {}")
-      compare(bad.dispatchForm.prefix, "m3", "reply " + i + ": the {} defaults stay")
-      compare(bad.dispatchForm.parallelism, 4, "reply " + i)
-      compare(bad.dispatchForm.verify.length, 0, "reply " + i)
-      compare(bad.dispatchState, "refused", "reply " + i + ": the check ran")
-      compare(bad.dispatchErrors[0].field, "verify", "reply " + i)
-    }
-
-    var late = otherRootStore(); if (!late) return
-    late.dispatchOpenFor(cards.m1, cards)
-    var lateRead = late.dispatchSettingsRunner.current
-    compare(late.closeDispatch(), true)
-    reply(lateRead, bSettings(), 0)
-    checkDispatchIdle(late, "a settings reply after the close")
-    compare(Object.keys(late.dispatchRunSettings).length, 0, "nothing kept after the close")
-
-    var reopened = otherRootStore(); if (!reopened) return
-    reopened.dispatchOpenFor(cards.m1, cards)
-    var bRead = reopened.dispatchSettingsRunner.current
-    compare(reopened.openDispatch(cards.m1, cards), true)
-    compare(reopened.dispatchRoot, tc.rootA)
-    reply(bRead, bSettings(), 0)
-    compare(Object.keys(reopened.dispatchRunSettings).length, 0, "B's late reply is dropped")
-    compare(reopened.dispatchForm.prefix, "old", "A's form stays")
-    compare(reopened.dispatchForm.verify.join(","), "uv run pytest")
-    compare(reopened.dispatchForm.parallelism, 4)
-  }
-
-  // 2.1 RunStore dispatch test 5
-  function test_dispatch_prefix_default_reads_only_the_roots_runs() {
-    var store = otherRootStore(); if (!store) return
-    var cards = dispatchCards()
-    var a = { root: tc.rootA, name: "alpha" }
-    var b = { root: tc.rootB, name: "beta" }
-    store.runs = [{ id: "r-a", milestone_id: "m1", branch_prefix: "a-pre", started_at: "2026-10-07T00:00:00Z", project: a },
-                  { id: "r-b", milestone_id: "m1", branch_prefix: "b-pre", started_at: "2026-10-06T00:00:00Z", project: b }]
-    store.dispatchOpenFor(cards.s1, cards)
-    compare(store.dispatchForm.prefix, "b-pre", "A's newer run of m1 does not supply B's prefix")
-    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
-    compare(store.dispatchForm.prefix, "b-pre", "B's run still beats B's history")
-
-    compare(store.closeDispatch(), true)
-    store.runs = [{ id: "r-a", milestone_id: "m1", branch_prefix: "a-pre", started_at: "2026-10-06T00:00:00Z", project: a },
-                  { id: "r-b", milestone_id: "m1", branch_prefix: "b-pre", started_at: "2026-10-07T00:00:00Z", project: b }]
-    compare(store.openDispatch(cards.s1, cards), true)
-    compare(store.dispatchRoot, tc.rootA)
-    compare(store.dispatchForm.prefix, "a-pre", "a card entry reads only the open project's runs")
-  }
-
-  // 2.1 RunStore dispatch test 9
-  function test_dispatch_retarget_keeps_the_root() {
-    var store = otherRootStore(); if (!store) return
-    var cards = dispatchCards()
-    store.dispatchOpenFor(cards.s1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
-    compare(argv(store.dispatchPreviewRunner.current),
-            tc.previewCmd + "/home/u/b|story|s1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
-    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
-    compare(store.dispatchState, "refused")
-    compare(JSON.stringify(store.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}')
-    var storyRead = store.dispatchSettingsRunner.current
-    compare(store.retargetToMilestone(), true)
-    compare(store.dispatchRoot, tc.rootB, "the retarget keeps the root")
-    compare(store.dispatchTarget.level, "milestone")
-    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/b")
-    verify(store.dispatchSettingsRunner.current !== storyRead, "B's settings are read afresh")
-    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b")
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
-    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "B's milestone is previewed")
-  }
-
-  // 2.1 RunStore dispatch test 10 + Review Focus 4
-  function test_dispatch_card_entry_launches_no_settings_read() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true)
-    verify(!store.dispatchSettingsRunner.current, "the open project's runSettings are used")
-    compare(Object.keys(store.dispatchRunSettings).length, 0)
-    compare(store.dispatchForm.prefix, "old")
-    compare(store.dispatchForm.verify.join(","), "uv run pytest")
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs, "previewed on the defaults reply")
-
-    var both = otherRootStore(); if (!both) return
-    compare(both.openDispatch(cards.m1, cards), true)
-    compare(both.dispatchRoot, tc.rootA, "the card entry replaces a root set before")
-    verify(!both.dispatchSettingsRunner.current, "no settings read for the open project")
-
-    var same = dispatchStore(); if (!same) return
-    same.dispatchRoot = tc.rootA
-    compare(same.dispatchOpenFor(cards.m1, cards), true)
-    verify(!same.dispatchSettingsRunner.current, "dispatchOpenFor on the open project reads no settings")
-    compare(same.dispatchForm.verify.join(","), "uv run pytest")
-    reply(same.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(argv(same.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs)
-  }
-
-  // otherRootStore() with A's and B's first snapshot landed (none in
-  // flight) and milestone m1 ready for B (readyForB).
-  function otherReadyStore() {
-    var store = otherRootStore(); if (!store) return null
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
-    readyForB(store)
-    return store
-  }
-
-  property string bSavedJson: '{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["bpre","bold"],"parallelism":2,"prefixByMilestone":{"m1":"bpre"}}'
-
-  // 2.1 RunStore dispatch test 6 + Review Focus 5
-  function test_dispatch_start_for_other_root_argv_save_and_refresh() {
-    var store = otherReadyStore(); if (!store) return
-    compare(store.dispatchState, "ready")
-    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
-    var aBefore = JSON.stringify(store.runSettings)
-    compare(store.dispatchStart(), true)
-    var runner = store.dispatchStartRunners[0]
-    compare(runner.madeFor, "/home/u/b")
-    compare(argv(runner.current), tc.startCmd + tc.bPreviewArgs)
-    compare(runner.savedJson, tc.bSavedJson, "B's history follows the prefix sent")
-    var seq = store.snapshotRunner.seq
-    reply(runner.current, startOk("r-b", ""), 0)
-    compare(store.dispatchState, "started")
-    compare(store.dispatchRunId, "r-b")
-    compare(spy.count, 1)
-    compare(spy.signalArguments[0][0], "r-b")
-    compare(store.snapshotRunner.seq, seq + 1, "one snapshot is asked for")
-    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB, "of B only")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" + tc.bSavedJson)
-    compare(store.dispatchRunSettings.prefixHistory.join(","), "bpre,bold")
-    compare(store.dispatchRunSettings.prefixByMilestone.m1, "bpre")
-    compare(store.dispatchRunSettings.confirmDispatch, false, "B's other keys are kept")
-    compare(JSON.stringify(store.runSettings), aBefore, "A's settings are untouched")
-    reply(runner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(store.dispatchStartRunners.length, 0)
-    compare(store.flashText, "")
-
-    compare(store.closeDispatch(), true)
-    compare(Object.keys(store.dispatchRunSettings).length, 0, "the merge does not outlive the close")
-    store.dispatchRoot = tc.rootB
-    var cards = dispatchCards()
-    compare(store.dispatchOpenFor(cards.m1, cards), true)
-    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b", "B is read afresh")
-
-    var busy = otherReadyStore(); if (!busy) return
-    busy.refresh()
-    verify(busy.snapshotRunner.busy, "a snapshot of every root is in flight")
-    busy.dispatchStart()
-    reply(busy.dispatchStartRunners[0].current, startOk("r-b", ""), 0)
-    compare(busy.dispatchState, "started")
-    compare(busy.pendingSnapshot.join("|"), tc.rootB, "B joins the pending request")
-
-    var lone = dispatchStore(); if (!lone) return
-    reply(lone.snapshotRunner.current, okReply([]), 0)
-    lone.dispatchRoot = tc.rootB
-    readyForB(lone)
-    compare(lone.dispatchState, "ready")
-    lone.dispatchStart()
-    var loneSeq = lone.snapshotRunner.seq
-    reply(lone.dispatchStartRunners[0].current, startOk("r-b", ""), 0)
-    compare(lone.dispatchState, "started")
-    compare(lone.snapshotRunner.seq, loneSeq, "B is not registered: no snapshot")
-  }
-
-  // 2.1 RunStore dispatch test 7
-  function test_dispatch_story_start_for_other_root_saves_prefix_by_milestone_for_it() {
-    var store = otherRootStore(); if (!store) return
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
-    var cards = dispatchCards()
-    store.dispatchOpenFor(cards.s1, cards)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchSettingsRunner.current, JSON.stringify({ verify: ["make test"], parallelism: 2, prefixHistory: ["bpre"],
-                                                                 prefixByMilestone: { m9: "b9" } }) + "\n", 0)
-    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchStart(), true)
-    var runner = store.dispatchStartRunners[0]
-    compare(argv(runner.current), tc.startCmd + "/home/u/b|story|s1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
-    reply(runner.current, startOk("r-s", ""), 0)
-    compare(store.dispatchState, "started")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" +
-            '{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["bpre"],"parallelism":2,"prefixByMilestone":{"m1":"bpre"}}')
-    var map = store.dispatchRunSettings.prefixByMilestone
-    compare(Object.keys(map).sort().join(","), "m1,m9", "merged into B's settings")
-    compare(map.m9, "b9", "B's stored entry is kept")
-    compare(map.m1, "bpre")
-    compare(store.runSettings.prefixByMilestone, undefined, "nothing keyed into A's settings")
-  }
-
-  // 2.1 RunStore dispatch test 8
-  function test_dispatch_start_in_flight_completes_for_its_root_after_a_switch() {
-    var store = otherReadyStore(); if (!store) return
-    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
-    compare(store.dispatchStart(), true)
-    var runner = store.dispatchStartRunners[0]
-    var proc = runner.current
-    store.project = tc.rootB
-    compare(store.dispatchRoot, "", "the switch forgets the root")
-    checkDispatchIdle(store, "after the switch")
-    compare(proc.running, true, "the start is not stopped")
-    var seq = store.snapshotRunner.seq
-    reply(proc, startOk("r-b", ""), 0)
-    checkDispatchIdle(store, "after B's start landed")
-    compare(spy.count, 0, "no signal")
-    compare(store.snapshotRunner.seq, seq, "no snapshot")
-    compare(Object.keys(store.dispatchRunSettings).length, 0, "nothing merged into dispatchRunSettings")
-    compare(Object.keys(store.runSettings).length, 0, "nothing merged into runSettings")
-    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" + tc.bSavedJson, "still written for B")
-    reply(runner.current, "garbage\n", 1)
-    compare(store.flashText, "", "a save failure that is not here does not flash")
-    compare(store.dispatchStartRunners.length, 0)
-  }
-
-  // ---- dispatch: project and target steps (2.2)
-
-  property string probeCmd: "python3|/plugin/core/backend/boards/board-tree.py|--probe"
-
-  // board-tree.py --probe's reply line: {"ok": true, "projects": entries}.
-  function probeReply(entries) {
-    return JSON.stringify({ ok: true, projects: entries }) + "\n"
-  }
-
-  // The project step's rows as "root:name:open:on|off:reason", " / "-joined.
-  function rowsText(rows) {
-    return rows.map(function(r) {
-      return r.root + ":" + r.name + ":" + (r.open ? "open" : "") + ":" + (r.enabled ? "on" : "off") + ":" + r.reason
-    }).join(" / ")
-  }
-
-  // Projects A and B registered, A open with its settings read (dispatchSettings).
-  function runsStore() {
-    var store = make(); if (!store) return null
-    store.projectRoots = registry([tc.rootA, tc.rootB])
-    store.project = tc.rootA
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    return store
-  }
-
-  // 2.2 test 1
-  function test_dispatch_step_empty_for_idle_and_card_entry() {
-    var fresh = make(); if (!fresh) return
-    compare(fresh.dispatchStep, "", "fresh")
-    compare(fresh.dispatchProjectRows.length, 0, "fresh: no rows")
-    compare(fresh.dispatchProjectProbe, null, "fresh: no probe")
-
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(store.dispatchStep, "", "a card entry has no step")
-    compare(store.dispatchProjectRows.length, 0, "a card entry has no rows")
-    verify(!store.dispatchProjectRunner.current, "a card entry probes nothing")
-  }
-  // 2.2 test 2
-  function test_dispatch_open_from_runs_argv_and_rows() {
-    var store = runsStore(); if (!store) return
-    compare(store.dispatchOpenFromRuns(), true)
-    compare(store.dispatchStep, "project")
-    compare(store.dispatchRoot, "", "no root until a pick")
-    compare(store.dispatchState, "idle")
-    compare(store.dispatchTarget, null, "S3's fields keep their none values")
-    compare(store.dispatchForm, null)
-    var probe = store.dispatchProjectRunner.current
-    verify(probe, "the probe is launched")
-    compare(argv(probe), tc.probeCmd + "|/home/u/my proj|/home/u/b")
-    compare(probe.command.length, 5)
-    compare(store.dispatchProjectProbe, null, "null before the reply")
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:",
-            "before the reply every row is enabled, the open project first")
-    reply(probe, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
-    compare(store.dispatchProjectProbe.ok, true)
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:no .brd marker")
-
-    var none = makeWithRoots([tc.rootB, tc.rootA]); if (!none) return
-    compare(none.dispatchOpenFromRuns(), true, "no project needs to be open")
-    compare(argv(none.dispatchProjectRunner.current), tc.probeCmd + "|/home/u/b|/home/u/my proj", "registry order")
-    compare(rowsText(none.dispatchProjectRows), "/home/u/my proj:alpha::on: / /home/u/b:beta::on:", "no row open, ordered by name")
-  }
-  // 2.2 test 3
-  function test_dispatch_open_from_runs_with_no_root_and_while_starting() {
-    var empty = make(); if (!empty) return
-    compare(empty.dispatchOpenFromRuns(), true)
-    compare(empty.dispatchStep, "project")
-    compare(empty.dispatchProjectRows.length, 0, "No projects registered")
-    verify(!empty.dispatchProjectRunner.current, "nothing to probe")
-
-    var unusable = make(); if (!unusable) return
-    unusable.projectRoots = [{ root: "-x", name: "x" }, { root: "", name: "empty" }, null, { name: "no root" }]
-    compare(unusable.dispatchOpenFromRuns(), true)
-    compare(unusable.dispatchProjectRows.length, 0, "an unusable entry gives no row")
-    verify(!unusable.dispatchProjectRunner.current, "an unusable entry is not probed")
-
-    var emptied = runsStore(); if (!emptied) return
-    emptied.dispatchOpenFromRuns()
-    var old = emptied.dispatchProjectRunner.current
-    emptied.projectRoots = []
-    compare(emptied.dispatchOpenFromRuns(), true)
-    compare(emptied.dispatchProjectRows.length, 0)
-    reply(old, probeReply([{ root: tc.rootA, ok: true }]), 0)
-    compare(emptied.dispatchProjectProbe, null, "a reopening with no root drops the older probe")
-
-    var starting = readyStore(); if (!starting) return
-    compare(starting.dispatchStart(), true)
-    compare(starting.dispatchOpenFromRuns(), false)
-    compare(starting.dispatchState, "starting")
-    compare(starting.dispatchStep, "")
-    compare(starting.dispatchRoot, tc.rootA)
-    verify(!starting.dispatchProjectRunner.current, "nothing launched")
-  }
-  // 2.2 test 4
-  function test_dispatch_project_probe_unreadable_and_latest_wins() {
-    var store = runsStore(); if (!store) return
-    var bad = probeReply([{ root: tc.rootB, ok: false, reason: "not a directory" }])
-    var unreadable = ["Traceback: boom\n", "", "[1, 2]\n",
-                      JSON.stringify({ ok: false, error: { type: "Usage", message: "no roots" } }) + "\n",
-                      JSON.stringify({ ok: true, projects: "nope" }) + "\n"]
-    for (var i = 0; i < unreadable.length; i++) {
-      store.dispatchOpenFromRuns()
-      reply(store.dispatchProjectRunner.current, bad, 0)
-      verify(store.dispatchProjectProbe !== null, "case " + i + ": a good reply first")
-      store.dispatchProjectReplied(unreadable[i])
-      compare(store.dispatchProjectProbe, null, "case " + i + ": unreadable is null")
-      compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:",
-              "case " + i + ": every row enabled")
-    }
-
-    store.dispatchOpenFromRuns()
-    var first = store.dispatchProjectRunner.current
-    compare(store.dispatchOpenFromRuns(), true, "a second call starts the step over")
-    var second = store.dispatchProjectRunner.current
-    verify(first !== second, "a new probe")
-    reply(first, bad, 0)
-    compare(store.dispatchProjectProbe, null, "the older reply is dropped")
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:")
-    reply(second, bad, 0)
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:not a directory",
-            "the newer reply applies")
-  }
-
-  // 2.2 test 5
-  function test_dispatch_project_pick() {
-    var store = runsStore(); if (!store) return
-    store.dispatchOpenFromRuns()
-    reply(store.dispatchProjectRunner.current,
-          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
-    compare(store.dispatchProjectPick(tc.rootB), false, "a disabled row")
-    compare(store.dispatchProjectPick("/nope"), false, "an unknown root")
-    compare(store.dispatchProjectPick(""), false, "no root")
-    compare(store.dispatchStep, "project", "a refused pick keeps the step")
-    compare(store.dispatchRoot, "", "a refused pick sets no root")
-    compare(store.dispatchProjectPick(tc.rootA), true)
-    compare(store.dispatchStep, "target")
-    compare(store.dispatchRoot, tc.rootA)
-    compare(store.dispatchState, "idle")
-    verify(!store.dispatchDefaultsRunner.current, "a pick looks up no defaults")
-    verify(!store.dispatchSettingsRunner.current, "a pick reads no settings")
-    verify(!store.dispatchPreviewRunner.current, "a pick previews nothing")
-    compare(store.dispatchProjectPick(tc.rootA), false, "no pick at the target step")
-    compare(store.dispatchStep, "target")
-    compare(store.dispatchRoot, tc.rootA)
-
-    var idle = runsStore(); if (!idle) return
-    compare(idle.dispatchProjectPick(tc.rootA), false, "no pick without a step")
-    compare(idle.dispatchStep, "")
-    compare(idle.dispatchRoot, "")
-
-    var early = runsStore(); if (!early) return
-    early.dispatchOpenFromRuns()
-    compare(early.dispatchProjectPick(tc.rootB), true, "a row with no probe entry is enabled")
-    compare(early.dispatchRoot, tc.rootB)
-  }
-  // 2.2 test 6
-  function test_dispatch_back_from_target() {
-    var store = runsStore(); if (!store) return
-    store.dispatchOpenFromRuns()
-    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
-    var probe = store.dispatchProjectProbe
-    var seq = store.dispatchProjectRunner.seq
-    compare(store.dispatchProjectPick(tc.rootB), true)
-    compare(store.dispatchBack(), true)
-    compare(store.dispatchStep, "project")
-    compare(store.dispatchRoot, "")
-    verify(store.dispatchProjectProbe === probe, "the probe is kept")
-    compare(store.dispatchProjectRunner.seq, seq, "nothing relaunched")
-    compare(store.dispatchProjectRows.length, 2)
-    compare(store.dispatchBack(), false, "step 1 has no Back")
-    compare(store.dispatchStep, "project")
-
-    var idle = runsStore(); if (!idle) return
-    compare(idle.dispatchBack(), false, "no Back without a step")
-    compare(idle.dispatchStep, "")
-
-    var form = runsStore(); if (!form) return
-    form.dispatchOpenFromRuns()
-    form.dispatchProjectPick(tc.rootB)
-    form.dispatchStep = "form"
-    compare(form.dispatchBack(), true, "Back from the form returns to the target step")
-    compare(form.dispatchStep, "target")
-    compare(form.dispatchRoot, tc.rootB)
-  }
-  // 2.2 test 10
-  function test_dispatch_rows_follow_project_roots() {
-    var store = runsStore(); if (!store) return
-    store.dispatchOpenFromRuns()
-    var seq = store.dispatchProjectRunner.seq
-    reply(store.dispatchProjectRunner.current,
-          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "not a directory" }]), 0)
-    store.projectRoots = [tc.rootEntry(tc.rootA), { root: tc.rootB, name: "zeta" }]
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:zeta::off:not a directory", "renamed")
-    store.projectRoots = [tc.rootEntry(tc.rootA), { root: tc.rootB, name: "zeta" }, tc.rootEntry(tc.rootC)]
-    compare(rowsText(store.dispatchProjectRows),
-            "/home/u/my proj:alpha:open:on: / /home/u/c:proj::on: / /home/u/b:zeta::off:not a directory",
-            "C added, enabled with no probe entry")
-    store.projectRoots = [tc.rootEntry(tc.rootC), { root: tc.rootB, name: "zeta" }, tc.rootEntry(tc.rootA)]
-    compare(rowsText(store.dispatchProjectRows),
-            "/home/u/my proj:alpha:open:on: / /home/u/c:proj::on: / /home/u/b:zeta::off:not a directory",
-            "reordered: still the open row first, then by name")
-    compare(store.dispatchProjectRunner.seq, seq, "no new probe")
-
-    store.projectRoots = [{ root: "-x", name: "x" }, tc.rootEntry(tc.rootA), { root: "/home/u/b/", name: "beta" }]
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:not a directory",
-            "no row for -x; the trailing / is trimmed")
-    store.dispatchOpenFromRuns()
-    compare(argv(store.dispatchProjectRunner.current), tc.probeCmd + "|/home/u/my proj|/home/u/b/",
-            "-x is not probed; the root is probed as registered")
-    compare(store.dispatchProjectPick("/home/u/b/"), false, "a pick names the row's root")
-    compare(store.dispatchProjectPick("/home/u/b"), true)
-    compare(store.dispatchRoot, "/home/u/b")
-  }
-
-  // 2.2 test 7
-  function test_dispatch_close_and_card_entry_clear_the_steps() {
-    var store = runsStore(); if (!store) return
-    store.dispatchOpenFromRuns()
-    var late = store.dispatchProjectRunner.current
-    compare(store.closeDispatch(), true)
-    compare(store.dispatchStep, "")
-    compare(store.dispatchProjectProbe, null)
-    compare(store.dispatchProjectRows.length, 0)
-    checkDispatchIdle(store, "closed")
-    reply(late, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
-    compare(store.dispatchProjectProbe, null, "a reply after the close is dropped")
-    compare(store.dispatchStep, "")
-    store.dispatchProjectReplied(probeReply([{ root: tc.rootB, ok: true }]))
-    compare(store.dispatchProjectProbe, null, "a reply is applied only while a step is open")
-
-    var cards = dispatchCards()
-    store.dispatchOpenFromRuns()
-    var lateCard = store.dispatchProjectRunner.current
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(store.dispatchStep, "", "a card entry clears the steps")
-    compare(store.dispatchRoot, tc.rootA)
-    compare(store.dispatchProjectRows.length, 0)
-    reply(lateCard, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
-    compare(store.dispatchProjectProbe, null, "a reply after a card entry is dropped")
-
-    var panel = make(); if (!panel) return
-    panel.active = true
-    panel.projectRoots = registry([tc.rootA, tc.rootB])
-    panel.dispatchOpenFromRuns()
-    compare(panel.dispatchProjectPick(tc.rootB), true)
-    panel.active = false
-    compare(panel.dispatchStep, "", "closing the panel clears the steps")
-    compare(panel.dispatchRoot, "")
-
-    var starting = readyStore(); if (!starting) return
-    compare(starting.dispatchStart(), true)
-    starting.dispatchStep = "form"
-    compare(starting.closeDispatch(), false)
-    compare(starting.dispatchStep, "form", "a refused close keeps the step")
-    compare(starting.openDispatch(cards.m1, cards), false)
-    compare(starting.dispatchStep, "form", "a refused card entry keeps the step")
-  }
-
-  // 2.2 test 8
-  function test_dispatch_registry_change_while_open_drops_the_row() {
-    var store = runsStore(); if (!store) return
-    store.dispatchOpenFromRuns()
-    var seq = store.dispatchProjectRunner.seq
-    store.projectRoots = registry([tc.rootA])
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:", "B's row is gone")
-    compare(store.dispatchProjectRunner.seq, seq, "no new probe")
-    compare(store.dispatchStep, "project")
-
-    store.projectRoots = registry([tc.rootA, tc.rootB])
-    store.dispatchOpenFromRuns()
-    compare(store.dispatchProjectPick(tc.rootB), true)
-    store.projectRoots = registry([tc.rootA])
-    compare(store.dispatchStep, "project", "the picked root left: back to step 1")
-    compare(store.dispatchRoot, "")
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:")
-
-    compare(store.dispatchProjectPick(tc.rootA), true)
-    store.projectRoots = registry([tc.rootB, tc.rootA])
-    compare(store.dispatchStep, "target", "a reorder keeps the step")
-    compare(store.dispatchRoot, tc.rootA)
-    store.projectRoots = [{ root: tc.rootA + "/", name: "alpha" }, tc.rootEntry(tc.rootB)]
-    compare(store.dispatchStep, "target", "a trailing / is the same root")
-    compare(store.dispatchRoot, tc.rootA)
-
-    store.dispatchStep = "form"
-    store.projectRoots = registry([tc.rootB])
-    compare(store.dispatchStep, "project", "the picked root left the form: back to step 1")
-    compare(store.dispatchRoot, "")
-  }
-
-  // 2.2 test 9
-  function test_dispatch_open_project_switch_leaves_a_runs_dialog_alone() {
-    var store = make(); if (!store) return
-    store.projectRoots = registry([tc.rootA, tc.rootB, tc.rootC])
-    store.project = tc.rootA
-    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
-    store.dispatchOpenFromRuns()
-    reply(store.dispatchProjectRunner.current,
-          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }, { root: tc.rootC, ok: true }]), 0)
-    var probe = store.dispatchProjectProbe
-    compare(store.dispatchProjectPick(tc.rootB), true)
-    store.project = tc.rootC
-    compare(store.dispatchStep, "target", "the step is kept")
-    compare(store.dispatchRoot, tc.rootB, "the root is kept")
-    verify(store.dispatchProjectProbe === probe, "the probe is kept")
-    compare(store.dispatchState, "idle")
-    compare(Object.keys(store.runSettings).length, 0, "the run settings are the new project's")
-    compare(argv(store.runSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/c")
-    compare(store.dispatchBack(), true)
-    compare(rowsText(store.dispatchProjectRows),
-            "/home/u/c:proj:open:on: / /home/u/my proj:alpha::on: / /home/u/b:beta::on:", "the open mark follows")
-    store.project = ""
-    compare(store.dispatchStep, "project", "closing the project keeps the step")
-    compare(rowsText(store.dispatchProjectRows),
-            "/home/u/my proj:alpha::on: / /home/u/b:beta::on: / /home/u/c:proj::on:", "no row open")
-
-    var inFlight = runsStore(); if (!inFlight) return
-    inFlight.dispatchOpenFromRuns()
-    var proc = inFlight.dispatchProjectRunner.current
-    inFlight.project = tc.rootB
-    reply(proc, probeReply([{ root: tc.rootA, ok: false, reason: "no .brd marker" }]), 0)
-    compare(rowsText(inFlight.dispatchProjectRows),
-            "/home/u/b:beta:open:on: / /home/u/my proj:alpha::off:no .brd marker", "a probe across a switch still applies")
-  }
-
-  // ---- dispatch: the target step (2.3)
-
-  // board-tree.py ROOT's argv up to the root.
-  property string treeCmd: "python3|/plugin/core/backend/boards/board-tree.py"
-
-  // board-tree.py ROOT's reply line: {"ok": true, "data": data}.
-  function treeReply(data) {
-    return JSON.stringify({ ok: true, data: data }) + "\n"
-  }
-
-  // board-tree.py ROOT's failure line: {"ok": false, "error": {type, message}}.
-  function treeFail(message) {
-    return JSON.stringify({ ok: false, error: { type: "BrdFailed", message: message } }) + "\n"
-  }
-
-  // A fresh brd tree as brd prints it (children, no depth or parentId):
-  // milestone m1 holding story s1, which holds subtask t1 (todo) and
-  // subtask t2 (done); then the done milestone d1.
-  function treeData() {
-    return [
-      { id: "m1", title: "M3 Document runs", status: "todo", children: [
-        { id: "s1", title: "Dispatch store", status: "todo", children: [
-          { id: "t1", title: "RunStore dispatch", status: "todo", children: [] },
-          { id: "t2", title: "Docs", status: "done", children: [] }] }] },
-      { id: "d1", title: "M2 Monitor runs", status: "done", children: [] }
-    ]
-  }
-
-  // The target rows' keys, ","-joined.
-  function targetKeys(rows) {
-    return rows.map(function(r) { return r.key }).join(",")
-  }
-
-  // runsStore() opened from Runs, A and B probed ok, and `root` picked: its
-  // tree read is in flight.
-  function pickedStore(root) {
-    var store = runsStore(); if (!store) return null
-    store.dispatchOpenFromRuns()
-    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
-    store.dispatchProjectPick(root)
-    return store
-  }
-
-  // pickedStore(root) with treeData() read: the target rows are up.
-  function targetStore(root) {
-    var store = pickedStore(root); if (!store) return null
-    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
-    return store
-  }
-
-  // The target data at its cleared values.
-  function checkTargetCleared(store, label) {
-    compare(store.dispatchTargetRows.length, 0, label + ": target rows")
-    compare(store.dispatchTargetCardMap, null, label + ": target card map")
-    compare(store.dispatchTargetLoading, false, label + ": target loading")
-    compare(store.dispatchTargetKey, "", label + ": target key")
-  }
-
-  // 2.3 test 1
-  function test_dispatch_target_pick_launches_the_tree_read() {
-    var store = runsStore(); if (!store) return
-    store.dispatchOpenFromRuns()
-    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
-    verify(!store.dispatchTargetRunner.current, "no tree read before a pick")
-    compare(store.dispatchTargetLoading, false)
-    compare(store.dispatchProjectPick(tc.rootB), true)
-    var proc = store.dispatchTargetRunner.current
-    verify(proc, "the pick reads B's tree")
-    compare(argv(proc), tc.treeCmd + "|/home/u/b")
-    compare(proc.command.length, 3, "no --probe")
-    compare(proc.launchGuard, tc.rootB, "guarded by the picked root")
-    compare(store.dispatchTargetLoading, true)
-    compare(store.dispatchTargetRows.length, 0, "no rows until the reply")
-    compare(store.dispatchTargetCardMap, null)
-    compare(store.dispatchTargetKey, "")
-    compare(store.dispatchState, "idle")
-    verify(!store.dispatchDefaultsRunner.current, "no defaults lookup")
-    verify(!store.dispatchSettingsRunner.current, "no settings read")
-    verify(!store.dispatchPreviewRunner.current, "no preview")
-    var seq = store.dispatchTargetRunner.seq
-    compare(store.dispatchProjectPick(tc.rootA), false, "no pick at the target step")
-    compare(store.dispatchTargetRunner.seq, seq, "a refused pick launches nothing")
-    verify(store.dispatchTargetRunner.current === proc)
-    compare(store.dispatchRoot, tc.rootB)
-
-    var off = runsStore(); if (!off) return
-    off.dispatchOpenFromRuns()
-    reply(off.dispatchProjectRunner.current, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
-    var offSeq = off.dispatchTargetRunner.seq
-    compare(off.dispatchProjectPick(tc.rootB), false, "a disabled row")
-    compare(off.dispatchTargetRunner.seq, offSeq, "a disabled row launches nothing")
-    verify(!off.dispatchTargetRunner.current)
-    compare(off.dispatchTargetLoading, false)
-  }
-
-  // 2.3 test 2
-  function test_dispatch_target_rows_from_the_tree() {
-    var store = pickedStore(tc.rootB); if (!store) return
-    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
-    compare(store.dispatchTargetLoading, false)
-    compare(store.dispatchStep, "target")
-    compare(store.dispatchRoot, tc.rootB)
-    compare(store.dispatchState, "idle")
-    var rows = store.dispatchTargetRows
-    compare(targetKeys(rows), "board,card:m1,card:s1,card:t1", "the board row, then the offered cards in tree order")
-    compare(rows[0].card, "board")
-    compare(rows[0].level, "board")
-    compare(rows[0].label, "Whole board")
-    compare(rows[1].level, "milestone")
-    compare(rows[1].label, "Milestone \"M3 Document runs\"")
-    compare(rows[3].level, "subtask")
-    compare(rows[3].depth, 2)
-    var map = store.dispatchTargetCardMap
-    compare(map.t1.parentId, "s1", "indexed with Board.indexTree")
-    compare(map.t1.depth, 2)
-    compare(Object.keys(map).sort().join(","), "d1,m1,s1,t1,t2", "the map holds every card")
-    verify(rows[3].card === map.t1, "the row's card is the map's card")
-
-    var empty = pickedStore(tc.rootB); if (!empty) return
-    reply(empty.dispatchTargetRunner.current, treeReply([]), 0)
-    compare(targetKeys(empty.dispatchTargetRows), "board", "a tree with no offered card gives the board row only")
-    compare(Object.keys(empty.dispatchTargetCardMap).length, 0)
-    compare(empty.dispatchStep, "target")
-  }
-
-  // 2.3 test 8
-  function test_dispatch_target_read_survives_a_project_switch() {
-    var store = pickedStore(tc.rootB); if (!store) return
-    var proc = store.dispatchTargetRunner.current
-    store.project = tc.rootC
-    compare(store.dispatchStep, "target", "the step is kept")
-    compare(store.dispatchRoot, tc.rootB, "the root is kept")
-    compare(store.dispatchTargetLoading, true, "the read is still in flight")
-    verify(store.dispatchTargetRunner.current === proc, "and not relaunched")
-    reply(proc, treeReply(treeData()), 0)
-    compare(store.dispatchTargetLoading, false)
-    compare(targetKeys(store.dispatchTargetRows), "board,card:m1,card:s1,card:t1", "the reply applies")
-  }
-
-  // 2.3 test 5
-  function test_dispatch_target_failure_disables_the_row() {
-    var store = pickedStore(tc.rootB); if (!store) return
-    var probeSeq = store.dispatchProjectRunner.seq
-    reply(store.dispatchTargetRunner.current, treeFail(" ProjectNotFoundError: no project "), 0)
-    compare(store.dispatchStep, "project")
-    compare(store.dispatchRoot, "")
-    compare(store.dispatchState, "idle")
-    checkTargetCleared(store, "failed")
-    compare(rowsText(store.dispatchProjectRows),
-            "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:ProjectNotFoundError: no project",
-            "B is off with the helper's message, A unchanged")
-    compare(store.dispatchProjectFailures[tc.rootB], "ProjectNotFoundError: no project")
-    compare(store.dispatchProjectRunner.seq, probeSeq, "the probe is not relaunched")
-    var seq = store.dispatchTargetRunner.seq
-    compare(store.dispatchProjectPick(tc.rootB), false, "a failed row ignores a pick")
-    compare(store.dispatchTargetRunner.seq, seq, "nothing launched")
-    compare(store.dispatchStep, "project")
-    store.dispatchProjectReplied(probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]))
-    compare(rowsText(store.dispatchProjectRows),
-            "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:ProjectNotFoundError: no project",
-            "a later probe saying B is ok does not lift the failure")
-
-    var unreadable = ["Traceback: boom\n", JSON.stringify({ ok: true }) + "\n", treeReply([null]), treeFail("   ")]
-    for (var i = 0; i < unreadable.length; i++) {
-      var bad = pickedStore(tc.rootB); if (!bad) return
-      reply(bad.dispatchTargetRunner.current, unreadable[i], i === 0 ? 1 : 0)
-      compare(bad.dispatchStep, "project", "case " + i + ": back to step 1")
-      compare(bad.dispatchRoot, "", "case " + i + ": no root")
-      checkTargetCleared(bad, "case " + i)
-      compare(rowsText(bad.dispatchProjectRows),
-              "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:The board could not be read", "case " + i)
-    }
-
-    compare(store.dispatchOpenFromRuns(), true)
-    compare(Object.keys(store.dispatchProjectFailures).length, 0, "a reopening forgets the failures")
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:", "B is judged afresh")
-    compare(store.dispatchProjectPick(tc.rootB), true)
-
-    var closed = pickedStore(tc.rootB); if (!closed) return
-    reply(closed.dispatchTargetRunner.current, treeFail("gone"), 0)
-    compare(closed.closeDispatch(), true)
-    compare(Object.keys(closed.dispatchProjectFailures).length, 0, "a close forgets the failures")
-  }
-
-  // 2.3 test 6
-  function test_dispatch_back_from_target_cancels_the_read() {
-    var store = pickedStore(tc.rootB); if (!store) return
-    var probe = store.dispatchProjectProbe
-    var probeSeq = store.dispatchProjectRunner.seq
-    var late = store.dispatchTargetRunner.current
-    compare(store.dispatchBack(), true)
-    compare(store.dispatchStep, "project")
-    compare(store.dispatchRoot, "")
-    compare(store.dispatchTargetLoading, false, "Back cancels the read")
-    verify(store.dispatchProjectProbe === probe, "the probe is kept")
-    compare(store.dispatchProjectRunner.seq, probeSeq, "the probe is not relaunched")
-    compare(store.dispatchProjectRows.length, 2)
-    reply(late, treeReply(treeData()), 0)
-    compare(store.dispatchStep, "project", "the late reply changes nothing")
-    checkTargetCleared(store, "late reply")
-    compare(Object.keys(store.dispatchProjectFailures).length, 0, "and marks nothing")
-    var seq = store.dispatchTargetRunner.seq
-    compare(store.dispatchProjectPick(tc.rootB), true)
-    verify(store.dispatchTargetRunner.seq > seq, "a new read")
-    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
-    compare(targetKeys(store.dispatchTargetRows), "board,card:m1,card:s1,card:t1", "its reply applies")
-    compare(store.dispatchBack(), true)
-    checkTargetCleared(store, "Back after the reply")
-  }
-
-  // 2.3 test 7
-  function test_dispatch_target_stale_replies_are_dropped() {
-    var store = pickedStore(tc.rootB); if (!store) return
-    var lateB = store.dispatchTargetRunner.current
-    store.dispatchBack()
-    compare(store.dispatchProjectPick(tc.rootA), true)
-    var procA = store.dispatchTargetRunner.current
-    reply(lateB, treeReply(treeData()), 0)
-    compare(store.dispatchRoot, tc.rootA)
-    compare(store.dispatchTargetLoading, true, "B's reply leaves A's read in flight")
-    compare(store.dispatchTargetRows.length, 0, "B's tree is not shown for A")
-    reply(procA, treeReply([]), 0)
-    compare(targetKeys(store.dispatchTargetRows), "board", "A's reply applies")
-
-    var failed = pickedStore(tc.rootB); if (!failed) return
-    var lateFail = failed.dispatchTargetRunner.current
-    failed.dispatchBack()
-    failed.dispatchProjectPick(tc.rootA)
-    reply(lateFail, treeFail("gone"), 0)
-    compare(failed.dispatchStep, "target", "B's failure does not send A back")
-    compare(failed.dispatchRoot, tc.rootA)
-    compare(Object.keys(failed.dispatchProjectFailures).length, 0, "and marks nothing")
-
-    var closed = pickedStore(tc.rootB); if (!closed) return
-    var lateClosed = closed.dispatchTargetRunner.current
-    compare(closed.closeDispatch(), true)
-    checkDispatchIdle(closed, "closed")
-    reply(lateClosed, treeReply(treeData()), 0)
-    checkDispatchIdle(closed, "a reply after the close")
-    compare(closed.dispatchRoot, "")
-
-    var card = pickedStore(tc.rootB); if (!card) return
-    var lateCard = card.dispatchTargetRunner.current
-    var cards = dispatchCards()
-    compare(card.openDispatch(cards.m1, cards), true)
-    compare(card.dispatchStep, "")
-    compare(card.dispatchRoot, tc.rootA)
-    checkTargetCleared(card, "card entry")
-    reply(lateCard, treeReply(treeData()), 0)
-    checkTargetCleared(card, "a reply after a card entry")
-    compare(card.dispatchStep, "")
-    compare(card.dispatchState, "previewing", "the card's dispatch is untouched")
-
-    var reopened = pickedStore(tc.rootB); if (!reopened) return
-    var lateReopen = reopened.dispatchTargetRunner.current
-    compare(reopened.dispatchOpenFromRuns(), true)
-    checkTargetCleared(reopened, "reopened")
-    reply(lateReopen, treeReply(treeData()), 0)
-    compare(reopened.dispatchStep, "project", "a reply after a reopening is dropped")
-    checkTargetCleared(reopened, "a reply after a reopening")
-
-    var dropped = pickedStore(tc.rootB); if (!dropped) return
-    var lateDropped = dropped.dispatchTargetRunner.current
-    dropped.projectRoots = registry([tc.rootA])
-    compare(dropped.dispatchStep, "project")
-    compare(dropped.dispatchRoot, "")
-    checkTargetCleared(dropped, "registry fallback")
-    reply(lateDropped, treeReply(treeData()), 0)
-    compare(dropped.dispatchStep, "project", "a reply after the registry fallback is dropped")
-    checkTargetCleared(dropped, "a reply after the registry fallback")
-  }
-
-  // 2.3 test 3
-  function test_dispatch_target_pick_enters_the_form_for_another_project() {
-    var store = targetStore(tc.rootB); if (!store) return
-    var rows = store.dispatchTargetRows
-    var map = store.dispatchTargetCardMap
-    compare(store.dispatchTargetPick("card:m1"), true)
-    compare(store.dispatchStep, "form")
-    compare(store.dispatchTargetKey, "card:m1")
-    compare(store.dispatchRoot, tc.rootB)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchTarget.level, "milestone")
-    compare(store.dispatchTargetLabel, Runs.dispatchLabel(map.m1, map))
-    compare(store.dispatchTargetLabel, "Milestone \"M3 Document runs\"")
-    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/b")
-    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b")
-    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchForm.parallelism, 2, "B's settings, not A's")
-    compare(store.dispatchForm.verify.join(","), "make test")
-    compare(store.dispatchForm.prefix, "bpre")
-    compare(store.dispatchForm.base, "main")
-    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "B's milestone is previewed")
-    verify(store.dispatchTargetRows === rows, "the rows stay")
-    verify(store.dispatchTargetCardMap === map, "the card map stays")
-
-    var board = targetStore(tc.rootB); if (!board) return
-    compare(board.dispatchTargetPick("board"), true)
-    compare(board.dispatchStep, "form")
-    compare(board.dispatchTargetKey, "board")
-    compare(board.dispatchTarget.level, "board")
-    compare(board.dispatchTargetLabel, "Whole board")
-  }
-
-  // 2.3 test 4
-  function test_dispatch_target_pick_for_the_open_project_and_refusals() {
-    var store = pickedStore(tc.rootA); if (!store) return
-    compare(store.dispatchTargetPick("board"), false, "no pick while loading")
-    compare(store.dispatchStep, "target")
-    compare(store.dispatchTargetLoading, true)
-    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
-    var refused = ["card:t2", "card:zz", "", "t1", null, 7]
-    for (var i = 0; i < refused.length; i++) {
-      compare(store.dispatchTargetPick(refused[i]), false, "key " + refused[i])
-      compare(store.dispatchStep, "target", "key " + refused[i] + ": step")
-      compare(store.dispatchTargetKey, "", "key " + refused[i] + ": key")
-      compare(store.dispatchState, "idle", "key " + refused[i] + ": state")
-    }
-    verify(!store.dispatchDefaultsRunner.current, "a refused pick launches nothing")
-    compare(store.dispatchTargetPick("card:t1"), true)
-    compare(store.dispatchStep, "form")
-    compare(store.dispatchTargetKey, "card:t1")
-    compare(store.dispatchTarget.level, "subtask")
-    compare(store.dispatchTargetLabel, "Subtask \"RunStore dispatch\"")
-    verify(!store.dispatchSettingsRunner.current, "the open project's runSettings are used")
-    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/my proj")
-    compare(store.dispatchForm.prefix, "old", "A's prefix history")
-    compare(store.dispatchForm.parallelism, 4)
-    var defaults = store.dispatchDefaultsRunner.current
-    compare(store.dispatchTargetPick("card:m1"), false, "no pick at the form")
-    compare(store.dispatchTargetKey, "card:t1")
-    compare(store.dispatchTarget.level, "subtask")
-    verify(store.dispatchDefaultsRunner.current === defaults, "nothing relaunched")
-
-    var idle = runsStore(); if (!idle) return
-    compare(idle.dispatchTargetPick("board"), false, "no pick without a step")
-    checkDispatchIdle(idle, "no step")
-  }
-
-  // 2.3 test 11
-  function test_dispatch_start_from_runs_refreshes_only_its_root() {
-    var store = targetStore(tc.rootB); if (!store) return
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
-    compare(store.dispatchTargetPick("card:t1"), true)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchStart(), true)
-    var runner = store.dispatchStartRunners[0]
-    compare(argv(runner.current), tc.startCmd + "/home/u/b|card|t1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
-    var seq = store.snapshotRunner.seq
-    reply(runner.current, startOk("r9", ""), 0)
-    compare(store.dispatchState, "started")
-    compare(store.dispatchRunId, "r9")
-    compare(store.snapshotRunner.seq, seq + 1, "one snapshot is asked for")
-    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|/home/u/b", "of B only")
-    compare(store.dispatchStep, "form")
-  }
-
-  // 2.3 test 9
-  function test_dispatch_back_from_form_keeps_the_picked_row() {
-    var store = targetStore(tc.rootB); if (!store) return
-    var rows = store.dispatchTargetRows
-    var map = store.dispatchTargetCardMap
-    var treeSeq = store.dispatchTargetRunner.seq
-    compare(store.dispatchTargetPick("card:m1"), true)
-    var defaults = store.dispatchDefaultsRunner.current
-    var settings = store.dispatchSettingsRunner.current
-    compare(store.dispatchBack(), true)
-    compare(store.dispatchStep, "target")
-    compare(store.dispatchRoot, tc.rootB)
-    compare(store.dispatchTargetKey, "card:m1", "the picked row is kept")
-    verify(store.dispatchTargetRows === rows, "the rows are kept")
-    verify(store.dispatchTargetCardMap === map, "the card map is kept")
-    compare(store.dispatchTargetLoading, false)
-    compare(store.dispatchTargetRunner.seq, treeSeq, "the tree is not read again")
-    checkDispatchFieldsIdle(store, "Back from the form")
-    reply(defaults, defaultsOk("main"), 0)
-    reply(settings, bSettings(), 0)
-    compare(store.dispatchState, "idle", "the form's lookups are dropped")
-    compare(store.dispatchForm, null)
-    compare(store.dispatchTargetPick("card:s1"), true)
-    compare(store.dispatchTarget.level, "story")
-    compare(store.dispatchTargetKey, "card:s1")
-
-    var starting = targetStore(tc.rootB); if (!starting) return
-    compare(starting.dispatchTargetPick("card:t1"), true)
-    reply(starting.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(starting.dispatchSettingsRunner.current, bSettings(), 0)
-    compare(starting.dispatchStart(), true)
-    compare(starting.dispatchBack(), false, "no Back while starting")
-    compare(starting.dispatchStep, "form")
-    compare(starting.dispatchState, "starting")
-    compare(starting.dispatchTargetKey, "card:t1")
-  }
-
-  // 2.3 test 10
-  function test_dispatch_registry_change_at_form() {
-    var store = targetStore(tc.rootB); if (!store) return
-    compare(store.dispatchTargetPick("card:m1"), true)
-    var defaults = store.dispatchDefaultsRunner.current
-    store.projectRoots = registry([tc.rootB, tc.rootA])
-    compare(store.dispatchStep, "form", "a reorder keeps the form")
-    compare(store.dispatchRoot, tc.rootB)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchTargetKey, "card:m1")
-    store.projectRoots = registry([tc.rootA])
-    compare(store.dispatchStep, "project", "the picked root left: back to step 1")
-    compare(store.dispatchRoot, "")
-    checkDispatchFieldsIdle(store, "dropped at the form")
-    checkTargetCleared(store, "dropped at the form")
-    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:", "B's row is gone")
-    reply(defaults, defaultsOk("main"), 0)
-    compare(store.dispatchState, "idle", "the form's lookup is dropped")
-
-    var starting = targetStore(tc.rootB); if (!starting) return
-    compare(starting.dispatchTargetPick("card:t1"), true)
-    reply(starting.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    reply(starting.dispatchSettingsRunner.current, bSettings(), 0)
-    compare(starting.dispatchStart(), true)
-    var runner = starting.dispatchStartRunners[0]
-    starting.projectRoots = registry([tc.rootA])
-    compare(starting.dispatchStep, "form", "a start in flight keeps the form")
-    compare(starting.dispatchState, "starting")
-    compare(starting.dispatchRoot, tc.rootB)
-    compare(starting.dispatchTargetKey, "card:t1")
-    reply(runner.current, startOk("r9", ""), 0)
-    compare(starting.dispatchState, "started", "the start completes for its root")
-  }
+  function toastIds(store) { return alerts(store).toasts.map(function(t) { return t.id }).join(",") }
 
   // ---- list snapshots
 
@@ -7227,7 +3327,7 @@ TestCase {
     compare(store.amStatus, "error", "no root answered")
     compare(store.lastError, "StoreBusyError: the am store is busy; try again")
     compare(store.stale, false, "stale is left as it was")
-    compare(store.toasts.length, 0)
+    compare(alerts(store).toasts.length, 0)
     var seq = store.snapshotRunner.seq
     store.livenessTimer.triggered()
     compare(store.snapshotRunner.seq, seq + 1, "the next tick retries")
@@ -7345,17 +3445,7 @@ TestCase {
     compare(store.watchCursor, 1005)
   }
 
-  // ---- control and logs for a run of any project (3.5)
-
-  property string bRepo: "/home/u/b-work"
-  property string settingsCmdB: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/b"
-
-  // `e` with its repo_dir moved to bRepo: a run of rootB whose repository is
-  // not the registry root (the store tags it by the entry's root).
-  function bWork(e) {
-    e.repo_dir = tc.bRepo
-    return e
-  }
+  // ---- logs for a run of any project (3.5); its control tests are in tst_run_control_store.qml
 
   // rootA and rootB registered, `open` the open project ("" for none), and
   // the first snapshot listed aRuns under A and bRuns under B.
@@ -7373,181 +3463,6 @@ TestCase {
     for (var k in e) if (k !== "status") row[k] = e[k]
     var run = Runs.normalizeRun({ row: row, status: e.status })
     return root === undefined ? run : Runs.withProject(run, root, "")
-  }
-
-  // 1
-  function test_pause_and_cancel_pass_the_runs_repo_dir_with_or_without_a_project() {
-    var store = crossStore("", [running("a1")], [bWork(running("b1")), bWork(running("b2"))]); if (!store) return
-    compare(store.project, "")
-    compare(store.control("pause", "b1"), true, "no project open is not a refusal")
-    var pause = store.controlRunners[0].current
-    compare(argv(pause), tc.ctlCmd + "pause|b1|/home/u/b-work")
-    compare(pause.command.length, 5)
-    compare(pause.launchGuard, "", "no guard")
-    compare(store.control("cancel", "a1"), true)
-    compare(argv(store.controlRunners[1].current), tc.ctlCmd + "cancel|a1|/home/u/my proj")
-    store.project = rootA
-    compare(store.control("pause", "b2"), true)
-    compare(argv(store.controlRunners[2].current), tc.ctlCmd + "pause|b2|/home/u/b-work", "never the open project's root")
-  }
-
-  // 2
-  function test_a_task_runs_resume_passes_its_repo_dir_with_no_settings_step() {
-    var store = crossStore(rootA, [running("a1")], [bWork(ctlEntry("b1", "started", false, "task"))]); if (!store) return
-    compare(store.control("resume", "b1"), true)
-    var runner = store.controlRunners[0]
-    compare(runner.seq, 1, "one launch only")
-    compare(argv(runner.current), tc.ctlCmd + "resume|b1|/home/u/b-work")
-    compare(runner.current.command.length, 5)
-  }
-
-  // 3
-  function test_a_milestone_resume_reads_its_own_projects_settings() {
-    var store = crossStore(rootA, [running("a1")], [bWork(dead("b1"))]); if (!store) return
-    compare(store.control("resume", "b1"), true)
-    var runner = store.controlRunners[0]
-    compare(argv(runner.current), tc.settingsCmdB, "B's run settings, not A's")
-    compare(runner.current.command.length, 4)
-    compare(runner.current.launchGuard, "")
-    reply(runner.current, settingsReply(["a"], false), 0)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|b1|/home/u/b-work|--verify|a")
-  }
-
-  // 4
-  function test_the_resume_keeps_the_repository_it_was_asked_for() {
-    var store = crossStore(rootA, [running("a1")], [bWork(dead("b1"))]); if (!store) return
-    store.control("resume", "b1")
-    var runner = store.controlRunners[0]
-    store.refresh()
-    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [])]), 0)
-    compare(store.runById("b1"), null, "the run left the snapshot")
-    compare(store.pending.b1, "resume", "a request in flight is never settled by a snapshot")
-    reply(runner.current, settingsReply(["a"], false), 0)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|b1|/home/u/b-work|--verify|a")
-    compare(store.pending.b1, "resume")
-  }
-
-  // 5
-  function test_a_run_with_no_repository_or_no_project_root_is_refused() {
-    var store = make(); if (!store) return
-    var noRepo = held(running("r1"), rootA)
-    noRepo.repo_dir = ""
-    store.runs = [noRepo, held(dead("r2")), held(ctlEntry("r3", "started", false, "task"))]
-    var actions = ["pause", "resume", "cancel"]
-    for (var i = 0; i < actions.length; i++) {
-      compare(store.refusalOf(actions[i], "r1"), "This run has no repository", actions[i])
-      compare(store.control(actions[i], "r1"), false, actions[i])
-    }
-    compare(store.refusalOf("resume", "r2"), "This run's project is not known")
-    compare(store.control("resume", "r2"), false)
-    compare(store.controlRunners.length, 0, "nothing launched")
-    compare(Object.keys(store.pending).length, 0)
-    compare(store.refusalOf("cancel", "r2"), "", "a cancel needs no project root")
-    compare(store.control("cancel", "r2"), true)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "cancel|r2|/home/u/my proj")
-    compare(store.refusalOf("resume", "r3"), "", "a task run's resume needs no project root")
-    compare(store.control("resume", "r3"), true)
-    compare(argv(store.controlRunners[1].current), tc.ctlCmd + "resume|r3|/home/u/my proj")
-    compare(store.controlRunners[1].seq, 1)
-    compare(store.controlRunners.length, 2)
-  }
-
-  // 6
-  function test_a_request_for_another_projects_run_survives_a_switch_and_its_reply_shows_on_that_run() {
-    var store = crossStore(rootA, [running("a1")],
-                           [bWork(running("b1")), bWork(running("b2")), bWork(dead("b3"))]); if (!store) return
-    compare(store.control("pause", "b1"), true)
-    var proc = store.controlRunners[0].current
-    store.project = rootB
-    store.project = ""
-    compare(store.pending.b1, "pause", "a switch settles nothing")
-    compare(store.controlRunners.length, 1)
-    var seq = store.snapshotRunner.seq
-    reply(proc, ctlOk({ requested_at: "t1" }), 0)
-    compare(store.pending.b1, "pause", "acknowledged: pending until a snapshot settles it")
-    compare(store.snapshotRunner.seq, seq + 1, "and re-snapshots")
-    compare(store.controlRunners.length, 0)
-
-    compare(store.control("pause", "b2"), true)
-    var proc2 = store.controlRunners[0].current
-    store.project = rootA
-    reply(proc2, ctlFail("NotRunningError", "not running"), 0)
-    compare(store.pending.b2, undefined)
-    compare(store.lastControlError, "The run is not running")
-    compare(store.lastControlErrorRunId, "b2", "the error shows on that run")
-
-    compare(store.control("resume", "b3"), true)
-    var runner = store.controlRunners[0]
-    store.project = rootB
-    reply(runner.current, settingsReply(["a"], false), 0)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|b3|/home/u/b-work|--verify|a",
-            "the settings reply after a switch launches run-control")
-  }
-
-  // Review Focus 5.
-  function test_a_request_made_with_no_project_open_is_answered_after_one_opens() {
-    var store = crossStore("", [running("a1")], [bWork(running("b1"))]); if (!store) return
-    compare(store.control("pause", "b1"), true)
-    var proc = store.controlRunners[0].current
-    store.project = rootA
-    var seq = store.snapshotRunner.seq
-    reply(proc, ctlFail("NotRunningError", "not running"), 0)
-    compare(store.pending.b1, undefined)
-    compare(store.lastControlError, "The run is not running")
-    compare(store.lastControlErrorRunId, "b1")
-    compare(store.snapshotRunner.seq, seq + 1)
-  }
-
-  // Review Focus 2.
-  function test_open_cancel_on_a_run_with_no_repository_flashes_why() {
-    var store = make(); if (!store) return
-    var run = held(running("r1"), rootA)
-    run.repo_dir = ""
-    store.runs = [run]
-    compare(store.openCancel("r1"), false)
-    compare(store.cancelOpen, false)
-    compare(store.flashText, "This run has no repository")
-    compare(store.controlRunners.length, 0)
-  }
-
-  // 7
-  function test_a_project_switch_keeps_the_dialog_the_flash_the_control_error_and_the_requests() {
-    var store = ctlStore([running("r1"), running("r2"), running("r3")]); if (!store) return
-    store.control("pause", "r3")
-    store.control("pause", "r2")
-    reply(store.controlRunners[1].current, ctlFail("NotRunningError", "not running"), 0)
-    compare(store.lastControlErrorRunId, "r2")
-    store.checkWaiting(Date.now() + 30000)
-    compare(store.stillWaiting.r3, true)
-    store.openCancel("r1")
-    store.cancelText = "can"
-    store.cancelError = "x"
-    store.flash("The run has finished")
-    store.project = rootB
-    compare(store.cancelOpen, true)
-    compare(store.cancelRunId, "r1")
-    compare(store.cancelText, "can")
-    compare(store.cancelError, "x")
-    compare(store.flashText, "The run has finished")
-    compare(store.flashTimer.running, true)
-    compare(store.lastControlError, "The run is not running")
-    compare(store.lastControlErrorRunId, "r2")
-    compare(store.pending.r3, "pause")
-    compare(store.stillWaiting.r3, true)
-    compare(store.controlRunners.length, 1)
-    compare(store.controlRunners[0].runId, "r3")
-  }
-
-  // Review Focus 1.
-  function test_a_cancel_dialog_for_another_projects_run_survives_closing_the_project_and_confirms() {
-    var store = crossStore(rootA, [running("a1")], [bWork(running("b1"))]); if (!store) return
-    compare(store.openCancel("b1"), true)
-    store.project = ""
-    compare(store.cancelRunId, "b1", "the dialog is kept")
-    store.cancelText = "cancel"
-    compare(store.confirmCancel(), true)
-    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "cancel|b1|/home/u/b-work")
-    compare(store.cancelOpen, false)
   }
 
   // 8
@@ -7641,7 +3556,7 @@ TestCase {
     compare(store.debounceTimer.running, false)
     compare(store.runs.length, 0)
     compare(Object.keys(store.runsByProject).length, 0, "every root's list is forgotten too")
-    compare(store.alertsArmed, false)
+    compare(alerts(store).alertsArmed, false)
     compare(store.selectedRunId, tc.doneRun, "the selection is untouched")
     compare(old.running, false, "the old store's snapshot is stopped")
     var list = store.snapshotRunner.current
@@ -7652,8 +3567,8 @@ TestCase {
     compare(Object.keys(store.appliedSeq).length, 0)
     reply(list, capturedList([], true), 0)
     compare(store.runs[0].status, "escalated")
-    compare(store.toasts.length, 0, "the first list after a reset only arms")
-    compare(store.alertsArmed, true)
+    compare(alerts(store).toasts.length, 0, "the first list after a reset only arms")
+    compare(alerts(store).alertsArmed, true)
     compare(store.appliedSeq[tc.startedRun], 0)
   }
 
@@ -7667,7 +3582,7 @@ TestCase {
       compare(store.snapshotRunner.seq, seq, label)
       compare(store.runs.length, 2, label)
       compare(Object.keys(store.appliedSeq).length, 2, label)
-      compare(store.alertsArmed, true, label)
+      compare(alerts(store).alertsArmed, true, label)
     }
   }
 
@@ -7769,7 +3684,7 @@ TestCase {
     compare(Object.keys(store.appliedSeq).length, 2)
     compare(store.watchCursor, 1005)
     compare(store.nudges[tc.doneRun], 1005)
-    compare(store.alertsArmed, true)
+    compare(alerts(store).alertsArmed, true)
   }
 
   function test_a_hello_from_another_store_starts_over_from_a_list_snapshot() {
@@ -7789,7 +3704,7 @@ TestCase {
     compare(Object.keys(store.nudges).length, 0)
     compare(store.debounceTimer.running, false)
     compare(store.runs.length, 0)
-    compare(store.alertsArmed, false)
+    compare(alerts(store).alertsArmed, false)
     compare(store.selectedRunId, tc.doneRun, "the selection is untouched")
     compare(old.running, false, "the old store's snapshot is stopped")
     var list = store.snapshotRunner.current
@@ -7800,8 +3715,8 @@ TestCase {
     compare(Object.keys(store.appliedSeq).length, 0)
     reply(list, capturedList([], true), 0)
     compare(store.runs[0].status, "escalated")
-    compare(store.toasts.length, 0, "the new store's first list only arms")
-    compare(store.alertsArmed, true)
+    compare(alerts(store).toasts.length, 0, "the new store's first list only arms")
+    compare(alerts(store).alertsArmed, true)
     compare(store.appliedSeq[tc.startedRun], 0)
     compare(store.snapshotRunner.seq, seq, "its reply launches no further snapshot")
   }
@@ -7875,183 +3790,233 @@ TestCase {
     reply(store.snapshotRunner.current, capturedList(), 0)
     compare(store.runs.length, 2)
   }
+  // ---- snapshotReplied (split-runstore 2.2)
 
-  // ---- relaunch
-
-  // Runs.stopReport's relaunch for m1 with a recorded prefix and base; extra's
-  // keys are set over it.
-  function relaunchOf(extra) {
-    var r = { level: "milestone", cardId: "m1", prefix: "relaunch/m1", base: "release" }
-    for (var key in extra) r[key] = extra[key]
-    return r
+  // Every snapshotReplied of `store` from now on, as {root, outcome,
+  // previous, runs, status, all, error}: the arguments (previousRuns and runs
+  // as ids) and the store's amStatus, ids(runs) and lastError at emission.
+  function recordReplies(store) {
+    var out = []
+    store.snapshotReplied.connect(function(root, outcome, previousRuns, runs) {
+      out.push({ root: root, outcome: outcome, previous: ids(previousRuns), runs: ids(runs),
+                 status: store.amStatus, all: ids(store.runs), error: store.lastError })
+    })
+    return out
   }
 
-  property string relaunchArgs: "/home/u/my proj|milestone|m1|--base-branch|release|--branch-prefix|relaunch/m1|--max-concurrent|4|--verify|uv run pytest"
-
-  function test_relaunch_overrides_prefix_and_base() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf()), true)
-    compare(store.dispatchState, "previewing")
-    compare(store.dispatchTarget.level, "milestone")
-    compare(store.dispatchTargetLabel, Runs.dispatchLabel(cards.m1, cards))
-    compare(store.dispatchForm.prefix, "relaunch/m1")
-    compare(store.dispatchForm.base, "release")
-    compare(store.dispatchError, "")
-    compare(store.dispatchDebounceTimer.running, false, "no check is scheduled before the defaults reply")
-    verify(!store.dispatchPreviewRunner.current, "no preview before the defaults reply")
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchForm.base, "release", "the default branch does not replace the recorded base")
-    compare(store.dispatchForm.prefix, "relaunch/m1")
+  // R1
+  function test_an_ok_reply_emits_ok_per_root_in_registry_order() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)])]), 0)
+    var seen = recordReplies(store)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotReplied" })
+    store.refresh()
+    // B's entry first: the registry's order decides, not the reply's.
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB), entry("b2", "started", true, tc.rootB)]),
+                                                  okEntry(tc.rootA, [entry("a2", "started", true)])]), 0)
+    compare(spy.count, 2)
+    compare(seen.length, 2)
+    compare(seen[0].root, tc.rootA, "A first, in registry order")
+    compare(seen[0].outcome, "ok")
+    compare(seen[0].previous, "a1", "the root's runs before the reply")
+    compare(seen[0].runs, "a2", "and after it")
+    compare(seen[1].root, tc.rootB)
+    compare(seen[1].outcome, "ok")
+    compare(seen[1].previous, "b1")
+    compare(seen[1].runs, "b1,b2")
+    compare(seen[0].all, "a2,b1,b2", "emitted after the merged runs are applied")
+    compare(seen[0].status, "ok")
+    compare(seen[0].error, "")
+    compare(spy.signalArguments[0][2][0].project.name, "alpha", "previousRuns are the tagged runs")
+    compare(spy.signalArguments[1][3][1].project.name, "beta", "and so are runs")
   }
 
-  function test_relaunch_takes_verify_and_parallelism_from_the_settings() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    var r = relaunchOf({ verify: ["make lint"], parallelism: 9, allowNoVerification: true })
-    compare(store.relaunchOpenFor(cards.m1, cards, r), true)
-    var form = store.dispatchForm
-    compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify")
-    compare(form.verify.length, 1)
-    compare(form.verify[0], "uv run pytest")
-    compare(form.parallelism, 4)
-    compare(form.allowNoVerification, false)
+  // R2
+  function test_a_root_with_no_entry_emits_nothing_and_a_failed_entry_emits_failed() {
+    var store = makeWithRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    var seen = recordReplies(store)
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootC, "AmTimeout", "am did not answer within 60 s."),
+                                                  okEntry(tc.rootA, [entry("a1", "done", false)])]), 0)
+    compare(seen.length, 2, "B, with no entry, emits nothing")
+    compare(seen[0].root, tc.rootA)
+    compare(seen[0].outcome, "ok")
+    compare(seen[0].previous, "", "a root with no runs before: []")
+    compare(seen[0].runs, "a1")
+    compare(seen[1].root, tc.rootC)
+    compare(seen[1].outcome, "failed")
+    compare(seen[1].previous, "")
+    compare(seen[1].runs, "", "a failed root's runs are []")
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootA, "AmTimeout", "am did not answer within 60 s."),
+                                                  okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])]), 0)
+    compare(seen.length, 4)
+    compare(seen[2].root, tc.rootA)
+    compare(seen[2].outcome, "failed")
+    compare(seen[2].previous, "a1", "a failed root's runs before the reply")
+    compare(seen[2].runs, "")
+    compare(seen[3].root, tc.rootC)
+    compare(seen[3].outcome, "ok")
+    compare(seen[3].runs, "c1")
   }
 
-  function test_relaunch_dispatches_from_the_open_project() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
-    compare(store.project, rootA)
-    var lookup = store.dispatchDefaultsRunner.current
-    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/my proj")
-    reply(lookup, defaultsOk("main"), 0)
-    var proc = store.dispatchPreviewRunner.current
-    verify(proc, "the preview is launched")
-    compare(proc.command[2], "/home/u/my proj", "the first argument after the script is the open project")
-    compare(proc.launchGuard, "/home/u/my proj")
+  // R3
+  function test_a_run_listed_under_two_roots_is_in_its_owners_runs_only() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    var seen = recordReplies(store)
+    // synthetic: x under both roots, and a run without an id under B.
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("x", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("x", "done", false, tc.rootB), entry("b1", "done", false, tc.rootB),
+                                                                     entry("", "done", false, tc.rootB)])]), 0)
+    compare(seen.length, 2)
+    compare(seen[0].runs, "x", "A owns x")
+    compare(seen[1].runs, "b1", "B's runs lack x, and a run without an id is no root's")
+    compare(ids(store.runsByProject[tc.rootB]), "x,b1,", "B's own list keeps all three")
   }
 
-  function test_relaunch_preview_and_start_carry_the_recorded_values() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.relaunchArgs)
-    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchStart(), true)
-    compare(argv(store.dispatchStartRunners[0].current), tc.startCmd + tc.relaunchArgs)
+  // R4
+  function test_every_entry_failed_emits_failed_after_the_error_is_set() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]), okEntry(tc.rootB, [])]), 0)
+    var seen = recordReplies(store)
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootB, "AmTimeout", "am did not answer within 60 s."),
+                                                  failEntry(tc.rootA, "HelperError", "boom")]), 0)
+    compare(seen.length, 2)
+    compare(seen[0].root, tc.rootA)
+    compare(seen[0].outcome, "failed")
+    compare(seen[0].previous, "a1")
+    compare(seen[0].runs, "")
+    compare(seen[1].root, tc.rootB)
+    compare(seen[1].outcome, "failed")
+    compare(seen[0].status, "error", "amStatus is set before the emission")
+    compare(seen[0].error, "AmTimeout: am did not answer within 60 s.", "lastError is the first failed entry's sentence")
+    compare(seen[0].all, "a1", "the runs stay")
   }
 
-  function test_relaunch_without_a_card_or_relaunch_is_refused() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    var noCards = [null, undefined, [], "m1"]
-    for (var i = 0; i < noCards.length; i++) {
-      compare(store.relaunchOpenFor(noCards[i], cards, relaunchOf()), false, "card " + i)
-      checkDispatchIdle(store, "card " + i)
+  // R5
+  function test_am_missing_emits_missing_per_matched_root_after_the_runs_are_emptied() {
+    var store = makeWithRoots([tc.rootA, tc.rootB, tc.rootC]); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "done", false)]),
+                                                  okEntry(tc.rootB, [entry("b1", "done", false, tc.rootB)]),
+                                                  okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)])]), 0)
+    var seen = recordReplies(store)
+    store.refresh()
+    reply(store.snapshotRunner.current, allReply([failEntry(tc.rootB, "AmMissing", "am is not installed."),
+                                                  failEntry(tc.rootA, "AmMissing", "am is not installed.")]), 0)
+    compare(seen.length, 2, "C, with no entry, emits nothing")
+    compare(seen[0].root, tc.rootA, "registry order")
+    compare(seen[0].outcome, "missing")
+    compare(seen[0].previous, "a1", "the root's runs before the reply")
+    compare(seen[0].runs, "")
+    compare(seen[0].all, "", "emitted after the runs are emptied")
+    compare(seen[0].status, "missing")
+    compare(seen[1].root, tc.rootB)
+    compare(seen[1].outcome, "missing")
+    compare(seen[1].previous, "b1")
+  }
+
+  // R6
+  function test_a_reply_with_no_usable_result_emits_nothing() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotReplied" })
+    // synthetic: entries for no registered root.
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootC, [entry("c1", "done", false, tc.rootC)]), null, "x"]), 0)
+    compare(store.amStatus, "error", "no matched entry")
+    compare(spy.count, 0)
+    store.refresh()
+    reply(store.snapshotRunner.current, JSON.stringify({ ok: false, error: { type: "Usage", message: "usage" } }) + "\n", 2)
+    compare(spy.count, 0, "an ok: false envelope")
+    store.refresh()
+    reply(store.snapshotRunner.current, "garbage\n", 1)
+    compare(spy.count, 0, "garbage")
+    store.refresh()
+    var gone = store.snapshotRunner.current
+    store.projectRoots = registry([tc.rootC])
+    reply(gone, allReply([okEntry(tc.rootA, [entry("a1", "done", false)])]), 0)
+    compare(spy.count, 0, "every launched root gone")
+  }
+
+  // R7
+  function test_a_reply_while_closed_still_emits() {
+    var store = makeWithRoots([tc.rootA]); if (!store) return
+    compare(store.active, false)
+    var seen = recordReplies(store)
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, [entry("a1", "escalated", false)])]), 0)
+    compare(seen.length, 1)
+    compare(seen[0].outcome, "ok")
+    compare(seen[0].runs, "a1")
+  }
+
+  // R8
+  function test_a_cursor_reset_emits_missing_for_every_usable_root() {
+    var store = threeRoots(); if (!store) return
+    var seen = recordReplies(store)
+    sendLine(store.watchProc, resetHello(true))
+    compare(seen.length, 3)
+    var roots = [tc.rootA, tc.rootB, tc.rootC]
+    var before = ["a1", "b1", "c1"]
+    for (var i = 0; i < 3; i++) {
+      compare(seen[i].root, roots[i], "registry order")
+      compare(seen[i].outcome, "missing")
+      compare(seen[i].previous, before[i], "the root's runs before the reset")
+      compare(seen[i].runs, "")
+      compare(seen[i].all, "", "emitted after the runs are cleared")
     }
-    var noRelaunch = [null, undefined, []]
-    for (var j = 0; j < noRelaunch.length; j++) {
-      compare(store.relaunchOpenFor(cards.m1, cards, noRelaunch[j]), false, "relaunch " + j)
-      checkDispatchIdle(store, "relaunch " + j)
-    }
-    verify(!store.dispatchDefaultsRunner.current, "no defaults lookup")
-
-    compare(store.openDispatch(cards.m1, cards), true)
-    var target = store.dispatchTarget
-    var form = store.dispatchForm
-    var lookup = store.dispatchDefaultsRunner.current
-    compare(store.relaunchOpenFor(null, cards, relaunchOf()), false)
-    compare(store.dispatchState, "previewing", "the open dispatch stays open")
-    verify(store.dispatchTarget === target, "same target")
-    verify(store.dispatchForm === form, "same form")
-    compare(store.dispatchForm.prefix, "old")
-    verify(store.dispatchDefaultsRunner.current === lookup, "the same lookup")
-    compare(lookup.running, true, "still in flight")
-
-    compare(store.relaunchOpenFor(cards.d1, cards, relaunchOf({ cardId: "d1" })), false)
-    compare(store.dispatchState, "refused")
-    compare(store.dispatchErrorType, "Target")
-    compare(store.dispatchError, "The card is done")
-    compare(store.dispatchForm, null, "nothing overridden")
   }
 
-  function test_relaunch_blank_values_keep_the_defaults() {
-    var variants = [{ prefix: "", base: "  " }, { prefix: 7, base: null }, { prefix: undefined, base: undefined }]
-    for (var i = 0; i < variants.length; i++) {
-      var store = dispatchStore(); if (!store) return
-      var cards = dispatchCards()
-      compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf(variants[i])), true, "variant " + i)
-      compare(store.dispatchForm.prefix, "old", "variant " + i + ": dispatchDefaults' prefix")
-      compare(store.dispatchForm.base, "", "variant " + i + ": no base until the lookup replies")
-      reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-      compare(store.dispatchForm.base, "main", "variant " + i + ": the default branch fills base")
-      compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs, "variant " + i)
-    }
+
+  // ---- the run store alone
+
+  // R4
+  function test_a_snapshot_settles_nothing_without_the_route() {
+    var comp = Qt.createComponent("../../../core/stores/RunStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return }
+    var store = comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
+    var cc = Qt.createComponent("../../../core/stores/RunControlStore.qml")
+    if (cc.status !== Component.Ready) { fail(cc.errorString()); return }
+    var c = cc.createObject(tc, { backendDir: "/plugin/core/backend/" })
+    c.runs = Qt.binding(function() { return store.runs })
+    store.projectRoots = [rootEntry(rootA)]
+    store.project = rootA
+    reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
+    compare(c.control("pause", "r1"), true)
+    reply(c.controlRunners[0].current, ctlOk({ requested_at: "t1" }), 0)
+    snapshot(store, [ctlEntry("r1", "started", true, "milestone",
+                              [{ command: "pause", requested_at: "t1", handled_at: "t1h" }])])
+    compare(store.amStatus, "ok")
+    compare(c.pending.r1, "pause", "the run store no longer settles requests itself")
   }
 
-  function test_relaunch_values_are_trimmed() {
-    var store = dispatchStore(); if (!store) return
+  // R5 and Review Focus 1, 5
+  function test_opening_the_run_store_alone_reads_no_switch() {
+    var comp = Qt.createComponent("../../../core/stores/RunStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return }
+    var store = comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
+    store.projectRoots = [rootEntry(rootA)]
+    reply(store.snapshotRunner.current, okReply([running("r1")]), 0)
+    var seq = store.snapshotRunner.seq
+    store.active = true
+    var names = ["settingsLoadRunner", "settingsSaveRunner", "notifyOnEscalation"]
+    for (var i = 0; i < names.length; i++)
+      compare(typeof store[names[i]], "undefined", names[i] + ": the run store has no switch to read")
+    compare(store.snapshotRunner.seq, seq + 1, "the opening still snapshots")
+    verify(store.snapshotRunner.current)
+  }
+
+  // R-D5 and Review Focus 4
+  function test_closing_and_switching_the_run_store_touch_no_dispatch() {
+    var store = makeWithProject(rootA); if (!store) return
+    var d = wireDispatch(store, false); if (!d) return
+    d.project = rootA
     var cards = dispatchCards()
-    compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf({ prefix: "  relaunch/m1 ", base: " release\n" })), true)
-    compare(store.dispatchForm.prefix, "relaunch/m1")
-    compare(store.dispatchForm.base, "release")
-  }
-
-  // Review Focus 1.
-  function test_relaunch_is_refused_without_a_project_or_while_starting() {
-    var bare = make(); if (!bare) return
-    var cards = dispatchCards()
-    compare(bare.relaunchOpenFor(cards.m1, cards, relaunchOf()), false)
-    checkDispatchIdle(bare, "no project")
-    verify(!bare.dispatchDefaultsRunner.current, "no defaults lookup")
-
-    var store = readyStore(); if (!store) return
-    compare(store.dispatchStart(), true)
-    var form = store.dispatchForm
-    compare(store.relaunchOpenFor(cards.s1, cards, relaunchOf({ level: "story", cardId: "s1" })), false)
-    compare(store.dispatchState, "starting")
-    compare(store.dispatchTarget.level, "milestone", "the start's target stays")
-    verify(store.dispatchForm === form, "the start's form stays")
-    compare(store.dispatchForm.prefix, "old")
-    compare(store.dispatchStartRunners.length, 1)
-  }
-
-  // Review Focus 2.
-  function test_relaunch_keeps_the_recorded_base_when_the_defaults_lookup_fails() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
-    reply(store.dispatchDefaultsRunner.current, "Traceback: boom\n", 1)
-    compare(store.dispatchForm.base, "release")
-    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.relaunchArgs)
-  }
-
-  // Review Focus 3.
-  function test_relaunch_of_a_subtask_is_ready_with_the_recorded_values() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    compare(store.relaunchOpenFor(cards.t1, cards, relaunchOf({ level: "subtask", cardId: "t1", prefix: "relaunch/t1" })), true)
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchState, "ready")
-    compare(store.dispatchTarget.level, "subtask")
-    compare(store.dispatchForm.prefix, "relaunch/t1")
-    compare(store.dispatchForm.base, "release")
-    verify(!store.dispatchPreviewRunner.current, "a subtask has no preview")
-  }
-
-  // Review Focus 4.
-  function test_an_opening_after_a_relaunch_takes_the_default_branch_again() {
-    var store = dispatchStore(); if (!store) return
-    var cards = dispatchCards()
-    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
-    compare(store.openDispatch(cards.m1, cards), true)
-    compare(store.dispatchForm.prefix, "old")
-    compare(store.dispatchForm.base, "")
-    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
-    compare(store.dispatchForm.base, "main", "the relaunch's base override is not inherited")
+    compare(d.openDispatch(cards.m1, cards), true)
+    compare(d.dispatchState, "previewing")
+    store.active = true
+    store.active = false
+    compare(d.dispatchState, "previewing", "closing the run store leaves the dispatch")
+    store.project = rootB
+    compare(d.dispatchState, "previewing", "switching the run store's project leaves the dispatch")
   }
 
   // ---- the selected run's events (3.1)

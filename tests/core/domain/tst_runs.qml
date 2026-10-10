@@ -4896,6 +4896,126 @@ TestCase {
     compare(single.length, 2, "its runs")
   }
 
+  function test_run_by_id_returns_the_entry_itself() {
+    var list = [{ id: "a" }, { id: "b" }, { id: "c" }]
+    verify(Runs.runById(list, "b") === list[1], "the entry itself")
+    compare(Runs.runById(list, "z"), null)
+  }
+
+  function test_run_by_id_skips_empty_entries() {
+    var list = [null, undefined, 0, { id: "a" }]
+    verify(Runs.runById(list, "a") === list[3], "found past the empty entries")
+  }
+
+  function test_run_by_id_on_a_non_list_is_null() {
+    compare(Runs.runById(null, "a"), null)
+    compare(Runs.runById(undefined, "a"), null)
+    compare(Runs.runById({}, "a"), null)
+    compare(Runs.runById({ a: { id: "a" } }, "a"), null)
+    compare(Runs.runById("abc", "a"), null)
+  }
+
+  function test_run_by_id_with_a_prototype_member_name() {
+    var names = ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]
+    for (var i = 0; i < names.length; i++) {
+      compare(Runs.runById([{ id: "a" }], names[i]), null, names[i] + " absent")
+      var list = [{ id: "a" }, { id: names[i] }]
+      verify(Runs.runById(list, names[i]) === list[1], names[i] + " present")
+    }
+  }
+
+  function test_run_by_id_is_strict() {
+    compare(Runs.runById([{ id: "1" }], 1), null)
+  }
+
+  function test_run_by_id_of_the_empty_id_matches_no_idless_entry() {
+    compare(Runs.runById([{}, { id: "a" }, { id: null }], ""), null)
+  }
+
+  function test_run_by_id_skips_primitive_entries() {
+    compare(Runs.runById(["a", 5, true], "a"), null)
+    var list = ["a", 5, true, { id: "a" }]
+    verify(Runs.runById(list, "a") === list[3], "the object entry")
+  }
+
+  function test_has_key_counts_own_keys_only() {
+    compare(Runs.hasKey({ a: 1 }, "a"), true)
+    var names = ["toString", "constructor", "hasOwnProperty", "valueOf", "__proto__"]
+    for (var i = 0; i < names.length; i++) {
+      compare(Runs.hasKey({}, names[i]), false, names[i] + " inherited")
+      var own = JSON.parse("{\"" + names[i] + "\": 1}")
+      compare(Runs.hasKey(own, names[i]), true, names[i] + " own")
+    }
+  }
+
+  function test_has_key_with_a_shadowed_has_own_property() {
+    var map = { hasOwnProperty: 1, a: 2 }
+    compare(Runs.hasKey(map, "a"), true)
+    compare(Runs.hasKey(map, "b"), false)
+  }
+
+  function test_has_key_on_nothing_is_false() {
+    compare(Runs.hasKey(null, "a"), false)
+    compare(Runs.hasKey(undefined, "a"), false)
+  }
+
+  function test_has_key_coerces_the_key_like_has_own_property() {
+    compare(Runs.hasKey({ "1": "x" }, 1), true)
+    compare(Runs.hasKey({ "1": "x" }, 2), false)
+  }
+
+  function test_copy_map_is_a_new_shallow_copy() {
+    var nested = { deep: true }
+    var map = { a: 1, b: "two", c: nested }
+    var copy = Runs.copyMap(map)
+    verify(copy !== map, "a new object")
+    compare(Object.keys(copy).sort().join(","), "a,b,c")
+    compare(copy.a, 1)
+    compare(copy.b, "two")
+    verify(copy.c === nested, "shallow: the nested object is the same reference")
+    copy.a = 99
+    copy.d = 4
+    compare(map.a, 1, "input value unchanged")
+    compare(Object.prototype.hasOwnProperty.call(map, "d"), false, "input keys unchanged")
+  }
+
+  function test_copy_map_copies_own_keys_only() {
+    var map = Object.create({ inherited: 1 })
+    map.a = 2
+    var copy = Runs.copyMap(map)
+    compare(Object.prototype.hasOwnProperty.call(copy, "a"), true)
+    compare(copy.a, 2)
+    compare(Object.prototype.hasOwnProperty.call(copy, "inherited"), false)
+    compare(copy.inherited, undefined)
+    var named = Runs.copyMap({ constructor: 1, toString: 2 })
+    compare(Object.prototype.hasOwnProperty.call(named, "constructor"), true)
+    compare(Object.prototype.hasOwnProperty.call(named, "toString"), true)
+    compare(named.constructor, 1)
+    compare(named.toString, 2)
+  }
+
+  function test_copy_map_of_nothing_is_empty() {
+    var a = Runs.copyMap(null)
+    var b = Runs.copyMap(undefined)
+    compare(typeof a, "object")
+    verify(a !== null, "an object, not null")
+    compare(Object.keys(a).length, 0)
+    compare(Object.keys(b).length, 0)
+    verify(a !== b, "a new object on each call")
+  }
+
+  // D1
+  function test_run_root_is_the_projects_root_string() {
+    compare(Runs.runRoot({ project: { root: "/a" } }), "/a")
+    compare(Runs.runRoot({ project: { root: "" } }), "", "an empty root stays empty")
+  }
+
+  // D2
+  function test_run_root_of_anything_else_is_empty() {
+    var others = [null, undefined, 5, "x", {}, { project: null }, { project: "x" }, { project: {} }, { project: { root: 7 } }]
+    for (var i = 0; i < others.length; i++) compare(Runs.runRoot(others[i]), "", JSON.stringify(others[i]))
+  }
+
   function dispatchRoots(rows) {
     var out = []
     for (var i = 0; i < rows.length; i++) out.push(rows[i].root)
@@ -6006,5 +6126,34 @@ TestCase {
     var c = comment("am", "am \u00b7 done \u00b7 run a.b*c\nam-key: a.b*c/x", noteAt)
     checkNote(Runs.stopComment([c], "a.b*c"), { createdAt: noteAt, kind: "done", fields: [] }, "metacharacters match themselves")
     compare(Runs.stopComment([c], "aXbbc"), null, "the id is not a pattern")
+  }
+
+  // ---- store helpers shared by the run stores (split-runstore merge)
+
+  function test_usable_roots_keep_each_root_once_in_registry_order() {
+    var list = [{ root: "/a", name: "A" }, null, [], { root: "" }, { root: "-x" }, { root: 7 },
+                { root: "/b", name: "B" }, { root: "/a", name: "again" }]
+    compare(JSON.stringify(Runs.usableRoots(list)), JSON.stringify([{ root: "/a", name: "A" }, { root: "/b", name: "B" }]))
+    compare(Runs.usableRoots(null).length, 0)
+    compare(Runs.usableRoots(undefined).length, 0)
+    compare(Runs.usableRoots({}).length, 0, "no numeric length")
+    compare(Runs.usableRoots([{ root: "constructor" }])[0].root, "constructor", "a root named like a prototype member")
+  }
+
+  function test_verify_commands_keep_the_non_blank_strings_in_order() {
+    compare(JSON.stringify(Runs.verifyCommands({ verify: ["a", " ", "", 5, null, " b "] })), JSON.stringify(["a", " b "]))
+    compare(Runs.verifyCommands({ verify: "a" }).length, 0)
+    compare(Runs.verifyCommands({}).length, 0)
+    compare(Runs.verifyCommands(null).length, 0)
+  }
+
+  function test_merged_prefixes_override_the_stored_entries() {
+    compare(JSON.stringify(Runs.mergedPrefixes({ m1: "a", m2: "b" }, { m2: "c" })), JSON.stringify({ m1: "a", m2: "c" }))
+    var stored = { m1: "a" }
+    var merged = Runs.mergedPrefixes(stored, { m3: "d" })
+    verify(merged !== stored, "a fresh map")
+    compare(JSON.stringify(stored), JSON.stringify({ m1: "a" }), "the stored map is not changed")
+    compare(JSON.stringify(Runs.mergedPrefixes(["x"], { m1: "a" })), JSON.stringify({ m1: "a" }), "an array merges from nothing")
+    compare(JSON.stringify(Runs.mergedPrefixes(null, { m1: "a" })), JSON.stringify({ m1: "a" }))
   }
 }

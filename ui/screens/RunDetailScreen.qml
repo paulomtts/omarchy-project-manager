@@ -25,9 +25,10 @@ import "../theme" as T
 // counts the rows held plus app.runs.eventsDropped. Run state always comes
 // from am (the run store), never from a brd status; brd's board only lends
 // titles, dims the cards it has closed and holds the card Relaunch opens. It
-// reads the run store and app.runOutput and asks the run store to show
-// another attempt or tab, fetch again or open a relaunch; it owns no state of
-// its own. A run outside the open project shows no note, and its Open card
+// reads the run store, app.runControl and app.runOutput, asks the run store
+// to show another attempt or tab or fetch again, run control to pause or
+// resume and the dispatch (app.runDispatch) to open a relaunch; it owns no
+// state of its own. A run outside the open project shows no note, and its Open card
 // and Relaunch are disabled with the reason. Ages are read against the clock
 // when a logs reply lands or a snapshot replaces the runs: no timer.
 Column {
@@ -247,7 +248,7 @@ Column {
     var id = ControlFacts.runIdOf(screen.run)
     if (id === "") return
     if (action === "cancel") screen.cancelRequested(id)
-    else screen.app.runs.control(action, id)
+    else screen.app.runControl.control(action, id)
   }
 
   // The run is in the open project: both roots are non-empty and equal, the
@@ -288,8 +289,8 @@ Column {
   function offersRelaunch(run, report) {
     if (!report || report.relaunch === null || typeof report.relaunch !== "object") return false
     if (!Runs.controls(run).resume.enabled) return true
-    var store = screen.app.runs
-    return store.lastControlErrorRunId === run.id && Runs.offersRelaunch({ type: store.lastControlErrorType })
+    var control = screen.app.runControl
+    return control.lastControlErrorRunId === run.id && Runs.offersRelaunch({ type: control.lastControlErrorType })
   }
 
   // Opens the dispatch on the relaunch target's card; a card no longer on the
@@ -299,10 +300,10 @@ Column {
     if (!report || report.relaunch === null || typeof report.relaunch !== "object") return
     var card = screen.cardOf(report.relaunch.cardId)
     if (card === null) {
-      screen.app.runs.flash("The card to relaunch is no longer on the board")
+      screen.app.runControl.flash("The card to relaunch is no longer on the board")
       return
     }
-    screen.app.runs.relaunchOpenFor(card, screen.app.board.cardMap, report.relaunch)
+    screen.app.runDispatch.relaunchOpenFor(card, screen.app.board.cardMap, report.relaunch)
   }
 
   UI.ListStatus {
@@ -369,10 +370,10 @@ Column {
       width: parent.width
       theme: screen.theme
       run: screen.run
-      pendingAction: ControlFacts.pendingOf(screen.app.runs.pending, screen.run)
-      waiting: ControlFacts.waitingOf(screen.app.runs.stillWaiting, screen.run)
-      waitingText: screen.app.runs.stillWaitingText
-      errorText: ControlFacts.errorOf(screen.app.runs.lastControlError, screen.app.runs.lastControlErrorRunId, screen.run)
+      pendingAction: ControlFacts.pendingOf(screen.app.runControl.pending, screen.run)
+      waiting: ControlFacts.waitingOf(screen.app.runControl.stillWaiting, screen.run)
+      waitingText: screen.app.runControl.stillWaitingText
+      errorText: ControlFacts.errorOf(screen.app.runControl.lastControlError, screen.app.runControl.lastControlErrorRunId, screen.run)
       wholeRun: false
       showButtons: true
       onActionRequested: function(action) { screen.requestControl(action) }
@@ -538,7 +539,7 @@ Column {
       theme: screen.theme
       width: parent.width
       visible: text !== ""
-      text: screen.app.runs.flashText
+      text: screen.app.runControl.flashText
       wrapMode: Text.WordWrap
     }
   }

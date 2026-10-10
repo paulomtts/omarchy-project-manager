@@ -66,10 +66,10 @@ TestCase {
     }
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
     // A stored verify command, so a fresh form passes the store's checks.
-    p.app.runs.runSettings = { verify: ["uv run pytest"] }
+    p.app.runControl.applyRunSettings(p.app.runs.project, { verify: ["uv run pytest"] })
     p.app.board.applyTreeData(roots())
     p.app.board.applyIssueData([{ id: "i1", title: "Broken build", status: "open" }])
     p.app.runs.runs = [run("run-0000000000a1")]
@@ -86,10 +86,10 @@ TestCase {
   // Answers the --defaults lookup and, for a milestone or the board, the dry
   // run it launches: the dispatch lands in ready.
   function toReady(p) {
-    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
-    if (p.app.runs.dispatchState === "previewing")
-      reply(p.app.runs.dispatchPreviewRunner.current, '{"ok":true,"data":{"max_concurrent":4,"levels":[]}}')
-    compare(p.app.runs.dispatchState, "ready")
+    reply(p.app.runDispatch.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
+    if (p.app.runDispatch.dispatchState === "previewing")
+      reply(p.app.runDispatch.dispatchPreviewRunner.current, '{"ok":true,"data":{"max_concurrent":4,"levels":[]}}')
+    compare(p.app.runDispatch.dispatchState, "ready")
   }
 
   // The card detail of `id`, and a click on its Dispatch.
@@ -130,7 +130,7 @@ TestCase {
     var field = H.find(p, "searchField")
     field.forceActiveFocus()
     keyClick("d")
-    compare(p.app.runs.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchState, "previewing")
     compare(p.dispatchCardId, "m1")
     compare(H.find(p, "dispatchDialog").visible, true)
     compare(text(p, "dispatchTarget"), "Target   Milestone \"M one\"")
@@ -144,19 +144,19 @@ TestCase {
     dispatchCard(p, "s1")
     compare(H.find(p, "dispatchDialog").visible, true)
     compare(p.dispatchCardId, "s1")
-    compare(p.app.runs.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchState, "previewing")
     compare(text(p, "dispatchTarget"), "Target   Story \"Story one\" (milestone \"M one\")")
-    compare(p.app.runs.dispatchSuggest, null)
+    compare(p.app.runDispatch.dispatchSuggest, null)
     compare(H.find(p, "dispatchSuggest").visible, false, "no milestone offer")
   }
 
   // A story's preview refused with `previewText`, after its defaults lookup.
   function refuseStory(p, previewText) {
     dispatchCard(p, "s1")
-    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
-    compare(p.app.runs.dispatchState, "previewing")
-    reply(p.app.runs.dispatchPreviewRunner.current, previewText)
-    compare(p.app.runs.dispatchState, "refused")
+    reply(p.app.runDispatch.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}')
+    compare(p.app.runDispatch.dispatchState, "previewing")
+    reply(p.app.runDispatch.dispatchPreviewRunner.current, previewText)
+    compare(p.app.runDispatch.dispatchState, "refused")
   }
 
   // 9, Review Focus 1 and 3
@@ -169,17 +169,17 @@ TestCase {
     compare(offer.visible, true)
     compare(String(offer.text), "Dispatch the milestone instead")
     offer.clicked()
-    compare(p.app.runs.dispatchTarget.level, "milestone")
-    compare(JSON.stringify(p.app.runs.dispatchTarget.flags), JSON.stringify(["--milestone", "m1"]))
+    compare(p.app.runDispatch.dispatchTarget.level, "milestone")
+    compare(JSON.stringify(p.app.runDispatch.dispatchTarget.flags), JSON.stringify(["--milestone", "m1"]))
     compare(p.dispatchCardId, "m1")
     compare(text(p, "dispatchTarget"), "Target   Milestone \"M one\"")
-    compare(p.app.runs.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchState, "previewing")
     compare(offer.visible, false)
     compare(H.find(p, "dispatchDialog").visible, true)
     offer.clicked()
     compare(p.dispatchCardId, "m1", "a second click changes nothing")
-    compare(p.app.runs.dispatchTarget.level, "milestone")
-    compare(p.app.runs.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchTarget.level, "milestone")
+    compare(p.app.runDispatch.dispatchState, "previewing")
     wait(50)
     compare(p.focusItem.objectName, "dispatchBase")
     verify(H.find(p, "dispatchBase").activeFocus, "the retargeted form has the keyboard")
@@ -195,17 +195,17 @@ TestCase {
     compare(p.dispatchSuggestion, null)
     dialog.suggestionRequested()
     compare(p.dispatchCardId, "s1", "no suggestion: nothing happens")
-    compare(p.app.runs.dispatchTarget.level, "story")
-    p.app.runs.closeDispatch()
+    compare(p.app.runDispatch.dispatchTarget.level, "story")
+    p.app.runDispatch.closeDispatch()
     refuseStory(p, '{"ok":false,"error":{"type":"StoryBlockedError","message":"Story blocked by s0"}}')
     verify(p.dispatchSuggestion !== null, "the milestone is offered")
     // The state moved on between render and click: the store refuses.
-    p.app.runs.dispatchState = "previewing"
+    p.app.runDispatch.dispatchState = "previewing"
     dialog.suggestionRequested()
     compare(p.dispatchCardId, "s1")
-    compare(p.app.runs.dispatchTarget.level, "story")
+    compare(p.app.runDispatch.dispatchTarget.level, "story")
     compare(text(p, "dispatchTarget"), "Target   Story \"Story one\" (milestone \"M one\")")
-    p.app.runs.closeDispatch()
+    p.app.runDispatch.closeDispatch()
   }
 
   // 10
@@ -237,14 +237,14 @@ TestCase {
     compare(text(p, "dispatchBlocked"), "Blocked by: \"Prep\" (Done), \"Broken build\" (Issue · open), ghost (not on this board)")
     var start = H.find(p, "dispatchStart")
     start.clicked()
-    compare(p.app.runs.dispatchState, "ready", "the first click only arms")
-    compare(p.app.runs.dispatchStartRunners.length, 0)
+    compare(p.app.runDispatch.dispatchState, "ready", "the first click only arms")
+    compare(p.app.runDispatch.dispatchStartRunners.length, 0)
     compare(String(start.text), "Confirm start")
     compare(H.find(p, "dispatchConfirmNote").visible, true)
     start.clicked()
-    compare(p.app.runs.dispatchState, "starting")
-    compare(p.app.runs.dispatchStartRunners.length, 1)
-    p.app.runs.dispatchStartRunners[0].cancel()
+    compare(p.app.runDispatch.dispatchState, "starting")
+    compare(p.app.runDispatch.dispatchStartRunners.length, 1)
+    p.app.runDispatch.dispatchStartRunners[0].cancel()
   }
 
   // Review Focus 4
@@ -265,7 +265,7 @@ TestCase {
     compare(H.find(p, "dispatchDialog").visible, true)
     var kc = H.find(p, "keyCatcher")
     kc.closeRequested()
-    compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.runDispatch.dispatchState, "idle")
     compare(H.find(p, "dispatchDialog").visible, false)
     compare(p.app.nav.viewMode, "entry", "that Escape closed the dialog only")
     compare(p.opened, true)
@@ -279,10 +279,10 @@ TestCase {
     var p = make(); if (!p) return
     dispatchCard(p, "m1")
     toReady(p)
-    compare(p.app.runs.dispatchStart(), true)
-    p.app.runs.dispatchStartRunners[0].cancel()
+    compare(p.app.runDispatch.dispatchStart(), true)
+    p.app.runDispatch.dispatchStartRunners[0].cancel()
     H.find(p, "keyCatcher").closeRequested()
-    compare(p.app.runs.dispatchState, "starting")
+    compare(p.app.runDispatch.dispatchState, "starting")
     compare(H.find(p, "dispatchDialog").visible, true)
     compare(p.app.nav.viewMode, "entry", "no Back")
     compare(p.opened, true, "no panel close")
@@ -297,13 +297,13 @@ TestCase {
     var prefix = H.find(p, "dispatchPrefix")
     prefix.forceActiveFocus()
     prefix.text = "m-one-b"
-    compare(p.app.runs.dispatchState, "previewing")
-    compare(p.app.runs.dispatchForm.prefix, "m-one-b")
+    compare(p.app.runDispatch.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchForm.prefix, "m-one-b")
     // The 400 ms debounce, run now; then the dry run's reply.
-    p.app.runs.dispatchDebounceTimer.stop()
-    p.app.runs.checkDispatch()
-    reply(p.app.runs.dispatchPreviewRunner.current, '{"ok":true,"data":{"max_concurrent":4,"levels":[]}}')
-    compare(p.app.runs.dispatchState, "ready")
+    p.app.runDispatch.dispatchDebounceTimer.stop()
+    p.app.runDispatch.checkDispatch()
+    reply(p.app.runDispatch.dispatchPreviewRunner.current, '{"ok":true,"data":{"max_concurrent":4,"levels":[]}}')
+    compare(p.app.runDispatch.dispatchState, "ready")
     wait(50)
     verify(prefix.activeFocus, "the caret stayed in Prefix")
   }
@@ -319,8 +319,8 @@ TestCase {
     var before = String(prefix.text)
     keyClick("d")
     compare(String(prefix.text).length, before.length + 1, "the letter went into the field")
-    compare(p.app.runs.dispatchForm.prefix, String(prefix.text), "an edit, not a re-opened dispatch")
-    compare(p.app.runs.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchForm.prefix, String(prefix.text), "an edit, not a re-opened dispatch")
+    compare(p.app.runDispatch.dispatchState, "previewing")
     compare(p.dispatchCardId, "m1")
   }
 
@@ -336,7 +336,7 @@ TestCase {
     compare(H.find(p, "dispatchStory").visible, false)
     compare(H.find(p, "dispatchBlocked").visible, false)
     H.find(p, "dispatchCancel").clicked()
-    compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.runDispatch.dispatchState, "idle")
     compare(H.find(p, "dispatchDialog").visible, false)
   }
 
@@ -358,7 +358,7 @@ TestCase {
     field.forceActiveFocus()
     keyClick("d")
     compare(String(field.text), "d", "the letter typed into the search")
-    compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.runDispatch.dispatchState, "idle")
   }
 
   // ---- the Runs entry
@@ -375,14 +375,14 @@ TestCase {
     button.clicked()
     var dialog = H.find(p, "dispatchDialog")
     compare(dialog.visible, true)
-    compare(p.app.runs.dispatchStep, "project")
-    compare(p.app.runs.dispatchState, "idle")
-    compare(p.app.runs.dispatchRoot, "")
+    compare(p.app.runDispatch.dispatchStep, "project")
+    compare(p.app.runDispatch.dispatchState, "idle")
+    compare(p.app.runDispatch.dispatchRoot, "")
     compare(String(dialog.step), "project")
     compare(H.find(p, "dispatchProjectList").visible, true)
     compare(H.find(p, "dispatchTarget").visible, false, "not the whole board")
     compare(H.find(p, "dispatchTargetChoices").visible, false, "no row of targets")
-    p.app.runs.closeDispatch()
+    p.app.runDispatch.closeDispatch()
   }
 
   // 30 (spec 13): a card dialog closes on a project switch; a Runs dialog
@@ -396,10 +396,10 @@ TestCase {
       p.app.extras.exportProc.running = false
       p.app.extras.exportProc.launchGuard = "stale"
     }
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
-    compare(p.app.runs.dispatchState, "idle")
-    compare(p.app.runs.dispatchStep, "")
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
+    compare(p.app.runDispatch.dispatchState, "idle")
+    compare(p.app.runDispatch.dispatchStep, "")
     compare(H.find(p, "dispatchDialog").visible, false)
   }
 
@@ -422,12 +422,12 @@ TestCase {
     var dialog = H.find(p, "dispatchDialog")
     compare(dialog.visible, true)
     compare(p.dispatchCardId, "m1")
-    compare(p.app.runs.dispatchStep, "")
-    compare(p.app.runs.dispatchRoot, "/home/u/a")
+    compare(p.app.runDispatch.dispatchStep, "")
+    compare(p.app.runDispatch.dispatchRoot, "/home/u/a")
     compare(String(dialog.step), "")
     compare(H.find(p, "dispatchBack").visible, false, "no Back")
     compare(H.find(p, "dispatchForm").visible, true, "the form at once")
-    verify(!p.app.runs.dispatchProjectRunner.current, "a card entry probes nothing")
+    verify(!p.app.runDispatch.dispatchProjectRunner.current, "a card entry probes nothing")
   }
 
   // 31
@@ -448,8 +448,8 @@ TestCase {
     var start = H.find(p, "dispatchStart")
     start.clicked()
     start.clicked()
-    compare(p.app.runs.dispatchState, "starting")
-    reply(p.app.runs.dispatchStartRunners[0].current, replyText)
+    compare(p.app.runDispatch.dispatchState, "starting")
+    reply(p.app.runDispatch.dispatchStartRunners[0].current, replyText)
     // A good start fetches the runs again; that launch cannot run here either.
     p.app.runs.snapshotRunner.cancel()
   }
@@ -460,7 +460,7 @@ TestCase {
     p.app.runs.runs = [run("run-0000000000a1"), run("run-new")]
     startT1(p, '{"ok":true,"run_id":"run-new","message":"started"}')
     compare(H.find(p, "dispatchDialog").visible, false)
-    compare(p.app.runs.dispatchState, "idle")
+    compare(p.app.runDispatch.dispatchState, "idle")
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-new")
     p.shortcuts.closeRequested()
@@ -494,7 +494,7 @@ TestCase {
   function test_a_failed_launch_keeps_the_dialog_and_goes_nowhere() {
     var p = make(); if (!p) return
     startT1(p, '{"ok":false,"error":{"type":"Spawn","message":"no am"},"log":"/tmp/l","exit_code":2}')
-    compare(p.app.runs.dispatchState, "failed")
+    compare(p.app.runDispatch.dispatchState, "failed")
     compare(H.find(p, "dispatchDialog").visible, true)
     compare(text(p, "dispatchRefusal"), "no am")
     compare(p.app.nav.viewMode, "entry")

@@ -386,7 +386,7 @@ QtObject {
     navi.awaitedRunId = ""
     navi.awaitedProject = ""
     if (typeof runId !== "string" || runId === "") {
-      navi.app.runs.flash("Started — waiting for the run to appear")
+      navi.app.runControl.flash("Started — waiting for the run to appear")
       return
     }
     if (navi.app.runs.runById(runId) !== null) {
@@ -395,7 +395,7 @@ QtObject {
     }
     navi.awaitedRunId = runId
     navi.awaitedProject = navi.app.projects.selectedProject ? navi.app.projects.selectedProject.root_path : ""
-    navi.app.runs.flash("Started — opening the run when it appears")
+    navi.app.runControl.flash("Started — opening the run when it appears")
   }
 
   // Every change of the runs: open the awaited run once it is listed; away

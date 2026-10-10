@@ -52,8 +52,8 @@ TestCase {
     }
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
     p.app.runs.runs = sampleRuns()
     return p
   }
@@ -341,19 +341,19 @@ TestCase {
     compare(pause.enabled, true)
     mouseClick(pause)
     compare(p.app.nav.viewMode, "runs", "the button did not open the run")
-    compare(p.app.runs.pending["run-0000000000a1"], "pause")
+    compare(p.app.runControl.pending["run-0000000000a1"], "pause")
     compare(pause.text, "Pause requested…")
     compare(pause.enabled, false)
-    compare(p.app.runs.controlRunners.length, 1)
+    compare(p.app.runControl.controlRunners.length, 1)
 
-    reply(p.app.runs.controlRunners[0].current,
+    reply(p.app.runControl.controlRunners[0].current,
           JSON.stringify({ ok: true, data: { run_id: "run-0000000000a1", command: "pause", requested_at: "t1" } }) + "\n", 0)
-    compare(p.app.runs.pending["run-0000000000a1"], "pause", "acknowledged, still pending until a snapshot")
+    compare(p.app.runControl.pending["run-0000000000a1"], "pause", "acknowledged, still pending until a snapshot")
     var snap = p.app.runs.snapshotRunner.current
     verify(snap, "the ok reply fetched the runs again")
     reply(snap, snapOk([snapEntry("run-0000000000a1", "stopped", null, "alpha"),
                         snapEntry("run-0000000000b2", "escalated", null, "beta")]), 0)
-    compare(p.app.runs.pending["run-0000000000a1"], undefined, "parked: the request settled")
+    compare(p.app.runControl.pending["run-0000000000a1"], undefined, "parked: the request settled")
     wait(50)
 
     var resume = controlOf(p, "Resume")
@@ -363,9 +363,9 @@ TestCase {
 
     wait(450)
     mouseClick(resume)
-    compare(p.app.runs.pending["run-0000000000a1"], "resume")
-    compare(p.app.runs.controlRunners.length, 1)
-    reply(p.app.runs.controlRunners[0].current,
+    compare(p.app.runControl.pending["run-0000000000a1"], "resume")
+    compare(p.app.runControl.controlRunners.length, 1)
+    reply(p.app.runControl.controlRunners[0].current,
           JSON.stringify({ ok: false, error: { type: "NotAcceptingError", message: "run is in integrate" } }) + "\n", 0)
     var error = controlOf(p, "Error")
     compare(error.visible, true)
@@ -396,7 +396,7 @@ TestCase {
     var modal = cancelModal(p)
     verify(modal, "the run cancel dialog")
     compare(modal.visible, true)
-    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(p.app.runControl.cancelRunId, "run-0000000000a1")
     compare(p.app.nav.viewMode, "runs", "the click did not open the run")
     compare(p.focusItem.objectName, "runCancelField")
     var field = inModal(p, "runCancelField")
@@ -409,18 +409,18 @@ TestCase {
     compare(modal.detail, "alpha")
 
     field.text = "cancle"
-    compare(p.app.runs.cancelText, "cancle")
+    compare(p.app.runControl.cancelText, "cancle")
     compare(accept.enabled, false)
     keyClick(Qt.Key_Return)
-    compare(p.app.runs.controlRunners.length, 0)
+    compare(p.app.runControl.controlRunners.length, 0)
     compare(modal.visible, true)
 
     field.text = "cancel"
     compare(accept.enabled, true)
     wait(450)
     mouseClick(accept)
-    compare(p.app.runs.pending["run-0000000000a1"], "cancel")
-    compare(p.app.runs.controlRunners.length, 1)
+    compare(p.app.runControl.pending["run-0000000000a1"], "cancel")
+    compare(p.app.runControl.controlRunners.length, 1)
     compare(modal.visible, false)
     wait(50)
     compare(p.focusItem.objectName, "searchField")
@@ -437,25 +437,25 @@ TestCase {
     field.forceActiveFocus()
     compare(p.app.nav.cursorIndex, 0)
     keyClick("c")
-    compare(p.app.runs.cancelOpen, true)
-    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(p.app.runControl.cancelOpen, true)
+    compare(p.app.runControl.cancelRunId, "run-0000000000a1")
     compare(field.text, "", "the handled letter was not typed")
     compare(p.app.nav.searchQuery, "")
     wait(50)
     compare(p.focusItem.objectName, "runCancelField")
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runControl.cancelOpen, false)
     compare(p.app.nav.viewMode, "runs")
-    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
     compare(p.opened, true, "the panel stays open")
     wait(50)
     verify(field.activeFocus, "the focus is back in the search field")
     keyClick("C", Qt.ShiftModifier)
     compare(field.text, "C", "Shift+C types")
-    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runControl.cancelOpen, false)
     keyClick("p")
     compare(field.text, "Cp", "with search text a bare letter types too")
-    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
   }
 
   // 18
@@ -474,10 +474,10 @@ TestCase {
     var reason = "Integrate is running; it cannot be paused or cancelled"
     compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), true)
     compare(H.find(p, "runsFooter").text, reason)
-    compare(p.app.runs.controlRunners.length, 0)
-    p.app.runs.flash("")
+    compare(p.app.runControl.controlRunners.length, 0)
+    p.app.runControl.flash("")
     compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), true)
-    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runControl.cancelOpen, false)
     compare(cancelModal(p).visible, false)
     compare(H.find(p, "runsFooter").text, reason)
 
@@ -486,15 +486,15 @@ TestCase {
     var detail = H.find(p, "runDetailControls")
     compare(H.find(detail, "runControlPause").enabled, false)
     compare(H.find(detail, "runControlCancel").enabled, false)
-    p.app.runs.flash("")
+    p.app.runControl.flash("")
     compare(H.find(p, "runDetailFlash").visible, false)
     compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), true)
     compare(H.find(p, "runDetailFlash").visible, true)
     compare(H.find(p, "runDetailFlash").text, reason)
     compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), true)
-    compare(p.app.runs.cancelOpen, false)
-    compare(p.app.runs.controlRunners.length, 0)
-    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(p.app.runControl.cancelOpen, false)
+    compare(p.app.runControl.controlRunners.length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
   }
 
   // 19 (and Review Focus 5)
@@ -512,17 +512,17 @@ TestCase {
     mouseClick(cancel)
     wait(50)
     compare(cancelModal(p).visible, true)
-    compare(p.app.runs.cancelRunId, "run-0000000000a1")
+    compare(p.app.runControl.cancelRunId, "run-0000000000a1")
     compare(p.focusItem.objectName, "runCancelField")
     inModal(p, "runCancelField").text = "cancel"
     compare(inModal(p, "confirmAccept").enabled, true)
     wait(450)
     mouseClick(inModal(p, "confirmCancel"))
-    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runControl.cancelOpen, false)
     compare(cancelModal(p).visible, false)
     compare(p.app.nav.viewMode, "entry", "the card is still open")
     compare(p.app.board.selectedCardId, "alpha")
-    compare(p.app.runs.controlRunners.length, 0)
+    compare(p.app.runControl.controlRunners.length, 0)
     wait(50)
     compare(p.focusItem.objectName, "keyCatcher")
 
@@ -548,9 +548,9 @@ TestCase {
     var p = noProject ? makeNoProject() : make(); if (!p) return null
     p.navigator.showSection(view)
     feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha"), snapEntry("run-0000000000b2", "started", true, "beta")])
-    compare(p.app.runs.toasts.length, 0, "the baseline raises nothing")
+    compare(p.app.runAlerts.toasts.length, 0, "the baseline raises nothing")
     feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runAlerts.toasts.length, 1)
     wait(50)
     return p
   }
@@ -591,9 +591,9 @@ TestCase {
     var aEntries = [snapEntry("run-0000000000a1", "started", true, "alpha"),
                     snapEntry("run-0000000000b2", "escalated", null, "beta")]
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "started", true, "zeta")])
-    compare(p.app.runs.toasts.length, 1, "beta's first entry only arms it")
+    compare(p.app.runAlerts.toasts.length, 1, "beta's first entry only arms it")
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
-    compare(p.app.runs.toasts.length, 2)
+    compare(p.app.runAlerts.toasts.length, 2)
     wait(50)
     compare(H.find(p, "runToastLine1").text, "zeta escalated")
     compare(H.find(p, "runToastProject1").text, "beta")
@@ -625,15 +625,15 @@ TestCase {
     verify(before !== null && before.root_path === "/home/u/a", "pA is open")
     var aEntries = [snapEntry("run-0000000000a1", "started", true, "alpha")]
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "started", true, "zeta")])
-    compare(p.app.runs.toasts.length, 0, "the baseline raises nothing")
+    compare(p.app.runAlerts.toasts.length, 0, "the baseline raises nothing")
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
-    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runAlerts.toasts.length, 1)
     wait(50)
     compare(H.find(p, "runToastProject0").text, "beta")
     mouseClick(H.find(p, "runToastOpen0"))
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-0000000000f6")
-    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    compare(p.app.runAlerts.toasts.length, 0, "Open dismisses its toast")
     verify(p.app.projects.selectedProject === before, "the same project object")
     p.shortcuts.closeRequested()
     compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
@@ -655,7 +655,7 @@ TestCase {
     mouseClick(H.find(p, "runToastOpen0"))
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-0000000000b2")
-    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    compare(p.app.runAlerts.toasts.length, 0, "Open dismisses its toast")
     p.shortcuts.closeRequested()
     compare(p.app.nav.viewMode, "runs", "Back lands on the Runs list")
     compare(p.opened, true)
@@ -668,7 +668,7 @@ TestCase {
     field.forceActiveFocus()
     compare(field.text, "")
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.toasts.length, 0)
+    compare(p.app.runAlerts.toasts.length, 0)
     compare(p.opened, true, "the panel stays open")
     compare(p.app.nav.viewMode, "runs")
   }
@@ -677,11 +677,11 @@ TestCase {
   function test_dismiss_removes_only_that_toast() {
     var p = withToast("runs"); if (!p) return
     feed(p, [snapEntry("run-0000000000a1", "started", false, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.toasts.length, 2)
+    compare(p.app.runAlerts.toasts.length, 2)
     wait(50)
     mouseClick(H.find(p, "runToastDismiss0"))
-    compare(p.app.runs.toasts.length, 1)
-    compare(p.app.runs.toasts[0].id, "run-0000000000a1")
+    compare(p.app.runAlerts.toasts.length, 1)
+    compare(p.app.runAlerts.toasts[0].id, "run-0000000000a1")
     wait(50)
     compare(H.find(p, "runToastLine0").text, "alpha died")
   }
@@ -689,31 +689,31 @@ TestCase {
   // 29
   function test_with_the_setting_on_an_escalation_also_notifies() {
     var p = make(); if (!p) return
-    compare(p.app.runs.setNotifyOnEscalation(true), true)
-    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(p.app.runs.notifySaved, true)
+    compare(p.app.runControl.setNotifyOnEscalation(true), true)
+    reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(p.app.runControl.notifySaved, true)
     feed(p, [snapEntry("run-0000000000b2", "started", true, "beta")])
     feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.notifyRunners.length, 1)
-    var cmd = p.app.runs.notifyRunners[0].current.command
+    compare(p.app.runAlerts.notifyRunners.length, 1)
+    var cmd = p.app.runAlerts.notifyRunners[0].current.command
     compare(cmd[1], p.pluginDir + "core/backend/runs/notify.py")
     compare(cmd[cmd.length - 2], "beta")
     compare(cmd[cmd.length - 1], "escalated")
-    p.app.runs.setNotifyOnEscalation(false)
-    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    p.app.runControl.setNotifyOnEscalation(false)
+    reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
     feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta"), snapEntry("run-0000000000c3", "escalated", null, "gamma")])
-    compare(p.app.runs.toasts.length, 2)
-    compare(p.app.runs.notifyRunners.length, 1, "off: no new launch")
+    compare(p.app.runAlerts.toasts.length, 2)
+    compare(p.app.runAlerts.notifyRunners.length, 1, "off: no new launch")
   }
 
   // 30
   function test_open_on_a_toast_whose_run_left_the_snapshot_flashes_why() {
     var p = withToast("board"); if (!p) return
     feed(p, [snapEntry("run-0000000000a1", "started", true, "alpha")])
-    compare(p.app.runs.toasts.length, 1, "the toast outlives its run's row")
+    compare(p.app.runAlerts.toasts.length, 1, "the toast outlives its run's row")
     wait(50)
     mouseClick(H.find(p, "runToastOpen0"))
-    compare(p.app.runs.toasts.length, 0)
+    compare(p.app.runAlerts.toasts.length, 0)
     compare(p.app.nav.viewMode, "runs")
     compare(p.app.runs.selectedRunId, "")
     compare(H.find(p, "runsFooter").text, "This run is no longer in the snapshot")
@@ -792,7 +792,7 @@ TestCase {
     mouseClick(H.find(p, "runToastOpen0"))
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-0000000000b2")
-    compare(p.app.runs.toasts.length, 0, "Open dismisses its toast")
+    compare(p.app.runAlerts.toasts.length, 0, "Open dismisses its toast")
     compare(p.app.projects.selectedProject, null, "Open opens no project")
     wait(50)
     compare(H.find(p, "runDetailView").visible, true)
@@ -802,13 +802,13 @@ TestCase {
     compare(H.find(p, "runsView").visible, true)
     // alpha dies, then leaves the snapshot: its toast outlives its row.
     feed(p, [snapEntry("run-0000000000a1", "started", false, "alpha"), snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runAlerts.toasts.length, 1)
     feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runs.toasts.length, 1)
+    compare(p.app.runAlerts.toasts.length, 1)
     p.app.nav.viewMode = "board"
     wait(50)
     mouseClick(H.find(p, "runToastOpen0"))
-    compare(p.app.runs.toasts.length, 0)
+    compare(p.app.runAlerts.toasts.length, 0)
     compare(p.app.nav.viewMode, "runs")
     compare(p.app.runs.selectedRunId, "")
     wait(50)
@@ -822,11 +822,11 @@ TestCase {
     p.navigator.showSection("runs")
     wait(50)
     compare(H.find(p, "runsNotifyRow").visible, true)
-    var was = p.app.runs.notifyOnEscalation
+    var was = p.app.runControl.notifyOnEscalation
     H.find(p, "runsNotifyToggle").toggled()
-    compare(p.app.runs.notifyOnEscalation, !was)
-    compare(p.app.runs.settingsSaveRunner.sent, !was, "the set-global-settings request carries the new value")
-    reply(p.app.runs.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(p.app.runControl.notifyOnEscalation, !was)
+    compare(p.app.runControl.settingsSaveRunner.sent, !was, "the set-global-settings request carries the new value")
+    reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
   }
 
   // F8
@@ -858,8 +858,8 @@ TestCase {
       p.app.extras.exportProc.running = false
       p.app.extras.exportProc.launchGuard = "stale"
     }
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
+    p.app.runControl.settingsLoadRunner.cancel()
+    p.app.runControl.runSettingsLoadRunner.cancel()
     compare(p.app.projects.selectedProject.root_path, "/home/u/a")
     compare(p.app.nav.viewMode, "board")
     compare(labels(p.navigator.crumbs), "Board")
@@ -889,8 +889,8 @@ TestCase {
       p.app.extras.exportProc.running = false
       p.app.extras.exportProc.launchGuard = "stale"
     }
-    p.app.runs.settingsLoadRunner.cancel()
-    p.app.runs.runSettingsRunner.cancel()
+    p.app.runControl.settingsLoadRunner.cancel()
+    if (p.app.runControl.runSettingsLoadRunner) p.app.runControl.runSettingsLoadRunner.cancel()
   }
 
   function ctrl6(p) {
@@ -1001,7 +1001,7 @@ TestCase {
     p.app.extras.extrasLoading = false
     p.app.runs.snapshotRunner.cancel()
     if (!open) p.app.projects.selectedProject = null
-    p.app.runs.runSettings = { verify: ["uv run pytest"] }
+    p.app.runControl.applyRunSettings(p.app.runs.project, { verify: ["uv run pytest"] })
     p.app.runs.runs = sampleRuns()
     ctrl6(p)
     compare(p.app.nav.viewMode, "runs")
@@ -1013,14 +1013,14 @@ TestCase {
 
   // board-tree.py --probe's reply: every root in `roots` readable.
   function probeOk(p, roots) {
-    reply(p.app.runs.dispatchProjectRunner.current,
+    reply(p.app.runDispatch.dispatchProjectRunner.current,
           JSON.stringify({ ok: true, projects: roots.map(function(r) { return { root: r, ok: true } }) }) + "\n", 0)
   }
 
   // Start run clicked and the probe answered: the project step.
   function startRun(p) {
     H.find(p, "startRunButton").clicked()
-    compare(p.app.runs.dispatchStep, "project")
+    compare(p.app.runDispatch.dispatchStep, "project")
     probeOk(p, p.app.runs.usableRoots().map(function(r) { return r.root }))
     wait(50)
   }
@@ -1029,9 +1029,9 @@ TestCase {
   // with tree(): the target step.
   function toTarget(p, root) {
     dialog(p).projectChosen(root)
-    compare(p.app.runs.dispatchStep, "target")
-    reply(p.app.runs.dispatchTargetRunner.current, JSON.stringify({ ok: true, data: tree() }) + "\n", 0)
-    compare(p.app.runs.dispatchTargetRows.map(function(r) { return r.key }).join(","),
+    compare(p.app.runDispatch.dispatchStep, "target")
+    reply(p.app.runDispatch.dispatchTargetRunner.current, JSON.stringify({ ok: true, data: tree() }) + "\n", 0)
+    compare(p.app.runDispatch.dispatchTargetRows.map(function(r) { return r.key }).join(","),
             "board,card:m1,card:s1,card:t1,card:t2")
     wait(50)
   }
@@ -1039,7 +1039,7 @@ TestCase {
   // The dialog's pick of the target row `key`: the form step.
   function toForm(p, key) {
     dialog(p).targetPicked(key)
-    compare(p.app.runs.dispatchStep, "form")
+    compare(p.app.runDispatch.dispatchStep, "form")
     wait(50)
   }
 
@@ -1053,7 +1053,7 @@ TestCase {
     compare(String(button.tooltipText), "No projects registered")
     mouseClick(button)
     compare(p.dispatchOpen, false, "a click opens nothing")
-    compare(p.app.runs.dispatchStep, "")
+    compare(p.app.runDispatch.dispatchStep, "")
   }
 
   // 3
@@ -1086,7 +1086,7 @@ TestCase {
     compare(p.focusItem.objectName, "dispatchTargetFilter")
     verify(H.find(p, "dispatchTargetFilter").activeFocus, "the target step has the keyboard")
     H.find(p, "dispatchBack").clicked()
-    compare(p.app.runs.dispatchStep, "project")
+    compare(p.app.runDispatch.dispatchStep, "project")
     compare(dialog(p).visible, true)
     wait(50)
     verify(H.find(p, "dispatchProjectKeys").activeFocus, "Back to the project step moves the keyboard there")
@@ -1094,8 +1094,8 @@ TestCase {
     toForm(p, "card:t1")
     compare(p.dispatchCardId, "t1")
     H.find(p, "dispatchBack").clicked()
-    compare(p.app.runs.dispatchStep, "target")
-    compare(p.app.runs.dispatchTargetKey, "card:t1")
+    compare(p.app.runDispatch.dispatchStep, "target")
+    compare(p.app.runDispatch.dispatchTargetKey, "card:t1")
     wait(50)
     compare(dialog(p).targetCursor, 3, "the picked row is under the cursor")
     verify(H.find(p, "dispatchTargetFilter").activeFocus, "Back to the target step moves the keyboard there")
@@ -1103,7 +1103,7 @@ TestCase {
     wait(50)
     verify(H.find(p, "dispatchProjectKeys").activeFocus)
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.dispatchStep, "")
+    compare(p.app.runDispatch.dispatchStep, "")
     compare(dialog(p).visible, false)
     compare(p.app.nav.viewMode, "runs", "that Escape closed the dialog only")
     compare(p.opened, true)
@@ -1119,7 +1119,7 @@ TestCase {
     toTarget(p, "/home/u/a")
     verify(H.find(p, "dispatchTargetFilter").activeFocus)
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.dispatchStep, "")
+    compare(p.app.runDispatch.dispatchStep, "")
     compare(dialog(p).visible, false)
     compare(p.app.nav.viewMode, "runs")
     wait(50)
@@ -1133,9 +1133,9 @@ TestCase {
     toTarget(p, "/home/u/a")
     keyClick("d")
     compare(String(H.find(p, "dispatchTargetFilter").text), "d", "the letter went into the filter")
-    compare(p.app.runs.dispatchStep, "target")
-    compare(p.app.runs.dispatchRoot, "/home/u/a")
-    p.app.runs.closeDispatch()
+    compare(p.app.runDispatch.dispatchStep, "target")
+    compare(p.app.runDispatch.dispatchRoot, "/home/u/a")
+    p.app.runDispatch.closeDispatch()
   }
 
   // Review Focus 4
@@ -1150,7 +1150,7 @@ TestCase {
     toForm(p, "board")
     compare(p.dispatchCardId, "", "the board row has no card")
     compare(textOf(p, "dispatchTarget"), "Target   Whole board")
-    p.app.runs.closeDispatch()
+    p.app.runDispatch.closeDispatch()
   }
 
   // Review Focus 1
@@ -1162,12 +1162,12 @@ TestCase {
     p.navigator.showSection("runs")
     wait(50)
     compare(dialog(p).visible, true)
-    compare(p.app.runs.dispatchStep, "project")
+    compare(p.app.runDispatch.dispatchStep, "project")
     compare(H.find(p, "dispatchProjectEmpty").visible, true)
     compare(textOf(p, "dispatchProjectEmpty"), "No projects registered")
     compare(H.find(p, "startRunButton").enabled, false)
     compare(String(H.find(p, "startRunButton").tooltipText), "No projects registered")
-    p.app.runs.closeDispatch()
+    p.app.runDispatch.closeDispatch()
   }
 
   // B5 through the panel: d in the empty Runs search.
@@ -1177,12 +1177,12 @@ TestCase {
     var field = H.find(p, "searchField")
     field.forceActiveFocus()
     keyClick("d")
-    compare(p.app.runs.dispatchStep, "project")
+    compare(p.app.runDispatch.dispatchStep, "project")
     compare(dialog(p).visible, true)
     compare(String(field.text), "", "the handled letter was not typed")
     wait(50)
     verify(H.find(p, "dispatchProjectKeys").activeFocus, "the dialog took the keyboard")
-    p.app.runs.closeDispatch()
+    p.app.runDispatch.closeDispatch()
   }
 
   // 1
@@ -1194,17 +1194,17 @@ TestCase {
     compare(String(button.tooltipText), "Start an am run")
     button.clicked()
     compare(dialog(p).visible, true)
-    compare(p.app.runs.dispatchStep, "project")
+    compare(p.app.runDispatch.dispatchStep, "project")
     probeOk(p, ["/home/u/a"])
     wait(50)
     compare(p.focusItem.objectName, "dispatchProjectKeys")
     verify(H.find(p, "dispatchProjectKeys").activeFocus, "the project step has the keyboard")
     keyClick(Qt.Key_Return)
-    compare(p.app.runs.dispatchStep, "target")
-    compare(p.app.runs.dispatchRoot, "/home/u/a")
+    compare(p.app.runDispatch.dispatchStep, "target")
+    compare(p.app.runDispatch.dispatchRoot, "/home/u/a")
     compare(String(dialog(p).projectName), "alpha")
     compare(textOf(p, "dispatchHeading"), "Dispatch · 2 Target in alpha")
-    reply(p.app.runs.dispatchTargetRunner.current, JSON.stringify({ ok: true, data: tree() }) + "\n", 0)
+    reply(p.app.runDispatch.dispatchTargetRunner.current, JSON.stringify({ ok: true, data: tree() }) + "\n", 0)
     wait(50)
     compare(p.focusItem.objectName, "dispatchTargetFilter")
     verify(H.find(p, "dispatchTargetFilter").activeFocus, "the target step has the keyboard")
@@ -1213,25 +1213,25 @@ TestCase {
     keyClick(Qt.Key_Down)
     compare(dialog(p).targetCursor, 3)
     keyClick(Qt.Key_Return)
-    compare(p.app.runs.dispatchStep, "form")
+    compare(p.app.runDispatch.dispatchStep, "form")
     compare(p.dispatchCardId, "t1")
     compare(textOf(p, "dispatchTarget"), "Target   Subtask \"Do it\"")
     compare(textOf(p, "dispatchStory"), "Story   \"Story one\"")
     compare(textOf(p, "dispatchBlocked"),
             "Blocked by: \"Prep\" (Done), i1 (not on this board), ghost (not on this board)")
-    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}\n', 0)
-    reply(p.app.runs.dispatchSettingsRunner.current, '{"verify":["uv run pytest"]}\n', 0)
-    compare(p.app.runs.dispatchState, "ready")
+    reply(p.app.runDispatch.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}\n', 0)
+    reply(p.app.runControl.runSettingsLoadRunner.current, '{"verify":["uv run pytest"]}\n', 0)
+    compare(p.app.runDispatch.dispatchState, "ready")
     var start = H.find(p, "dispatchStart")
     start.clicked()
-    compare(p.app.runs.dispatchState, "ready", "the first click only arms")
+    compare(p.app.runDispatch.dispatchState, "ready", "the first click only arms")
     start.clicked()
-    compare(p.app.runs.dispatchState, "starting")
-    reply(p.app.runs.dispatchStartRunners[0].current, '{"ok":true,"run_id":"run-0000000000b2","message":"started"}\n', 0)
+    compare(p.app.runDispatch.dispatchState, "starting")
+    reply(p.app.runDispatch.dispatchStartRunners[0].current, '{"ok":true,"run_id":"run-0000000000b2","message":"started"}\n', 0)
     // A good start fetches the runs again; that launch cannot run here.
     p.app.runs.snapshotRunner.cancel()
     compare(dialog(p).visible, false)
-    compare(p.app.runs.dispatchStep, "")
+    compare(p.app.runDispatch.dispatchStep, "")
     compare(p.app.nav.viewMode, "run")
     compare(p.app.runs.selectedRunId, "run-0000000000b2")
     compare(p.app.projects.selectedProject, null, "no project was opened")
@@ -1248,14 +1248,14 @@ TestCase {
     disarmSwitch(p)
     compare(p.app.projects.selectedProject.root_path, "/home/u/b")
     compare(dialog(p).visible, true)
-    compare(p.app.runs.dispatchRoot, "/home/u/a")
-    compare(p.app.runs.dispatchStep, "form")
+    compare(p.app.runDispatch.dispatchRoot, "/home/u/a")
+    compare(p.app.runDispatch.dispatchStep, "form")
     compare(p.dispatchCardId, "t1")
     compare(textOf(p, "dispatchStory"), "Story   \"Story one\"", "still the picked tree's story")
     compare(textOf(p, "dispatchBlocked"),
             "Blocked by: \"Prep\" (Done), i1 (not on this board), ghost (not on this board)",
             "another project is open: its issues name nothing here")
-    p.app.runs.closeDispatch()
+    p.app.runDispatch.closeDispatch()
   }
 
   // 6 and Review Focus 3
@@ -1273,7 +1273,7 @@ TestCase {
     compare(textOf(p, "dispatchBlocked"),
             "Blocked by: \"Prep\" (Done), \"Broken build\" (Issue · open), ghost (not on this board)",
             "the open project's issues name a blocker of its own tree")
-    p.app.runs.closeDispatch()
+    p.app.runDispatch.closeDispatch()
   }
 
   // B4: the milestone offer of a blocked story reads the picked tree.
@@ -1283,20 +1283,20 @@ TestCase {
     toTarget(p, "/home/u/a")
     toForm(p, "card:s1")
     compare(p.dispatchCardId, "s1")
-    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}\n', 0)
-    reply(p.app.runs.dispatchSettingsRunner.current, '{"verify":["uv run pytest"]}\n', 0)
-    compare(p.app.runs.dispatchState, "previewing")
-    reply(p.app.runs.dispatchPreviewRunner.current,
+    reply(p.app.runDispatch.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}\n', 0)
+    reply(p.app.runControl.runSettingsLoadRunner.current, '{"verify":["uv run pytest"]}\n', 0)
+    compare(p.app.runDispatch.dispatchState, "previewing")
+    reply(p.app.runDispatch.dispatchPreviewRunner.current,
           '{"ok":false,"error":{"type":"StoryBlockedError","message":"Story blocked by s0"}}\n', 0)
-    compare(p.app.runs.dispatchState, "refused")
+    compare(p.app.runDispatch.dispatchState, "refused")
     var offer = H.find(p, "dispatchSuggest")
     compare(offer.visible, true, "the milestone is in the picked tree")
     offer.clicked()
     compare(p.dispatchCardId, "m1")
-    compare(p.app.runs.dispatchTarget.level, "milestone")
+    compare(p.app.runDispatch.dispatchTarget.level, "milestone")
     compare(textOf(p, "dispatchTarget"), "Target   Milestone \"M one\"")
-    compare(p.app.runs.dispatchStep, "form")
-    p.app.runs.closeDispatch()
+    compare(p.app.runDispatch.dispatchStep, "form")
+    p.app.runDispatch.closeDispatch()
   }
 
   // ---- the Resume dialog (3.2)
@@ -1316,10 +1316,10 @@ TestCase {
     field.forceActiveFocus()
     p.app.nav.cursorIndex = indexOfRun(p, "run-0000000000b2")
     keyClick("r")
-    compare(p.app.runs.controlRunners.length, 1, "one runner reads the run settings")
-    verify(argv(p.app.runs.controlRunners[0].current).indexOf("get-run-settings") >= 0,
+    compare(p.app.runControl.controlRunners.length, 1, "one runner reads the run settings")
+    verify(argv(p.app.runControl.controlRunners[0].current).indexOf("get-run-settings") >= 0,
            "the runner reads get-run-settings")
-    reply(p.app.runs.controlRunners[0].current,
+    reply(p.app.runControl.controlRunners[0].current,
           JSON.stringify({ verify: [], allowNoVerification: false }) + "\n", 0)
     wait(50)
     return field
@@ -1332,36 +1332,36 @@ TestCase {
     var dialog = resumeDialog(p)
     verify(dialog, "the Resume dialog is mounted")
     compare(dialog.visible, true)
-    compare(p.app.runs.resumeRunId, "run-0000000000b2")
-    compare(Object.keys(p.app.runs.pending).length, 0, "nothing pending")
+    compare(p.app.runControl.resumeRunId, "run-0000000000b2")
+    compare(Object.keys(p.app.runControl.pending).length, 0, "nothing pending")
     compare(H.find(p, "resumeDialogTitle").text, "Resume run …000000b2")
     compare(p.focusItem.objectName, "resumeVerify0")
     verify(p.focusItem.activeFocus, "row 0 has the keyboard")
     compare(field.text, "", "the handled r was not typed")
 
     H.find(p, "resumeVerify0").text = "bash tests/run.sh"
-    compare(p.app.runs.resumeVerify.length, 1)
-    compare(p.app.runs.resumeVerify[0], "bash tests/run.sh")
+    compare(p.app.runControl.resumeVerify.length, 1)
+    compare(p.app.runControl.resumeVerify[0], "bash tests/run.sh")
     mouseClick(H.find(p, "resumeVerifyAdd"))
     wait(50)
     var row1 = H.find(p, "resumeVerify1")
     verify(row1, "+ added a row")
     row1.text = "uv run pytest"
-    compare(p.app.runs.resumeVerify.length, 2)
+    compare(p.app.runControl.resumeVerify.length, 2)
     wait(450)
     var accept = H.find(p, "resumeDialogAccept")
     compare(accept.enabled, true)
     mouseClick(accept)
 
     compare(dialog.visible, false)
-    compare(p.app.runs.resumeRunId, "")
-    compare(p.app.runs.pending["run-0000000000b2"], "resume")
-    compare(p.app.runs.controlRunners.length, 1)
-    var launched = argv(p.app.runs.controlRunners[0].current)
+    compare(p.app.runControl.resumeRunId, "")
+    compare(p.app.runControl.pending["run-0000000000b2"], "resume")
+    compare(p.app.runControl.controlRunners.length, 1)
+    var launched = argv(p.app.runControl.controlRunners[0].current)
     verify(endsWith(launched, "run-control.py|resume|run-0000000000b2|/home/u/a|--verify|bash tests/run.sh|--verify|uv run pytest"),
            "run-control got the typed commands in order: " + launched)
-    compare(p.app.runs.resumeSaveRunner.seq, 1, "the set was saved")
-    verify(argv(p.app.runs.resumeSaveRunner.current).indexOf("set-run-settings|/home/u/a|") >= 0,
+    compare(p.app.runControl.resumeSaveRunner.seq, 1, "the set was saved")
+    verify(argv(p.app.runControl.resumeSaveRunner.current).indexOf("set-run-settings|/home/u/a|") >= 0,
            "saved for the run's project")
     wait(50)
     compare(p.focusItem.objectName, "searchField")
@@ -1378,15 +1378,15 @@ TestCase {
     keyClick("p")
     keyClick("c")
     compare(row0.text, "pc", "the letters were typed into the row")
-    compare(Object.keys(p.app.runs.pending).length, 0)
-    compare(p.app.runs.cancelOpen, false)
-    compare(p.app.runs.controlRunners.length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
+    compare(p.app.runControl.cancelOpen, false)
+    compare(p.app.runControl.controlRunners.length, 0)
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.runControl.resumeRunId, "")
     compare(resumeDialog(p).visible, false)
     compare(p.app.nav.viewMode, "runs")
     compare(p.opened, true, "the panel stays open")
-    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
     compare(p.shortcuts.modalOpen(), false)
     wait(50)
     verify(field.activeFocus, "the focus is back in the search field")
@@ -1398,34 +1398,34 @@ TestCase {
     var p = make(); if (!p) return
     p.navigator.showSection("runs")
     wait(50)
-    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    compare(p.app.runControl.resumeOpenFor("run-0000000000b2"), true)
     wait(50)
     H.find(p, "resumeVerify0").text = "bash tests/run.sh"
     p.app.runs.runs = [run("run-0000000000b2", "started", true, "beta")]
-    var reason = p.app.runs.refusalOf("resume", "run-0000000000b2")
+    var reason = p.app.runControl.refusalOf("resume", "run-0000000000b2")
     verify(reason !== "", "a live run cannot be resumed")
     wait(450)
     mouseClick(H.find(p, "resumeDialogAccept"))
     compare(resumeDialog(p).visible, true)
-    compare(p.app.runs.resumeRunId, "run-0000000000b2")
+    compare(p.app.runControl.resumeRunId, "run-0000000000b2")
     var error = H.find(p, "resumeDialogError")
     compare(error.visible, true)
     compare(error.text, reason)
     compare(H.find(p, "resumeVerify0").text, "bash tests/run.sh", "the typed row is kept")
-    compare(p.app.runs.controlRunners.length, 0, "run-control was never launched")
-    compare(p.app.runs.resumeSaveRunner.seq, 0, "nothing saved")
+    compare(p.app.runControl.controlRunners.length, 0, "run-control was never launched")
+    compare(p.app.runControl.resumeSaveRunner.seq, 0, "nothing saved")
   }
 
   // Review Focus 2
   function test_escape_at_the_panel_closes_only_the_resume_dialog_and_keeps_the_toast() {
     var p = withToast("runs"); if (!p) return
     p.app.runs.runs = sampleRuns()
-    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    compare(p.app.runControl.resumeOpenFor("run-0000000000b2"), true)
     wait(50)
     p.shortcuts.closeRequested()
-    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.runControl.resumeRunId, "")
     compare(resumeDialog(p).visible, false)
-    compare(p.app.runs.toasts.length, 1, "the toast is kept")
+    compare(p.app.runAlerts.toasts.length, 1, "the toast is kept")
     compare(p.opened, true)
     compare(p.app.nav.viewMode, "runs")
   }
@@ -1436,15 +1436,15 @@ TestCase {
     p.navigator.showSection("runs")
     wait(50)
     p.app.nav.cursorIndex = indexOfRun(p, "run-0000000000b2")
-    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    compare(p.app.runControl.resumeOpenFor("run-0000000000b2"), true)
     compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_1 }), false)
     compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 }), false)
     compare(p.app.nav.viewMode, "runs")
     compare(p.shortcuts.handleRunKey(key(Qt.Key_R)), false)
     compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), false)
-    compare(p.app.runs.controlRunners.length, 0)
-    compare(p.app.runs.cancelOpen, false)
-    compare(p.app.runs.resumeRunId, "run-0000000000b2")
+    compare(p.app.runControl.controlRunners.length, 0)
+    compare(p.app.runControl.cancelOpen, false)
+    compare(p.app.runControl.resumeRunId, "run-0000000000b2")
   }
 
   // Review Focus 4
@@ -1452,13 +1452,13 @@ TestCase {
     var p = make(); if (!p) return
     p.navigator.showSection("runs")
     wait(50)
-    p.app.runs.resumeOpenFor("run-0000000000b2")
+    p.app.runControl.resumeOpenFor("run-0000000000b2")
     wait(50)
     H.find(p, "resumeVerify0").text = "a"
     mouseClick(H.find(p, "resumeVerifyAdd"))
     wait(50)
     verify(H.find(p, "resumeVerify1"), "two rows")
-    compare(p.app.runs.resumeOpenFor("run-0000000000d4"), true)
+    compare(p.app.runControl.resumeOpenFor("run-0000000000d4"), true)
     wait(50)
     compare(H.find(p, "resumeDialogTitle").text, "Resume run …000000d4")
     compare(H.find(p, "resumeVerify0").text, "")
@@ -1472,21 +1472,21 @@ TestCase {
     var p = make(); if (!p) return
     p.navigator.showSection("runs")
     wait(50)
-    p.app.runs.resumeOpenFor("run-0000000000b2")
+    p.app.runControl.resumeOpenFor("run-0000000000b2")
     wait(50)
     var accept = H.find(p, "resumeDialogAccept")
     compare(accept.enabled, false, "blank rows, no opt-out")
     mouseClick(H.find(p, "resumeNoVerify"))
-    compare(p.app.runs.resumeAllowNoVerification, true)
+    compare(p.app.runControl.resumeAllowNoVerification, true)
     compare(accept.enabled, true)
     wait(450)
     mouseClick(accept)
-    compare(p.app.runs.resumeRunId, "")
-    compare(p.app.runs.controlRunners.length, 1)
-    var launched = argv(p.app.runs.controlRunners[0].current)
+    compare(p.app.runControl.resumeRunId, "")
+    compare(p.app.runControl.controlRunners.length, 1)
+    var launched = argv(p.app.runControl.controlRunners[0].current)
     verify(endsWith(launched, "run-control.py|resume|run-0000000000b2|/home/u/a|--allow-no-verification"),
            "run-control got the opt-out: " + launched)
-    verify(endsWith(argv(p.app.runs.resumeSaveRunner.current),
+    verify(endsWith(argv(p.app.runControl.resumeSaveRunner.current),
                     "set-run-settings|/home/u/a|" + JSON.stringify({ verify: [], allowNoVerification: true })),
            "the opt-out was saved")
   }
@@ -1497,11 +1497,11 @@ TestCase {
     p.navigator.showSection("runs")
     p.navigator.openRun("run-0000000000b2")
     wait(50)
-    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    compare(p.app.runControl.resumeOpenFor("run-0000000000b2"), true)
     wait(50)
     compare(p.focusItem.objectName, "resumeVerify0")
     keyClick(Qt.Key_Escape)
-    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.runControl.resumeRunId, "")
     compare(p.app.nav.viewMode, "run", "Escape closed only the dialog")
     wait(50)
     compare(p.focusItem.objectName, "keyCatcher")
@@ -1514,7 +1514,7 @@ TestCase {
   function test_a_cancelled_run_relaunches_into_the_prefilled_dispatch_dialog() {
     var p = make(); if (!p) return
     p.app.backendDir = "/plugin/core/backend/"
-    p.app.runs.runSettings = { verify: ["uv run pytest"] }
+    p.app.runControl.applyRunSettings(p.app.runs.project, { verify: ["uv run pytest"] })
     p.app.board.applyTreeData([{ id: "m1", title: "M one", status: "todo", description: "d", children: [] }])
     var r = run("run-0000000000f7", "cancelled", null, "m1")
     r.branch_prefix = "old-m1"
@@ -1533,12 +1533,12 @@ TestCase {
     compare(relaunch.visible, true)
     compare(relaunch.enabled, true)
     mouseClick(relaunch)
-    compare(p.app.runs.dispatchState, "previewing")
+    compare(p.app.runDispatch.dispatchState, "previewing")
     wait(50)
     compare(H.find(p, "dispatchDialog").visible, true)
     compare(H.find(p, "dispatchPrefix").text, "old-m1")
     compare(H.find(p, "dispatchBase").text, "release")
-    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}', 0)
+    reply(p.app.runDispatch.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}', 0)
     compare(H.find(p, "dispatchBase").text, "release", "the run's base is kept over the default branch")
   }
 
@@ -1636,11 +1636,11 @@ TestCase {
     var p = openDetail(); if (!p) return
     H.find(p, "keyCatcher").forceActiveFocus()
     keyClick("c")
-    compare(p.app.runs.cancelOpen, true)
+    compare(p.app.runControl.cancelOpen, true)
     wait(50)
     compare(p.focusItem.objectName, "runCancelField")
     keyClick("e")
-    compare(p.app.runs.cancelText, "e")
+    compare(p.app.runControl.cancelText, "e")
     compare(p.app.runs.detailTab, "output")
   }
 }

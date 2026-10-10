@@ -4,9 +4,10 @@
 // bookkeeping rows, the Output / Events tabs with the output pane (snapshot or
 // live) and the events pane, and the missing-run line. A stub app: a REAL
 // NavigationStore, a plain object carrying the RunStore properties the screen
-// reads (with recorders for selectAttempt, refreshLogs, setDetailTab, control,
-// relaunchOpenFor and flash), a plain object carrying the RunOutputStore
-// properties, an extras stub whose commentsFor reads a settable map, a board
+// reads (with recorders for selectAttempt, refreshLogs and setDetailTab), one
+// carrying the RunControlStore properties (with recorders for control and
+// flash), one carrying RunDispatchStore's relaunchOpenFor (a recorder), a
+// plain object carrying the RunOutputStore properties, an extras stub whose commentsFor reads a settable map, a board
 // whose cardMap lends titles and brd statuses, and a navigator stub recording
 // openCard.
 import QtQuick
@@ -39,7 +40,6 @@ TestCase {
       property string logsError: ""
       property string logsNote: ""
       property string amStatus: "ok"
-      property string flashText: ""
       property var selected: null
       property int refreshed: 0
       // As RunStore: (card, phase, 0, true) is a step, stored with step: true.
@@ -64,30 +64,46 @@ TestCase {
         rs.detailTab = tab
         return true
       }
-      // The control surface the header reads (S2 4.2). `control` only records.
+      // The open project's root (RunStore.project); "" when none is open.
+      property string project: "/home/u/a"
+    }
+  }
+
+  // The control surface the header reads (S2 4.2). `control` and `flash`
+  // only record.
+  Component {
+    id: controlC
+    QtObject {
+      id: rc
+      property string flashText: ""
       property var pending: ({})
       property var stillWaiting: ({})
       readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
       property string lastControlError: ""
       property string lastControlErrorRunId: ""
+      property string lastControlErrorType: ""
       property var controlCalls: []
       function control(action, id) {
-        rs.controlCalls = rs.controlCalls.concat([action + "|" + id])
-        return true
-      }
-      // The open project's root (RunStore.project); "" when none is open.
-      property string project: "/home/u/a"
-      property string lastControlErrorType: ""
-      // relaunchOpenFor and flash only record.
-      property var relaunchCalls: []
-      function relaunchOpenFor(card, cardMap, relaunch) {
-        rs.relaunchCalls = rs.relaunchCalls.concat([{ card: card, cardMap: cardMap, relaunch: relaunch }])
+        rc.controlCalls = rc.controlCalls.concat([action + "|" + id])
         return true
       }
       property var flashes: []
       function flash(text) {
-        rs.flashes = rs.flashes.concat([text])
-        rs.flashText = text
+        rc.flashes = rc.flashes.concat([text])
+        rc.flashText = text
+      }
+    }
+  }
+
+  // The dispatch surface Relaunch reaches: relaunchOpenFor only records.
+  Component {
+    id: dispatchC
+    QtObject {
+      id: rd
+      property var relaunchCalls: []
+      function relaunchOpenFor(card, cardMap, relaunch) {
+        rd.relaunchCalls = rd.relaunchCalls.concat([{ card: card, cardMap: cardMap, relaunch: relaunch }])
+        return true
       }
     }
   }
@@ -132,6 +148,8 @@ TestCase {
     QtObject {
       property var nav: null
       property var runs: null
+      property var runControl: null
+      property var runDispatch: null
       property var runOutput: null
       property var extras: null
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" } })
@@ -154,7 +172,10 @@ TestCase {
     var runs = runsC.createObject(host)
     var ro = roC.createObject(host)
     var extras = extrasC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runOutput: ro, extras: extras })
+    var control = controlC.createObject(host)
+    var dispatch = dispatchC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runDispatch: dispatch,
+                                        runOutput: ro, extras: extras })
     var navi = naviC.createObject(host)
     var sC = Qt.createComponent("../../../ui/screens/RunDetailScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
@@ -164,7 +185,8 @@ TestCase {
     runs.selectedRunId = selectedId === undefined ? "run-20261004-19efcddc" : selectedId
     runs.selectedAttempt = attempt === undefined ? null : attempt
     wait(20)
-    return { app: app, runs: runs, nav: nav, screen: screen, ro: ro, extras: extras, navi: navi }
+    return { app: app, runs: runs, control: control, dispatch: dispatch, nav: nav, screen: screen, ro: ro,
+             extras: extras, navi: navi }
   }
 
   // Colours that differ only in the colour spec (Qt.darker's HSV against a
@@ -368,7 +390,7 @@ TestCase {
     compare(part(s, "stopActionReason").text, both)
     tap(part(s, "stopRelaunch"))
     tap(part(s, "stopOpenCard"))
-    compare(s.runs.relaunchCalls.length, 0, "a disabled Relaunch dispatches nothing")
+    compare(s.dispatch.relaunchCalls.length, 0, "a disabled Relaunch dispatches nothing")
     compare(s.navi.opened.length, 0, "a disabled Open card navigates nowhere")
 
     s.runs.runs = [escalatedRun({ workflow: "task", card: "t1" })]
@@ -398,12 +420,12 @@ TestCase {
     compare(relaunch.visible, true)
     compare(relaunch.enabled, true)
     tap(relaunch)
-    compare(s.runs.relaunchCalls.length, 1)
-    var call = s.runs.relaunchCalls[0]
+    compare(s.dispatch.relaunchCalls.length, 1)
+    var call = s.dispatch.relaunchCalls[0]
     verify(call.card === s.app.board.cardMap.M3, "the milestone card")
     verify(call.cardMap === s.app.board.cardMap, "the board's cardMap")
     compare(JSON.stringify(call.relaunch), '{"level":"milestone","cardId":"M3","prefix":"m3","base":"master"}')
-    compare(s.runs.flashes.length, 0)
+    compare(s.control.flashes.length, 0)
   }
 
   // 17
@@ -412,8 +434,8 @@ TestCase {
     var relaunch = part(s, "stopRelaunch")
     compare(relaunch.enabled, true)
     tap(relaunch)
-    compare(s.runs.relaunchCalls.length, 0)
-    compare(s.runs.flashes.join("|"), "The card to relaunch is no longer on the board")
+    compare(s.dispatch.relaunchCalls.length, 0)
+    compare(s.control.flashes.join("|"), "The card to relaunch is no longer on the board")
     compare(H.find(s.screen, "runDetailFlash").text, "The card to relaunch is no longer on the board")
   }
 
@@ -422,16 +444,16 @@ TestCase {
     var s = make([escalatedRun()], "run-x-escl0002"); if (!s) return
     var relaunch = part(s, "stopRelaunch")
     compare(relaunch.visible, false, "a resumable escalated run: Resume is in the controls")
-    s.runs.lastControlErrorType = "NotResumableError"
-    s.runs.lastControlErrorRunId = "run-x-escl0002"
+    s.control.lastControlErrorType = "NotResumableError"
+    s.control.lastControlErrorRunId = "run-x-escl0002"
     compare(relaunch.visible, true)
     compare(relaunch.enabled, true)
-    s.runs.lastControlErrorRunId = "run-x-other0009"
+    s.control.lastControlErrorRunId = "run-x-other0009"
     compare(relaunch.visible, false, "another run's refusal")
-    s.runs.lastControlErrorRunId = "run-x-escl0002"
-    s.runs.lastControlErrorType = "RunIsLiveError"
+    s.control.lastControlErrorRunId = "run-x-escl0002"
+    s.control.lastControlErrorType = "RunIsLiveError"
     compare(relaunch.visible, false, "a refusal relaunching does not answer")
-    s.runs.lastControlErrorType = "CheckpointMismatchError"
+    s.control.lastControlErrorType = "CheckpointMismatchError"
     compare(relaunch.visible, true)
     s.runs.runs = [escalatedRun({ milestone: "" })]
     compare(relaunch.visible, false, "no relaunch target, whatever the refusal")
@@ -444,9 +466,9 @@ TestCase {
     compare(relaunch.visible, true)
     compare(relaunch.enabled, true)
     tap(relaunch)
-    compare(s.runs.relaunchCalls.length, 1)
-    verify(s.runs.relaunchCalls[0].card === s.app.board.cardMap.t1)
-    compare(s.runs.relaunchCalls[0].relaunch.level, "card")
+    compare(s.dispatch.relaunchCalls.length, 1)
+    verify(s.dispatch.relaunchCalls[0].card === s.app.board.cardMap.t1)
+    compare(s.dispatch.relaunchCalls[0].relaunch.level, "card")
   }
 
   // 20
@@ -1077,23 +1099,23 @@ TestCase {
     cancelSpy.target = s.screen
     cancelSpy.clear()
     tap(ctl(s, "Pause"))
-    compare(s.runs.controlCalls.join(","), "pause|run-20261004-19efcddc")
+    compare(s.control.controlCalls.join(","), "pause|run-20261004-19efcddc")
     tap(ctl(s, "Cancel"))
     compare(cancelSpy.count, 1)
     compare(cancelSpy.signalArguments[0][0], "run-20261004-19efcddc")
-    compare(s.runs.controlCalls.length, 1, "cancel never reaches the store")
+    compare(s.control.controlCalls.length, 1, "cancel never reaches the store")
   }
 
   function test_the_runs_own_error_and_waiting_lines() {
     var s = make(detail()); if (!s) return
-    s.runs.lastControlError = "The run no longer exists"
-    s.runs.lastControlErrorRunId = "run-other"
+    s.control.lastControlError = "The run no longer exists"
+    s.control.lastControlErrorRunId = "run-other"
     compare(ctl(s, "Error").visible, false, "another run's error")
-    s.runs.lastControlErrorRunId = "run-20261004-19efcddc"
+    s.control.lastControlErrorRunId = "run-20261004-19efcddc"
     compare(ctl(s, "Error").visible, true)
     compare(ctl(s, "Error").text, "The run no longer exists")
-    s.runs.pending = { "run-20261004-19efcddc": "pause" }
-    s.runs.stillWaiting = { "run-20261004-19efcddc": true }
+    s.control.pending = { "run-20261004-19efcddc": "pause" }
+    s.control.stillWaiting = { "run-20261004-19efcddc": true }
     compare(ctl(s, "Pause").text, "Pause requested…")
     compare(ctl(s, "Waiting").visible, true)
   }
@@ -1113,10 +1135,10 @@ TestCase {
     var line = H.find(s.screen, "runDetailFlash")
     verify(line, "the flash line")
     compare(line.visible, false)
-    s.runs.flashText = "Integrate is running; it cannot be paused or cancelled"
+    s.control.flashText = "Integrate is running; it cannot be paused or cancelled"
     compare(line.visible, true)
     compare(line.text, "Integrate is running; it cannot be paused or cancelled")
-    s.runs.flashText = ""
+    s.control.flashText = ""
     compare(line.visible, false)
   }
 
