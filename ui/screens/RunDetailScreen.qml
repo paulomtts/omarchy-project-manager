@@ -43,6 +43,15 @@ Column {
   readonly property real nowMs: screen.app.runs.logsFetchedMs >= 0 && screen.app.runs.runs ? Date.now() : 0
   // The rows the store holds; 0 when `events` is not an array.
   readonly property int eventsHeld: Array.isArray(screen.app.runs.events) ? screen.app.runs.events.length : 0
+  // app.runOutput, or null when the app has none.
+  readonly property var ro: screen.app.runOutput || null
+  // ro's followStatus; "idle" without ro or for anything it does not name.
+  readonly property string followStatus: {
+    var f = screen.ro ? screen.ro.followStatus : "idle"
+    return ["connecting", "following", "ended", "error", "unsupported"].indexOf(f) >= 0 ? f : "idle"
+  }
+  // The pane presents ro (live mode) rather than the snapshot.
+  readonly property bool live: ["connecting", "following", "ended", "error"].indexOf(screen.followStatus) >= 0
 
   visible: screen.app.nav.viewMode === "run"
   spacing: Style.space(6)
@@ -136,8 +145,8 @@ Column {
     return step === true ? s.step === true : s.step !== true && s.attempt === attempt
   }
 
-  // The pane's age line: the snapshot's age (and "last 200 lines" when cut),
-  // "loading…" before the first reply, "" otherwise. Never "live".
+  // The snapshot's label: its age (and "last 200 lines" when cut),
+  // "loading…" before the first reply, "" otherwise or with no selection.
   function outputAge() {
     var store = screen.app.runs
     if (!screen.selection) return ""
@@ -147,6 +156,44 @@ Column {
       return store.logsTruncated ? line + " · last 200 lines" : line
     }
     return store.logsLoading ? "loading…" : ""
+  }
+
+  // A string field of ro; "" without ro or when it is not a string.
+  function roText(key) {
+    var v = screen.ro ? screen.ro[key] : ""
+    return typeof v === "string" ? v : ""
+  }
+
+  // The end statuses drawn urgent, with the escalated glyph.
+  function endIsUrgent(end) {
+    return end === "gate_failed" || end === "schema_invalid" || end === "harness_error"
+  }
+
+  // The pane's status line: live or waiting, ended with its status (or ro's
+  // sentence for an end without one), the unsupported sentence before the
+  // snapshot's label, or the snapshot's label. "" with no selection and for a
+  // follow error, which runOutputError states.
+  function statusLabel() {
+    if (!screen.selection) return ""
+    var f = screen.followStatus
+    var running = RunGlyphs.glyphOf("running")
+    if (f === "connecting" || (f === "following" && screen.ro.hasOutput !== true)) return running + " live · waiting for output"
+    if (f === "following") return running + " live"
+    if (f === "error") return ""
+    if (f === "ended") {
+      var end = screen.roText("endStatus")
+      if (end === "") return screen.roText("followError")
+      return (screen.endIsUrgent(end) ? RunGlyphs.glyphOf("escalated") + " " : "") + "ended · " + end
+    }
+    var age = screen.outputAge()
+    if (f !== "unsupported") return age
+    var sentence = screen.roText("followError")
+    return sentence !== "" && age !== "" ? sentence + " · " + age : sentence + age
+  }
+
+  // The status line is drawn urgent: an ended attempt with an urgent status.
+  function statusUrgent() {
+    return !!screen.selection && screen.followStatus === "ended" && screen.endIsUrgent(screen.roText("endStatus"))
   }
 
   // Safe reads by position: a Repeater may still bind a delegate once while
@@ -274,6 +321,7 @@ Column {
         spacing: Style.space(10)
 
         UI.ThemedText {
+          id: outputHeading
           objectName: "runOutputHeading"
           theme: screen.theme
           text: !screen.selection ? "Output"
@@ -285,14 +333,19 @@ Column {
           objectName: "runOutputAge"
           variant: "caption"
           theme: screen.theme
+          // Wraps within the room the heading and Refresh leave, so Refresh stays on screen.
+          width: Math.min(implicitWidth, Math.max(Style.space(80), parent.width - outputHeading.width - outputRefresh.width - 2 * parent.spacing))
+          wrapMode: Text.WordWrap
           visible: text !== ""
-          text: screen.outputAge()
+          text: screen.statusLabel()
+          color: screen.statusUrgent() ? screen.theme.urgent : screen.theme.dim
         }
 
         UI.ActionButton {
+          id: outputRefresh
           objectName: "runOutputRefresh"
           theme: screen.theme
-          visible: !!screen.selection
+          visible: !!screen.selection && !screen.live
           text: "Refresh"
           tooltipText: "Fetch this attempt's output again"
           onClicked: screen.app.runs.refreshLogs()
@@ -307,14 +360,28 @@ Column {
         text: "No attempt selected"
       }
 
+      // The snapshot's fetch error, or in live mode the follow's error.
       UI.ThemedText {
         objectName: "runOutputError"
         variant: "caption"
         theme: screen.theme
         width: parent.width
-        visible: !!screen.selection && screen.app.runs.logsError !== ""
-        text: screen.app.runs.logsError
+        visible: text !== ""
+        text: !screen.selection ? ""
+          : !screen.live ? screen.app.runs.logsError
+          : screen.followStatus === "error" ? screen.roText("followError") : ""
         color: screen.theme.urgent
+        wrapMode: Text.WordWrap
+      }
+
+      // The snapshot's neutral note (a step that records no output), never urgent.
+      UI.ThemedText {
+        objectName: "runOutputNote"
+        variant: "dim"
+        theme: screen.theme
+        width: parent.width
+        visible: text !== ""
+        text: !!screen.selection && !screen.live && typeof screen.app.runs.logsNote === "string" ? screen.app.runs.logsNote : ""
         wrapMode: Text.WordWrap
       }
 

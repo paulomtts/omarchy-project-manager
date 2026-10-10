@@ -1,10 +1,11 @@
 // tests/ui/screens/tst_run_detail_screen.qml
 // ui/screens/RunDetailScreen.qml on its own: the header, the story > subtask >
 // attempt tree with its bookkeeping rows, the Output / Events tabs with the
-// output pane and the events pane, and the missing-run line. A stub app: a
-// REAL NavigationStore, a plain object carrying the RunStore properties the
-// screen reads (with recorders for selectAttempt, refreshLogs and
-// setDetailTab), and a board whose cardMap lends titles and brd statuses.
+// output pane (snapshot or live) and the events pane, and the missing-run
+// line. A stub app: a REAL NavigationStore, a plain object carrying the
+// RunStore properties the screen reads (with recorders for selectAttempt,
+// refreshLogs and setDetailTab), a plain object carrying the RunOutputStore
+// properties, and a board whose cardMap lends titles and brd statuses.
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
@@ -33,6 +34,7 @@ TestCase {
       property real logsFetchedMs: 0
       property bool logsLoading: false
       property string logsError: ""
+      property string logsNote: ""
       property string amStatus: "ok"
       property string flashText: ""
       property var selected: null
@@ -73,11 +75,26 @@ TestCase {
     }
   }
 
+  // The RunOutputStore surface the screen reads. Fields a store could hand
+  // over malformed are var, so tests can put garbage in them.
+  Component {
+    id: roC
+    QtObject {
+      property var followStatus: "idle"
+      property var endStatus: ""
+      property var liveText: ""
+      property int liveDropped: 0
+      property bool hasOutput: false
+      property var followError: ""
+    }
+  }
+
   Component {
     id: appC
     QtObject {
       property var nav: null
       property var runs: null
+      property var runOutput: null
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" } })
       property var board: ({ cardMap: {
         s1: { id: "s1", title: "Runs screens", status: "in_progress" },
@@ -95,7 +112,8 @@ TestCase {
     if (navComp.status !== Component.Ready) { fail(navComp.errorString()); return null }
     var nav = navComp.createObject(host)
     var runs = runsC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs })
+    var ro = roC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runOutput: ro })
     var sC = Qt.createComponent("../../../ui/screens/RunDetailScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
     var screen = sC.createObject(host, { width: 500, app: app, navigator: null })
@@ -104,7 +122,19 @@ TestCase {
     runs.selectedRunId = selectedId === undefined ? "run-20261004-19efcddc" : selectedId
     runs.selectedAttempt = attempt === undefined ? null : attempt
     wait(20)
-    return { app: app, runs: runs, nav: nav, screen: screen }
+    return { app: app, runs: runs, nav: nav, screen: screen, ro: ro }
+  }
+
+  // Colours that differ only in the colour spec (Qt.darker's HSV against a
+  // Text's RGB) are the same colour.
+  function sameColor(a, b) {
+    return Math.abs(a.r - b.r) < 0.01 && Math.abs(a.g - b.g) < 0.01
+      && Math.abs(a.b - b.b) < 0.01 && Math.abs(a.a - b.a) < 0.01
+  }
+
+  // Puts each field of `fields` on the stub runOutput.
+  function setLive(s, fields) {
+    for (var key in fields) s.ro[key] = fields[key]
   }
 
   // Two clicks inside the double-click interval make the second a double-click.
@@ -410,6 +440,162 @@ TestCase {
     var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
     tap(H.find(s.screen, "runOutputRefresh"))
     compare(s.runs.refreshed, 1)
+  }
+
+  // ---- live output: label, error, note, Refresh
+
+  function test_following_with_output_reads_live() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "following", hasOutput: true, liveText: "collecting...\n" })
+    var age = H.find(s.screen, "runOutputAge")
+    compare(age.visible, true)
+    compare(age.text, RG.glyphOf("running") + " live")
+    verify(sameColor(age.color, s.screen.theme.dim), "a plain caption")
+    compare(H.find(s.screen, "runOutputError").visible, false)
+  }
+
+  function test_connecting_and_following_without_output_read_waiting() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    var age = H.find(s.screen, "runOutputAge")
+    setLive(s, { followStatus: "connecting" })
+    compare(age.text, RG.glyphOf("running") + " live · waiting for output")
+    setLive(s, { followStatus: "following", hasOutput: false })
+    compare(age.text, RG.glyphOf("running") + " live · waiting for output")
+    setLive(s, { hasOutput: true })
+    compare(age.text, RG.glyphOf("running") + " live")
+  }
+
+  function test_ended_ok_reads_ended_plainly() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "ended", endStatus: "ok", hasOutput: true, liveText: "3 passed\n" })
+    var age = H.find(s.screen, "runOutputAge")
+    compare(age.text, "ended · ok")
+    verify(sameColor(age.color, s.screen.theme.dim))
+    setLive(s, { endStatus: "weird_status" })
+    compare(age.text, "ended · weird_status", "an unknown end status is shown plainly")
+    verify(sameColor(age.color, s.screen.theme.dim))
+  }
+
+  function test_ended_failures_are_urgent_with_the_escalated_glyph_data() {
+    return [{ tag: "gate_failed", status: "gate_failed" },
+            { tag: "schema_invalid", status: "schema_invalid" },
+            { tag: "harness_error", status: "harness_error" }]
+  }
+
+  function test_ended_failures_are_urgent_with_the_escalated_glyph(data) {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "ended", endStatus: data.status, hasOutput: true, liveText: "x\n" })
+    var age = H.find(s.screen, "runOutputAge")
+    compare(age.text, RG.glyphOf("escalated") + " ended · " + data.status)
+    verify(Qt.colorEqual(age.color, s.screen.theme.urgent))
+  }
+
+  function test_a_step_with_no_log_reads_a_plain_sentence() {
+    var s = make(stepRun(), undefined, stepSel("t1", "verify")); if (!s) return
+    setLive(s, { followStatus: "ended", endStatus: "", followError: "This step records no output" })
+    var age = H.find(s.screen, "runOutputAge")
+    compare(age.text, "This step records no output")
+    verify(!Qt.colorEqual(age.color, s.screen.theme.urgent), "never urgent")
+    compare(H.find(s.screen, "runOutputError").visible, false)
+  }
+
+  function test_unsupported_puts_the_sentence_before_the_snapshot() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "unsupported", followError: "This am cannot stream output (am logs --follow is missing)" })
+    var age = H.find(s.screen, "runOutputAge")
+    compare(age.text, "This am cannot stream output (am logs --follow is missing)", "no snapshot yet: the sentence alone")
+    s.runs.logsText = "3 passed"
+    s.runs.logsFetchedMs = Date.now() - 14000
+    compare(age.text, "This am cannot stream output (am logs --follow is missing) · snapshot 14s ago")
+    verify(sameColor(age.color, s.screen.theme.dim))
+    compare(H.find(s.screen, "runOutputText").visible, true)
+    compare(H.find(s.screen, "runOutputText").text, "3 passed")
+    compare(H.find(s.screen, "runOutputRefresh").visible, true)
+    tap(H.find(s.screen, "runOutputRefresh"))
+    compare(s.runs.refreshed, 1, "Refresh works")
+  }
+
+  function test_a_follow_error_is_urgent() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsError = "an older snapshot error"
+    setLive(s, { followStatus: "error", followError: "Live output stopped: run not found" })
+    var err = H.find(s.screen, "runOutputError")
+    compare(err.visible, true)
+    compare(err.text, "Live output stopped: run not found")
+    verify(Qt.colorEqual(err.color, s.screen.theme.urgent))
+    compare(H.find(s.screen, "runOutputRefresh").visible, false)
+    compare(H.find(s.screen, "runOutputAge").visible, false, "no live label for an error")
+  }
+
+  function test_refresh_only_for_a_snapshot_data() {
+    return [{ tag: "idle", status: "idle", shown: true },
+            { tag: "unsupported", status: "unsupported", shown: true },
+            { tag: "connecting", status: "connecting", shown: false },
+            { tag: "following", status: "following", shown: false },
+            { tag: "ended", status: "ended", shown: false },
+            { tag: "error", status: "error", shown: false }]
+  }
+
+  function test_refresh_only_for_a_snapshot(data) {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: data.status })
+    compare(H.find(s.screen, "runOutputRefresh").visible, data.shown)
+  }
+
+  function test_a_logs_note_shows_dim_not_urgent() {
+    var s = make(stepRun(), undefined, stepSel("t1", "verify")); if (!s) return
+    var note = H.find(s.screen, "runOutputNote")
+    compare(note.visible, false, "no note, no line")
+    s.runs.logsNote = "This step records no output"
+    compare(note.visible, true)
+    compare(note.text, "This step records no output")
+    verify(sameColor(note.color, s.screen.theme.dim))
+    verify(!Qt.colorEqual(note.color, s.screen.theme.urgent))
+    setLive(s, { followStatus: "following" })
+    compare(note.visible, false, "a snapshot's note only")
+  }
+
+  function test_no_run_output_object_is_the_snapshot() {
+    failOnWarning(/TypeError|ReferenceError|is not a function|Unable to assign/)
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.app.runOutput = null
+    s.runs.logsText = "3 passed"
+    s.runs.logsFetchedMs = Date.now() - 14000
+    compare(H.find(s.screen, "runOutputAge").text, "snapshot 14s ago")
+    compare(H.find(s.screen, "runOutputText").text, "3 passed")
+    compare(H.find(s.screen, "runOutputRefresh").visible, true)
+    s.app.runOutput = undefined
+    compare(H.find(s.screen, "runOutputRefresh").visible, true, "undefined too")
+  }
+
+  // Review Focus 1.
+  function test_no_selection_ignores_a_live_run_output() {
+    var s = make(detail()); if (!s) return
+    s.runs.logsNote = "This step records no output"
+    setLive(s, { followStatus: "error", followError: "Live output stopped" })
+    compare(H.find(s.screen, "runOutputNone").visible, true)
+    compare(H.find(s.screen, "runOutputAge").visible, false)
+    compare(H.find(s.screen, "runOutputError").visible, false)
+    compare(H.find(s.screen, "runOutputNote").visible, false)
+    compare(H.find(s.screen, "runOutputRefresh").visible, false)
+    setLive(s, { followStatus: "following", hasOutput: true, liveText: "a\n" })
+    compare(H.find(s.screen, "runOutputAge").visible, false)
+  }
+
+  // Review Focus 3.
+  function test_an_unknown_follow_status_is_the_snapshot() {
+    failOnWarning(/TypeError|ReferenceError|is not a function|Unable to assign/)
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsFetchedMs = Date.now() - 14000
+    setLive(s, { followStatus: "bogus" })
+    compare(H.find(s.screen, "runOutputAge").text, "snapshot 14s ago")
+    compare(H.find(s.screen, "runOutputRefresh").visible, true)
+    setLive(s, { followStatus: 7 })
+    compare(H.find(s.screen, "runOutputAge").text, "snapshot 14s ago")
+    setLive(s, { followStatus: "ended", endStatus: 5, followError: null })
+    compare(H.find(s.screen, "runOutputAge").visible, false, "a non-string end status is none, and so is the sentence")
+    setLive(s, { followStatus: "error", followError: 9 })
+    compare(H.find(s.screen, "runOutputError").visible, false)
   }
 
   // ---- missing, malformed, visibility
