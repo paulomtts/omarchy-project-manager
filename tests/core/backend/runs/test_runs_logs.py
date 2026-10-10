@@ -133,7 +133,9 @@ def calls(world):
 
 def test_logs_data_is_the_capture():
     assert logs_data() == fixture("logs-attempt.json")["data"]
-    assert {"ok": True, "data": logs_data()} == fixture("logs-attempt.json")
+    # The capture's top-level `_note` is an annotation, not part of am's envelope.
+    assert {"ok": True, "data": logs_data()} == \
+        {k: v for k, v in fixture("logs-attempt.json").items() if not k.startswith("_")}
     # Each call is a fresh copy: an edit to one never reaches the next.
     first = logs_data()
     first["artifacts"]["stdout"]["text"] = "edited"

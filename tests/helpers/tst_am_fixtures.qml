@@ -13,7 +13,7 @@ TestCase {
   readonly property var names: [
     "runs.json", "status-started.json", "status-done.json", "status-escalated.json",
     "status-escalated-integrate.json", "status-done-integrate.json", "watch-events.json",
-    "watch-hello.json", "logs-attempt.json"
+    "watch-hello.json", "logs-attempt.json", "events.json"
   ]
 
   function test_every_fixture_loads() {
@@ -28,6 +28,14 @@ TestCase {
     compare(runs.ok, true)
     verify(Array.isArray(runs.data.runs), "runs.json data.runs is an array")
     compare(F.load("watch-hello.json").schema_2.schema, 2)
+  }
+
+  function test_events_page_loads_with_its_head() {
+    var page = F.load("events.json")
+    compare(page.ok, true)
+    verify(Array.isArray(page.data.events), "events.json data.events is an array")
+    verify(page.data.events.length > 0, "events.json data.events is empty")
+    compare(typeof page.data.head, "number")
   }
 
   function test_underscore_keys_are_kept() {

@@ -1,21 +1,36 @@
 #!/usr/bin/env python3
-"""List an am project's runs and each selected run's status.
+"""Snapshot am runs: every project's, one project's, or a single run.
 
-    runs-snapshot.py <project_root>
+    runs-snapshot.py                   all projects
+    runs-snapshot.py <project_root>    one project
+    runs-snapshot.py --run RUN         one run
 
-Runs `am runs --repo-dir R` (newest first), keeps am's order and selects every
-non-terminal run plus the first 10 terminal ones (terminal: done, escalated,
-stopped, cancelled, canceled), then runs `am status <id> --repo-dir R` for each
-selected run.
+<project_root> and RUN are non-empty and do not start with -. Any other argv is
+a Usage error (exit 2) and am is not run.
+
+List modes run `am runs --all-projects --limit 200` (or `am runs --repo-dir R
+--limit 200` for one project), then `am status <id>` for every selected run, in
+am's (newest-first) order. Selected: every non-terminal run plus the first 10
+terminal ones (terminal: done, escalated, stopped, cancelled, canceled; exact
+match) among those 200 rows; a run older than the 200th row is not in the
+snapshot. Single-run mode runs `am status RUN` alone. `am status` never gets
+--repo-dir.
 
 Prints exactly one JSON line on EVERY path:
-{"ok": true, "runs": [{<am runs summary fields>, "status": <am status data>}],
- "data_dir": <XDG_DATA_HOME in effect, else ~/.local/share>}
-or {"ok": false, "error": {"type", "message"}} with type AmMissing, AmBadOutput,
-Usage (exit 2) or HelperError; an `ok:false` envelope from am is re-emitted
-unchanged. Exit 0 ok, 1 failure, 2 usage. If any `am status` call fails the whole
-snapshot fails (no partial result). Only `am` commands are used, always as argv
-lists; am's database and on-disk layout are never read.
+{"ok": true, "as_of_seq": <am runs as_of_seq>, "store_id": <am runs store_id>,
+ "runs": [{<am runs row>, "status": <am status data>}], "data_dir": D}
+or, for --run,
+{"ok": true, "run": RUN, "as_of_seq": <am status as_of_seq>,
+ "store_id": <am status store_id>, "status": <am status data>, "data_dir": D}
+where store_id is "" when am's is not a string and D is XDG_DATA_HOME when
+absolute, else ~/.local/share;
+or {"ok": false, "error": {"type", "message"}} with type Usage (exit 2),
+AmMissing, AmBadOutput, SchemaMismatch (am runs or am status data without a
+non-negative integer as_of_seq: the plugin needs the newer am) or HelperError.
+An `ok:false` envelope from am (StoreBusyError, UnknownRunError, RepoDirError,
+...) is re-emitted unchanged. Exit 0 ok, 1 failure, 2 usage. A failure stops at
+the failing am call; a list is never partial. Only `am` commands are used,
+always as argv lists; am's database and on-disk layout are never read.
 """
 import json
 import os
@@ -26,8 +41,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = "usage: runs-snapshot.py <project_root>"
+USAGE = "usage: runs-snapshot.py [<project_root> | --run RUN]"
 AM_TIMEOUT = 60
+LIST_LIMIT = 200
 # The finished statuses, matched exactly. A cancelled run is terminal under either
 # spelling, `cancelled` or `canceled`. `stopped` is "parked" (resumable) in the
 # domain table, but for the snapshot it is terminal and counts toward the cap.
@@ -45,6 +61,28 @@ class AmFailure(Exception):
 
 def bad_output(message):
     return AmFailure({"ok": False, "error": {"type": "AmBadOutput", "message": message}})
+
+
+def schema_mismatch(what):
+    return AmFailure({"ok": False, "error": {
+        "type": "SchemaMismatch",
+        "message": what + " sent no non-negative integer as_of_seq; "
+                          "the plugin needs the newer am."}})
+
+
+def as_of_seq(data, what):
+    """`data`'s as_of_seq, a non-negative JSON integer (not a bool, float or
+    string); else SchemaMismatch, naming the am command `what`."""
+    seq = data.get("as_of_seq")
+    if not (type(seq) is int and seq >= 0):
+        raise schema_mismatch(what)
+    return seq
+
+
+def store_id(data):
+    """`data`'s store_id when a string, else ""."""
+    store = data.get("store_id")
+    return store if isinstance(store, str) else ""
 
 
 def failure(kind, message, code=1):
@@ -106,32 +144,66 @@ def select_runs(runs):
     return picked
 
 
-def snapshot(am, root, runs):
-    """Each selected run's summary with `status` replaced by its `am status` data."""
+def run_status(am, run_id):
+    """`am status RUN` data (never with --repo-dir), checked: an object
+    (else AmBadOutput) with an as_of_seq (else SchemaMismatch)."""
+    status = call_am(am, ["status", run_id])
+    if not isinstance(status, dict):
+        raise bad_output("am status " + run_id + " data is not an object.")
+    as_of_seq(status, "am status " + run_id)
+    return status
+
+
+def list_snapshot(am, scope):
+    """`am runs <scope> --limit LIST_LIMIT`, checked before any status call, then
+    each selected run's row with `status` replaced by its `am status` data."""
+    data = call_am(am, ["runs", *scope, "--limit", str(LIST_LIMIT)])
+    runs = run_list(data)
+    seq = as_of_seq(data, "am runs")
     out = []
     for run in select_runs(runs):
-        status = call_am(am, ["status", run["id"], "--repo-dir", root])
-        if not isinstance(status, dict):
-            raise bad_output("am status " + run["id"] + " data is not an object.")
         entry = dict(run)
-        entry["status"] = status
+        entry["status"] = run_status(am, run["id"])
         out.append(entry)
-    return out
+    return {"ok": True, "as_of_seq": seq, "store_id": store_id(data), "runs": out,
+            "data_dir": data_dir()}
+
+
+def single_snapshot(am, run_id):
+    """`am status RUN` alone: the run id as given, its status data verbatim and
+    that data's as_of_seq and store_id."""
+    status = run_status(am, run_id)
+    return {"ok": True, "run": run_id, "as_of_seq": status["as_of_seq"],
+            "store_id": store_id(status), "status": status, "data_dir": data_dir()}
+
+
+def parse_args(argv):
+    """("list", the `am runs` scope arguments) or ("run", RUN) for the helper's
+    argv: --all-projects for none, --repo-dir R for one <project_root>, RUN for
+    `--run RUN` (R and RUN non-empty, not starting with -); None for anything
+    else."""
+    if not argv:
+        return "list", ["--all-projects"]
+    if len(argv) == 1 and argv[0] and not argv[0].startswith("-"):
+        return "list", ["--repo-dir", argv[0]]
+    if len(argv) == 2 and argv[0] == "--run" and argv[1] and not argv[1].startswith("-"):
+        return "run", argv[1]
+    return None
 
 
 def main(argv):
-    if len(argv) != 1:
+    mode = parse_args(argv)
+    if mode is None:
         return failure("Usage", USAGE, 2)
-    root = argv[0]
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
+    kind, arg = mode
     try:
-        runs = run_list(call_am(am, ["runs", "--repo-dir", root]))
-        result = snapshot(am, root, runs)
+        result = list_snapshot(am, arg) if kind == "list" else single_snapshot(am, arg)
     except AmFailure as e:
         return emit(e.payload, 1)
-    return emit({"ok": True, "runs": result, "data_dir": data_dir()})
+    return emit(result)
 
 
 def guarded(argv):

@@ -1,5 +1,5 @@
 {
-  "_note": "schema_1 is the real first line of `am watch 20261004T204141Z-cb11063d --follow --from-now` (am 0.1.0). schema_2 is DERIVED: the same line with schema set to 2, the hello the announced `canceled` respelling migration will print; no am prints it yet.",
+  "_note": "schema_2 is Captured 2026-10-08 from agent-manager 0.2.0 (its hello reports am 0.1.0): the stdout of `am watch --all --follow --from-now` on a scratch store (HOME, XDG_DATA_HOME and XDG_STATE_HOME under a fresh dir), a scratch git repo with a brd board at /home/user/Code/omarchy-project-manager, and agent-manager's tests/e2e/fake_claude.py first on PATH as claude; its first line, the hello. Only the scratch root is rewritten so paths read /home/user/...; nothing else edited. schema_1 is the historical am 0.1.0 capture, kept unchanged: the real first line of `am watch 20261004T204141Z-cb11063d --follow --from-now` (am 0.1.0, before head); no am prints schema 1 any more.",
   "schema_1": {
     "am": "0.1.0",
     "event": "watch",
@@ -8,8 +8,11 @@
   },
   "schema_2": {
     "am": "0.1.0",
+    "cursor_reset": false,
     "event": "watch",
+    "head": 1005,
     "runs_dir": "/home/user/.local/share/agent-manager/runs",
-    "schema": 2
+    "schema": 2,
+    "store_id": "91b9e8afc25044c385859292bfabfde7"
   }
 }

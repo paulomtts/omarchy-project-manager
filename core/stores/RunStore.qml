@@ -3,14 +3,22 @@ import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
 
-// The am run monitor's data: one snapshot of the selected project's runs
-// (runs-snapshot.py), normalized by the run domain model, plus the selected run,
-// the attempt the Run detail pane shows and that attempt's `am logs` snapshot
-// (runs-logs.py), and whether `am` could be asked at all. Two HelperRunners
-// (snapshot, attempt logs) plus, while `active` (the panel is open), a
-// long-lived runs-watch.py that says which runs changed; each burst of changes
-// costs one debounced snapshot. Logs are fetched on a selection, on Refresh and
-// when a snapshot changes the selected attempt's status -- never on a timer.
+// The am run monitor's data: a list snapshot of every project's runs
+// (runs-snapshot.py) kept to the selected project and normalized by the run
+// domain model, plus the selected run, the attempt the Run detail pane shows
+// and that attempt's `am logs` snapshot (runs-logs.py), and whether `am` could
+// be asked at all. While `active` (the panel is open) a long-lived
+// runs-watch.py nudges it, "run X changed at seq N", and is never folded into
+// state: once per debounce window, a nudge newer than the snapshot that last
+// covered its run (appliedSeq) costs one run read (runs-snapshot.py --run RUN,
+// one HelperRunner per run) for a run it holds, or one list snapshot for a run
+// it does not know. A cursorReset hello starts over from a list snapshot, as
+// does a hello or a run read naming a store_id other than the one last seen
+// (storeId); a list snapshot naming one is applied as the new store's full
+// snapshot. The first store_id seen resets nothing. asOfSeq is the last
+// list's as_of_seq and watchCursor the watch's last cursor, held in memory
+// only. Logs are fetched on a selection, on Refresh and when a snapshot
+// changes the selected attempt's status -- never on a timer.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch .. dispatchStart) previews a run with
 // dispatch-preview.py and starts it with start-run.py, one HelperRunner per
@@ -43,6 +51,22 @@ Scope {
   signal runFilterToggled()
   // The one filtered list: the screen's rows and the navigator's cursor list.
   readonly property var filteredRuns: Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery)
+
+  // Snapshot coverage. `asOfSeq` is the last good list snapshot's as_of_seq
+  // (0 before one). `appliedSeq` is {runId: seq}: the as_of_seq of the
+  // snapshot that last covered each run the list named, of every project.
+  // Both are replaced, never changed in place.
+  property int asOfSeq: 0
+  property var appliedSeq: ({})
+  // The current watch's last {"cursor": C} (0 = none), held in memory only.
+  property int watchCursor: 0
+  // {runId: seq}: the highest changed seq per run since the last debounce
+  // trigger. Replaced, never changed in place.
+  property var nudges: ({})
+  // am's store_id from the last hello or snapshot that named one; "" = none
+  // yet. Replaced, never derived. A project switch, the watch ending and
+  // AmMissing keep it.
+  property string storeId: ""
 
   // A watch has been started since the last activation or project switch:
   // later snapshots never start another (the helper picks up the project's new
@@ -131,6 +155,7 @@ Scope {
   readonly property alias watching: watchState.watching   // the footer's "watching"
   readonly property alias watchProc: watchState.proc      // the current watch Process, or null
   readonly property alias snapshotRunner: snapshotRunner
+  readonly property alias readRunners: readState.runners  // in-flight run reads, oldest first
   readonly property alias debounceTimer: debounceTimer
   readonly property alias livenessTimer: livenessTimer
   readonly property alias staleTimer: staleTimer
@@ -158,11 +183,12 @@ Scope {
     return false
   }
 
-  // Asks for a fresh snapshot of the current project. A newer call replaces an
-  // older one (the runner's latest-wins rule).
+  // Asks for a list snapshot: runs-snapshot.py with no argument, every
+  // project's runs, filtered to `project` on arrival. Nothing without a
+  // project. A newer call replaces an older one (the runner's latest-wins rule).
   function refresh() {
     if (store.project === "") return
-    snapshotRunner.run([store.project])
+    snapshotRunner.run([])
   }
 
   // A chip was chosen: the All chip, or the active one again, means All.
@@ -191,6 +217,7 @@ Scope {
   function stopLive() {
     store.stopWatch()
     debounceTimer.stop()
+    store.nudges = {}
     store.stopPoll()
     staleTimer.stop()
     store.stale = false
@@ -217,20 +244,15 @@ Scope {
     store.forgetHello()
   }
 
-  // runs-watch.py for this project and the runs the snapshot just listed, in
-  // its order. Long-lived, so a plain Process rather than the HelperRunner.
-  // It starts with am's schema and version unknown until its own hello.
+  // runs-watch.py with no argument: every project's nudges, from now.
+  // Long-lived, so a plain Process rather than the HelperRunner. It starts
+  // with am's schema and version unknown until its own hello.
   function startWatch() {
     store.watchSeq += 1
     store.watchTried = true
     store.forgetHello()
-    var ids = []
-    for (var i = 0; i < store.runs.length; i++) {
-      var id = store.runs[i].id
-      if (typeof id === "string" && id !== "") ids.push(id)
-    }
     var proc = watchC.createObject(store, { launchSeq: store.watchSeq, launchProject: store.project })
-    proc.command = ["python3", store.backendDir + "runs/runs-watch.py", store.project].concat(ids)
+    proc.command = ["python3", store.backendDir + "runs/runs-watch.py"]
     watchState.proc = proc
     watchState.watching = true
     proc.running = true
@@ -243,10 +265,15 @@ Scope {
     return proc.launchSeq === store.watchSeq && proc.launchProject === store.project
   }
 
-  // One stdout line of the watch. {"changed": [...]} (re)starts the debounce;
+  // One stdout line of the watch, a nudge source never folded into state.
+  // {"changed": [{run, seq}, ...]} records each nudge (recordNudges).
   // {"ok": false, ...} is kept as the envelope its exit explains. The hello,
-  // {"hello": {"schema": N, "am": V}}, sets amSchema to N (an integer of 1 or
-  // more, else 0) and amVersion to V (a string, else "") and starts nothing.
+  // {"hello": {"schema": N, "am": V, "head": H, "cursorReset": B,
+  // "storeId": S}}, sets amSchema to N (an integer of 1 or more, else 0) and
+  // amVersion to V (a string, else ""), and records S (seeStore). B === true,
+  // or an S naming another store than the one last seen, starts over
+  // (resetCursor) once; anything else starts nothing. H is not read.
+  // {"cursor": C} sets watchCursor when C is an integer of 0 or more.
   // Anything else -- blank, not JSON, not an object, a hello that is not an
   // object -- is ignored. Never throws.
   function watchLine(proc, data) {
@@ -256,13 +283,88 @@ Scope {
     var value = null
     try { value = JSON.parse(text) } catch (e) { return }
     if (value === null || typeof value !== "object" || Array.isArray(value)) return
-    if (Array.isArray(value.changed)) debounceTimer.restart()
+    if (Array.isArray(value.changed)) store.recordNudges(value.changed)
     else if (value.ok === false) proc.envelope = value
     else if (value.hello !== null && typeof value.hello === "object" && !Array.isArray(value.hello)) {
       var schema = value.hello.schema
       store.amSchema = typeof schema === "number" && Number.isInteger(schema) && schema >= 1 ? schema : 0
       store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
+      var changed = store.seeStore(value.hello.storeId)
+      if (changed || value.hello.cursorReset === true) store.resetCursor()
+    } else if (store.hasKey(value, "cursor")) {
+      if (store.isSeq(value.cursor)) store.watchCursor = value.cursor
     }
+  }
+
+  // A changed line's entries: each {run: non-empty string, seq: integer of 1
+  // or more} raises nudges[run] to seq; every other entry is ignored. The
+  // debounce restarts when at least one entry was recorded.
+  function recordNudges(entries) {
+    var next = null
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i]
+      if (e === null || typeof e !== "object" || Array.isArray(e)) continue
+      if (typeof e.run !== "string" || e.run === "" || !store.isSeq(e.seq) || e.seq < 1) continue
+      if (next === null) next = store.copyMap(store.nudges)
+      if (!store.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
+    }
+    if (next === null) return
+    store.nudges = next
+    debounceTimer.restart()
+  }
+
+  // The debounce fired: the nudges are taken. A nudge for a run appliedSeq
+  // does not know costs one list snapshot, which covers every run, and no run
+  // read. Otherwise each nudge newer than appliedSeq[run] for a run in `runs`
+  // costs one run read, in nudge order. A nudge no newer than
+  // appliedSeq[run], or for another project's listed run, is ignored.
+  function triggerNudges() {
+    var taken = store.nudges
+    store.nudges = {}
+    var ids = Object.keys(taken)
+    var reads = []
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i]
+      if (!store.hasKey(store.appliedSeq, id)) {
+        store.refresh()
+        return
+      }
+      if (taken[id] > store.appliedSeq[id] && store.runById(id) !== null) reads.push(id)
+    }
+    for (var j = 0; j < reads.length; j++) store.readRun(reads[j], taken[reads[j]])
+  }
+
+  // Starts over: the coverage (appliedSeq, asOfSeq) and the live state
+  // (forgetLive) are forgotten and one list snapshot is launched.
+  function resetCursor() {
+    store.appliedSeq = {}
+    store.asOfSeq = 0
+    store.forgetLive()
+    store.refresh()
+  }
+
+  // The live state of the store last seen is forgotten: the cursor, the
+  // nudges and their debounce, every run read in flight (its reply changes
+  // nothing), the runs, and the alerts (the next list snapshot only arms).
+  // Selection, logs, controls and dispatch stay.
+  function forgetLive() {
+    store.watchCursor = 0
+    store.nudges = {}
+    debounceTimer.stop()
+    store.dropReads()
+    store.runs = []
+    store.alertsArmed = false
+  }
+
+  // A store id seen in a hello or a good snapshot. A non-empty string is
+  // recorded as storeId; anything else is no store id and changes nothing.
+  // Returns whether it names another store than the one last seen: storeId
+  // was non-empty and differs. The first one seen is no change.
+  function seeStore(id) {
+    if (typeof id !== "string" || id === "") return false
+    var changed = store.storeId !== "" && store.storeId !== id
+    store.storeId = id
+    return changed
   }
 
   // amSchema and amVersion back to unknown: no current watch has said hello.
@@ -314,6 +416,10 @@ Scope {
     store.stopWatch()
     store.watchTried = false
     debounceTimer.stop()
+    store.nudges = {}
+    store.appliedSeq = {}
+    store.asOfSeq = 0
+    store.dropReads()
     store.stopPoll()
     store.watchWarning = ""
     store.restartStale()
@@ -487,22 +593,65 @@ Scope {
     return row
   }
 
-  // One snapshot reply. ok:true replaces the runs (none at all is fine).
-  // AmMissing empties them: no badges while am is not there. Any other failure
-  // -- an ok:false envelope or output that is not one -- keeps what the last
-  // good snapshot said and only reports why this one failed. Never throws.
+  // A non-negative integer: an as_of_seq or a cursor.
+  function isSeq(value) {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0
+  }
+
+  // The entry's project root: project.repo_dir when project is an object with
+  // a string repo_dir, else repo_dir when it is a string, else null.
+  function entryProject(e) {
+    var p = e.project
+    if (p !== null && typeof p === "object" && !Array.isArray(p) && typeof p.repo_dir === "string") return p.repo_dir
+    return typeof e.repo_dir === "string" ? e.repo_dir : null
+  }
+
+  // A path without its trailing "/" characters; a lone "/" stays "/".
+  function trimSlashes(path) {
+    var s = path
+    while (s.length > 1 && s.charAt(s.length - 1) === "/") s = s.slice(0, -1)
+    return s
+  }
+
+  // One list snapshot reply. ok:true keeps the entries whose project is
+  // `project` (trailing "/" ignored on both sides) and replaces the runs with
+  // them, in am's order (none at all is fine); asOfSeq becomes its as_of_seq
+  // (a non-negative integer, else 0) and appliedSeq {id: asOfSeq} for every
+  // entry with an id, of every project. Its store_id is recorded (seeStore);
+  // one naming another store than the one last seen first forgets the old
+  // store's live state (forgetLive), so the reply is applied as the new
+  // store's full snapshot, raises no toast and launches no other snapshot.
+  // StoreBusyError keeps everything and only marks the runs stale. AmMissing
+  // empties them and the coverage: no badges while am is not there. Any other
+  // failure -- an ok:false envelope or output that is not one -- keeps what
+  // the last good snapshot said and only reports why this one failed. Never
+  // throws.
   // A reply for a project the user has left never gets here: the runner only
   // emits `finished` when the launch guard still equals its (project) guard.
   function applySnapshot(stdout, exitCode) {
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
+      if (store.seeStore(envelope.store_id)) store.forgetLive()
       var list = Array.isArray(envelope.runs) ? envelope.runs : []
+      var asOf = store.isSeq(envelope.as_of_seq) ? envelope.as_of_seq : 0
+      var root = store.trimSlashes(store.project)
       var out = []
+      var rows = {}
+      var applied = {}
       for (var i = 0; i < list.length; i++) {
         var e = list[i]
         if (e === null || typeof e !== "object" || Array.isArray(e)) continue
-        out.push(Runs.normalizeRun({ row: store.rowOf(e), status: e.status }))
+        var id = typeof e.id === "string" && e.id !== "" ? e.id : ""
+        if (id !== "") applied[id] = asOf
+        var owner = store.entryProject(e)
+        if (owner === null || store.trimSlashes(owner) !== root) continue
+        var row = store.rowOf(e)
+        if (id !== "") rows[id] = row
+        out.push(Runs.normalizeRun({ row: row, status: e.status }))
       }
+      store.asOfSeq = asOf
+      store.appliedSeq = applied
+      readState.rows = rows
       // Compared before the runs are replaced; raised below only while open.
       var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, out)
       store.runs = out
@@ -528,9 +677,15 @@ Scope {
     if (envelope !== null && envelope.ok === false) {
       var err = envelope.error
       var type = err !== null && typeof err === "object" ? err.type : ""
+      if (type === "StoreBusyError") {
+        store.stale = true
+        return
+      }
       store.lastError = Runs.errorText(envelope)
       if (type === "AmMissing") {
         store.runs = []
+        store.appliedSeq = {}
+        store.asOfSeq = 0
         store.amStatus = "missing"
         // Comparing the next good snapshot against [] would alert every
         // escalated run again.
@@ -542,6 +697,114 @@ Scope {
     }
     store.amStatus = "error"
     store.lastError = "The runs snapshot gave no usable result (exit " + exitCode + ")."
+  }
+
+  // ---- run reads
+
+  // One runs-snapshot.py --run RUN on its own runner, for a nudge at seq. It
+  // supersedes an older read of the same run still in flight.
+  function readRun(runId, seq) {
+    if (store.project === "") return
+    var runner = readC.createObject(store, { runId: runId, nudgeSeq: seq, madeFor: store.project })
+    var latest = store.copyMap(readState.latest)
+    latest[runId] = runner
+    readState.latest = latest
+    readState.runners = readState.runners.concat([runner])
+    runner.run(["--run", runId])
+  }
+
+  // Every run read in flight is dropped: its reply changes nothing.
+  function dropReads() {
+    readState.latest = {}
+  }
+
+  // One run read's reply. The runner leaves readRunners and is destroyed. A
+  // reply that is not its run's latest read, or for a project the user has
+  // left, changes nothing. ok:true records its store_id (seeStore): one
+  // naming another store than the one last seen is not applied and starts
+  // over (resetCursor), raising no toast and leaving amStatus and lastError;
+  // else it goes to applyRunRead. UnknownRunError launches one list snapshot:
+  // the run stays until am no longer lists it. StoreBusyError marks the runs
+  // stale and puts the nudge back for the next trigger. Neither raises a toast
+  // or touches amStatus or lastError. Any other failure changes nothing: the
+  // list snapshot reports such conditions.
+  function readReplied(runner, stdout) {
+    var runId = runner.runId
+    var seq = runner.nudgeSeq
+    var latest = store.hasKey(readState.latest, runId) && readState.latest[runId] === runner
+    var current = latest && runner.madeFor === store.project
+    readState.runners = readState.runners.filter(function(r) { return r !== runner })
+    if (latest) {
+      var next = store.copyMap(readState.latest)
+      delete next[runId]
+      readState.latest = next
+    }
+    runner.destroy()
+    if (!current) return
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope === null) return
+    if (envelope.ok === true) {
+      if (store.seeStore(envelope.store_id)) store.resetCursor()
+      else store.applyRunRead(runId, envelope)
+      return
+    }
+    if (envelope.ok !== false) return
+    var err = envelope.error
+    var type = err !== null && typeof err === "object" ? err.type : ""
+    if (type === "UnknownRunError") {
+      store.refresh()
+    } else if (type === "StoreBusyError") {
+      store.stale = true
+      store.keepNudge(runId, seq)
+    }
+  }
+
+  // nudges[runId] raised to seq (never lowered), without touching the
+  // debounce: the next trigger takes it.
+  function keepNudge(runId, seq) {
+    if (store.hasKey(store.nudges, runId) && store.nudges[runId] >= seq) return
+    var next = store.copyMap(store.nudges)
+    next[runId] = seq
+    store.nudges = next
+  }
+
+  // A good run read, {run, as_of_seq, status}: for the run asked, with a
+  // non-negative integer as_of_seq and an object status, still in `runs` and
+  // not covered by a newer snapshot, the run at its position is rebuilt from
+  // its remembered `am runs` row and the reply's status (the other runs stay
+  // the same objects) and appliedSeq[run] becomes as_of_seq. Then alerts,
+  // settling, logs and the stale clock as after a list snapshot; asOfSeq,
+  // amStatus and lastError are left alone. Anything else changes nothing.
+  function applyRunRead(runId, envelope) {
+    var asOf = envelope.as_of_seq
+    var status = envelope.status
+    if (envelope.run !== runId || !store.isSeq(asOf)) return
+    if (status === null || typeof status !== "object" || Array.isArray(status)) return
+    if (store.hasKey(store.appliedSeq, runId) && store.appliedSeq[runId] > asOf) return
+    var index = -1
+    for (var i = 0; i < store.runs.length; i++) {
+      if (store.runs[i] && store.runs[i].id === runId) {
+        index = i
+        break
+      }
+    }
+    if (index < 0) return
+    var row = store.hasKey(readState.rows, runId) ? readState.rows[runId] : { id: runId }
+    var next = store.runs.slice()
+    next[index] = Runs.normalizeRun({ row: row, status: status })
+    // Compared before the runs are replaced; raised below only while open.
+    var alerts = Runs.newAlerts(store.alertsArmed ? store.runs : null, next)
+    store.runs = next
+    var applied = store.copyMap(store.appliedSeq)
+    applied[runId] = asOf
+    store.appliedSeq = applied
+    store.settleAfterSnapshot()
+    store.logsAfterSnapshot()
+    store.stale = false
+    if (store.active) {
+      staleTimer.restart()
+      store.raiseAlerts(alerts)
+    }
   }
 
   // ---- run controls (S2 4.1)
@@ -1297,13 +1560,13 @@ Scope {
     onFinished: function(stdout, exitCode) { store.dispatchPreviewReplied(stdout) }
   }
 
-  // A burst of changed lines costs one snapshot.
+  // A burst of changed lines is taken in one go (triggerNudges).
   Timer {
     id: debounceTimer
     objectName: "debounceTimer"
     interval: 250
     repeat: false
-    onTriggered: store.refresh()
+    onTriggered: store.triggerNudges()
   }
 
   // Only while the panel is open and a run is running: no timer while idle.
@@ -1391,6 +1654,17 @@ Scope {
     property int nextToken: 0
   }
 
+  // The run reads' own state; kept apart so consumers cannot write it.
+  // `runners` are the reads in flight, oldest first; `latest` is {runId:
+  // runner}, the read whose reply counts; `rows` is {runId: am runs row} of
+  // the runs the last good list snapshot kept, which a run read rebuilds from.
+  QtObject {
+    id: readState
+    property var runners: []
+    property var latest: ({})
+    property var rows: ({})
+  }
+
   // The toast keys only grow, so a stale Dismiss never removes a newer toast.
   QtObject {
     id: toastState
@@ -1470,6 +1744,23 @@ Scope {
       script: store.backendDir + "runs/start-run.py"
       guard: ""
       onFinished: function(stdout, exitCode) { store.dispatchStartReplied(sr, stdout) }
+    }
+  }
+
+  // One HelperRunner per run read, so reads of different runs run in
+  // parallel. Guard "": readReplied checks the project and the latest read
+  // itself, so every exit lands there and the runner always goes.
+  Component {
+    id: readC
+
+    HelperRunner {
+      id: rr
+      property string runId: ""
+      property int nudgeSeq: 0        // the nudge seq it was launched for
+      property string madeFor: ""     // the project the read was made in
+      script: store.backendDir + "runs/runs-snapshot.py"
+      guard: ""
+      onFinished: function(stdout, exitCode) { store.readReplied(rr, stdout) }
     }
   }
 

@@ -1,23 +1,25 @@
 {
+  "_note": "Captured 2026-10-08 from agent-manager 0.2.0 (its hello reports am 0.1.0): the stdout of `am runs --repo-dir /home/user/Code/omarchy-project-manager --limit 2` on a scratch store (HOME, XDG_DATA_HOME and XDG_STATE_HOME under a fresh dir), a scratch git repo with a brd board at /home/user/Code/omarchy-project-manager, and agent-manager's tests/e2e/fake_claude.py first on PATH as claude; taken while the started run was held, after the done run finished: row 0 is the started run (a milestone of four chained stories (2, 3, 1 and 2 subtasks) held by the fake at explore of its fourth subtask (FAKE_CLAUDE_HOLD_DIR, FAKE_CLAUDE_HOLD_PHASE=explore), then cancelled), row 1 the done run (a milestone of four chained stories (2, 3, 1 and 4 subtasks) run to done). Only the scratch root is rewritten so paths read /home/user/...; nothing else edited.",
   "data": {
+    "as_of_seq": 989,
     "runs": [
       {
         "base_branch": "main",
         "branch_prefix": "dsp",
         "card_id": null,
-        "id": "20261005T021400Z-837c4431",
+        "id": "20261008T143823Z-e795ad19",
         "lease": {
           "accepting": true,
-          "heartbeat_at": "2026-10-05T03:30:22.281942+00:00",
+          "heartbeat_at": "2026-10-08T14:38:28.740774+00:00",
           "host": "mtts-desktop",
           "live": true,
-          "pid": 3736962
+          "pid": 1991
         },
-        "milestone_id": "837c4431-7a24-4531-96a8-881698ea8c5e",
+        "milestone_id": "e795ad19-c81f-43ec-bdda-ef61ab5f860b",
         "progress": {
           "current": {
             "attempt": 1,
-            "card": "299ec9c0-b935-4c44-a7a0-982a104cbfe5",
+            "card": "2280a6ab-9c40-434b-9729-63fd1f373754",
             "phase": "explore"
           },
           "stories": {
@@ -29,18 +31,23 @@
             "total": 8
           }
         },
+        "project": {
+          "id": 1,
+          "repo_dir": "/home/user/Code/omarchy-project-manager"
+        },
         "repo_dir": "/home/user/Code/omarchy-project-manager",
-        "started_at": "2026-10-05 02:14:00.590972+00:00",
+        "started_at": "2026-10-08 14:38:23.739155+00:00",
         "status": "started",
+        "story_id": null,
         "workflow": "milestone"
       },
       {
         "base_branch": "main",
         "branch_prefix": "ctl",
         "card_id": null,
-        "id": "20261004T204141Z-cb11063d",
+        "id": "20261008T143807Z-63060df3",
         "lease": null,
-        "milestone_id": "cb11063d-78b9-4537-8569-fb5c249519f8",
+        "milestone_id": "63060df3-f582-4eb9-a56e-44cadb15b693",
         "progress": {
           "current": null,
           "stories": {
@@ -52,12 +59,18 @@
             "total": 10
           }
         },
+        "project": {
+          "id": 1,
+          "repo_dir": "/home/user/Code/omarchy-project-manager"
+        },
         "repo_dir": "/home/user/Code/omarchy-project-manager",
-        "started_at": "2026-10-04 20:41:41.703925+00:00",
+        "started_at": "2026-10-08 14:38:07.918443+00:00",
         "status": "done",
+        "story_id": null,
         "workflow": "milestone"
       }
-    ]
+    ],
+    "store_id": "91b9e8afc25044c385859292bfabfde7"
   },
   "ok": true
 }
