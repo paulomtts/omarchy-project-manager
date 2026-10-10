@@ -1020,3 +1020,55 @@ def test_new_started_row_in_poll(world, mod, capsys):
     assert printed(capsys) == []
     at(clock, tracker, 180)
     assert printed(capsys) == [dead(world["repo"], run_id=RUN_B)]
+
+
+def test_upsert_started_tracks(world, mod, capsys):
+    repo = world["repo"]
+    tracker, clock = seeded(mod, world, runs_reply(), runs_reply(row(lease=None)))
+    watcher = mod.Watcher(registry((repo, NAME)), tracker)
+    clock.now = 10
+    watcher.see(RUN_A, {"status": "started", "repo_dir": str(repo)})
+    at(clock, tracker, 60)  # 50 s after the tracked set became non-empty
+    at(clock, tracker, 69.9)
+    assert len(runs_calls(world)) == 1
+    at(clock, tracker, 70)
+    assert len(runs_calls(world)) == 2
+    assert printed(capsys) == [dead(repo)]
+    assert brd_calls(world) == []
+
+
+def test_upsert_started_unregistered_not_tracked(world, mod, capsys):
+    tracker, clock = seeded(mod, world, runs_reply())
+    watcher = mod.Watcher(registry((world["repo"], NAME)), tracker)
+    watcher.see(RUN_A, {"status": "started", "repo_dir": str(world["tmp"] / "elsewhere")})
+    watcher.see(RUN_B, {"status": "started"})  # no repo_dir at all
+    for now in (60, 600):
+        at(clock, tracker, now)
+    assert len(runs_calls(world)) == 1
+    assert printed(capsys) == []
+    assert brd_calls(world) == []  # no registry re-read for a started run
+
+
+@pytest.mark.parametrize("status", ["escalated", "cancelled", "done"])
+def test_upsert_other_status_drops(world, mod, capsys, status):
+    repo = world["repo"]
+    tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply(row(lease=None)))
+    watcher = mod.Watcher(registry((repo, NAME)), tracker)
+    watcher.see(RUN_A, {"status": status, "repo_dir": str(repo)})
+    for now in (60, 600):
+        at(clock, tracker, now)
+    assert len(runs_calls(world)) == 1
+    assert printed(capsys) == ([alert(repo, run_id=RUN_A)] if status == "escalated" else [])
+    assert brd_calls(world) == []
+
+
+def test_upsert_never_arms_and_non_string_status_keeps(world, mod, capsys):
+    repo = world["repo"]
+    tracker, clock = seeded(mod, world, runs_reply(row(lease=None)))
+    watcher = mod.Watcher(registry((repo, NAME)), tracker)
+    watcher.see(RUN_A, {"status": "started", "repo_dir": str(repo)})
+    watcher.see(RUN_A, {"status": None, "repo_dir": str(repo)})
+    at(clock, tracker, 60)
+    at(clock, tracker, 120)
+    assert printed(capsys) == []  # seeded unarmed; an upsert never arms
+    assert len(runs_calls(world)) == 3  # still tracked: polled at 60 and 120

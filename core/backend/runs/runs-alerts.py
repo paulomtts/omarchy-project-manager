@@ -240,27 +240,35 @@ class Tracker:
 
 
 class Watcher:
-    """Each run's last status and last repo_dir, and the registry
-    (realpath -> (root_path, name))."""
+    """Each run's last status and last repo_dir, the registry
+    (realpath -> (root_path, name)) and the Tracker its run_upserts go to."""
 
-    def __init__(self, registry):
+    def __init__(self, registry, tracker):
         self.registry = registry
+        self.tracker = tracker
         self.status = {}
         self.repo_dir = {}
 
     def see(self, run_id, payload):
-        """Record a run_upsert's payload. On a transition into escalated, print
-        the alert when the run's last repo_dir is registered, reading the
-        registry again first when it is not (never for a repo_dir realpath
-        cannot take)."""
+        """Record a run_upsert's payload; on a transition into escalated,
+        escalate(); then hand the tracker the run's status and, for "started",
+        the realpath of its last repo_dir."""
         before = self.status.get(run_id)
         status, repo_dir = payload.get("status"), payload.get("repo_dir")
         if isinstance(status, str):
             self.status[run_id] = status
         if isinstance(repo_dir, str) and repo_dir:
             self.repo_dir[run_id] = repo_dir
-        if status != "escalated" or before == "escalated":
-            return
+        if status == "escalated" and before != "escalated":
+            self.escalate(run_id)
+        repo_dir = self.repo_dir.get(run_id)
+        key = real(repo_dir) if status == "started" and repo_dir is not None else None
+        self.tracker.see(run_id, status, key, self.registry)
+
+    def escalate(self, run_id):
+        """Print the escalation alert when the run's last repo_dir is
+        registered, reading the registry again first when it is not (never for
+        a repo_dir realpath cannot take)."""
         repo_dir = self.repo_dir.get(run_id)
         key = real(repo_dir) if repo_dir is not None else None
         if key is None:
@@ -360,7 +368,8 @@ def main(argv):
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
-    watcher = Watcher(read_registry() or {})
+    registry = read_registry() or {}
+    watcher = Watcher(registry, Tracker(am))
     proc = spawn(am)
     lines, err = queue.Queue(), []
     threading.Thread(target=pump, args=(proc.stdout, lines), daemon=True).start()
