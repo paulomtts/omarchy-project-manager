@@ -3,9 +3,12 @@
 
     runs-logs.py <project_root> RUN CARD PHASE ATTEMPT
 
-Runs `am logs RUN CARD --phase PHASE --attempt ATTEMPT --repo-dir ROOT` as an
-argv list (no shell, stdin /dev/null, 60 s timeout). The five arguments go to am
-verbatim; am refuses bad ones itself.
+The first argument is the repository am resolves the run against; the helper's
+cwd never matters. Runs
+`am logs RUN CARD --phase PHASE [--attempt ATTEMPT] --repo-dir ROOT` as an argv
+list (no shell, stdin /dev/null, 60 s timeout). ATTEMPT 0 omits --attempt (a
+step: am picks its latest). The arguments go to am verbatim; am refuses bad
+ones itself.
 
 Prints exactly one JSON line on EVERY path:
 - am's envelope, unchanged, whether {"ok": true, "data": ...} or
@@ -44,8 +47,11 @@ def failure(kind, message, code=0):
 
 
 def logs_argv(root, run, card, phase, attempt):
-    """am's argv after the executable: the attempt, then --repo-dir ROOT."""
-    return ["logs", run, card, "--phase", phase, "--attempt", attempt, "--repo-dir", root]
+    """am's argv after the executable: the attempt, then --repo-dir ROOT. ATTEMPT
+    exactly "0" omits --attempt (a step: am picks its latest); any other ATTEMPT
+    goes to am verbatim."""
+    which = [] if attempt == "0" else ["--attempt", attempt]
+    return ["logs", run, card, "--phase", phase, *which, "--repo-dir", root]
 
 
 def envelope_of(stdout, returncode):

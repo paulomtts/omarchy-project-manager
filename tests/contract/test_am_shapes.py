@@ -10,17 +10,29 @@ am.db is never read. Skipped when am is absent.
 Story tests build a real git repo and brd board under tmp_path and run am with
 a PATH holding only am, brd and git, so no agent CLI is reachable. When am is
 present they fail, never skip, if am run lacks --story or brd or git is absent.
+
+Finished-run tests add to that PATH the stub claude (stub_claude.py, run by
+this interpreter) and verify-ok, so story S1 runs to done; they fail, never
+skip, when it does not. Their am logs --follow captures, with the scratch root
+rewritten to /home/user, equal tests/fixtures/am/logs-follow-agent.jsonl,
+logs-follow-step.jsonl and logs-follow-refusal.json; with AM_RECORD_FIXTURES=1
+the captures are written there instead.
 """
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+import stub_claude
 
 pytestmark = pytest.mark.skipif(shutil.which("am") is None, reason="am is not installed here")
 
@@ -473,3 +485,329 @@ def test_attempt_payloads_carry_no_cost_or_token_keys(am, seeded_run):
     assert attempts, "the seeded run recorded no attempt_upsert"
     for event in attempts:
         assert cost_or_token_keys(event["payload"]) == [], event
+
+
+def missing_logs_follow_options(help_text):
+    """The options `am logs --follow` readers need that `help_text` does not name, in the
+    order --follow, --since-offset."""
+    return [option for option in ("--follow", "--since-offset") if option not in help_text]
+
+
+def test_missing_logs_follow_options_names_each_missing_option():
+    assert missing_logs_follow_options("--follow ... --since-offset BYTES") == []
+    assert missing_logs_follow_options("--phase --attempt") == ["--follow", "--since-offset"]
+    assert missing_logs_follow_options("--follow") == ["--since-offset"]
+
+
+def test_logs_help_lists_the_follow_options(am):
+    proc = am.run("logs", "--help")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    missing = missing_logs_follow_options(proc.stdout)
+    if missing:
+        pytest.fail(f"the installed am logs has no {', '.join(missing)} option "
+                    "(reinstall agent-manager: uv tool install --reinstall)")
+
+
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "am"
+RECORD_ENV = "AM_RECORD_FIXTURES"
+SCRATCH_HOME = "/home/user"
+
+
+def normalize(value, root):
+    """`value` with `root` replaced by /home/user in every string, keys untouched."""
+    if isinstance(value, str):
+        return value.replace(str(root), SCRATCH_HOME)
+    if isinstance(value, dict):
+        return {key: normalize(item, root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize(item, root) for item in value]
+    return value
+
+
+def test_normalize_rewrites_only_the_scratch_root():
+    root = "/tmp/pytest-of-u/pytest-7/test_x0"
+    value = {f"{root}/key": [f"{root}/data/a.log", {"text": f"see {root}/b"}],
+             "offset": 12, "status": "ok", "other": "/tmp/pytest-of-u/elsewhere"}
+    assert normalize(value, root) == {
+        f"{root}/key": ["/home/user/data/a.log", {"text": "see /home/user/b"}],
+        "offset": 12, "status": "ok", "other": "/tmp/pytest-of-u/elsewhere"}
+
+
+def recorded_fixture(name, text):
+    """The committed tests/fixtures/am/`name`. With AM_RECORD_FIXTURES=1, `text` is written
+    there first; with it unset, a missing file fails naming the file and the variable."""
+    path = FIXTURES / name
+    if os.environ.get(RECORD_ENV) == "1":
+        path.write_text(text, encoding="utf-8")
+    if not path.is_file():
+        pytest.fail(f"{path} is missing: record it with {RECORD_ENV}=1")
+    return path.read_text(encoding="utf-8")
+
+
+def test_recorded_fixture_fails_naming_the_file_and_the_variable(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys.modules[__name__], "FIXTURES", tmp_path)
+    monkeypatch.delenv(RECORD_ENV, raising=False)
+    with pytest.raises(pytest.fail.Exception,
+                       match=r"logs-follow-x\.jsonl is missing.*AM_RECORD_FIXTURES=1"):
+        recorded_fixture("logs-follow-x.jsonl", "{}\n")
+
+
+def test_recorded_fixture_writes_the_capture_when_recording(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys.modules[__name__], "FIXTURES", tmp_path)
+    monkeypatch.setenv(RECORD_ENV, "1")
+    assert recorded_fixture("logs-follow-x.jsonl", "{}\n") == "{}\n"
+    assert (tmp_path / "logs-follow-x.jsonl").read_text() == "{}\n"
+
+
+LOGS_HELLO_KEYS = {"event", "offset", "path", "schema"}
+CHUNK_KEYS = {"offset", "text"}
+END_KEYS = {"event", "status"}
+END_STATUSES = {"ok", "schema_invalid", "gate_failed", "harness_error"}
+
+
+def json_lines(stdout):
+    """Each stdout line of am parsed as one JSON object; fails naming a line that is not."""
+    lines = []
+    for index, raw in enumerate(stdout.splitlines()):
+        try:
+            line = json.loads(raw)
+        except json.JSONDecodeError:
+            pytest.fail(f"line {index} is not JSON: {raw!r}")
+        if not isinstance(line, dict):
+            pytest.fail(f"line {index} is not a JSON object: {raw!r}")
+        lines.append(line)
+    return lines
+
+
+def follow_stream_text(lines, path_prefix, path_suffix):
+    """The joined chunk text of one whole `am logs --follow` stream.
+
+    The stream is a hello `{event: "logs", offset, path, schema}` whose path starts with
+    `path_prefix` and ends with `path_suffix`, one or more contiguous `{offset, text}`
+    chunks from the hello's offset, and an `{event: "end", status}` line. No line has an
+    `ok` key. A line that breaks this fails naming its index and its keys.
+    """
+    def drift(index, why):
+        pytest.fail(f"line {index} {why}: keys {sorted(lines[index])} in {lines[index]!r}")
+
+    if len(lines) < 3:
+        pytest.fail(f"a stream is a hello, one or more chunks and an end; got {lines!r}")
+    for index, line in enumerate(lines):
+        if "ok" in line:
+            drift(index, "has an ok key")
+    hello, chunks, end = lines[0], lines[1:-1], lines[-1]
+    if set(hello) != LOGS_HELLO_KEYS or hello["event"] != "logs":
+        drift(0, "is not a logs hello")
+    if type(hello["offset"]) is not int or hello["schema"] not in (1, 2):
+        drift(0, "has a bad offset or schema")
+    path = hello["path"]
+    if not (isinstance(path, str) and path.startswith(path_prefix) and path.endswith(path_suffix)):
+        drift(0, f"has a path outside {path_prefix}...{path_suffix}")
+    offset = hello["offset"]
+    for index, chunk in enumerate(chunks, start=1):
+        if set(chunk) != CHUNK_KEYS or not isinstance(chunk["text"], str):
+            drift(index, "is not a chunk")
+        if type(chunk["offset"]) is not int or chunk["offset"] != offset:
+            drift(index, f"does not start at byte {offset}")
+        offset += len(chunk["text"].encode("utf-8"))
+    if set(end) != END_KEYS or end["event"] != "end" or end["status"] not in END_STATUSES:
+        drift(len(lines) - 1, "is not an end line")
+    return "".join(chunk["text"] for chunk in chunks)
+
+
+STREAM = [{"event": "logs", "offset": 0, "path": "/d/runs/r/c/review.1/stdout.log", "schema": 1},
+          {"offset": 0, "text": "é\n"}, {"offset": 3, "text": "b\n"},
+          {"event": "end", "status": "ok"}]
+
+
+def test_follow_stream_text_joins_contiguous_chunks_counting_utf8_bytes():
+    assert follow_stream_text(STREAM, "/d/runs/", "/c/review.1/stdout.log") == "é\nb\n"
+
+
+@pytest.mark.parametrize("index, line, message", [
+    (0, {**STREAM[0], "am": "0.2.0"}, r"line 0 is not a logs hello: keys \['am', 'event'"),
+    (2, {"offset": 4, "text": "b\n"}, r"line 2 does not start at byte 3: keys \['offset', 'text'\]"),
+    (3, {"event": "end"}, r"line 3 is not an end line: keys \['event'\]"),
+    (3, {"event": "end", "status": "ok", "ok": True},
+     r"line 3 has an ok key: keys \['event', 'ok', 'status'\]"),
+])
+def test_follow_stream_checker_names_the_line_that_drifted(index, line, message):
+    drifted = [*STREAM[:index], line, *STREAM[index + 1:]]
+    with pytest.raises(pytest.fail.Exception, match=message):
+        follow_stream_text(drifted, "/d/runs/", "/c/review.1/stdout.log")
+
+
+def test_follow_stream_checker_fails_on_a_stream_with_no_chunk():
+    with pytest.raises(pytest.fail.Exception, match="one or more chunks"):
+        follow_stream_text([STREAM[0], STREAM[-1]], "/d/runs/", "/c/review.1/stdout.log")
+
+
+def test_json_lines_names_a_line_that_is_not_a_json_object():
+    with pytest.raises(pytest.fail.Exception, match=r"line 1 is not a JSON object: '\[1\]'"):
+        json_lines('{"a": 1}\n[1]\n')
+
+
+STUB_CLAUDE = Path(__file__).resolve().parent / "stub_claude.py"
+
+
+def test_stub_claude_refuses_a_field_the_schema_lacks():
+    with pytest.raises(stub_claude.StubError, match="no field 'summary'.*'synopsis'"):
+        stub_claude.override({"synopsis": ""}, summary="x")
+
+
+def test_stub_claude_zero_payload_follows_refs_and_nullable_fields():
+    schema = {"$defs": {"V": {"properties": {"lint": {"type": "array"},
+                                              "typecheck": {"type": "string"}}}},
+              "properties": {"verification": {"$ref": "#/$defs/V"},
+                             "reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                             "refused": {"type": "boolean"}, "n": {"type": "integer"}}}
+    assert stub_claude.zero_payload(schema) == {
+        "verification": {"lint": [], "typecheck": ""}, "reason": None, "refused": False, "n": 0}
+
+
+def test_stub_claude_exits_1_naming_a_phase_it_has_no_behaviour_for(tmp_path):
+    result = tmp_path / "result.json"
+    brief = tmp_path / "prompt.txt"
+    brief.write_text("# phase: resolve\n# role: resolver\n\n## Result contract\n"
+                     "When you are done, write your result as valid JSON to exactly this path:\n\n"
+                     f"{result}\n\n```json\n{{\"properties\": {{}}}}\n```\n", encoding="utf-8")
+    proc = subprocess.run([sys.executable, str(STUB_CLAUDE), "-p",
+                           f"Read {brief} and follow the instructions in it exactly. Go."],
+                          cwd=tmp_path, capture_output=True, text=True, timeout=AM_TIMEOUT)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "stub claude: no behaviour for phase 'resolve'" in proc.stderr, proc.stderr
+    assert proc.stdout == "" and not result.exists()
+
+
+def stub_executable(path, body):
+    """`body` as an executable at `path`, run by this interpreter."""
+    path.write_text(f"#!{os.path.realpath(sys.executable)}\n{body}", encoding="utf-8")
+    path.chmod(0o755)
+
+
+@pytest.fixture
+def finished_run(am, story_board, tmp_path):
+    """Story S1 run to done through the real am: the bin dir also holds the stub `claude`
+    and `verify-ok` (prints `verified`, exits 0), the run's only verify command."""
+    bin_dir = tmp_path / "bin"
+    stub_executable(bin_dir / "claude", STUB_CLAUDE.read_text(encoding="utf-8"))
+    stub_executable(bin_dir / "verify-ok", 'print("verified")\n')
+    proc = am.run("run", "--story", story_board.s1, "--branch-prefix", "p", "--verify",
+                  "verify-ok", "--repo-dir", am.repo)
+    output = f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    if proc.returncode != 0:
+        pytest.fail(f"am run of story S1 exited {proc.returncode}: {output}")
+    runs = am.run("runs", "--repo-dir", am.repo)
+    rows = json.loads(runs.stdout)["data"]["runs"] if runs.returncode == 0 else None
+    if not rows or len(rows) != 1 or rows[0]["status"] != "done":
+        pytest.fail(f"am run of story S1 did not finish as one done run: runs={runs.stdout!r} "
+                    f"{output}")
+    return SimpleNamespace(id=rows[0]["id"], card=story_board.s1_subtasks[0], root=tmp_path)
+
+
+def phases_of(am, run, card):
+    """`am status RUN`'s phases of subtask `card`, by name."""
+    proc = am.run("status", run.id, "--repo-dir", am.repo)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    subtasks = [subtask for story in json.loads(proc.stdout)["data"]["stories"]
+                for subtask in story["subtasks"] if subtask["card_id"] == card]
+    assert len(subtasks) == 1, proc.stdout
+    return {phase["name"]: phase for phase in subtasks[0]["phases"]}
+
+
+def test_finished_run_reaches_verify_and_is_done(am, finished_run):
+    phases = phases_of(am, finished_run, finished_run.card)
+    assert [(attempt["n"], attempt["status"]) for attempt in phases["review"]["attempts"]] \
+        == [(1, "ok")], phases["review"]
+    assert phases["verify"]["status"] == "done", phases["verify"]
+    assert phases["verify"]["attempts"] == [], phases["verify"]
+    assert phases["worktree"]["attempts"] == [], phases["worktree"]
+
+
+def follow(am, run, card, *selector):
+    """`am logs RUN CARD *selector --follow` on a terminal attempt, which exits by itself."""
+    return am.run("logs", run.id, card, *selector, "--follow", "--repo-dir", am.repo)
+
+
+def jsonl(lines):
+    """`lines` as one compact JSON object per line, each ending in a newline."""
+    return "".join(json.dumps(line, separators=(",", ":"), ensure_ascii=False) + "\n"
+                   for line in lines)
+
+
+def hello_shape(hello, phase):
+    """`hello` with its path replaced by whether it reads
+    /home/user/data/agent-manager/runs/<run>/<card>/<phase>.1/stdout.log."""
+    shape = re.compile(rf"{SCRATCH_HOME}/data/agent-manager/runs/[^/]+/[^/]+/"
+                       rf"{re.escape(phase)}\.1/stdout\.log")
+    return {**hello, "path": bool(shape.fullmatch(str(hello.get("path"))))}
+
+
+def assert_stream_matches_fixture(lines, name, phase):
+    """The normalized stream `lines` equals tests/fixtures/am/`name` line for line; the
+    hello's path is compared by shape only."""
+    fixture = [json.loads(line) for line in recorded_fixture(name, jsonl(lines)).splitlines()]
+    assert hello_shape(lines[0], phase)["path"] is True, lines[0]
+    assert [hello_shape(fixture[0], phase), *fixture[1:]] == \
+        [hello_shape(lines[0], phase), *lines[1:]], (name, fixture, lines)
+
+
+def test_hello_shape_accepts_only_a_normalized_attempt_log_path():
+    hello = {"event": "logs", "offset": 0, "schema": 1,
+             "path": "/home/user/data/agent-manager/runs/r1/c1/review.1/stdout.log"}
+    assert hello_shape(hello, "review") == {**hello, "path": True}
+    assert hello_shape(hello, "verify")["path"] is False
+    assert hello_shape({**hello, "path": "/tmp/x/data/agent-manager/runs/r1/c1/review.1/stdout.log"},
+                       "review")["path"] is False
+
+
+def test_logs_follow_of_an_agent_attempt_prints_hello_chunks_and_end(am, finished_run):
+    proc = follow(am, finished_run, finished_run.card, "--phase", "review", "--attempt", "1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = json_lines(proc.stdout)
+    text = follow_stream_text(lines, f"{am.data}/agent-manager/runs/",
+                              f"/{finished_run.card}/review.1/stdout.log")
+    assert text == "stub claude ok phase=review\n", lines
+    assert lines[-1]["status"] == "ok", lines[-1]
+    assert_stream_matches_fixture(normalize(lines, finished_run.root),
+                                  "logs-follow-agent.jsonl", "review")
+
+
+def test_logs_follow_of_a_step_prints_hello_chunks_and_end(am, finished_run):
+    proc = follow(am, finished_run, finished_run.card, "--phase", "verify")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = json_lines(proc.stdout)
+    text = follow_stream_text(lines, f"{am.data}/agent-manager/runs/",
+                              f"/{finished_run.card}/verify.1/stdout.log")
+    assert text == "==> verify-ok (exit 0)\nverified\n", lines
+    assert lines[-1]["status"] == "ok", lines[-1]
+    assert_stream_matches_fixture(normalize(lines, finished_run.root),
+                                  "logs-follow-step.jsonl", "verify")
+
+
+def masked_card(refusal):
+    """`refusal` with the card id in its error message replaced by <CARD>."""
+    message = re.sub(r"card '[^']*'", "card '<CARD>'", refusal["error"]["message"])
+    return {**refusal, "error": {**refusal["error"], "message": message}}
+
+
+def test_masked_card_replaces_only_the_card_id_in_the_message():
+    message = "phase 'worktree' of card 'c-1' has no recorded attempt yet"
+    refusal = {"ok": False, "error": {"type": "UnknownAttemptError", "message": message}}
+    assert masked_card(refusal) == {"ok": False, "error": {
+        "type": "UnknownAttemptError",
+        "message": "phase 'worktree' of card '<CARD>' has no recorded attempt yet"}}
+
+
+def test_logs_follow_of_a_step_without_a_log_is_one_refusal(am, finished_run):
+    proc = follow(am, finished_run, finished_run.card, "--phase", "worktree")
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    [refusal] = json_lines(proc.stdout)
+    assert set(refusal) == {"ok", "error"} and refusal["ok"] is False, refusal
+    assert set(refusal["error"]) == {"type", "message"}, refusal
+    assert refusal["error"]["type"] == "UnknownAttemptError", refusal
+    assert "'worktree'" in refusal["error"]["message"], refusal
+    assert "has no recorded attempt yet" in refusal["error"]["message"], refusal
+    capture = normalize(refusal, finished_run.root)
+    fixture = json.loads(recorded_fixture("logs-follow-refusal.json", jsonl([capture])))
+    assert masked_card(fixture) == masked_card(capture), (fixture, capture)

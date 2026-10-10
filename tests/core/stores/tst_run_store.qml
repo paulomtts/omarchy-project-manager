@@ -2686,22 +2686,27 @@ TestCase {
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
   }
 
-  // The logs launch: python3, the script, then the project root and the
-  // attempt, five arguments; the root is the selected run's project.root, one
-  // element.
-  function test_logs_argv_leads_with_the_runs_project_root() {
-    var store = opened(); if (!store) return
-    var procA = store.logsRunner.current
-    compare(argv(procA), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/my proj|r1|" + tc.openCard + "|explore|1")
-    compare(procA.command.length, 7, "five arguments after python3 and the script")
-    compare(procA.command[2], "/home/u/my proj", "the root with a space is one argument")
+  // The logs launch: python3, the script, then the run's repo_dir and the
+  // attempt, five arguments; the repository is the selected run's repo_dir,
+  // one element, never its project root.
+  function test_logs_argv_leads_with_the_runs_repo_dir() {
+    var store = crossStore("", [], [bWork(treeEntry("rb", "started", rootB))]); if (!store) return
+    compare(store.runById("rb").project.root, "/home/u/b", "the run is rootB's")
+    store.selectedRunId = "rb"
+    var proc = store.logsRunner.current
+    verify(proc, "the default attempt's logs were asked for")
+    compare(argv(proc), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b-work|rb|" + tc.openCard + "|explore|1")
+    compare(proc.command.length, 7, "five arguments after python3 and the script")
+    compare(proc.command[2], "/home/u/b-work", "the run's repo_dir")
+    verify(proc.command.indexOf("/home/u/b") < 0, "never the project root")
   }
 
-  // The run's project.root reaches the runner byte-for-byte.
-  function test_logs_argv_keeps_an_odd_root_verbatim() {
+  // The run's repo_dir reaches the runner byte-for-byte.
+  function test_logs_argv_keeps_an_odd_repo_dir_verbatim() {
     var odd = "/home/u/o'dd; $x"
     var store = makeWithProject(odd); if (!store) return
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started", odd)]), 0)
+    compare(store.runById("r1").repo_dir, odd)
     store.selectedRunId = "r1"
     var proc = store.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
@@ -5643,14 +5648,28 @@ TestCase {
   }
 
   // 10
-  function test_no_logs_for_a_selected_run_without_a_project_root() {
-    var store = make(); if (!store) return
-    store.runs = [held(treeEntry("r1", "started"))]
-    compare(store.runs[0].project.root, undefined, "normalizeRun's project has no root")
-    store.selectedRunId = "r1"
-    verify(store.selectedAttempt !== null, "the default attempt is selected")
-    verify(!store.logsRunner.current, "no logs launch")
-    compare(store.logsLoading, false)
+  function test_no_logs_for_a_selected_run_without_a_repo_dir() {
+    var bad = ["", null, 7]
+    for (var i = 0; i < bad.length; i++) {
+      var label = "repo_dir " + JSON.stringify(bad[i])
+      var store = make(); if (!store) return
+      var run = held(treeEntry("r1", "started"), rootA)
+      run.repo_dir = bad[i]
+      store.runs = [run]
+      store.selectedRunId = "r1"
+      verify(store.selectedAttempt !== null, label + ": the default attempt is selected")
+      verify(!store.logsRunner.current, label + ": no logs launch")
+      compare(store.logsLoading, false, label)
+      compare(store.logsStatus, "", label + ": untouched")
+    }
+    var noRoot = make(); if (!noRoot) return
+    noRoot.runs = [held(treeEntry("r2", "started"))]
+    compare(noRoot.runs[0].project.root, undefined, "normalizeRun's project has no root")
+    noRoot.selectedRunId = "r2"
+    var proc = noRoot.logsRunner.current
+    verify(proc, "a run with a repo_dir but no project root launches")
+    compare(argv(proc), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/my proj|r2|" + tc.openCard + "|explore|1")
+    compare(noRoot.logsLoading, true)
   }
 
   // Review Focus 3.

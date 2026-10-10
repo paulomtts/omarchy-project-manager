@@ -815,18 +815,17 @@ Scope {
   }
 
   // One runs-logs.py launch for the selected attempt, the selected run's
-  // project root first, remembering the status it was launched for (a
-  // snapshot that changes it fetches again). Nothing launches for a run not
-  // in the snapshot or one with no project root.
+  // repo_dir first, remembering the status it was launched for (a snapshot
+  // that changes it fetches again). Nothing launches for a run not in the
+  // snapshot or one with no repo_dir.
   function fetchLogs() {
     var sel = store.selectedAttempt
     if (store.selectedRunId === "" || !sel) return
     var run = store.runById(store.selectedRunId)
-    var root = store.runRoot(run)
-    if (root === "") return
+    if (run === null || typeof run.repo_dir !== "string" || run.repo_dir === "") return
     store.logsStatus = Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
     store.logsLoading = true
-    logsRunner.run([root, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
+    logsRunner.run([run.repo_dir, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
   }
 
   // No selection and no logs; a fetch in flight is stopped and its reply dropped.
