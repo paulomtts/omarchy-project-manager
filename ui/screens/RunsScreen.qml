@@ -9,7 +9,8 @@ import "../theme" as T
 
 // The Runs section: every registered project's am runs, grouped by project
 // with a header each (name; live, parked and needs-attention counts; the
-// project's snapshot error), flat with no header under a project filter. Each
+// project's snapshot error; a dim `titles unavailable` while its titles
+// cannot be read), flat with no header under a project filter. Each
 // run is one row (state glyph; title, from the run's own project's map in
 // app.runTitles; short id in dim; done/total, current phase, age) whose index
 // is its position in the store's filteredRuns, the one list
@@ -60,7 +61,8 @@ Column {
 
   // What the list draws, in order (entriesOf).
   readonly property var entries: screen.entriesOf(screen.app.runs.groups, screen.app.runs.filteredRuns,
-    screen.app.runs.projectRoots, screen.app.runs.projectErrors, screen.app.runs.projectFilter)
+    screen.app.runs.projectRoots, screen.app.runs.projectErrors, screen.app.runs.projectFilter,
+    screen.app.runTitles.titleStatus)
 
   visible: screen.app.nav.viewMode === "runs"
   spacing: Style.space(6)
@@ -107,6 +109,19 @@ Column {
       if (screen.rootKey(keys[k]) === want && typeof errors[keys[k]] === "string") return errors[keys[k]]
     }
     return ""
+  }
+
+  // Whether `status` ({root: "loading" | "ok" | "unreachable"}) holds
+  // "unreachable" for `root`, keys and root compared by rootKey; false when
+  // `root` is "" or `status` is not an object.
+  function titlesUnavailableOf(status, root) {
+    var want = screen.rootKey(root)
+    if (want === "" || status === null || typeof status !== "object") return false
+    var keys = Object.keys(status)
+    for (var k = 0; k < keys.length; k++) {
+      if (screen.rootKey(keys[k]) === want && status[keys[k]] === "unreachable") return true
+    }
+    return false
   }
 
   // How many groups of `groups` have a root other than "".
@@ -182,16 +197,17 @@ Column {
   }
 
   // The list's entries, scalar values only (a Repeater converts nested ones):
-  // { kind: "header", g, name, counts, error }, { kind: "run", i } with i the
-  // run's index in `runs` (filteredRuns, which is displayOrder of `groups`),
-  // and { kind: "projectError", text }.
+  // { kind: "header", g, name, counts, error, titlesUnavailable },
+  // { kind: "run", i } with i the run's index in `runs` (filteredRuns, which
+  // is displayOrder of `groups`), and { kind: "projectError", text }.
   // Under a project filter: the filtered project's error when it has one,
   // then every run, flat. Otherwise each group of `groups` in turn: a header
   // unless its root is "", then its runs; then, for each root of the registry
   // `roots` (in order, once) with an error and no group, a header with no
   // counts and no runs. g counts the headers from 0; name is the project's
-  // name, else its root; error is projectError's.
-  function entriesOf(groups, runs, roots, errors, filter) {
+  // name, else its root; error is projectError's; titlesUnavailable is
+  // titlesUnavailableOf `status` ({root: title status}) for its root.
+  function entriesOf(groups, runs, roots, errors, filter, status) {
     var out = []
     if (typeof filter === "string" && filter !== "") {
       var flatError = screen.projectError(errors, filter)
@@ -208,7 +224,8 @@ Column {
       if (root !== "") {
         listed[root] = true
         out.push({ kind: "header", g: g++, name: group.project.name !== "" ? group.project.name : root,
-                   counts: screen.countsText(group.counts), error: screen.projectError(errors, root) })
+                   counts: screen.countsText(group.counts), error: screen.projectError(errors, root),
+                   titlesUnavailable: screen.titlesUnavailableOf(status, root) })
       }
       for (var j = 0; j < screen.sizeOf(group.runs); j++) out.push({ kind: "run", i: i++ })
     }
@@ -221,7 +238,7 @@ Column {
       if (error === "") continue
       listed[key] = true
       out.push({ kind: "header", g: g++, name: typeof project.name === "string" && project.name !== "" ? project.name : key,
-                 counts: "", error: error })
+                 counts: "", error: error, titlesUnavailable: screen.titlesUnavailableOf(status, key) })
     }
     return out
   }
@@ -374,6 +391,7 @@ Column {
         name: typeof entry.fact.name === "string" ? entry.fact.name : ""
         counts: typeof entry.fact.counts === "string" ? entry.fact.counts : ""
         error: typeof entry.fact.error === "string" ? entry.fact.error : ""
+        titlesUnavailable: entry.fact.titlesUnavailable === true
       }
     }
 
@@ -397,14 +415,16 @@ Column {
     }
   }
 
-  // A project's header: its name, its counts and, when its snapshot failed,
-  // the error. Not a row: no cursor, no hover, no click.
+  // A project's header: its name, its counts, a dim `titles unavailable` while
+  // its titles cannot be read and, when its snapshot failed, the error. Not a
+  // row: no cursor, no hover, no click.
   component RunGroupHeader: Column {
     id: header
     property int g: 0
     property string name: ""
     property string counts: ""
     property string error: ""
+    property bool titlesUnavailable: false
     readonly property real innerWidth: Math.max(0, header.width - header.leftPadding - header.rightPadding)
 
     objectName: "runGroup" + header.g
@@ -423,7 +443,8 @@ Column {
         theme: screen.theme
         font.bold: true
         width: Math.max(0, Math.min(implicitWidth,
-          parent.width - (groupCounts.visible ? groupCounts.width + parent.spacing : 0)))
+          parent.width - (groupCounts.visible ? groupCounts.width + parent.spacing : 0)
+            - (groupTitles.visible ? groupTitles.width + parent.spacing : 0)))
         text: header.name
         elide: Text.ElideRight
       }
@@ -435,6 +456,16 @@ Column {
         theme: screen.theme
         visible: text !== ""
         text: header.counts
+      }
+
+      UI.ThemedText {
+        id: groupTitles
+        objectName: "runGroupTitles" + header.g
+        variant: "caption"
+        theme: screen.theme
+        visible: header.titlesUnavailable
+        text: "titles unavailable"
+        color: screen.theme.dim
       }
     }
 

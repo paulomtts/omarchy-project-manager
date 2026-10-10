@@ -348,6 +348,94 @@ TestCase {
     verify(right <= s.screen.width, "the short id stays on the row: right edge " + right)
   }
 
+  // twoProjects(): alpha's header is runGroup0, beta's runGroup1.
+  function test_an_unreachable_project_header_says_titles_unavailable() {
+    var s = make(twoProjects()); if (!s) return
+    s.titles.titleStatus = { "/home/u/b": "unreachable", "/home/u/a": "ok" }
+    wait(20)
+    var beta = H.find(s.screen, "runGroupTitles1")
+    verify(beta, "beta's header has the caption")
+    compare(beta.visible, true)
+    compare(beta.text, "titles unavailable")
+    compare(String(beta.color), String(s.screen.theme.dim), "dim")
+    verify(String(beta.color) !== String(s.screen.theme.urgent), "never urgent")
+    verify(H.find(s.screen, "runGroupCounts1").x < beta.x, "after the counts")
+    compare(H.find(s.screen, "runGroupName1").text, "beta")
+    compare(H.find(s.screen, "runGroupTitles0").visible, false, "alpha's titles are ok")
+    compare(H.find(s.screen, "runRowId2").text, "…live0003", "beta's run keeps its id")
+    s.titles.titleStatus = { "/home/u/b": "loading" }
+    wait(20)
+    compare(H.find(s.screen, "runGroupTitles1").visible, false, "loading")
+    s.titles.titleStatus = { "/home/u/b": "unreachable" }
+    s.runs.projectFilter = "/home/u/b"
+    wait(20)
+    compare(H.find(s.screen, "runGroup0"), null, "flat under a project filter")
+    compare(H.find(s.screen, "runGroupTitles0"), null, "no caption under a project filter")
+  }
+
+  // Review Focus 2 and 4.
+  function test_titles_unavailable_matches_the_root_by_its_key_and_ignores_garbage() {
+    var s = make(twoProjects()); if (!s) return
+    s.titles.titleStatus = { "/home/u/b/": "unreachable" }
+    wait(20)
+    compare(H.find(s.screen, "runGroupTitles1").visible, true, "a trailing / on the key")
+    s.titles.titleStatus = { "/home/u/b//": "unreachable" }
+    wait(20)
+    compare(H.find(s.screen, "runGroupTitles1").visible, true, "several trailing /")
+    var none = [{ "/home/u": "unreachable" }, {}, null, "x", 5, [], { "/home/u/b": 1 },
+                { "/home/u/b": "Unreachable" }, { "/home/u/b": "ok" }]
+    for (var i = 0; i < none.length; i++) {
+      s.titles.titleStatus = none[i]
+      wait(20)
+      compare(H.find(s.screen, "runGroupTitles1").visible, false, "no caption for status " + i)
+      compare(H.find(s.screen, "runGroupTitles0").visible, false, "nor on alpha for status " + i)
+    }
+  }
+
+  // Review Focus 5.
+  function test_an_error_only_header_also_says_titles_unavailable() {
+    var s = make([tagged(run("run-a-live0001", "started", true, {}), "/home/u/a", "alpha")]); if (!s) return
+    s.runs.projectRoots = [{ root: "/home/u/a", name: "alpha" }, { root: "/home/u/b", name: "beta" }]
+    s.runs.projectErrors = { "/home/u/b": "AmFailed: boom" }
+    s.titles.titleStatus = { "/home/u/b": "unreachable" }
+    wait(20)
+    compare(H.find(s.screen, "runGroupName1").text, "beta")
+    compare(H.find(s.screen, "runGroupTitles1").visible, true)
+    compare(H.find(s.screen, "runGroupError1").text, "AmFailed: boom", "the error still shows")
+    compare(H.find(s.screen, "runGroupTitles0").visible, false)
+  }
+
+  // Review Focus 5.
+  function test_a_long_project_name_leaves_room_for_the_caption() {
+    var name = ""
+    for (var i = 0; i < 30; i++) name += "longname"
+    var s = make([tagged(run("run-b-live0003", "started", true, { milestone: "zeta" }), "/home/u/b", name)]); if (!s) return
+    s.titles.titleStatus = { "/home/u/b": "unreachable" }
+    wait(20)
+    var nameText = H.find(s.screen, "runGroupName0")
+    var caption = H.find(s.screen, "runGroupTitles0")
+    compare(caption.visible, true)
+    verify(nameText.width < nameText.implicitWidth, "the name elides")
+    var right = caption.mapToItem(s.screen, 0, 0).x + caption.width
+    verify(right <= s.screen.width, "the caption stays on the header: right edge " + right)
+  }
+
+  // Review Focus 3. The headers are rebuilt; the cursor and its run are not.
+  function test_a_title_status_change_keeps_the_cursor_on_its_run() {
+    var s = make(twoProjects()); if (!s) return
+    s.nav.cursorIndex = 2
+    wait(20)
+    s.titles.titleStatus = { "/home/u/b": "unreachable" }
+    wait(20)
+    compare(s.nav.cursorIndex, 2)
+    compare(s.runs.filteredRuns[2].id, "run-b-live0003")
+    compare(H.find(s.screen, "runRow2").hasCursor, true)
+    s.titles.titleStatus = {}
+    wait(20)
+    compare(s.nav.cursorIndex, 2)
+    compare(H.find(s.screen, "runRow2").hasCursor, true)
+  }
+
   function test_an_escalated_row_carries_its_reason() {
     var s = make(sample()); if (!s) return
     var reason = H.find(s.screen, "runRowReason1")
