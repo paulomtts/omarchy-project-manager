@@ -1,8 +1,11 @@
-"""docs/architecture.md documents runs-history.py and board-titles.py.
+"""docs/architecture.md documents runs-history.py and board-titles.py; README.md's Runs bullet describes the
+run history and the run titles.
 
 The `core/backend/runs/` paragraph describes `runs-history.py`'s argv, its am calls, its page limit and its
 output, and counts the helpers it covers. A line outside the `RunTitlesStore.qml` bullet states
-`board-titles.py`'s contract.
+`board-titles.py`'s contract. README.md's Runs bullet names the Finished chip and its state and age rows,
+says age is the start time, describes Show older, and says an unreachable board is quiet until asked again;
+README.md names both helpers.
 """
 import re
 
@@ -71,3 +74,51 @@ def test_architecture_documents_board_titles_contract():
     hits = [n for n, line in enumerate(DOC.read_text().splitlines(), 1)
             if n not in span and all(token in line for token in tokens)]
     assert len(hits) == 1, hits
+
+
+def runs_bullet():
+    """README.md's line that starts with `- **Runs**`."""
+    lines = [line for line in README.read_text().splitlines() if line.startswith("- **Runs**")]
+    assert len(lines) == 1, f"{len(lines)} README Runs bullets, want 1"
+    return lines[0]
+
+
+def sentences(text):
+    """`text` split after each `.`, `!` or `?` that whitespace and a capital, `*` or backtick follow."""
+    return re.split(r"(?<=[.!?])\s+(?=[A-Z*`])", text)
+
+
+def test_readme_runs_bullet_names_the_finished_chip_and_rows():
+    line = runs_bullet()
+    missing = [token for token in ["**Finished**", "All finished", "Done", "Escalated", "Cancelled",
+                                   "Today", "7 days", "All time"] if token not in line]
+    assert missing == []
+
+
+def test_readme_finished_chip_is_done_escalated_or_cancelled():
+    m = re.search(r"\*\*Finished\*\* \(([^)]*)\)", runs_bullet())
+    assert m and m.group(1) == "done, escalated or cancelled"
+
+
+def test_readme_says_age_is_the_start_time():
+    said = [s for s in sentences(runs_bullet()) if "started_at" in s]
+    assert said and all("no end time" in s for s in said), said
+
+
+def test_readme_describes_show_older():
+    line = runs_bullet()
+    missing = [token for token in ["**Show older**", "Loading older runs…", "am status"] if token not in line]
+    assert missing == []
+
+
+def test_readme_says_unreachable_titles_are_quiet():
+    line = runs_bullet()
+    assert "**Refresh titles**" in line
+    said = [s for s in sentences(line) if "titles unavailable" in s]
+    assert len(said) == 1, said
+    assert "toast" in said[0] and "not asked again until **Refresh titles**" in said[0], said[0]
+
+
+def test_readme_names_the_history_and_titles_helpers():
+    text = README.read_text()
+    assert "runs/runs-history.py" in text and "boards/board-titles.py" in text
