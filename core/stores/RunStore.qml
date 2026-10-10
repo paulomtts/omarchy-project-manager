@@ -120,6 +120,7 @@ Scope {
   property bool logsLoading: false    // a fetch is in flight
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
+  property string logsRunState: ""    // the run's Runs.runState when its opening attempt was chosen; "" when not in the snapshot
 
   // The selected run's event timeline (3.1). `titles` is the open project's
   // card id -> title map, handed in by App. `events` is RunEvents.eventRow
@@ -148,6 +149,7 @@ Scope {
   readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
   property string lastControlError: ""      // Runs.controlError sentence of the last failed request
   property string lastControlErrorRunId: "" // the run that sentence is about
+  property string lastControlErrorType: ""  // am's error type of that failure; "" when it carried none
 
   // The cancel confirmation (S2 4.3). Panel renders it; the store keeps the
   // run it asks about ("" = closed), the typed word and why the last confirm
@@ -792,12 +794,13 @@ Scope {
 
   // Shows (and fetches) one attempt of the selected run. Another attempt than
   // the one shown starts from an empty pane -- its predecessor's text is never
-  // shown under its heading. Nothing happens without a selected run or a real
-  // attempt (a non-empty card and phase, a number above 0).
+  // shown under its heading. Nothing happens without a selected run, a
+  // non-empty card and phase, and an attempt that is a number 0 or above; 0 is
+  // the phase's newest output, am's choice.
   function selectAttempt(cardId, phase, attempt) {
     if (store.selectedRunId === "") return
     if (typeof cardId !== "string" || cardId === "" || typeof phase !== "string" || phase === "") return
-    if (typeof attempt !== "number" || !isFinite(attempt) || attempt <= 0) return
+    if (typeof attempt !== "number" || !isFinite(attempt) || attempt < 0) return
     var old = store.selectedAttempt
     if (!old || old.card_id !== cardId || old.phase !== phase || old.attempt !== attempt) {
       store.logsText = ""
@@ -829,7 +832,8 @@ Scope {
     logsRunner.run([root, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
   }
 
-  // No selection and no logs; a fetch in flight is stopped and its reply dropped.
+  // No selection, no logs and no recorded run state; a fetch in flight is
+  // stopped and its reply dropped.
   function clearLogs() {
     logsRunner.cancel()
     store.selectedAttempt = null
@@ -839,31 +843,46 @@ Scope {
     store.logsLoading = false
     store.logsError = ""
     store.logsStatus = ""
+    store.logsRunState = ""
   }
 
-  // The selected run's default attempt, when it has one.
+  // The selected run's opening attempt: the attempt its stop report names,
+  // else its default attempt. It is selected when there is one; with none the
+  // selection is left alone. Either way logsRunState becomes the run's
+  // Runs.runState, or "" when the run is not in the snapshot.
   function openDefaultAttempt() {
-    var d = Runs.defaultAttempt(store.runById(store.selectedRunId))
-    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt)
+    var run = store.runById(store.selectedRunId)
+    var report = Runs.stopReport(run)
+    var target = report !== null && report.attempt !== null ? report.attempt : Runs.defaultAttempt(run)
+    store.logsRunState = run !== null ? Runs.runState(run) : ""
+    if (target) store.selectAttempt(target.card_id, target.phase, target.attempt)
   }
 
-  // After every applied snapshot: a selected run with no attempt yet gets its
-  // default once one exists; otherwise the selected attempt is fetched again
-  // only when its status moved since its fetch was launched. Nothing else
-  // fetches logs on its own.
+  // After every applied snapshot, for a selected run: when the run is in the
+  // snapshot and its Runs.runState is not logsRunState, it opens on its
+  // opening attempt again, over any attempt picked since; otherwise a run with
+  // no attempt yet gets its opening attempt once one exists, and the selected
+  // attempt is fetched again only when its status moved since its fetch was
+  // launched. Nothing else fetches logs on its own.
   function logsAfterSnapshot() {
     if (store.selectedRunId === "") return
+    var run = store.runById(store.selectedRunId)
+    if (run !== null && Runs.runState(run) !== store.logsRunState) {
+      store.openDefaultAttempt()
+      return
+    }
     var sel = store.selectedAttempt
     if (!sel) {
       store.openDefaultAttempt()
       return
     }
-    var status = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    var status = Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
     if (status !== store.logsStatus) store.fetchLogs()
   }
 
-  // Another run (or none): the pane starts over on that run's default
-  // attempt, the events start over (selectEvents) and the tab is Output.
+  // Another run (or none): the pane starts over, a selected run opens on its
+  // opening attempt, the events start over (selectEvents) and the tab is
+  // Output.
   onSelectedRunIdChanged: {
     store.clearLogs()
     if (store.selectedRunId !== "") store.openDefaultAttempt()
@@ -1293,12 +1312,11 @@ Scope {
     return Object.prototype.hasOwnProperty.call(map, key)
   }
 
-  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
-  // returns whether it started: only when refusalOf(action, runId) is "".
-  // The request acts on the run's repo_dir; a milestone resume reads the run
-  // settings of the run's project.root. Confirming a cancel is the caller's job.
-  function control(action, runId) {
-    if (store.refusalOf(action, runId) !== "") return false
+  // A new request for runId, a run in `runs`: the control error is dismissed,
+  // the request is recorded with the run's state as its baseline, pending is
+  // set, and its runner (repo_dir and project.root of the run, not launched
+  // yet) joins controlRunners and is returned.
+  function startRequest(action, runId) {
     var run = store.runById(runId)
     store.dismissControlError()
     controlState.nextToken += 1
@@ -1312,6 +1330,17 @@ Scope {
     var runner = controlC.createObject(store, { runId: runId, action: action, token: controlState.nextToken,
                                                 repoDir: run.repo_dir, projectRoot: store.runRoot(run) })
     controlState.runners = controlState.runners.concat([runner])
+    return runner
+  }
+
+  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
+  // returns whether it started: only when refusalOf(action, runId) is "".
+  // The request acts on the run's repo_dir; a milestone resume reads the run
+  // settings of the run's project.root. Confirming a cancel is the caller's job.
+  function control(action, runId) {
+    if (store.refusalOf(action, runId) !== "") return false
+    var run = store.runById(runId)
+    var runner = store.startRequest(action, runId)
     if (action === "resume" && run.workflow !== "task") {
       // A milestone resume reuses its project's stored verify set: read it first.
       runner.settingsStep = true
@@ -1361,16 +1390,19 @@ Scope {
   }
 
   // A request ended without am taking it: the buttons come back and the
-  // sentence shows under that run.
-  function failControl(runId, sentence) {
+  // sentence shows under that run. `type` is am's error type when a string,
+  // else "".
+  function failControl(runId, sentence, type) {
     store.settle(runId)
     store.lastControlError = sentence
     store.lastControlErrorRunId = runId
+    store.lastControlErrorType = typeof type === "string" ? type : ""
   }
 
   function dismissControlError() {
     store.lastControlError = ""
     store.lastControlErrorRunId = ""
+    store.lastControlErrorType = ""
   }
 
   // A runner's request is over: it leaves controlRunners and is destroyed.
@@ -1404,9 +1436,11 @@ Scope {
                                  launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
       controlState.requests = requests
     } else if (envelope !== null && envelope.ok === false) {
-      store.failControl(runner.runId, Runs.controlError(envelope))
+      var err = envelope.error
+      var type = err !== null && typeof err === "object" && typeof err.type === "string" ? err.type : ""
+      store.failControl(runner.runId, Runs.controlError(envelope), type)
     } else {
-      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").")
+      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").", "")
     }
     store.dropRunner(runner)
     store.refresh()
@@ -1414,13 +1448,14 @@ Scope {
 
   // The run settings' reply for a milestone resume. A stored verify set (a
   // non-empty list of strings) goes to run-control as --verify pairs in its
-  // order; otherwise the stored opt-out as --allow-no-verification; with
-  // neither, or no readable reply, run-control is never launched and the
-  // request ends with a sentence -- no re-snapshot, nothing was asked of am.
+  // order; otherwise the stored opt-out as --allow-no-verification. With
+  // neither, the request is settled and the Resume dialog opens for the run;
+  // with no readable reply, the request ends with a sentence. In both,
+  // run-control is never launched and there is no re-snapshot.
   function resumeWithSettings(runner, stdout, exitCode) {
     var settings = store.parseEnvelope(stdout)
     if (settings === null) {
-      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").")
+      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").", "")
       store.dropRunner(runner)
       return
     }
@@ -1436,8 +1471,10 @@ Scope {
     } else if (settings.allowNoVerification === true) {
       store.launchControl(runner, ["--allow-no-verification"])
     } else {
-      store.failControl(runner.runId, "Resume needs verify commands: none are stored for this project, and running without verification was not chosen.")
+      var runId = runner.runId
+      store.settle(runId)
       store.dropRunner(runner)
+      store.resumeOpenFor(runId)
     }
   }
 
@@ -1544,6 +1581,89 @@ Scope {
     store.closeCancel()
     return true
   }
+
+  // ---- resume dialog
+
+  // The Resume dialog: a milestone resume with no stored verify set asks for
+  // the commands here. `resumeRunId` is the run it asks about ("" = closed),
+  // `resumeVerify` the commands as typed (blanks allowed),
+  // `resumeAllowNoVerification` the opt-out, and `resumeError` why the last
+  // confirm was refused.
+  property string resumeRunId: ""
+  property var resumeVerify: []
+  property bool resumeAllowNoVerification: false
+  property string resumeError: ""
+
+  // Opens the dialog for runId with empty fields, replacing any open one, and
+  // returns true. Returns false and changes nothing when runId is not a
+  // non-empty string, its run is not in the snapshot, or it is a task run.
+  function resumeOpenFor(runId) {
+    if (typeof runId !== "string" || runId === "") return false
+    var run = store.runById(runId)
+    if (run === null || run.workflow === "task") return false
+    store.resumeVerify = []
+    store.resumeAllowNoVerification = false
+    store.resumeError = ""
+    store.resumeRunId = runId
+    return true
+  }
+
+  function resumeClose() {
+    store.resumeRunId = ""
+    store.resumeVerify = []
+    store.resumeAllowNoVerification = false
+    store.resumeError = ""
+  }
+
+  // The dialog's confirm. Refused, with resumeError and the dialog left open,
+  // when the form has no non-blank command and no opt-out, or when the run
+  // cannot be resumed now (refusalOf). Otherwise the resume starts as
+  // control() starts one and launches run-control at once: the non-blank
+  // commands as --verify pairs in order, else --allow-no-verification. The
+  // set is saved for the run's project without waiting for the reply, the
+  // dialog closes, and true is returned.
+  function resumeConfirm() {
+    if (store.resumeRunId === "") return false
+    var form = { verify: store.resumeVerify, allowNoVerification: store.resumeAllowNoVerification }
+    var missing = Runs.validateDispatch(form).errors.filter(function(e) { return e.field === "verify" })
+    if (missing.length > 0) {
+      store.resumeError = missing[0].message
+      return false
+    }
+    var runId = store.resumeRunId
+    var reason = store.refusalOf("resume", runId)
+    if (reason !== "") {
+      store.resumeError = reason
+      return false
+    }
+    var commands = store.dispatchCommands(form)
+    var extra = []
+    for (var i = 0; i < commands.length; i++) extra.push("--verify", commands[i])
+    if (commands.length === 0) extra = ["--allow-no-verification"]
+    var runner = store.startRequest("resume", runId)
+    store.launchControl(runner, extra)
+    resumeSaveRunner.run(["set-run-settings", runner.projectRoot,
+                          JSON.stringify({ verify: commands, allowNoVerification: store.resumeAllowNoVerification === true })])
+    store.resumeClose()
+    return true
+  }
+
+  // set-run-settings: {"ok": true} changes nothing; anything else flashes.
+  // Never touches the request, the control error or the dialog.
+  function resumeSaveReplied(stdout, exitCode) {
+    var reply = store.parseEnvelope(stdout)
+    if (reply !== null && reply.ok === true) return
+    store.flash("The verify commands could not be saved")
+  }
+
+  // set-run-settings for a confirmed resume; latest wins. No guard: the save
+  // is for the run's project, whatever project is open.
+  HelperRunner {
+    id: resumeSaveRunner
+    script: store.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { store.resumeSaveReplied(stdout, exitCode) }
+  }
+  readonly property alias resumeSaveRunner: resumeSaveRunner
 
   // ---- alerts (S2 4.4)
 
@@ -1969,6 +2089,26 @@ Scope {
     dispatchBook.runners = dispatchBook.runners.filter(function(r) { return r !== runner })
     if (dispatchBook.startRunner === runner) dispatchBook.startRunner = null
     runner.destroy()
+  }
+
+  // ---- relaunch
+
+  // Opens the dispatch for card as openDispatch does and returns its result;
+  // when it opens, relaunch.prefix and relaunch.base (Runs.stopReport's
+  // relaunch), each when a non-blank string, are set trimmed over the
+  // defaults, and a base set so is kept over the default branch. Refused
+  // (false, nothing changes) when card or relaunch is not an object.
+  function relaunchOpenFor(card, cardMap, relaunch) {
+    var isObject = function(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+    if (!isObject(card) || !isObject(relaunch)) return false
+    if (!store.openDispatch(card, cardMap)) return false
+    if (typeof relaunch.prefix === "string" && relaunch.prefix.trim() !== "")
+      store.dispatchForm = store.withField(store.dispatchForm, "prefix", relaunch.prefix.trim())
+    if (typeof relaunch.base === "string" && relaunch.base.trim() !== "") {
+      store.dispatchForm = store.withField(store.dispatchForm, "base", relaunch.base.trim())
+      dispatchBook.baseTouched = true
+    }
+    return true
   }
 
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is

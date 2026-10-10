@@ -91,14 +91,16 @@ Panel {
   }
 
   // A different Runs chip means a different list: the cursor reset is App's,
-  // the scroll is the panel's. The cancel confirmation takes the focus when it
-  // opens and gives it back when it closes. A started dispatch closes its
-  // dialog and goes to the run; the run is usually not in the snapshot yet,
-  // so every new list may hold the run the navigator still waits for.
+  // the scroll is the panel's. The cancel confirmation and the Resume dialog
+  // take the focus when they open and give it back when they close. A started
+  // dispatch closes its dialog and goes to the run; the run is usually not in
+  // the snapshot yet, so every new list may hold the run the navigator still
+  // waits for.
   Connections {
     target: appStores.runs
     function onRunFilterToggled() { Qt.callLater(root.scrollToTop) }
     function onCancelOpenChanged() { root.focusForView() }
+    function onResumeRunIdChanged() { root.focusForView() }
     function onDispatchStarted(runId) {
       appStores.runs.closeDispatch()
       navi.openStartedRun(runId)
@@ -182,6 +184,7 @@ Panel {
     : appStores.milestones.dialogOpen ? newMilestoneDialog.focusItem
     : root.dispatchOpen ? dispatchDialog.focusItem
     : appStores.runs.cancelOpen ? runCancelModal.focusItem
+    : appStores.runs.resumeRunId !== "" ? resumeDialog.focusItem
     : (appStores.nav.viewMode === "memory" && appStores.memories.memoryEditing) ? memoryNoteScreen.editorItem
     : appStores.nav.dropdownOpen ? sidebar.filterItem
     : (appStores.nav.viewMode === "entry" || appStores.nav.viewMode === "document" || appStores.nav.viewMode === "memory" || appStores.nav.viewMode === "issue" || appStores.nav.viewMode === "run" || appStores.nav.viewMode === "graph" || (!appStores.projects.selectedProject && appStores.nav.viewMode !== "runs")) ? keyCatcher
@@ -842,6 +845,24 @@ Panel {
         onTypedEdited: function(text) { appStores.runs.cancelText = text }
         onConfirmRequested: appStores.runs.confirmCancel()
         onCancelRequested: appStores.runs.closeCancel()
+      }
+
+      // The Resume dialog: a milestone resume with no stored verify set asks
+      // for the commands through the run store; only its confirm resumes.
+      ResumeVerifyDialog {
+        id: resumeDialog
+        objectName: "resumeVerifyDialog"
+        anchors.fill: parent
+        shown: appStores.runs.resumeRunId !== ""
+        runLabel: Runs.shortId({ id: appStores.runs.resumeRunId })
+        commands: appStores.runs.resumeVerify
+        allowNoVerification: appStores.runs.resumeAllowNoVerification
+        error: appStores.runs.resumeError
+        theme: panelTheme
+        onCommandsEdited: function(commands) { appStores.runs.resumeVerify = commands }
+        onAllowNoVerificationEdited: function(on) { appStores.runs.resumeAllowNoVerification = on }
+        onConfirmRequested: appStores.runs.resumeConfirm()
+        onCancelRequested: appStores.runs.resumeClose()
       }
 
       NewMemoryDialog {
