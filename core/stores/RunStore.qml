@@ -74,9 +74,16 @@ Scope {
   // The project filter's list changed under the cursor: emitted once per
   // toggleProjectFilter call and once per fallback to All.
   signal projectFilterToggled()
-  // The runs past the chip, the search and the project filter, grouped by
+  // Older runs, each built like a snapshot run
+  // (Runs.withProject(Runs.normalizeRun(..), root, name)); App binds it. It
+  // changes no snapshot member.
+  property var historyRuns: []
+  // `runs`, then each historyRuns entry that is a plain object whose id
+  // neither `runs` nor an earlier entry lists, in historyRuns order.
+  readonly property var listedRuns: store.listed(store.runs, store.historyRuns)
+  // listedRuns past the chip, the search and the project filter, grouped by
   // project in display order (Runs.groupByProject).
-  readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery), store.projectFilter))
+  readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(store.listedRuns, store.runFilter), store.searchQuery), store.projectFilter))
   // The one filtered list: the screen's rows and the navigator's cursor list,
   // group by group (Runs.displayOrder of groups).
   readonly property var filteredRuns: Runs.displayOrder(store.groups)
@@ -646,9 +653,25 @@ Scope {
 
   // ---- attempt logs (5.2)
 
-  // The run with this id in the snapshot, or null.
+  // The run with this id in the snapshot, else in the listed history, or null.
   function runById(id) {
-    return Runs.runById(store.runs, id)
+    return Runs.runById(store.listedRuns, id)
+  }
+
+  // A new array: `runs`, then each entry of `history` that is a plain object
+  // whose id no entry before it lists. `runs` itself when `history` is not
+  // an array.
+  function listed(runs, history) {
+    if (!Array.isArray(history)) return runs
+    var out = runs.slice()
+    var ids = runs.map(function(run) { return run.id })
+    for (var i = 0; i < history.length; i++) {
+      var run = history[i]
+      if (run === null || typeof run !== "object" || Array.isArray(run) || ids.indexOf(run.id) >= 0) continue
+      ids.push(run.id)
+      out.push(run)
+    }
+    return out
   }
 
   // The run's project root when it is a non-empty string, else "".
@@ -682,8 +705,8 @@ Scope {
 
   // One runs-logs.py launch for the selected attempt, the selected run's
   // project root first, remembering the status it was launched for (a
-  // snapshot that changes it fetches again). Nothing launches for a run not
-  // in the snapshot or one with no project root.
+  // snapshot that changes it fetches again). Nothing launches for a run
+  // runById does not find or one with no project root.
   function fetchLogs() {
     var sel = store.selectedAttempt
     if (store.selectedRunId === "" || !sel) return

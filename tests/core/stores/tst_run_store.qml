@@ -2,7 +2,8 @@
 // The run monitor's store: the snapshot helper's exact argv, how its one JSON
 // line becomes every registered root's normalized runs and an amStatus, the
 // one-in-flight-plus-one-pending rule, what a registry change does and what a
-// project switch leaves alone, and the snapshotReplied it emits. Built
+// project switch leaves alone, the snapshotReplied it emits, and the Runs
+// screen's list over the snapshot plus the history App hands it. Built
 // directly, wired to a RunControlStore and a RunAlertsStore the way App wires
 // app.runControl and app.runAlerts (and, where a test needs it, a
 // RunDispatchStore the way App wires app.runDispatch), and driven through
@@ -3566,5 +3567,111 @@ TestCase {
     compare(d.dispatchState, "previewing", "closing the run store leaves the dispatch")
     store.project = rootB
     compare(d.dispatchState, "previewing", "switching the run store's project leaves the dispatch")
+  }
+
+  // ---- history rows in the filtered list (3.3 history)
+
+  // Run `id` of `root` as RunHistoryStore builds one: am status `status`,
+  // milestone "m-<id>", started at `startedAt`, its lease live when `live`
+  // (no lease otherwise), tagged with rootEntry(root)'s name.
+  function histRun(id, root, status, startedAt, live) {
+    var st = { run: { id: id, milestone_id: "m-" + id, status: status }, rows: [], stories: [], subtasks: [] }
+    if (live) st.control = { lease: { pid: 42, host: "h", heartbeat_at: "2026-10-01T00:00:05Z", accepting: true, live: true } }
+    var raw = { row: { id: id, repo_dir: root, started_at: startedAt, status: status }, status: st }
+    return Runs.withProject(Runs.normalizeRun(raw), root, tc.rootEntry(root).name)
+  }
+
+  // rootA ("alpha") and rootB ("beta") registered, no project open, the
+  // snapshot answered: A lists a-live1 (running) and a-park1, B lists b-park1.
+  function historyStore() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return null
+    reply(store.snapshotRunner.current, allReply([
+      okEntry(tc.rootA, [entry("a-live1", "started", true, tc.rootA), entry("a-park1", "stopped", false, tc.rootA)]),
+      okEntry(tc.rootB, [entry("b-park1", "stopped", false, tc.rootB)])]), 0)
+    return store
+  }
+
+  // History for historyStore(), interleaved by root: A's a-h1 (done), B's
+  // b-h1 (escalated), A's a-h2 (parked).
+  function historyPage() {
+    return [histRun("a-h1", tc.rootA, "done", "2026-09-20T00:00:00Z"),
+            histRun("b-h1", tc.rootB, "escalated", "2026-09-19T00:00:00Z"),
+            histRun("a-h2", tc.rootA, "stopped", "2026-09-18T00:00:00Z")]
+  }
+
+  // H1
+  function test_each_projects_history_follows_its_snapshot_runs() {
+    var store = historyStore(); if (!store) return
+    compare(groupText(store), "alpha:0/1/1,beta:0/0/1", "before any history")
+    store.historyRuns = historyPage()
+    compare(ids(store.listedRuns), "a-live1,a-park1,b-park1,a-h1,b-h1,a-h2")
+    compare(groupText(store), "beta:1/0/1,alpha:0/1/2", "b-h1 counts in beta's attention, a-h2 in alpha's parked")
+    compare(ids(store.filteredRuns), "b-park1,b-h1,a-live1,a-park1,a-h1,a-h2",
+            "each group: its snapshot runs, then its history in historyRuns order")
+    compare(ids(Runs.displayOrder(store.groups)), ids(store.filteredRuns))
+    verify(store.filteredRuns[1] === store.historyRuns[1], "the history objects themselves")
+  }
+
+  // H2
+  function test_the_snapshot_wins_and_odd_history_entries_are_skipped() {
+    var store = makeWithRoots([tc.rootA]); if (!store) return
+    reply(store.snapshotRunner.current, okReply([entry("a-park1", "stopped", false, tc.rootA)]), 0)
+    var seq = store.snapshotRunner.seq
+    var applied = JSON.stringify(store.appliedSeq)
+    var known = JSON.stringify(store.knownRunIds())
+    var spies = ["snapshotReplied", "runsNudged", "projectFilterToggled", "runFilterToggled"].map(function(name) {
+      return createTemporaryObject(spyC, tc, { target: store, signalName: name })
+    })
+    store.historyRuns = [null, 7, "x", [], histRun("a-park1", tc.rootA, "done", "2026-09-20T00:00:00Z"),
+                         histRun("a-h1", tc.rootA, "started", "2026-09-19T00:00:00Z", true),
+                         histRun("a-h1", tc.rootA, "done", "2026-09-18T00:00:00Z")]
+    compare(ids(store.listedRuns), "a-park1,a-h1", "each id once")
+    verify(store.listedRuns[0] === store.runs[0], "the snapshot's object wins")
+    verify(store.listedRuns[1] === store.historyRuns[5], "the first of a duplicated history id")
+    compare(Runs.runState(store.listedRuns[1]), "running")
+    compare(ids(store.filteredRuns), "a-park1,a-h1")
+    store.runFilter = "parked"
+    compare(ids(store.filteredRuns), "a-park1", "the shared id is the snapshot's parked run")
+    compare(ids(store.runs), "a-park1", "runs stays the snapshot")
+    compare(store.hasRunningRun, false, "a running history run is not the snapshot's")
+    compare(JSON.stringify(store.appliedSeq), applied)
+    compare(JSON.stringify(store.knownRunIds()), known)
+    compare(store.snapshotRunner.seq, seq, "no snapshot launched")
+    for (var i = 0; i < spies.length; i++) compare(spies[i].count, 0, spies[i].signalName)
+  }
+
+  // Review Focus 2
+  function test_a_history_that_is_not_an_array_lists_the_snapshot_alone() {
+    var store = historyStore(); if (!store) return
+    var values = [null, "runs", 3, ({ id: "a-h1" })]
+    for (var i = 0; i < values.length; i++) {
+      store.historyRuns = values[i]
+      compare(ids(store.listedRuns), "a-live1,a-park1,b-park1", "historyRuns " + JSON.stringify(values[i]))
+      compare(ids(store.filteredRuns), "a-live1,a-park1,b-park1")
+    }
+  }
+
+  // H9
+  function test_the_cursor_walks_snapshot_then_history_and_run_by_id_finds_both() {
+    var store = historyStore(); if (!store) return
+    store.historyRuns = historyPage().concat([histRun("a-park1", tc.rootA, "done", "2026-09-17T00:00:00Z")])
+    var expected = ["b-park1", "b-h1", "a-live1", "a-park1", "a-h1", "a-h2"]
+    compare(store.filteredRuns.length, expected.length)
+    for (var i = 0; i < expected.length; i++) {
+      compare(store.filteredRuns[i].id, expected[i], "row " + i)
+      verify(store.runById(expected[i]) === store.filteredRuns[i], "runById(" + expected[i] + ")")
+    }
+    compare(store.runById("a-park1").status, "stopped", "a snapshot id is the snapshot's run")
+    compare(store.runById("nope"), null)
+  }
+
+  // Review Focus 1
+  function test_a_selected_history_run_fetches_its_logs_from_its_root() {
+    var store = historyStore(); if (!store) return
+    store.historyRuns = historyPage()
+    store.selectedRunId = "b-h1"
+    store.selectAttempt("c1", "spec", 1)
+    compare(argv(store.logsRunner.current), "python3|/plugin/core/backend/runs/runs-logs.py|" + tc.rootB + "|b-h1|c1|spec|1")
+    compare(store.logsLoading, true)
   }
 }
