@@ -152,6 +152,18 @@ QtObject {
     projectRoots: app.runs.projectRoots
   }
 
+  // The run titles never import the run or board store: App hands them the
+  // backend directory, the panel-open flag, the registry, the open project's
+  // root and card map and the run list. App routes no signal from them.
+  readonly property RunTitlesStore runTitles: RunTitlesStore {
+    backendDir: app.backendDir
+    active: app.panelOpen
+    projectRoots: app.runs.projectRoots
+    openRoot: app.runs.project
+    openCardMap: app.board.cardMap
+    runs: app.runs.runs
+  }
+
   // The dispatch never imports the run store or run control: App hands it the
   // backend directory, the open project's root, the panel-open flag, the run
   // list and the open project's run settings from run control, routes its

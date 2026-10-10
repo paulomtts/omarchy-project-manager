@@ -1,4 +1,4 @@
-"""docs/architecture.md describes the four run stores as App composes them; README.md names none.
+"""docs/architecture.md describes the five run stores as App composes them; README.md names none.
 
 Each run store has one top-level bullet in the `core/stores/` list that names the App property composing
 it, every input App binds on it and every signal App routes from it. No line names a shim, a sibling
@@ -15,13 +15,13 @@ README = ROOT / "README.md"
 APP = ROOT / "core" / "stores" / "App.qml"
 
 # bullet order in the core/stores/ list
-STORES = ["RunStore", "RunControlStore", "RunAlertsStore", "RunDispatchStore"]
+STORES = ["RunStore", "RunControlStore", "RunAlertsStore", "RunDispatchStore", "RunTitlesStore"]
 
 SHIM_RE = re.compile(r"\b(shim\w*|controlStore|alertsStore|dispatchStore)\b")
 RUN_STORE_MEMBER_RE = re.compile(
     r"\bRunStore(?:\.|'s `)(" + "|".join(sorted(MOVED, key=len, reverse=True)) + r")\b")
-README_TOKENS = ["RunStore", "RunControlStore", "RunAlertsStore", "RunDispatchStore",
-                 "app.runs", "app.runControl", "app.runAlerts", "app.runDispatch", "shim"]
+README_TOKENS = ["RunStore", "RunControlStore", "RunAlertsStore", "RunDispatchStore", "RunTitlesStore",
+                 "app.runs", "app.runControl", "app.runAlerts", "app.runDispatch", "app.runTitles", "shim"]
 
 
 def bullet(name, text=None):

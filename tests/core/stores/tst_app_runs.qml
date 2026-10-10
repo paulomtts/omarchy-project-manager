@@ -9,10 +9,12 @@
 // store, and `app.runDispatch`, which App feeds with the run store's project
 // and run list and run control's run settings, and whose refreshRequested,
 // noticeRequested, runSettingsWanted and runSettingsSaveRequested App routes,
-// as it routes run control's runSettingsSaveFailed back to the dispatch. The
-// stores' own behaviour is tested in
-// tst_run_store.qml, tst_run_alerts_store.qml, tst_run_control_store.qml and
-// tst_run_dispatch_store.qml.
+// as it routes run control's runSettingsSaveFailed back to the dispatch, and
+// `app.runTitles`, which App feeds with the registry, the open project's root
+// and card map, the run list and the panel-open flag. The stores' own
+// behaviour is tested in tst_run_store.qml, tst_run_alerts_store.qml,
+// tst_run_control_store.qml, tst_run_dispatch_store.qml and
+// tst_run_titles_store.qml.
 import QtQuick
 import QtTest
 
@@ -859,5 +861,38 @@ TestCase {
     app.projects.chooseProject(pB)
     reply(save.current, ctlFail("Invalid", "x"), 1)
     compare(app.runControl.flashText, "")
+  }
+
+  // ---- the run titles
+
+  function test_app_composes_run_titles_wired_to_the_run_store_and_board() {
+    var app = make(); if (!app) return
+    verify(app.runTitles, "App composes the titles store as app.runTitles")
+    compare(app.runTitles.backendDir, "/plugin/core/backend/")
+    compare(JSON.stringify(app.runTitles.projectRoots), JSON.stringify(app.runs.projectRoots))
+    compare(app.runTitles.openRoot, tc.pA.root_path)
+    compare(app.runTitles.active, false)
+    app.panelOpen = true
+    compare(app.runTitles.active, true, "active follows app.panelOpen")
+    app.board.applyTreeData([{ id: "c1", title: "One", status: "todo", children: [] }])
+    compare(JSON.stringify(app.runTitles.openCardMap), JSON.stringify(app.board.cardMap))
+    compare(app.runTitles.titlesByRoot[tc.pA.root_path].c1, "One")
+    compare(app.runTitles.titleStatus[tc.pA.root_path], "ok")
+  }
+
+  function test_app_runs_no_board_titles_for_the_open_project() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runs.runs.length, 1)
+    compare(JSON.stringify(app.runTitles.runs), JSON.stringify(app.runs.runs))
+    compare(app.runTitles.titlesRunner.current, null, "pA is open and pB has no runs: no board-titles.py")
+    compare(app.runTitles.titleStatus[tc.pA.root_path], "ok")
+  }
+
+  function test_app_fetches_titles_for_another_project_with_runs() {
+    var app = openApp([runningIn("r1")], [runningIn("r2", tc.pB.root_path)]); if (!app) return
+    compare(argv(app.runTitles.titlesRunner.current),
+            "python3|/plugin/core/backend/boards/board-titles.py|" + tc.pB.root_path)
+    compare(app.runTitles.fetchingRoot, tc.pB.root_path)
+    compare(app.runTitles.titleStatus[tc.pB.root_path], "loading")
   }
 }
