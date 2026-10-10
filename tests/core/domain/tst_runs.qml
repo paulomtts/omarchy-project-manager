@@ -4688,4 +4688,63 @@ TestCase {
     compare(JSON.stringify(run), runJson, "run unchanged")
     compare(JSON.stringify(titles), titlesJson, "titles unchanged")
   }
+
+  function test_run_subtitle() {
+    var runs = [{ id: "run-20261003-abcdef12" }, { id: "abc" }, { id: "" }, idRun("r1", "m1", "s1", "c1"),
+                undefined, null, "x", 5, [], {}, { id: 7 }, { id: null }]
+    for (var i = 0; i < runs.length; i++)
+      compare(Runs.runSubtitle(runs[i]), Runs.shortId(runs[i]), "input " + i)
+    compare(Runs.runSubtitle({ id: "run-20261003-abcdef12" }), "…abcdef12")
+  }
+
+  function test_card_title() {
+    var run = idRun("r1", "m1", "", "", [{ card_id: "s1", title: " Am story " }, { card_id: "s2", title: "Am two" }])
+    compare(Runs.cardTitle("t1", run, { t1: "Subtask" }), "Subtask", "from the map")
+    compare(Runs.cardTitle("s1", run, {}), "Am story", "from the run's story title, trimmed")
+    compare(Runs.cardTitle("s1", run), "Am story", "titles omitted")
+    compare(Runs.cardTitle("s2", run, { s2: "Brd two" }), "Brd two", "the map wins over am")
+    compare(Runs.cardTitle("s2", run, { s2: "  " }), "Am two", "an unusable map title falls through to am's")
+    compare(Runs.cardTitle("t9", run, { t1: "Subtask" }), "", "an unknown id")
+    compare(Runs.cardTitle("t1", run, { t1: 5 }), "", "a non-string map title")
+    compare(Runs.cardTitle("t1", run, { t1: {} }), "", "an object map title")
+
+    var ids = [undefined, null, 5, "", [], {}]
+    for (var i = 0; i < ids.length; i++)
+      compare(Runs.cardTitle(ids[i], run, { "": "Empty", "5": "Five" }), "", "id " + JSON.stringify(ids[i]))
+
+    var runs = [undefined, null, "x", 5, [], {}, { tree: "x" }, { tree: { stories: "x" } }]
+    for (var j = 0; j < runs.length; j++) {
+      compare(Runs.cardTitle("s1", runs[j], {}), "", "garbage run " + j)
+      compare(Runs.cardTitle("t1", runs[j], { t1: "Subtask" }), "Subtask", "garbage run " + j + " with a map title")
+    }
+
+    var maps = [undefined, null, "x", 5, [], true]
+    for (var k = 0; k < maps.length; k++) {
+      compare(Runs.cardTitle("t1", run, maps[k]), "", "garbage titles " + k)
+      compare(Runs.cardTitle("s1", run, maps[k]), "Am story", "garbage titles " + k + " keep am's")
+    }
+  }
+
+  function test_card_title_prototype_ids() {
+    var names = ["constructor", "__proto__", "toString", "hasOwnProperty"]
+    var run = idRun("r1", "m1", "", "", [])
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i]
+      compare(Runs.cardTitle(n, run, {}), "", n + " with an empty map")
+      compare(Runs.cardTitle(n, run), "", n + " with no map")
+      compare(Runs.cardTitle(n, run, JSON.parse('{"' + n + '": "Own"}')), "Own", n + " as an own key")
+      compare(Runs.cardTitle(n, idRun("r1", "", "", "", [{ card_id: n, title: "Am " + n }]), {}), "Am " + n,
+              n + " as an am story id")
+    }
+  }
+
+  function test_card_title_pure() {
+    var run = idRun("r1", "m1", "", "", [{ card_id: "s1", title: "Am" }])
+    var titles = { t1: "T" }
+    var runJson = JSON.stringify(run), titlesJson = JSON.stringify(titles)
+    Runs.cardTitle("s1", run, titles)
+    Runs.cardTitle("t1", run, titles)
+    compare(JSON.stringify(run), runJson, "run unchanged")
+    compare(JSON.stringify(titles), titlesJson, "titles unchanged")
+  }
 }

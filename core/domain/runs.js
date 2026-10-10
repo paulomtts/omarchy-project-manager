@@ -601,6 +601,19 @@ function runTitle(run, titles) {
   return shortId(run)
 }
 
+// The run's secondary text: exactly shortId(run).
+function runSubtitle(run) { return shortId(run) }
+
+// The title of card id within run: titles' own usable title for id, else the
+// usable title of the first object in run.tree.stories whose card_id is id,
+// else "". "" when id is not a non-empty string. am has no subtask titles, so
+// a subtask's title comes only from titles.
+function cardTitle(id, run, titles) {
+  if (!_isTitleId(id)) return ""
+  var title = _mappedTitle(titles, id)
+  return title !== "" ? title : _amStoryTitle(run, id)
+}
+
 // Counts of the run's real subtasks (an object with a real card id) and of those whose own
 // `status` is `done`.
 function runProgress(run) {
