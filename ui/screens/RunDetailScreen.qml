@@ -8,18 +8,23 @@ import "../components" as UI
 import "../theme" as T
 
 // One am run (the "run" view): a header with its state, milestone, branch
-// prefix and base and lease; its story > subtask > phase > attempt tree, with
-// the orchestrator's own Integrate / Bases / Base rows when it has them; and a
-// bottom area of two tabs, app.runs.detailTab, chosen by the Output / Events
-// chips. Output holds ONE attempt's `am logs` snapshot -- labelled with its
-// age, never presented as a live tail. Events is the run's event timeline
-// (EventsPane over app.runs.events); its filter chips set app.runs.eventsFilter,
-// and a row naming an attempt selects that attempt and shows Output. The
-// Events chip counts the rows held plus app.runs.eventsDropped. Run state
-// always comes from am (the run store), never from a brd status; brd's board
-// only lends titles and dims the cards it has closed. It reads the run store
-// and asks it to show another attempt or tab or fetch again; it owns no state
-// of its own. Ages are read against the clock when a logs reply lands or a
+// prefix and base and lease; its story > subtask > phase > attempt tree (a
+// step row reads its phase and selects the step), with the orchestrator's own
+// Integrate / Bases / Base rows when it has them; and a bottom area of two
+// tabs, app.runs.detailTab, chosen by the Output / Events chips. Output shows
+// ONE selected attempt or step. While app.runOutput's followStatus is
+// connecting, following, ended or error it is live: app.runOutput's text in
+// a TailScroll under a live / ended label, closed by an end line once ended,
+// and no Refresh. Otherwise (idle, unsupported, or no app.runOutput) it is
+// the selection's `am logs` snapshot labelled with its age, with Refresh.
+// Events is the run's event timeline (EventsPane over app.runs.events); its
+// filter chips set app.runs.eventsFilter, and a row naming an attempt selects
+// that attempt and shows Output. The Events chip counts the rows held plus
+// app.runs.eventsDropped. Run state always comes from am (the run store),
+// never from a brd status; brd's board only lends titles and dims the cards
+// it has closed. It reads the run store and app.runOutput and asks the run
+// store to show another attempt or tab or fetch again; it owns no state of
+// its own. Ages are read against the clock when a logs reply lands or a
 // snapshot replaces the runs: no timer.
 Column {
   id: screen
@@ -194,6 +199,22 @@ Column {
   // The status line is drawn urgent: an ended attempt with an urgent status.
   function statusUrgent() {
     return !!screen.selection && screen.followStatus === "ended" && screen.endIsUrgent(screen.roText("endStatus"))
+  }
+
+  // The live list's rows: the source text's lines (an ended step's landed
+  // snapshot, else ro's liveText; no trailing empty row), then the end line
+  // once ro has ended with a status. [] with no selection or outside live mode.
+  function liveRows() {
+    if (!screen.selection || !screen.live) return []
+    var store = screen.app.runs
+    var ended = screen.followStatus === "ended"
+    var source = ended && screen.selection.step === true && store.logsFetchedMs > 0
+      ? store.logsText : screen.roText("liveText")
+    var rows = typeof source === "string" && source !== "" ? source.split("\n") : []
+    if (rows.length > 0 && rows[rows.length - 1] === "") rows.pop()
+    var end = screen.roText("endStatus")
+    if (ended && end !== "") rows.push("— ended: " + end + " —")
+    return rows
   }
 
   // Safe reads by position: a Repeater may still bind a delegate once while
@@ -385,16 +406,41 @@ Column {
         wrapMode: Text.WordWrap
       }
 
-      // Read-only by nature: a Text, in the theme's font, never an editor.
+      // The snapshot. Read-only by nature: a Text, in the theme's font, never an editor.
       UI.ThemedText {
         objectName: "runOutputText"
         variant: "small"
         theme: screen.theme
         width: parent.width
-        visible: !!screen.selection && text !== ""
+        visible: !!screen.selection && !screen.live && text !== ""
         text: screen.app.runs.logsText
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
+      }
+
+      // Live mode's text, one row per line, following its bottom; outside
+      // live mode it has no rows and takes no room.
+      UI.TailScroll {
+        objectName: "runOutputTail"
+        width: parent.width
+        theme: screen.theme
+        model: screen.liveRows()
+        listName: "runOutputList"
+        jumpName: "runOutputJump"
+
+        rowDelegate: UI.ThemedText {
+          id: outputRow
+          required property var modelData
+          required property int index
+
+          objectName: "runOutputRow" + outputRow.index
+          width: outputRow.ListView.view ? outputRow.ListView.view.width : 0
+          variant: "small"
+          theme: screen.theme
+          text: outputRow.modelData
+          textFormat: Text.PlainText
+          wrapMode: Text.WrapAnywhere
+        }
       }
     }
 

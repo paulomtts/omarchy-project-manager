@@ -137,6 +137,20 @@ TestCase {
     for (var key in fields) s.ro[key] = fields[key]
   }
 
+  // n numbered lines, each ended by a newline.
+  function lines(n) {
+    var out = []
+    for (var i = 1; i <= n; i++) out.push("line " + i)
+    return out.join("\n") + "\n"
+  }
+
+  function atBottom(list) {
+    return Math.abs(list.contentY - (list.originY + list.contentHeight - list.height)) <= 1
+  }
+
+  // The live list's model, as JSON.
+  function liveModel(s) { return JSON.stringify(H.find(s.screen, "runOutputTail").model) }
+
   // Two clicks inside the double-click interval make the second a double-click.
   function tap(item) {
     wait(450)
@@ -404,7 +418,7 @@ TestCase {
 
   // ---- output pane
 
-  function test_the_output_pane_is_a_labelled_snapshot_never_live() {
+  function test_the_output_pane_is_a_labelled_snapshot_while_idle() {
     var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
     s.runs.logsText = "collecting...\n3 passed"
     s.runs.logsFetchedMs = Date.now() - 14000
@@ -596,6 +610,169 @@ TestCase {
     compare(H.find(s.screen, "runOutputAge").visible, false, "a non-string end status is none, and so is the sentence")
     setLive(s, { followStatus: "error", followError: 9 })
     compare(H.find(s.screen, "runOutputError").visible, false)
+  }
+
+  // ---- live output: the list
+
+  function test_idle_keeps_the_snapshot_pane() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsText = "3 passed"
+    setLive(s, { followStatus: "idle", liveText: "live stuff\n", hasOutput: true })
+    compare(H.find(s.screen, "runOutputTail").visible, false)
+    compare(H.find(s.screen, "runOutputList").count, 0)
+    compare(H.find(s.screen, "runOutputText").visible, true)
+    compare(H.find(s.screen, "runOutputText").text, "3 passed")
+  }
+
+  function test_following_shows_the_live_text_not_the_snapshot() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsText = "old snapshot"
+    setLive(s, { followStatus: "following", hasOutput: true, liveText: "… 3 earlier lines\ncollecting...\n" })
+    wait(30)
+    compare(H.find(s.screen, "runOutputText").visible, false)
+    compare(H.find(s.screen, "runOutputTail").visible, true)
+    compare(liveModel(s), JSON.stringify(["… 3 earlier lines", "collecting..."]))
+    var row = H.find(s.screen, "runOutputRow1")
+    compare(row.text, "collecting...")
+    compare(row.textFormat, Text.PlainText)
+    compare(row.wrapMode, Text.WrapAnywhere)
+    compare(row.width, H.find(s.screen, "runOutputList").width)
+  }
+
+  function test_ended_ok_reads_ended_and_the_end_line_is_last() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "ended", endStatus: "ok", hasOutput: true, liveText: "a\nb\n" })
+    wait(30)
+    compare(H.find(s.screen, "runOutputAge").text, "ended · ok")
+    compare(liveModel(s), JSON.stringify(["a", "b", "— ended: ok —"]))
+    compare(H.find(s.screen, "runOutputRow2").text, "— ended: ok —")
+    compare(s.ro.liveText, "a\nb\n", "the end line is never part of liveText")
+  }
+
+  function test_ended_failures_end_with_their_end_line_data() {
+    return [{ tag: "gate_failed", status: "gate_failed" },
+            { tag: "schema_invalid", status: "schema_invalid" },
+            { tag: "harness_error", status: "harness_error" }]
+  }
+
+  function test_ended_failures_end_with_their_end_line(data) {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "ended", endStatus: data.status, hasOutput: true, liveText: "x\n" })
+    compare(liveModel(s), JSON.stringify(["x", "— ended: " + data.status + " —"]))
+  }
+
+  function test_a_step_with_no_log_has_no_end_line_and_no_rows() {
+    var s = make(stepRun(), undefined, stepSel("t1", "verify")); if (!s) return
+    setLive(s, { followStatus: "ended", endStatus: "", followError: "This step records no output" })
+    compare(liveModel(s), "[]")
+    compare(H.find(s.screen, "runOutputTail").visible, false)
+    compare(H.find(s.screen, "runOutputText").visible, false)
+  }
+
+  function test_an_ended_step_shows_its_snapshot_then_the_end_line() {
+    var s = make(stepRun(), undefined, stepSel("t1", "verify")); if (!s) return
+    setLive(s, { followStatus: "ended", endStatus: "ok", hasOutput: true, liveText: "x\n" })
+    compare(liveModel(s), JSON.stringify(["x", "— ended: ok —"]), "before the snapshot lands: the live text")
+    s.runs.logsText = "a\nb"
+    s.runs.logsFetchedMs = Date.now()
+    compare(liveModel(s), JSON.stringify(["a", "b", "— ended: ok —"]))
+    s.runs.selectedAttempt = sel("t1", "implement", 1)
+    compare(liveModel(s), JSON.stringify(["x", "— ended: ok —"]), "an attempt always shows its live text")
+  }
+
+  function test_an_error_keeps_the_live_text_it_has() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "error", followError: "Live output stopped: run not found", liveText: "kept\n" })
+    compare(liveModel(s), JSON.stringify(["kept"]))
+    compare(H.find(s.screen, "runOutputText").visible, false)
+    setLive(s, { liveText: "" })
+    compare(H.find(s.screen, "runOutputTail").visible, false, "no text, no room")
+  }
+
+  function test_connecting_has_no_rows() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsText = "old snapshot"
+    setLive(s, { followStatus: "connecting" })
+    compare(liveModel(s), "[]")
+    compare(H.find(s.screen, "runOutputTail").visible, false)
+    compare(H.find(s.screen, "runOutputText").visible, false)
+  }
+
+  function test_the_live_list_follows_growing_text_and_offers_jump() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "following", hasOutput: true, liveText: lines(80) })
+    wait(50)
+    var tail = H.find(s.screen, "runOutputTail")
+    var list = H.find(s.screen, "runOutputList")
+    var jump = H.find(s.screen, "runOutputJump")
+    compare(list.count, 80)
+    verify(list.contentHeight > list.height, "the list scrolls")
+    tryVerify(function () { return atBottom(list) }, 1000, "it opens at its bottom")
+    compare(tail.following, true)
+    compare(jump.visible, false)
+    s.ro.liveText = lines(160)
+    wait(50)
+    compare(list.count, 160)
+    tryVerify(function () { return atBottom(list) }, 1000, "growing text is followed")
+    compare(tail.following, true)
+    list.contentY = list.originY
+    wait(30)
+    compare(tail.following, false)
+    compare(jump.visible, true)
+    var before = list.contentY
+    s.ro.liveText = lines(200)
+    wait(50)
+    compare(list.count, 200)
+    compare(list.contentY, before, "scrolled up, it stays put")
+    tap(jump)
+    tryVerify(function () { return atBottom(list) }, 1000, "Jump puts it at its bottom")
+    compare(tail.following, true)
+  }
+
+  // Review Focus 1.
+  function test_no_selection_shows_no_live_list() {
+    var s = make(detail()); if (!s) return
+    setLive(s, { followStatus: "following", hasOutput: true, liveText: "a\n" })
+    compare(liveModel(s), "[]")
+    compare(H.find(s.screen, "runOutputTail").visible, false)
+    compare(H.find(s.screen, "runOutputNone").visible, true)
+  }
+
+  // Review Focus 3.
+  function test_a_non_string_live_text_gives_no_rows() {
+    failOnWarning(/TypeError|ReferenceError|is not a function|Unable to assign/)
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "following", hasOutput: true, liveText: 42 })
+    compare(liveModel(s), "[]")
+    setLive(s, { liveText: null })
+    compare(liveModel(s), "[]")
+    setLive(s, { followStatus: "ended", endStatus: { s: 1 }, liveText: "a\n" })
+    compare(liveModel(s), JSON.stringify(["a"]), "a non-string end status adds no end line")
+  }
+
+  // Review Focus 4.
+  function test_going_back_to_idle_restores_the_snapshot() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsText = "3 passed"
+    s.runs.logsFetchedMs = Date.now() - 14000
+    setLive(s, { followStatus: "following", hasOutput: true, liveText: "a\n" })
+    compare(H.find(s.screen, "runOutputTail").visible, true)
+    compare(H.find(s.screen, "runOutputRefresh").visible, false)
+    setLive(s, { followStatus: "idle" })
+    compare(H.find(s.screen, "runOutputTail").visible, false)
+    compare(H.find(s.screen, "runOutputText").visible, true)
+    compare(H.find(s.screen, "runOutputText").text, "3 passed")
+    compare(H.find(s.screen, "runOutputAge").text, "snapshot 14s ago")
+    compare(H.find(s.screen, "runOutputRefresh").visible, true)
+  }
+
+  // Review Focus 5.
+  function test_blank_lines_are_kept_and_a_trailing_newline_adds_no_row() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    setLive(s, { followStatus: "following", hasOutput: true, liveText: "a\n\nb\n" })
+    compare(liveModel(s), JSON.stringify(["a", "", "b"]))
+    setLive(s, { liveText: "a\n\nb" })
+    compare(liveModel(s), JSON.stringify(["a", "", "b"]), "a partial last line is a row")
   }
 
   // ---- missing, malformed, visibility
