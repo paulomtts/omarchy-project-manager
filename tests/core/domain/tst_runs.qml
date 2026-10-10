@@ -1780,6 +1780,66 @@ TestCase {
     for (var i = 0; i < bad.length; i++) compare(Runs.filterRuns(bad[i], "finished").length, 0, "garbage " + i)
   }
 
+  // A done run started at startedAt (undefined: no started_at).
+  function startedRun(startedAt) { return mkRun("s", "done", null, { started_at: startedAt }) }
+
+  // "a,b": withinAge "today" for a run started at `inside`, then at `outside`.
+  function todayPair(inside, outside, now, offset) {
+    return [Runs.withinAge(startedRun(inside), "today", now, offset),
+            Runs.withinAge(startedRun(outside), "today", now, offset)].join(",")
+  }
+
+  function test_within_age_today_at_fixed_offsets() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    compare(todayPair("2026-10-04T00:00:00Z", "2026-10-03T23:59:59Z", now, 0), "true,false", "UTC")
+    compare(todayPair("2026-10-04T03:00:00Z", "2026-10-04T02:59:59Z", now, -180), "true,false", "UTC-3")
+    compare(todayPair("2026-10-03T14:00:00Z", "2026-10-03T13:59:59Z", now, 600), "true,false",
+            "UTC+10: the previous UTC day")
+    compare(todayPair("2026-10-04T11:00:00Z", "2026-10-04T10:59:59Z", now, 780), "true,false",
+            "UTC+13: the next local day")
+    var atMidnight = Date.parse("2026-10-04T03:00:00Z")
+    compare(todayPair("2026-10-04T03:00:00Z", "2026-10-04T02:59:59.999Z", atMidnight, -180), "true,false",
+            "now exactly at local midnight")
+    compare(todayPair("2026-10-04 00:00:00-03:00", "2026-10-03 23:59:59-03:00", now, -180), "true,false",
+            "am's format with an offset")
+    var badOffsets = [undefined, NaN, "x", null, Infinity, {}, "-180"]
+    for (var i = 0; i < badOffsets.length; i++)
+      compare(todayPair("2026-10-04T00:00:00Z", "2026-10-03T23:59:59Z", now, badOffsets[i]), "true,false",
+              "non-finite offset " + i + " is 0")
+    var run = startedRun("2026-10-04T03:00:00Z")
+    var json = JSON.stringify(run)
+    Runs.withinAge(run, "today", now, -180)
+    compare(JSON.stringify(run), json, "the run is unchanged")
+  }
+
+  function test_within_age_week_and_defaults() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    compare(Runs.withinAge(startedRun("2026-09-27T12:00:00Z"), "week", now, 0), true, "exactly 7 days")
+    compare(Runs.withinAge(startedRun("2026-09-27T11:59:59Z"), "week", now, 0), false, "a second over")
+    compare(Runs.withinAge(startedRun("2026-09-27 12:00:00+00:00"), "week", now, 600), true,
+            "the offset never moves the week")
+    compare(Runs.withinAge(startedRun("2026-10-05T12:00:00Z"), "week", now, 0), true, "a future start, week")
+    compare(Runs.withinAge(startedRun("2026-10-05T12:00:00Z"), "today", now, 0), true, "a future start, today")
+    compare(Runs.withinAge(mkRun("l", "started", true, { started_at: "2020-01-01T00:00:00Z" }), "week", now, 0),
+            false, "the run's state is not consulted")
+    var anyAge = ["all", "", "bogus", undefined, null, 5, "constructor", "__proto__", "Today"]
+    for (var i = 0; i < anyAge.length; i++) {
+      compare(Runs.withinAge(startedRun(undefined), anyAge[i], now, 0), true, "age " + i + " with no started_at")
+      compare(Runs.withinAge(startedRun("2020-01-01T00:00:00Z"), anyAge[i], now, 0), true, "age " + i + " with an old start")
+    }
+    var badNow = [undefined, null, "x", NaN, Infinity, -Infinity, {}, []]
+    for (var j = 0; j < badNow.length; j++) {
+      compare(Runs.withinAge(startedRun("2020-01-01T00:00:00Z"), "today", badNow[j], 0), true, "no clock, today " + j)
+      compare(Runs.withinAge(startedRun(undefined), "week", badNow[j], 0), true, "no clock, week " + j)
+    }
+    var noStart = [startedRun(undefined), startedRun(""), startedRun("not a date"), startedRun(5),
+                   startedRun(null), startedRun({}), undefined, null, "x", 5, [], {}]
+    for (var k = 0; k < noStart.length; k++) {
+      compare(Runs.withinAge(noStart[k], "today", now, 0), false, "no start instant, today " + k)
+      compare(Runs.withinAge(noStart[k], "week", now, 0), false, "no start instant, week " + k)
+    }
+  }
+
   // ---- Run detail (5.2)
 
   function test_normalize_branch_fields() {

@@ -706,6 +706,32 @@ function filterRuns(runs, id) {
   return list
 }
 
+var _DAY_MS = 86400000
+
+// Date.parse(run.started_at) when `run` is an object whose `started_at` is a
+// non-empty string that parses to a finite number; NaN otherwise.
+function _startMs(run) {
+  if (!_isObject(run) || typeof run.started_at !== "string" || run.started_at === "") return NaN
+  var t = Date.parse(run.started_at)
+  return isFinite(t) ? t : NaN
+}
+
+// Whether `run` started within `age` of `nowMs`. "today": at or after local
+// midnight, for a local offset of `utcOffsetMinutes` east of UTC (0 when not a
+// finite number). "week": at or after nowMs - 7 days. No upper bound. Any other
+// age, or a `nowMs` that is not a finite number, is true. A run with no start
+// instant (see _startMs) is false under "today" and "week". The run's state is
+// not consulted. Never mutates, never throws.
+function withinAge(run, age, nowMs, utcOffsetMinutes) {
+  if (age !== "today" && age !== "week") return true
+  if (!_isFiniteNumber(nowMs)) return true
+  var start = _startMs(run)
+  if (!isFinite(start)) return false
+  if (age === "week") return start >= nowMs - 7 * _DAY_MS
+  var off = (_isFiniteNumber(utcOffsetMinutes) ? utcOffsetMinutes : 0) * 60000
+  return start >= Math.floor((nowMs + off) / _DAY_MS) * _DAY_MS - off
+}
+
 // The titles map of run's project: titlesByRoot's own entry for runRoot(run)
 // when titlesByRoot is a plain object and that entry a plain object; {} for
 // anything else, and always for a run whose root is "".
