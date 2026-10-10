@@ -42,8 +42,11 @@ Scope {
 
   readonly property alias titlesRunner: titlesRunner
 
+  onActiveChanged: if (titles.active) titles.needCheck()
+  onProjectRootsChanged: titles.needCheck()
   onOpenRootChanged: titles.openRootMoved()
   onOpenCardMapChanged: titles.mirrorOpen()
+  onRunsChanged: titles.needCheck()
   Component.onCompleted: titles.openRootMoved()
 
   // `path` with every trailing "/" removed ("/" for a path of only slashes);
@@ -58,6 +61,112 @@ Scope {
 
   // The open project's root as a key; "" when none is open.
   function openKey() { return titles.rootKey(titles.openRoot) }
+
+  // The usable roots of projectRoots as keys, in registry order, each once:
+  // an entry's root must be a non-empty string that does not start with "-".
+  function registeredRoots() {
+    var list = titles.projectRoots
+    var n = list !== null && typeof list === "object" && typeof list.length === "number" ? list.length : 0
+    var out = []
+    for (var i = 0; i < n; i++) {
+      var p = list[i]
+      if (p === null || typeof p !== "object" || Array.isArray(p)) continue
+      if (typeof p.root !== "string" || p.root === "" || p.root.charAt(0) === "-") continue
+      var key = titles.rootKey(p.root)
+      if (out.indexOf(key) < 0) out.push(key)
+    }
+    return out
+  }
+
+  // {root: [run, ...]} of the runs in `runs`, keyed by run.project.root as a
+  // key; a run with no root belongs to none.
+  function runsByRoot() {
+    var list = Array.isArray(titles.runs) ? titles.runs : []
+    var out = {}
+    for (var i = 0; i < list.length; i++) {
+      var key = titles.rootKey(Runs.runRoot(list[i]))
+      if (key === "") continue
+      if (!Runs.hasKey(out, key)) out[key] = []
+      out[key].push(list[i])
+    }
+    return out
+  }
+
+  // Queues, in registry order, every registered root other than the open
+  // one that has a run in `runs`, is neither queued nor in flight, and has
+  // no entry. A queued root's status becomes "loading". Then the queue
+  // launches.
+  function needCheck() {
+    var open = titles.openKey()
+    var roots = titles.registeredRoots()
+    var byRoot = titles.runsByRoot()
+    var queue = titles.titleQueue.slice()
+    var status = Runs.copyMap(titles.titleStatus)
+    var queued = false
+    for (var i = 0; i < roots.length; i++) {
+      var root = roots[i]
+      if (root === open || !Runs.hasKey(byRoot, root)) continue
+      if (root === titles.fetchingRoot || queue.indexOf(root) >= 0) continue
+      if (Runs.hasKey(status, root)) continue
+      queue.push(root)
+      status[root] = "loading"
+      queued = true
+    }
+    if (queued) {
+      titles.titleQueue = queue
+      titles.titleStatus = status
+    }
+    titles.launchNext()
+  }
+
+  // Launches the head of the queue as fetchingRoot: only while active and
+  // nothing is in flight.
+  function launchNext() {
+    if (!titles.active || titles.fetchingRoot !== "" || titles.titleQueue.length === 0) return
+    var queue = titles.titleQueue.slice()
+    var root = queue.shift()
+    titles.titleQueue = queue
+    titles.fetchingRoot = root
+    titlesRunner.run([root])
+  }
+
+  // fetchingRoot's reply. Exit 0 with an {"ok": true, "titles": {...}}
+  // envelope: its string titles become the root's map, its status "ok" and
+  // its stale mark goes. Anything else: its status becomes "unreachable" and
+  // its map goes. A root that has left the registry or become the open root
+  // changes nothing. Then the queue launches and the roots are checked again.
+  function replied(stdout, exitCode) {
+    var root = titles.fetchingRoot
+    titles.fetchingRoot = ""
+    if (root !== "" && root !== titles.openKey() && titles.registeredRoots().indexOf(root) >= 0) {
+      var env = exitCode === 0 ? Results.parseEnvelope(stdout) : null
+      var got = env !== null && env.ok === true ? env.titles : null
+      var maps = Runs.copyMap(titles.titlesByRoot)
+      var status = Runs.copyMap(titles.titleStatus)
+      if (got !== null && typeof got === "object" && !Array.isArray(got)) {
+        maps[root] = titles.stringTitles(got)
+        status[root] = "ok"
+      } else {
+        delete maps[root]
+        status[root] = "unreachable"
+      }
+      titles.titlesByRoot = maps
+      titles.titleStatus = status
+    }
+    titles.launchNext()
+    titles.needCheck()
+  }
+
+  // A new map of each own key of `map` whose value is a string.
+  function stringTitles(map) {
+    var out = {}
+    var keys = Object.keys(map)
+    for (var i = 0; i < keys.length; i++) {
+      var v = map[keys[i]]
+      if (typeof v === "string") Object.defineProperty(out, keys[i], { value: v, enumerable: true, writable: true, configurable: true })
+    }
+    return out
+  }
 
   // The open project's map becomes Runs.titlesFromCards(openCardMap) and its
   // status "ok"; nothing while no project is open.
@@ -101,5 +210,6 @@ Scope {
     id: titlesRunner
     script: titles.backendDir + "boards/board-titles.py"
     guard: ""
+    onFinished: function(stdout, exitCode) { titles.replied(stdout, exitCode) }
   }
 }
