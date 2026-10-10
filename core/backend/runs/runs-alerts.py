@@ -40,13 +40,16 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from common.am_runs import AM_TIMEOUT, AmFailure, call_am, run_list  # noqa: E402
 from common.json_line import emit  # noqa: E402
 
 USAGE = "usage: runs-alerts.py"
 IDLE_POLL = 1.0  # seconds; the longest the main loop blocks with nothing pending
 BRD_TIMEOUT = 30  # seconds; the longest one `brd projects` may take
+POLL_EVERY = 60  # seconds between lease polls while a run is tracked
 EOF = object()
 
 
@@ -134,6 +137,106 @@ def upsert(line):
     if not (isinstance(run_id, str) and run_id and isinstance(payload, dict)):
         return None
     return run_id, payload
+
+
+def live(row):
+    """True when the row's lease is an object whose live is the JSON true."""
+    lease = row.get("lease")
+    return isinstance(lease, dict) and lease.get("live") is True
+
+
+class Tracker:
+    """The runs last seen started, each under the root it was first tracked
+    under (registry key, root_path, name) and armed or not, and when the next
+    lease poll is due. `clock` is its only time source; it never sleeps."""
+
+    def __init__(self, am, clock=time.monotonic):
+        self.am = am
+        self.clock = clock
+        self.runs = {}  # run id -> {"key", "root", "name", "armed"}
+        self.order = []  # registry keys, in the registry's order
+        self.since = None  # when the poll interval last restarted
+
+    def read(self, root):
+        """The run list of one `am runs --repo-dir root`, or None when the read
+        fails (am's ok:false envelope, other output, a malformed run list, a
+        timeout, am failing to start)."""
+        try:
+            return run_list(call_am(self.am, ["runs", "--repo-dir", root], AM_TIMEOUT))
+        except (AmFailure, subprocess.TimeoutExpired, OSError, ValueError):
+            return None
+
+    def track(self, run_id, key, root, name, armed):
+        if not self.runs:
+            self.since = self.clock()
+        self.runs[run_id] = {"key": key, "root": root, "name": name, "armed": armed}
+
+    def take(self, key, root, name, rows):
+        """One successful read of the root `key`: each run tracked under it is
+        armed (started, live), alerted dead and disarmed (started, not live,
+        armed) or dropped (any other status, or no row); every untracked
+        started row is tracked under it, armed when its lease is live."""
+        by_id = {}
+        for row in rows:
+            by_id.setdefault(row["id"], row)
+        for run_id, run in list(self.runs.items()):
+            if run["key"] != key:
+                continue
+            row = by_id.get(run_id)
+            if row is None or row["status"] != "started":
+                del self.runs[run_id]
+            elif live(row):
+                run["armed"] = True
+            elif run["armed"]:
+                run["armed"] = False
+                say({"alert": {"run_id": run_id, "root": run["root"],
+                               "project": run["name"], "state": "dead"}})
+        for run_id, row in by_id.items():
+            if row["status"] == "started" and run_id not in self.runs:
+                self.track(run_id, key, root, name, live(row))
+
+    def seed(self, registry):
+        """One read of each registered root, in the registry's order; a failed
+        read skips that root. Prints nothing."""
+        self.order = list(registry)
+        for key, (root, name) in registry.items():
+            rows = self.read(root)
+            if rows is not None:
+                self.take(key, root, name, rows)
+        self.since = self.clock()
+
+    def see(self, run_id, status, key, registry):
+        """One run_upsert: status "started" tracks a run not yet tracked whose
+        registry key is in `registry`, armed; any other string drops the run; a
+        tracked started run and a non-string status change nothing."""
+        if not isinstance(status, str):
+            return
+        if status != "started":
+            self.runs.pop(run_id, None)
+            return
+        if run_id in self.runs or key is None or key not in registry:
+            return
+        self.order = list(registry)
+        root, name = registry[key]
+        self.track(run_id, key, root, name, True)
+
+    def poll_if_due(self):
+        """When a run is tracked and POLL_EVERY seconds have passed since the
+        latest of the seed, the previous poll and the tracked set becoming
+        non-empty: read each root holding a tracked run, in registry order, and
+        restart the interval."""
+        if not self.runs or self.clock() - self.since < POLL_EVERY:
+            return
+        held = {}
+        for run in self.runs.values():
+            held.setdefault(run["key"], (run["root"], run["name"]))
+        keys = [k for k in self.order if k in held] + [k for k in held if k not in self.order]
+        for key in keys:
+            root, name = held[key]
+            rows = self.read(root)
+            if rows is not None:
+                self.take(key, root, name, rows)
+        self.since = self.clock()
 
 
 class Watcher:

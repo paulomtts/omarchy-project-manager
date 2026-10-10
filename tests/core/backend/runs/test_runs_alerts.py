@@ -1,20 +1,29 @@
-"""runs-alerts.py: `am watch --all --follow --from-now` turned into escalation alerts.
+"""runs-alerts.py: escalation alerts from `am watch --all --follow --from-now` and
+dead alerts from `am runs --repo-dir R`.
 
-Hermetic: a fake `am` on a temp PATH replays FAKE_AM_DIR/script.json: a list of
-steps (a JSON line, raw text, or a sleep), then a chosen stderr text and exit
-code. A fake `brd` answers its Nth call from FAKE_BRD_DIR/responses.json (the
-last answer repeats). The JSON lines are copies of the committed captures in
-tests/fixtures/am/; a line no capture holds, or a capture copy with edited
-fields, is labelled `synthetic:`. Both fakes log their argv to calls.log; the
-fake am writes its pid to pid. HOME and XDG_* are temp. The real `am`, the real
-`brd` and real data are never touched.
+Hermetic: a fake `am` on a temp PATH. For `am runs` it answers from
+FAKE_AM_DIR/runs.json: per --repo-dir value a list of answers ({stdout, exit},
+optional sleep before answering), the Nth call for a root getting the Nth answer
+(the last repeats), any other root the "default" answer; it writes its pid to
+runs.pid. For every other argv (`am watch`) it replays FAKE_AM_DIR/script.json:
+a list of steps (a JSON line, raw text, or a sleep), then a chosen stderr text
+and exit code, and writes its pid to pid. A fake `brd` answers its Nth call from
+FAKE_BRD_DIR/responses.json (the last answer repeats). The JSON lines are copies
+of the committed captures in tests/fixtures/am/; a line no capture holds, or a
+capture copy with edited fields, is labelled `synthetic:`. Both fakes log their
+argv to calls.log. HOME and XDG_* are temp. The real `am`, the real `brd` and
+real data are never touched. The in-process tests load the module with
+importlib and drive `Tracker` with an injected clock; am is still the fake.
 """
+import importlib.util
 import json
 import os
+import queue
 import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -27,8 +36,26 @@ USAGE = "usage: runs-alerts.py"
 FAKE_AM = r'''#!/usr/bin/env python3
 import json, os, sys, time
 d = os.environ["FAKE_AM_DIR"]
-with open(os.path.join(d, "calls.log"), "a") as f:
-    f.write(json.dumps(sys.argv[1:]) + "\n")
+argv = sys.argv[1:]
+log = os.path.join(d, "calls.log")
+before = []
+if os.path.exists(log):
+    with open(log) as f:
+        before = f.read().splitlines()
+with open(log, "a") as f:
+    f.write(json.dumps(argv) + "\n")
+if argv[:1] == ["runs"]:
+    with open(os.path.join(d, "runs.pid"), "w") as f:
+        f.write(str(os.getpid()))
+    with open(os.path.join(d, "runs.json")) as f:
+        table = json.load(f)
+    root = argv[argv.index("--repo-dir") + 1] if "--repo-dir" in argv else None
+    answers = table["answers"].get(root) or [table["default"]]
+    answer = answers[min(before.count(json.dumps(argv)), len(answers) - 1)]
+    time.sleep(answer.get("sleep", 0))
+    sys.stdout.buffer.write(answer.get("stdout", "").encode("utf-8", "surrogateescape"))
+    sys.stdout.flush()
+    sys.exit(answer.get("exit", 0))
 with open(os.path.join(d, "pid"), "w") as f:
     f.write(str(os.getpid()))
 with open(os.path.join(d, "script.json")) as f:
@@ -107,10 +134,66 @@ def set_brd(world, *answers):
     (world["brd"] / "responses.json").write_text(json.dumps(list(answers)))
 
 
+# The captured started run (row 0 of tests/fixtures/am/runs.json).
+RUN_A = fixture("runs.json")["data"]["runs"][0]["id"]
+RUN_B = "20261008T150000Z-0000000b"  # synthetic: a second run id
+LIVE = object()
+
+
+def row(run_id=RUN_A, status="started", lease=LIVE):
+    """A copy of captured row 0 (started, lease live) with id set. synthetic:
+    when run_id, status or lease is edited; MISSING drops lease, LIVE keeps the
+    capture's live lease."""
+    r = fixture("runs.json")["data"]["runs"][0]
+    r["id"] = run_id
+    r["status"] = status
+    if lease is MISSING:
+        r.pop("lease")
+    elif lease is not LIVE:
+        r["lease"] = lease
+    return r
+
+
+def done_row():
+    """Captured row 1: done, lease null."""
+    return fixture("runs.json")["data"]["runs"][1]
+
+
+def runs_reply(*rows):
+    """An `am runs` answer: the captured envelope (without the capture's _note)
+    whose runs are `rows`."""
+    reply = fixture("runs.json")
+    reply.pop("_note")
+    reply["data"]["runs"] = list(rows)
+    return {"stdout": json.dumps(reply) + "\n", "exit": 0}
+
+
+# synthetic: `am runs` answers that are failed reads.
+RUNS_FAILURES = {
+    "ok-false": {"stdout": json.dumps({"ok": False, "error": {
+        "type": "StoreBusyError", "message": "the am store is busy; try again"}}) + "\n",
+        "exit": 1},
+    "not-json": {"stdout": "not json\n", "exit": 0},
+    "no-runs": {"stdout": json.dumps({"ok": True, "data": {"as_of_seq": 1}}) + "\n",
+                "exit": 0},
+    "row-without-id": runs_reply({"status": "started", "lease": {"live": True}}),
+    "undecodable": {"stdout": "\udcff\n", "exit": 0},
+}
+
+
+def set_runs(world, answers=None):
+    """`am runs` answers per --repo-dir value (a path is keyed by its text), in
+    call order, the last repeating; any other root gets runs_reply()."""
+    table = {str(root): list(replies) for root, replies in (answers or {}).items()}
+    (world["am"] / "runs.json").write_text(
+        json.dumps({"answers": table, "default": runs_reply()}))
+
+
 @pytest.fixture
 def world(tmp_path):
     """A temp PATH with a fake am and a fake brd, their dirs, a temp HOME and an
-    existing project dir `repo`, which brd registers unless a test says otherwise."""
+    existing project dir `repo`, which brd registers unless a test says otherwise.
+    Every `am runs` answers with an empty run list unless a test says otherwise."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     write_exec(bindir / "am", FAKE_AM)
@@ -126,6 +209,7 @@ def world(tmp_path):
     w = {"tmp": tmp_path, "bin": bindir, "am": amdir, "brd": brddir, "home": home,
          "repo": repo}
     set_brd(w, projects(project(repo)))
+    set_runs(w)
     return w
 
 
@@ -186,6 +270,12 @@ def alert(root, run_id=RUN, name=NAME):
                       "state": "escalated"}}
 
 
+def dead(root, run_id=RUN_A, name=NAME):
+    """The helper's dead alert line for `run_id` under the registered `root`."""
+    return {"alert": {"run_id": run_id, "root": str(root), "project": name,
+                      "state": "dead"}}
+
+
 def pause(seconds):
     return {"sleep": seconds}
 
@@ -215,6 +305,15 @@ def calls(world):
 def brd_calls(world):
     log = world["brd"] / "calls.log"
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def am_path(world):
+    return str(world["bin"] / "am")
+
+
+def runs_calls(world):
+    """The fake am's `am runs` argv lists, in call order."""
+    return [c for c in calls(world) if c[:1] == ["runs"]]
 
 
 def start_helper(world):
@@ -700,3 +799,224 @@ def test_closed_stdout_exits_zero(world):
     assert code == 0, err
     assert "Traceback" not in err
     assert_gone(am_pid(world))
+
+
+# --- in-process: the Tracker with an injected clock ----------------------------------
+
+def load_module():
+    """Import the helper in-process (its file name is not a Python identifier)."""
+    spec = importlib.util.spec_from_file_location("runs_alerts", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Clock:
+    """The injected clock: returns `now`, which only the test moves."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def mod(world, monkeypatch):
+    """The helper module, loaded in-process with the fake am and brd on PATH."""
+    for name, value in env_for(world).items():
+        monkeypatch.setenv(name, value)
+    return load_module()
+
+
+def registry(*entries):
+    """A registry as read_registry builds it: realpath(root) -> (root text, name)."""
+    return {os.path.realpath(str(root)): (str(root), name) for root, name in entries}
+
+
+def printed(capsys):
+    """The JSON lines printed since the last call."""
+    return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+
+def at(clock, tracker, now):
+    """Move the clock to `now` and give the tracker its "poll if due" call."""
+    clock.now = now
+    tracker.poll_if_due()
+
+
+def seeded(mod, world, *answers):
+    """A Tracker on the fake am and a Clock at 0, seeded from a registry of
+    `repo` alone whose `am runs` answers are `answers`."""
+    set_runs(world, {world["repo"]: answers})
+    clock = Clock()
+    tracker = mod.Tracker(am_path(world), clock)
+    tracker.seed(registry((world["repo"], NAME)))
+    return tracker, clock
+
+
+def test_dead_once(world, mod, capsys):
+    tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply(row(lease=None)))
+    assert printed(capsys) == []  # the seed prints nothing
+    at(clock, tracker, 60)
+    lines = printed(capsys)
+    assert lines == [dead(world["repo"])]
+    assert list(lines[0]) == ["alert"]
+    assert list(lines[0]["alert"]) == ["run_id", "root", "project", "state"]
+    at(clock, tracker, 120)
+    assert printed(capsys) == []
+    assert runs_calls(world) == [["runs", "--repo-dir", str(world["repo"])]] * 3
+
+
+@pytest.mark.parametrize("lease", [None, MISSING, {}, {"live": False}, {"live": "true"},
+                                   {"live": 1}, "live"],
+                         ids=["synthetic: null", "synthetic: missing", "synthetic: empty",
+                              "synthetic: false", "synthetic: string-true", "synthetic: one",
+                              "synthetic: string"])
+def test_not_live_shapes(world, mod, capsys, lease):
+    tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply(row(lease=lease)))
+    at(clock, tracker, 60)
+    assert printed(capsys) == [dead(world["repo"])]
+
+
+def test_re_armed_after_resume(world, mod, capsys):
+    tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply(row(lease=None)),
+                            runs_reply(row()), runs_reply(row(lease=None)))
+    at(clock, tracker, 60)
+    assert printed(capsys) == [dead(world["repo"])]
+    at(clock, tracker, 120)
+    assert printed(capsys) == []
+    at(clock, tracker, 180)
+    assert printed(capsys) == [dead(world["repo"])]
+
+
+def test_seeded_dead_waits_for_live(world, mod, capsys):
+    tracker, clock = seeded(mod, world, *[runs_reply(row(lease=None))] * 3,
+                            runs_reply(row()), runs_reply(row(lease=None)))
+    for now in (60, 120, 180):
+        at(clock, tracker, now)
+    assert printed(capsys) == []
+    at(clock, tracker, 240)
+    assert printed(capsys) == [dead(world["repo"])]
+    assert len(runs_calls(world)) == 5
+
+
+def test_poll_interval(world, mod):
+    tracker, clock = seeded(mod, world, runs_reply(row()))
+    at(clock, tracker, 59.9)
+    assert len(runs_calls(world)) == 1
+    at(clock, tracker, 60)
+    assert len(runs_calls(world)) == 2
+    at(clock, tracker, 60)  # the same instant: not due again
+    at(clock, tracker, 119.9)
+    assert len(runs_calls(world)) == 2
+    at(clock, tracker, 120)
+    assert len(runs_calls(world)) == 3
+
+
+def test_no_poll_when_idle(world, mod):
+    tracker, clock = seeded(mod, world, runs_reply(done_row()))
+    for now in (60, 600, 3600):
+        at(clock, tracker, now)
+    assert len(runs_calls(world)) == 1
+
+
+def test_polls_only_roots_with_started(world, mod):
+    r1, r2 = world["tmp"] / "r1", world["tmp"] / "r2"
+    r1.mkdir()
+    r2.mkdir()
+    set_runs(world, {r1: [runs_reply(row())]})
+    clock = Clock()
+    tracker = mod.Tracker(am_path(world), clock)
+    tracker.seed(registry((r1, "one"), (r2, "two")))
+    assert runs_calls(world) == [["runs", "--repo-dir", str(r1)],
+                                 ["runs", "--repo-dir", str(r2)]]
+    at(clock, tracker, 60)
+    assert runs_calls(world)[2:] == [["runs", "--repo-dir", str(r1)]]
+
+
+def test_polls_in_registry_order(world, mod):
+    r1, r2 = world["tmp"] / "r1", world["tmp"] / "r2"
+    r1.mkdir()
+    r2.mkdir()
+    set_runs(world, {r1: [runs_reply(row())], r2: [runs_reply(row(RUN_B))]})
+    clock = Clock()
+    tracker = mod.Tracker(am_path(world), clock)
+    tracker.seed(registry((r2, "two"), (r1, "one")))
+    at(clock, tracker, 60)
+    assert runs_calls(world) == [["runs", "--repo-dir", str(r2)],
+                                 ["runs", "--repo-dir", str(r1)]] * 2
+
+
+@pytest.mark.parametrize("status", ["done", "stopped", "escalated", "cancelled", "canceled",
+                                    "waiting"],
+                         ids=["done", "stopped", "escalated", "cancelled", "canceled",
+                              "synthetic: other"])
+def test_terminal_dropped(world, mod, capsys, status):
+    tracker, clock = seeded(mod, world, runs_reply(row()),
+                            runs_reply(row(status=status, lease=None)))
+    at(clock, tracker, 60)
+    assert printed(capsys) == []
+    at(clock, tracker, 120)
+    at(clock, tracker, 600)
+    assert len(runs_calls(world)) == 2
+
+
+def test_absent_row_dropped(world, mod, capsys):
+    tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply())
+    at(clock, tracker, 60)
+    assert printed(capsys) == []
+    at(clock, tracker, 120)
+    at(clock, tracker, 600)
+    assert len(runs_calls(world)) == 2
+
+
+@pytest.mark.parametrize("failure", sorted(RUNS_FAILURES))
+def test_failed_poll_keeps_runs(world, mod, capsys, failure):
+    tracker, clock = seeded(mod, world, runs_reply(row()), RUNS_FAILURES[failure],
+                            runs_reply(row(lease=None)))
+    at(clock, tracker, 60)
+    assert printed(capsys) == []
+    assert len(runs_calls(world)) == 2
+    at(clock, tracker, 119.9)
+    assert len(runs_calls(world)) == 2
+    at(clock, tracker, 120)
+    assert printed(capsys) == [dead(world["repo"])]
+
+
+def test_poll_timeout_keeps_runs(world, mod, capsys, monkeypatch):
+    monkeypatch.setattr(mod, "AM_TIMEOUT", 1.0)
+    slow = {**runs_reply(row(lease=None)), "sleep": 8}
+    tracker, clock = seeded(mod, world, runs_reply(row()), slow, runs_reply(row(lease=None)))
+    began = time.monotonic()
+    at(clock, tracker, 60)
+    assert time.monotonic() - began < 6
+    assert printed(capsys) == []
+    assert_gone(int((world["am"] / "runs.pid").read_text()))  # the slow am runs was reaped
+    at(clock, tracker, 120)
+    assert printed(capsys) == [dead(world["repo"])]
+
+
+def test_poll_am_cannot_start_keeps_runs(world, mod, capsys):
+    tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply(row(lease=None)))
+    am = world["bin"] / "am"
+    am.chmod(0o644)
+    at(clock, tracker, 60)
+    assert printed(capsys) == []
+    assert len(runs_calls(world)) == 1
+    am.chmod(0o755)
+    at(clock, tracker, 120)
+    assert printed(capsys) == [dead(world["repo"])]
+
+
+def test_new_started_row_in_poll(world, mod, capsys):
+    tracker, clock = seeded(mod, world, runs_reply(row()),
+                            runs_reply(row(), row(RUN_B, lease=None)),
+                            runs_reply(row(), row(RUN_B)),
+                            runs_reply(row(), row(RUN_B, lease=None)))
+    at(clock, tracker, 60)
+    assert printed(capsys) == []
+    at(clock, tracker, 120)
+    assert printed(capsys) == []
+    at(clock, tracker, 180)
+    assert printed(capsys) == [dead(world["repo"], run_id=RUN_B)]
