@@ -82,9 +82,11 @@ Scope {
     history.historyByProject = map
   }
 
-  // A new runner for `root`, kept as runnerFor(root).
+  // A new runner for `root`, kept as runnerFor(root); its replies go to
+  // replied(root, ..).
   function makeRunner(root) {
     var runner = runnerC.createObject(history)
+    runner.finished.connect(function(stdout, exitCode) { history.replied(root, stdout, exitCode) })
     var runners = Runs.copyMap(historyState.runners)
     runners[root] = runner
     historyState.runners = runners
@@ -108,6 +110,63 @@ Scope {
     var runner = history.runnerFor(root)
     if (runner === null) runner = history.makeRunner(root)
     runner.run(args)
+  }
+
+
+  // The `am runs` summary without its `status` key: the helper replaced the
+  // summary's status string with the `am status` object, which normalizeRun
+  // must never read as the row's status ("[object Object]").
+  function rowOf(entry) {
+    var row = {}
+    for (var key in entry) {
+      if (key !== "status" && Runs.hasKey(entry, key)) row[key] = entry[key]
+    }
+    return row
+  }
+
+  // project.name of the root's first snapshot run, else of its first history
+  // run; "" when neither has a string one.
+  function nameOf(root) {
+    var list = history.snapshotOf(root).concat(history.historyOf(root))
+    var run = list.length > 0 ? list[0] : null
+    var p = run !== null && typeof run === "object" ? run.project : null
+    return p !== null && typeof p === "object" && typeof p.name === "string" ? p.name : ""
+  }
+
+  // The id of each run of `list`, in order (undefined for a run that is not an object).
+  function idsOf(list) {
+    return list.map(function(run) { return run !== null && typeof run === "object" ? run.id : undefined })
+  }
+
+  // The reply to root's latest launch; a root without an entry changes
+  // nothing. Exit 0 with an {"ok": true, "runs": [...]} envelope: each plain
+  // object entry becomes a run built like the snapshot's, the ones whose id
+  // the root's snapshot or history already lists are dropped, the rest are
+  // appended in the helper's order, `more` becomes env.more === true and the
+  // error clears. Anything else keeps `runs` and `more` and sets `error` to
+  // Runs.errorText of an ok:false envelope, else "unknown error". Either way
+  // `loading` becomes false.
+  function replied(root, stdout, exitCode) {
+    if (!Runs.hasKey(history.historyByProject, root)) return
+    var entry = history.historyByProject[root]
+    var env = Results.parseEnvelope(stdout)
+    if (exitCode !== 0 || env === null || env.ok !== true || !Array.isArray(env.runs)) {
+      var error = env !== null && env.ok !== true ? Runs.errorText(env) : Runs.errorText(null)
+      history.setEntry(root, { runs: entry.runs, more: entry.more, loading: false, error: error })
+      return
+    }
+    var name = history.nameOf(root)
+    var seen = history.idsOf(history.snapshotOf(root).concat(entry.runs))
+    var runs = entry.runs.slice()
+    for (var i = 0; i < env.runs.length; i++) {
+      var item = env.runs[i]
+      if (item === null || typeof item !== "object" || Array.isArray(item)) continue
+      var run = Runs.withProject(Runs.normalizeRun({ row: history.rowOf(item), status: item.status }), root, name)
+      if (seen.indexOf(run.id) >= 0) continue
+      seen.push(run.id)
+      runs.push(run)
+    }
+    history.setEntry(root, { runs: runs, more: env.more === true, loading: false, error: "" })
   }
 
   // Bookkeeping kept apart so consumers cannot write it.

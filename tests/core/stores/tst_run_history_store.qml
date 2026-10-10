@@ -221,4 +221,109 @@ TestCase {
     compare(s.historyByProject[key].loading, true)
     compare(Runs.hasKey(s.historyByProject, tc.rootA), false)
   }
+
+  // ---- a page's reply
+
+  function test_an_ok_page_drops_the_ids_the_snapshot_lists() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    page(s, tc.rootA, [entryOf("a2", tc.rootA, "done", "2026-10-04T00:00:00Z"), h1(), h2()], true)
+    var e = s.historyByProject[tc.rootA]
+    compare(idsOf(s, tc.rootA), "h1,h2", "a2 is in the snapshot: the snapshot wins")
+    compare(e.loading, false)
+    compare(e.error, "")
+    compare(e.runs[0].project.root, tc.rootA)
+    compare(e.runs[0].project.name, "proj", "the name of the root's first snapshot run")
+    compare(e.runs[0].status, "done", "the am status, normalized, not [object Object]")
+    compare(e.runs[1].status, "stopped")
+    compare(e.runs[0].started_at, "2026-10-02T00:00:00Z")
+  }
+
+  function test_pages_chain_from_the_oldest_run_listed_so_far() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    page(s, tc.rootA, [h1(), h2()], true)
+    compare(s.historyByProject[tc.rootA].more, true)
+    s.showOlder(tc.rootA)
+    compare(argv(s.runnerFor(tc.rootA).current),
+            tc.historyCmd + tc.rootA + "|--before|2026-10-01T00:00:00Z|--status|" + tc.allStatuses,
+            "h2 is the oldest terminal run of the snapshot and the history")
+    compare(idsOf(s, tc.rootA), "h1,h2", "a launch keeps the loaded runs")
+    compare(s.historyByProject[tc.rootA].more, true, "and `more`")
+    compare(s.historyByProject[tc.rootA].loading, true)
+    answer(s, tc.rootA, pageOk([h2(), h3()], false), 0)
+    compare(idsOf(s, tc.rootA), "h1,h2,h3", "the repeated h2 is not added twice")
+    compare(s.historyByProject[tc.rootA].more, false, "exhausted")
+    compare(s.historyByProject[tc.rootA].loading, false)
+  }
+
+  function test_a_failed_page_keeps_the_rows_and_shows_its_error() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    page(s, tc.rootA, [h1()], true)
+    var replies = [
+      [JSON.stringify({ ok: false, error: { type: "AmMissing", message: "am is not installed." } }) + "\n", 1, "AmMissing: am is not installed."],
+      ["not json\n", 0, "unknown error"],
+      [JSON.stringify({ ok: true, runs: {} }) + "\n", 0, "unknown error"],
+      ["", 2, "unknown error"]
+    ]
+    for (var i = 0; i < replies.length; i++) {
+      s.showOlder(tc.rootA)
+      compare(s.historyByProject[tc.rootA].error, "", "a launch clears the error, case " + i)
+      answer(s, tc.rootA, replies[i][0], replies[i][1])
+      var e = s.historyByProject[tc.rootA]
+      compare(idsOf(s, tc.rootA), "h1", "the rows stay, case " + i)
+      compare(e.more, true, "`more` stays, case " + i)
+      compare(e.loading, false, "case " + i)
+      compare(e.error, replies[i][2], "case " + i)
+    }
+    page(s, tc.rootA, [h2()], false)
+    compare(s.historyByProject[tc.rootA].error, "", "an ok page clears the error")
+    compare(idsOf(s, tc.rootA), "h1,h2")
+  }
+
+  function test_a_page_skips_entries_that_are_not_objects_and_repeated_ids() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    page(s, tc.rootA, [null, "h9", [h3()], h1(), h1(), h2()], false)
+    compare(idsOf(s, tc.rootA), "h1,h2")
+    compare(s.historyByProject[tc.rootA].error, "")
+  }
+
+  function test_more_is_true_only_when_the_page_says_so() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    page(s, tc.rootA, [h1()], undefined)
+    compare(s.historyByProject[tc.rootA].more, false, "no `more` key")
+    page(s, tc.rootA, [h2()], "yes")
+    compare(s.historyByProject[tc.rootA].more, false, "a `more` that is not true")
+    page(s, tc.rootA, [h3()], true)
+    compare(s.historyByProject[tc.rootA].more, true)
+  }
+
+  function test_a_second_show_older_supersedes_the_page_in_flight() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    s.showOlder(tc.rootA)
+    var first = s.runnerFor(tc.rootA).current
+    s.showOlder(tc.rootA)
+    var second = s.runnerFor(tc.rootA).current
+    verify(first !== second, "a new process")
+    reply(first, pageOk([h1()], true), 0)
+    compare(idsOf(s, tc.rootA), "", "the superseded reply changes nothing")
+    compare(s.historyByProject[tc.rootA].loading, true)
+    reply(second, pageOk([h2()], false), 0)
+    compare(idsOf(s, tc.rootA), "h2")
+    compare(s.historyByProject[tc.rootA].loading, false)
+  }
+
+  function test_roots_page_independently() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    s.showOlder(tc.rootA)
+    s.showOlder(tc.rootB)
+    compare(s.runnerFor(tc.rootA).busy, true, "rootA's page is not cancelled by rootB's")
+    compare(s.runnerFor(tc.rootB).busy, true)
+    compare(argv(s.runnerFor(tc.rootB).current), tc.historyCmd + tc.rootB + "|--before|2026-10-02T00:00:00Z|--status|" + tc.allStatuses)
+    answer(s, tc.rootB, pageOk([hb1()], false), 0)
+    compare(idsOf(s, tc.rootB), "hb1")
+    compare(s.historyByProject[tc.rootA].loading, true)
+    answer(s, tc.rootA, pageOk([h1()], true), 0)
+    compare(idsOf(s, tc.rootA), "h1")
+    compare(idsOf(s, tc.rootB), "hb1")
+    compare(s.historyByProject[tc.rootB].runs[0].project.root, tc.rootB)
+  }
 }
