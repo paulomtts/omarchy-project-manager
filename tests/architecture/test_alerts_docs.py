@@ -30,7 +30,7 @@ def test_service_bullet_names_journal():
 
 def test_service_bullet_says_no_replay():
     line, text = bullet("RunAlertsService.qml")
-    assert re.search(r"not replayed|no replay|never notified", text, re.I), f"docs/architecture.md:{line}"
+    assert re.search(r"not replayed|no replay|never notified", text, re.IGNORECASE), f"docs/architecture.md:{line}"
 
 
 def test_alerts_store_bullet_toasts_only():
