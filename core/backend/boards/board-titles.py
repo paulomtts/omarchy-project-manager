@@ -13,7 +13,8 @@ Prints exactly one JSON line on EVERY path:
 {"ok": true, "titles": {<card id>: <title>}} for every card at any depth,
 or brd's own ok:false envelope unchanged, whatever brd's exit code,
 or {"ok": false, "error": {"type", "message"}} with type Usage, RootMissing,
-BrdMissing or BrdBadOutput (stdout not a JSON object; ok neither true nor
+BrdMissing, HelperError (brd tree timed out, or any other unexpected
+failure) or BrdBadOutput (stdout not a JSON object; ok neither true nor
 false; ok true with a non-zero exit; data not a list; a card at any depth not
 an object, its id not a non-empty string, its title not a string, or its
 children present, not null and not a list). Exit 0 ok, 1 failure, 2 usage.
@@ -97,5 +98,17 @@ def main(argv):
     return emit({"ok": True, "titles": titles})
 
 
+def guarded(argv):
+    """main(argv), except that any exception but SystemExit - a brd tree past
+    TIMEOUT_SECONDS, a brd that cannot start - is a HelperError line."""
+    try:
+        return main(argv)
+    except SystemExit:
+        raise
+    except BaseException as e:  # noqa: BLE001 - deliberate catch-all
+        reason = str(e) or e.__class__.__name__
+        return failure("HelperError", "The board titles lookup failed: " + reason)
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(guarded(sys.argv[1:]))

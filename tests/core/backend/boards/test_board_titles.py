@@ -1,5 +1,6 @@
 """board-titles.py against a fake `brd` on PATH: one `brd tree` in ROOT, one
 JSON line on every path, {id: title} for every card at any depth."""
+import importlib.util
 import json
 import os
 import stat
@@ -307,3 +308,60 @@ def test_empty_title_is_kept(box):
     code, out = run(box, str(box["project"]))
     assert code == 0
     assert out == {"ok": True, "titles": {"m1": ""}}
+
+
+def load_helper():
+    """The script as a module (its name has a hyphen, so no plain import)."""
+    spec = importlib.util.spec_from_file_location("board_titles", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def one_line(capsys):
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, lines
+    return json.loads(lines[0])
+
+
+def test_timeout_is_helper_error(box, monkeypatch, capsys):
+    # In-process: a brd that runs past TIMEOUT_SECONDS (shortened here so the
+    # test does not wait the real 30 s) is cut off and reported as HelperError.
+    helper = load_helper()
+    monkeypatch.setattr(helper, "TIMEOUT_SECONDS", 0.5)
+    for key, value in dict(box["env"], BRD_SLEEP="10").items():
+        monkeypatch.setenv(key, value)
+    code = helper.guarded([str(box["project"])])
+    out = one_line(capsys)
+    assert code == 1
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The board titles lookup failed: ")
+    assert "timed out" in out["error"]["message"]
+
+
+def test_unexpected_exception_is_helper_error(box, monkeypatch, capsys):
+    # In-process: no external input makes valid code raise, so the brd call is
+    # replaced with one that does.
+    helper = load_helper()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(helper.subprocess, "run", boom)
+    code = helper.guarded([str(box["project"])])
+    out = one_line(capsys)
+    assert code == 1
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"] == "The board titles lookup failed: boom"
+
+
+def test_unexecutable_brd_is_helper_error(box):
+    brd = box["bin"] / "brd"
+    brd.chmod(0o644)
+    code, out = run(box, str(box["project"]), extra_env={"PATH": str(box["bin"])})
+    assert code == 1
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The board titles lookup failed: ")
