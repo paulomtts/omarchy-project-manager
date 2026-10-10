@@ -1,4 +1,4 @@
-"""The am calls and the run snapshot shared by the run helpers.
+"""The am calls, the run snapshot and the time parser shared by the run helpers.
 
 Runs only `am runs <scope> --limit LIST_LIMIT` and `am status RUN` (never with
 --repo-dir), as argv lists, each bounded by the caller's `timeout`; reads
@@ -6,6 +6,7 @@ nothing but am's stdout. Every failure is an AmFailure whose `payload` is the
 one line to print, except subprocess.TimeoutExpired and OSError (am hangs or
 cannot start), which propagate. Prints nothing and never exits.
 """
+import datetime
 import json
 import os
 import subprocess
@@ -61,6 +62,20 @@ def data_dir():
     if not os.path.isabs(data):
         return os.path.join(os.path.expanduser("~"), ".local", "share")
     return data
+
+
+def parse_time(value):
+    """An ISO-8601 time (`Z` or an offset) as an aware datetime; no offset means UTC.
+    None when it does not parse."""
+    if not isinstance(value, str):
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return when
 
 
 def call_am(am, args, timeout):
