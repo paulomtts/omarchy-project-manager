@@ -131,6 +131,20 @@ QtObject {
     }
   }
 
+  // The live output store never imports the run store: App hands it the
+  // selected run (normalized, from the run store's snapshot), the attempt or
+  // step Run detail shows (selectedAttempt) and the two presence flags --
+  // the panel open and the view mode "run" -- and routes its snapshot
+  // request to the run store's refreshLogs.
+  readonly property RunOutputStore runOutput: RunOutputStore {
+    backendDir: app.backendDir
+    active: app.panelOpen
+    inRunDetail: app.nav.viewMode === "run"
+    run: app.runs.runById(app.runs.selectedRunId)
+    selection: app.runs.selectedAttempt
+    onSnapshotWanted: app.runs.refreshLogs()
+  }
+
   readonly property GraphStore graph: GraphStore {
     cardRoots: app.board.cardRoots
     issueMap: app.board.issueMap
