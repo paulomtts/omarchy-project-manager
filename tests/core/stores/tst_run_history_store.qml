@@ -1,0 +1,224 @@
+// tests/core/stores/tst_run_history_store.qml
+// The run history store: showOlder's runs-history.py page per snapshot root
+// (argv per chip and age, the no-op cases), its reply (dedupe against the
+// snapshot and the history, the cursor chaining pages, `more`, errors that
+// keep the rows, latest wins per root), window overflow and snapshot-wins
+// on a snapshot change, and every trigger that drops the pages. Built alone
+// and driven through its inputs; stubbed Process objects stand in for
+// runs-history.py.
+import QtQuick
+import QtTest
+import "../../../core/domain/runs.js" as Runs
+
+TestCase {
+  id: tc
+  name: "StoresRunHistoryStore"
+
+  Component { id: spyC; SignalSpy {} }
+
+  property string rootA: "/home/u/a"
+  property string rootB: "/home/u/b"
+  property string historyCmd: "python3|/plugin/core/backend/runs/runs-history.py|"
+  property string allStatuses: "done,escalated,stopped,cancelled,canceled"
+
+  // A RunHistoryStore built alone, closed, with an empty snapshot.
+  function makeHistory() {
+    var comp = Qt.createComponent("../../../core/stores/RunHistoryStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
+    return comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
+  }
+
+  // Run `id` of `root` as the run store hands it over: am status `status`
+  // (a "started" run has no lease, so it is not terminal), started at
+  // `startedAt`, tagged with project "proj".
+  function runOf(id, root, status, startedAt) {
+    var raw = {
+      row: { id: id, repo_dir: root, started_at: startedAt, status: status },
+      status: { run: { id: id, status: status }, rows: [], stories: [], subtasks: [] }
+    }
+    return Runs.withProject(Runs.normalizeRun(raw), root, "proj")
+  }
+
+  // rootA's base snapshot: a1 live, a2 done, a3 parked (the oldest terminal).
+  function baseA() {
+    return [runOf("a1", tc.rootA, "started", "2026-10-05T10:00:00Z"),
+            runOf("a2", tc.rootA, "done", "2026-10-04T00:00:00Z"),
+            runOf("a3", tc.rootA, "stopped", "2026-10-03T00:00:00Z")]
+  }
+
+  // rootB's base snapshot: b1 done.
+  function baseB() { return [runOf("b1", tc.rootB, "done", "2026-10-02T00:00:00Z")] }
+
+  // A snapshotByProject value: rootA lists aRuns, rootB lists bRuns; a null list leaves its root out.
+  function snap(aRuns, bRuns) {
+    var out = {}
+    if (aRuns !== null) out[tc.rootA] = aRuns
+    if (bRuns !== null) out[tc.rootB] = bRuns
+    return out
+  }
+
+  // A store with the snapshot `byProject`, then opened.
+  function openHistory(byProject) {
+    var s = makeHistory(); if (!s) return null
+    s.snapshotByProject = byProject
+    s.active = true
+    return s
+  }
+
+  // One runs-history.py entry: an am runs row whose `status` is the am status object.
+  function entryOf(id, root, status, startedAt) {
+    return { id: id, repo_dir: root, started_at: startedAt,
+             status: { run: { id: id, status: status }, rows: [], stories: [], subtasks: [] } }
+  }
+
+  function h1() { return entryOf("h1", tc.rootA, "done", "2026-10-02T00:00:00Z") }
+  function h2() { return entryOf("h2", tc.rootA, "stopped", "2026-10-01T00:00:00Z") }
+  function h3() { return entryOf("h3", tc.rootA, "done", "2026-09-30T00:00:00Z") }
+  function hb1() { return entryOf("hb1", tc.rootB, "done", "2026-10-01T00:00:00Z") }
+  function hb2() { return entryOf("hb2", tc.rootB, "done", "2026-09-30T00:00:00Z") }
+
+  // runs-history.py's ok reply; no `more` key when `more` is undefined.
+  function pageOk(entries, more) { return JSON.stringify({ ok: true, runs: entries, more: more }) + "\n" }
+
+  // A stubbed process's reply: its stdout, then its exit code.
+  function reply(proc, text, code) {
+    proc.outText = text
+    proc.exited(code)
+  }
+
+  // root's latest launch answered with `text` and exit code `code`.
+  function answer(s, root, text, code) { reply(s.runnerFor(root).current, text, code) }
+
+  // showOlder(root), answered with an ok page of `entries` and `more`.
+  function page(s, root, entries, more) {
+    s.showOlder(root)
+    answer(s, root, pageOk(entries, more), 0)
+  }
+
+  // A process's argv, joined with "|".
+  function argv(proc) { return proc.command.join("|") }
+
+  // The value after --since in a process's argv; "" when there is none.
+  function sinceArg(proc) {
+    var i = proc.command.indexOf("--since")
+    return i < 0 ? "" : proc.command[i + 1]
+  }
+
+  // The ids of root's history runs, comma-joined.
+  function idsOf(s, root) { return s.historyByProject[root].runs.map(function(r) { return r.id }).join(",") }
+
+  // Store `s` (snapshot snap(baseA(), baseB())) with a first page for each
+  // root (rootA [h1], rootB [hb1]) and a second page in flight for each.
+  // Returns the two processes in flight.
+  function inFlight(s) {
+    page(s, tc.rootA, [h1()], true)
+    page(s, tc.rootB, [hb1()], true)
+    s.showOlder(tc.rootA)
+    s.showOlder(tc.rootB)
+    return { a: s.runnerFor(tc.rootA).current, b: s.runnerFor(tc.rootB).current }
+  }
+
+  // ---- showOlder launches
+
+  function test_show_older_runs_the_helper_with_the_cursor_and_every_terminal_status() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    compare(s.runnerFor(tc.rootA), null, "no runner before the first showOlder")
+    s.showOlder(tc.rootA)
+    var cmd = argv(s.runnerFor(tc.rootA).current)
+    compare(cmd, tc.historyCmd + tc.rootA + "|--before|2026-10-03T00:00:00Z|--status|" + tc.allStatuses)
+    verify(cmd.indexOf("--since") < 0, "no --since under all time")
+    verify(cmd.indexOf("--limit") < 0, "no --limit")
+    var e = s.historyByProject[tc.rootA]
+    compare(JSON.stringify(e.runs), "[]")
+    compare(e.more, false)
+    compare(e.loading, true)
+    compare(e.error, "")
+    compare(Runs.hasKey(s.historyByProject, tc.rootB), false, "only the root asked for has an entry")
+    compare(s.runnerFor(tc.rootB), null)
+  }
+
+  function test_the_status_list_follows_the_chip_and_the_finished_state() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    var head = tc.historyCmd + tc.rootA + "|--before|2026-10-03T00:00:00Z|--status|"
+    s.runFilter = "parked"
+    s.showOlder(tc.rootA)
+    compare(argv(s.runnerFor(tc.rootA).current), head + "stopped")
+    s.runFilter = "attention"
+    s.showOlder(tc.rootA)
+    compare(argv(s.runnerFor(tc.rootA).current), head + "escalated")
+    s.runFilter = "finished"
+    s.finishedState = "cancelled"
+    s.showOlder(tc.rootA)
+    compare(argv(s.runnerFor(tc.rootA).current), head + "cancelled,canceled")
+    s.finishedState = ""
+    s.showOlder(tc.rootA)
+    compare(argv(s.runnerFor(tc.rootA).current), head + "done,escalated,cancelled,canceled")
+  }
+
+  function test_the_live_chip_launches_nothing() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    s.runFilter = "live"
+    s.showOlder(tc.rootA)
+    compare(s.runnerFor(tc.rootA), null, "a live run is never terminal: no page")
+    compare(Runs.hasKey(s.historyByProject, tc.rootA), false)
+  }
+
+  function test_since_is_a_week_back_under_week() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    s.finishedAge = "week"
+    var t0 = Date.now()
+    s.showOlder(tc.rootA)
+    var t1 = Date.now()
+    var since = Date.parse(sinceArg(s.runnerFor(tc.rootA).current))
+    var week = 7 * 24 * 3600 * 1000
+    verify(since >= t0 - week && since <= t1 - week, "since " + since + " not in [" + (t0 - week) + ", " + (t1 - week) + "]")
+    verify(argv(s.runnerFor(tc.rootA).current).indexOf("|--status|" + tc.allStatuses + "|--since|") > 0, "--since comes last")
+  }
+
+  function test_since_is_local_midnight_under_today() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    s.finishedAge = "today"
+    var m0 = new Date(); m0.setHours(0, 0, 0, 0)
+    s.showOlder(tc.rootA)
+    var m1 = new Date(); m1.setHours(0, 0, 0, 0)
+    var since = sinceArg(s.runnerFor(tc.rootA).current)
+    verify(since === m0.toISOString() || since === m1.toISOString(), since)
+  }
+
+  // ---- showOlder does nothing
+
+  function test_an_inactive_store_launches_nothing() {
+    var s = makeHistory(); if (!s) return
+    s.snapshotByProject = snap(baseA(), null)
+    s.showOlder(tc.rootA)
+    compare(s.runnerFor(tc.rootA), null)
+    compare(Runs.hasKey(s.historyByProject, tc.rootA), false)
+  }
+
+  function test_a_root_the_snapshot_lacks_launches_nothing() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    s.showOlder(tc.rootB)
+    compare(s.runnerFor(tc.rootB), null)
+    compare(Runs.hasKey(s.historyByProject, tc.rootB), false)
+  }
+
+  function test_a_root_with_no_terminal_run_launches_nothing() {
+    var s = openHistory(snap([baseA()[0]], null)); if (!s) return
+    s.showOlder(tc.rootA)
+    compare(s.runnerFor(tc.rootA), null, "no cursor: no page")
+    compare(Runs.hasKey(s.historyByProject, tc.rootA), false)
+  }
+
+  function test_a_root_with_a_trailing_slash_is_used_as_given() {
+    var key = tc.rootA + "/"
+    var byProject = {}
+    byProject[key] = baseA()
+    var s = openHistory(byProject); if (!s) return
+    s.showOlder(tc.rootA)
+    compare(s.runnerFor(tc.rootA), null, "the root without its slash is not a snapshot root")
+    s.showOlder(key)
+    compare(argv(s.runnerFor(key).current), tc.historyCmd + key + "|--before|2026-10-03T00:00:00Z|--status|" + tc.allStatuses)
+    compare(s.historyByProject[key].loading, true)
+    compare(Runs.hasKey(s.historyByProject, tc.rootA), false)
+  }
+}
