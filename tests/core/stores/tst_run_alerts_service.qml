@@ -500,4 +500,252 @@ TestCase {
     compare(r.step, "")
     s.destroy()
   }
+
+  function snapshotCmd(s, root) {
+    return "python3|" + s.backendDir + "runs/runs-snapshot.py|" + root
+  }
+
+  // The notify.py command for notification n ({title, body}).
+  function notifyCmd(s, n) {
+    return "python3|" + s.backendDir + "runs/notify.py|" + n.title + "|" + n.body
+  }
+
+  // One runs-snapshot.py entry: the `am runs` row with its `status` replaced by
+  // the `am status` object, whose one failed phase gives the escalation reason.
+  function runEntry(id, milestone) {
+    return {
+      id: id, repo_dir: "/p/alpha", workflow: "milestone",
+      status: {
+        run: { id: id, milestone_id: milestone, status: "escalated" },
+        stories: [{ card_id: "s1", subtasks: [{ card_id: "c1",
+          phases: [{ name: "verify", status: "failed", detail: "verify failed in " + milestone }] }] }]
+      }
+    }
+  }
+
+  // The run the service must find for `entry`: its row without `status`, normalized.
+  function normalized(entry) {
+    var row = {}
+    for (var k in entry) if (k !== "status") row[k] = entry[k]
+    return Runs.normalizeRun({ row: row, status: entry.status })
+  }
+
+  function snapshotReply(entries) {
+    return JSON.stringify({ ok: true, as_of_seq: 3, store_id: "st", runs: entries, data_dir: "/d" })
+  }
+
+  // Sends `alert`, answers its settings with true; returns its runner, now at the snapshot step.
+  function toSnapshot(s, alert) {
+    sendAlert(s, alert)
+    var r = s.alertRunners[s.alertRunners.length - 1]
+    reply(r.current, settingsReply(true), 0)
+    return r
+  }
+
+  function test_switch_on_takes_one_snapshot_of_that_root() {
+    var s = make(); if (!s) return
+    var r = toSnapshot(s, alertOf({}))
+    compare(s.alertRunners.length, 1)
+    compare(s.alertRunners[0], r)
+    compare(r.step, "snapshot")
+    compare(argv(r.current), snapshotCmd(s, "/p/alpha"))
+    compare(r.current.running, true)
+    compare(r.seq, 2, "exactly one snapshot after the settings read")
+    compare(s.notifyRunners.length, 0, "no notification before the snapshot answers")
+    s.destroy()
+  }
+
+  function test_a_snapshot_with_the_run_notifies_with_its_title() {
+    var s = make(); if (!s) return
+    var r = toSnapshot(s, alertOf({}))
+    var mine = runEntry(tc.runId, "M1")
+    reply(r.current, snapshotReply([runEntry("20261010T000000Z-bbbbbbbb", "M0"), mine]), 0)
+    compare(s.alertRunners.length, 0)
+    compare(s.notifyRunners.length, 1)
+    var n = Runs.alertNotification(normalized(mine), "escalated", "alpha", tc.runId)
+    var proc = s.notifyRunners[0].current
+    compare(argv(proc), notifyCmd(s, n))
+    compare(proc.command.length, 4)
+    verify(n.title.indexOf("M1") >= 0, n.title)
+    verify(n.title.indexOf(Runs.shortId({ id: tc.runId })) === -1, n.title)
+    compare(n.body, "verify failed in M1")
+    compare(proc.running, true)
+    compare(proc.launchGuard, "")
+    compare(s.notifyRunners[0].guard, "")
+    s.destroy()
+  }
+
+  function test_the_notify_runner_goes_when_it_exits() {
+    var s = make(); if (!s) return
+    var r = toSnapshot(s, alertOf({}))
+    reply(r.current, snapshotReply([runEntry(tc.runId, "M1")]), 0)
+    compare(s.notifyRunners.length, 1)
+    reply(s.notifyRunners[0].current, "", 0)
+    compare(s.notifyRunners.length, 0)
+    s.destroy()
+  }
+
+  function test_a_failed_snapshot_falls_back_to_the_short_id_data() {
+    return [
+      { tag: "ok false, exit 1", text: JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }), code: 1 },
+      { tag: "garbage, exit 0", text: "garbage", code: 0 },
+      { tag: "ok without runs", text: JSON.stringify({ ok: true }), code: 0 },
+      { tag: "runs is not an array", text: JSON.stringify({ ok: true, runs: {} }), code: 0 },
+      { tag: "runs lacks the run", text: JSON.stringify({ ok: true, runs: [null, [1], 7, { id: "other" }] }), code: 0 },
+      { tag: "an ok line with exit 2", text: JSON.stringify({ ok: true, runs: [runEntry(tc.runId, "M1")] }), code: 2 }
+    ]
+  }
+
+  function test_a_failed_snapshot_falls_back_to_the_short_id(data) {
+    var s = make(); if (!s) return
+    var r = toSnapshot(s, alertOf({}))
+    reply(r.current, data.text, data.code)
+    compare(s.alertRunners.length, 0)
+    compare(s.notifyRunners.length, 1)
+    var n = Runs.alertNotification(null, "escalated", "alpha", tc.runId)
+    verify(n.title.indexOf(Runs.shortId({ id: tc.runId })) >= 0, n.title)
+    compare(n.body, "escalated")
+    compare(argv(s.notifyRunners[0].current), notifyCmd(s, n))
+    s.destroy()
+  }
+
+  function test_a_dead_alert_says_process_died() {
+    var s = make(); if (!s) return
+    var r = toSnapshot(s, alertOf({ state: "dead" }))
+    reply(r.current, JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }), 1)
+    var n = Runs.alertNotification(null, "dead", "alpha", tc.runId)
+    verify(n.title.indexOf("✖") === 0, n.title)
+    compare(n.body, "process died")
+    compare(s.notifyRunners.length, 1)
+    compare(argv(s.notifyRunners[0].current), notifyCmd(s, n))
+    s.destroy()
+  }
+
+  function test_an_alert_without_a_usable_root_skips_the_snapshot_data() {
+    return [
+      { tag: "no root", root: undefined },
+      { tag: "empty root", root: "" },
+      { tag: "flag-like root", root: "-x" },
+      { tag: "a number", root: 42 }
+    ]
+  }
+
+  function test_an_alert_without_a_usable_root_skips_the_snapshot(data) {
+    var s = make(); if (!s) return
+    var alert = alertOf({})
+    if (data.root === undefined) delete alert.root
+    else alert.root = data.root
+    sendAlert(s, alert)
+    var r = s.alertRunners[0]
+    var settingsProc = r.current
+    reply(settingsProc, settingsReply(true), 0)
+    compare(r.seq, 1, "a runs-snapshot.py process was launched")
+    compare(r.current, settingsProc)
+    compare(s.alertRunners.length, 0)
+    compare(s.notifyRunners.length, 1)
+    var n = Runs.alertNotification(null, "escalated", "alpha", tc.runId)
+    compare(argv(s.notifyRunners[0].current), notifyCmd(s, n))
+    s.destroy()
+  }
+
+  function test_a_missing_project_name_is_not_appended_data() {
+    return [
+      { tag: "no project", project: undefined },
+      { tag: "empty project", project: "" },
+      { tag: "a number", project: 7 }
+    ]
+  }
+
+  function test_a_missing_project_name_is_not_appended(data) {
+    var s = make(); if (!s) return
+    var alert = alertOf({})
+    if (data.project === undefined) delete alert.project
+    else alert.project = data.project
+    var r = toSnapshot(s, alert)
+    var mine = runEntry(tc.runId, "M1")
+    reply(r.current, snapshotReply([mine]), 0)
+    var n = Runs.alertNotification(normalized(mine), "escalated", "", tc.runId)
+    verify(n.title.indexOf(" · ") === -1, n.title)
+    compare(argv(s.notifyRunners[0].current), notifyCmd(s, n))
+    s.destroy()
+  }
+
+  function test_two_alerts_never_stop_each_other() {
+    var s = make(); if (!s) return
+    var idB = "20261010T030000Z-cccccccc"
+    var a = toSnapshot(s, alertOf({}))
+    var aSnap = a.current
+    sendAlert(s, alertOf({ run_id: idB, root: "/p/beta", project: "beta" }))
+    compare(s.alertRunners.length, 2)
+    var b = s.alertRunners[1]
+    verify(b !== a, "the second alert reused the first one's runner")
+    compare(aSnap.running, true)
+    compare(argv(b.current), settingsCmd(s))
+    reply(b.current, settingsReply(true), 0)
+    compare(argv(b.current), snapshotCmd(s, "/p/beta"))
+    compare(aSnap.running, true)
+    var mine = runEntry(tc.runId, "M1")
+    reply(aSnap, snapshotReply([mine]), 0)
+    compare(s.notifyRunners.length, 1)
+    var first = s.notifyRunners[0].current
+    compare(b.current.running, true)
+    reply(b.current, "garbage", 1)
+    compare(s.alertRunners.length, 0)
+    compare(s.notifyRunners.length, 2)
+    compare(first.running, true)
+    compare(argv(first), notifyCmd(s, Runs.alertNotification(normalized(mine), "escalated", "alpha", tc.runId)))
+    compare(argv(s.notifyRunners[1].current), notifyCmd(s, Runs.alertNotification(null, "escalated", "beta", idB)))
+    s.destroy()
+  }
+
+  function test_the_same_alert_twice_notifies_twice() {
+    var s = make(); if (!s) return
+    var a = toSnapshot(s, alertOf({}))
+    var b = toSnapshot(s, alertOf({}))
+    verify(a !== b, "one runner for two alerts")
+    compare(s.alertRunners.length, 2)
+    var mine = runEntry(tc.runId, "M1")
+    reply(a.current, snapshotReply([mine]), 0)
+    reply(b.current, snapshotReply([mine]), 0)
+    compare(s.notifyRunners.length, 2)
+    var n = Runs.alertNotification(normalized(mine), "escalated", "alpha", tc.runId)
+    compare(argv(s.notifyRunners[0].current), notifyCmd(s, n))
+    compare(argv(s.notifyRunners[1].current), notifyCmd(s, n))
+    compare(s.notifyRunners[0].current.running, true)
+    s.destroy()
+  }
+
+  function test_the_switch_is_read_again_for_each_alert() {
+    var s = make(); if (!s) return
+    var r = toSnapshot(s, alertOf({}))
+    reply(r.current, snapshotReply([runEntry(tc.runId, "M1")]), 0)
+    compare(s.notifyRunners.length, 1)
+    sendAlert(s, alertOf({ run_id: "20261010T040000Z-dddddddd" }))
+    compare(s.alertRunners.length, 1)
+    var second = s.alertRunners[0]
+    compare(second.step, "settings")
+    compare(argv(second.current), settingsCmd(s))
+    reply(second.current, settingsReply(false), 0)
+    compare(s.alertRunners.length, 0)
+    compare(s.notifyRunners.length, 1, "the switch was off for the second alert")
+    s.destroy()
+  }
+
+  // In one synchronous block, so the exited processes' deferred destroy() has not run yet.
+  function test_a_repeated_exit_never_advances_twice() {
+    var s = make(); if (!s) return
+    sendAlert(s, alertOf({}))
+    var r = s.alertRunners[0]
+    var settingsProc = r.current
+    reply(settingsProc, settingsReply(true), 0)
+    var snapProc = r.current
+    reply(settingsProc, settingsReply(true), 0)
+    compare(r.seq, 2, "a stale settings exit launched a second snapshot")
+    compare(r.current, snapProc)
+    reply(snapProc, snapshotReply([runEntry(tc.runId, "M1")]), 0)
+    compare(s.notifyRunners.length, 1)
+    reply(snapProc, snapshotReply([runEntry(tc.runId, "M1")]), 0)
+    compare(s.notifyRunners.length, 1, "a repeated snapshot exit notified twice")
+    s.destroy()
+  }
 }

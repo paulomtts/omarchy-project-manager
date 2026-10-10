@@ -12,6 +12,14 @@ import "../domain/results.js" as Results
 // ui/Panel.qml hands App as backendDir.
 // From creation to destruction it keeps runs-alerts.py running as a plain
 // Process (helperProc) and emits alertReceived(alert) for each alert line.
+// Each alertReceived runs its own pipeline on a HelperRunner of its own
+// (alertRunners; `step` "settings", then "snapshot"): viewer-state.py
+// get-global-settings, read at each alert -- the alert is dropped unless
+// notifyOnEscalation is exactly true --, then runs-snapshot.py of the
+// alert's root, once (none when the root is not a non-empty string or
+// starts with "-"), then notify.py TITLE BODY from Runs.alertNotification
+// of that run (null when the snapshot fails or lacks it) on one more
+// HelperRunner of its own (notifyRunners). No runner serves two alerts.
 // `status` is "watching" while a launched helper has not exited, "waiting"
 // between a retryable failure and the relaunch 300 s later (retryTimer, which
 // runs only then), "stopped" after exit 0 or a SchemaMismatch /
@@ -111,14 +119,31 @@ Scope {
 
   // The newest run of an alert's runner finished; its step says which run it
   // was. Settings: the alert goes on only on exit 0 with notifyOnEscalation
-  // exactly true, else it is dropped. Never throws.
+  // exactly true, else it is dropped. Then one runs-snapshot.py of the
+  // alert's root when that is a non-empty string not starting with "-", else
+  // straight to notify with a null run. Snapshot: notify with the alert's run
+  // in the reply (null when absent). Any other step changes nothing. Never
+  // throws.
   function alertStepFinished(runner, stdout, exitCode) {
+    var alert = runner.alert
     if (runner.step === "settings") {
       var settings = exitCode === 0 ? Results.parseEnvelope(stdout) : null
       if (settings === null || settings.notifyOnEscalation !== true) {
         service.dropAlertRunner(runner)
         return
       }
+      var root = alert.root
+      if (typeof root !== "string" || root === "" || root.charAt(0) === "-") {
+        service.dropAlertRunner(runner)
+        service.notify(alert, null)
+        return
+      }
+      runner.step = "snapshot"
+      runner.script = service.backendDir + "runs/runs-snapshot.py"
+      runner.run([root])
+    } else if (runner.step === "snapshot") {
+      service.dropAlertRunner(runner)
+      service.notify(alert, service.snapshotRun(stdout, exitCode, alert.run_id))
     }
   }
 
@@ -127,6 +152,49 @@ Scope {
   function dropAlertRunner(runner) {
     runner.step = ""
     pipelineState.alertRunners = pipelineState.alertRunners.filter(function(r) { return r !== runner })
+    runner.destroy()
+  }
+
+  // The run runId in one runs-snapshot.py reply, normalized; null unless the
+  // exit is 0 and the last line is {"ok": true, "runs": [...]} holding it.
+  // Entries that are not plain objects are skipped. Never throws.
+  function snapshotRun(stdout, exitCode, runId) {
+    if (exitCode !== 0) return null
+    var envelope = Results.parseEnvelope(stdout)
+    if (envelope === null || envelope.ok !== true || !Array.isArray(envelope.runs)) return null
+    var runs = []
+    for (var i = 0; i < envelope.runs.length; i++) {
+      var entry = envelope.runs[i]
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue
+      runs.push(Runs.normalizeRun({ row: service.rowOf(entry), status: entry.status }))
+    }
+    return Runs.runById(runs, runId)
+  }
+
+  // The `am runs` summary without its `status` key: the helper replaced the
+  // summary's status string with the `am status` object, which normalizeRun
+  // must never read as the row's status ("[object Object]").
+  function rowOf(entry) {
+    var row = {}
+    for (var key in entry) {
+      if (key !== "status" && Runs.hasKey(entry, key)) row[key] = entry[key]
+    }
+    return row
+  }
+
+  // One notify.py TITLE BODY for an alert, from Runs.alertNotification of run
+  // (null: the short-id fallback), on a runner of its own so two never stop
+  // each other. The reply is not read.
+  function notify(alert, run) {
+    var project = typeof alert.project === "string" ? alert.project : ""
+    var n = Runs.alertNotification(run, alert.state, project, alert.run_id)
+    var runner = notifyC.createObject(service)
+    pipelineState.notifyRunners = pipelineState.notifyRunners.concat([runner])
+    runner.run([String(n.title), String(n.body)])
+  }
+
+  function dropNotifyRunner(runner) {
+    pipelineState.notifyRunners = pipelineState.notifyRunners.filter(function(r) { return r !== runner })
     runner.destroy()
   }
 
@@ -164,6 +232,18 @@ Scope {
       property string step: "settings"   // "settings" | "snapshot"; "" once dropped
       guard: ""
       onFinished: function(stdout, exitCode) { service.alertStepFinished(ar, stdout, exitCode) }
+    }
+  }
+
+  // One HelperRunner per notification. Guard "". It goes when its process exits.
+  Component {
+    id: notifyC
+
+    HelperRunner {
+      id: nr
+      script: service.backendDir + "runs/notify.py"
+      guard: ""
+      onFinished: service.dropNotifyRunner(nr)
     }
   }
 
