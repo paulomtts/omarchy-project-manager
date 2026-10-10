@@ -3132,6 +3132,160 @@ TestCase {
     compare(next.length, 3, "nextRuns length")
   }
 
+  // ---- 1.1 (alerts while closed): alert notification --------------------------------------
+
+  // The reason status-escalated.json escalated with (its failed review phase's detail).
+  function anFixtureReason() {
+    return "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-10e26d57"
+  }
+
+  function checkNotification(n, title, body, label) {
+    compare(Object.keys(n).sort().join(","), "body,title", label + ": keys")
+    compare(n.title, title, label + ": title")
+    compare(n.body, body, label + ": body")
+  }
+
+  function test_alertNotification_escalated_fixture() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var n = Runs.alertNotification(run, "escalated", "omarchy-project-manager", run.id)
+    checkNotification(n, "‼ f18d342f-4887-4cd8-a86e-dd2755237c2c escalated · omarchy-project-manager",
+                      anFixtureReason(), "fixture")
+    compare(n.body, Runs.escalationReason(run), "body is the run's escalation reason")
+  }
+
+  function test_alertNotification_dead() {
+    var run = mkRun("20261008T000000Z-deadbeef", "started", false)
+    var n = Runs.alertNotification(run, "dead", "alpha", run.id)
+    checkNotification(n, "✖ m1 died · alpha", "process died", "dead")
+
+    // exact code points: glyph + space, then space, U+00B7, space before the project
+    var t = n.title
+    compare(t.charCodeAt(0), 0x2716, "heavy multiplication x")
+    compare(t.charCodeAt(1), 0x20, "space after the glyph")
+    compare(t.charCodeAt(t.length - 8), 0x20, "space before the dot")
+    compare(t.charCodeAt(t.length - 7), 0xB7, "middle dot")
+    compare(t.charCodeAt(t.length - 6), 0x20, "space after the dot")
+    var e = Runs.alertNotification(run, "escalated", "alpha", run.id).title
+    compare(e.charCodeAt(0), 0x203C, "double exclamation mark")
+    compare(e.charCodeAt(1), 0x20, "space after the escalated glyph")
+
+    // runId is not compared with run.id: a usable run titles from itself
+    checkNotification(Runs.alertNotification(run, "dead", "alpha", "20261008T143755Z-f18d342f"),
+                      "✖ m1 died · alpha", "process died", "runId differs from run.id")
+  }
+
+  function test_alertNotification_title_without_milestone() {
+    var run = mkRun("20261008T000000Z-deadbeef", "escalated", null, { milestone_id: "" })
+    checkNotification(Runs.alertNotification(run, "escalated", "alpha", run.id),
+                      "‼ …deadbeef escalated · alpha", "escalated", "escalated, no milestone")
+    checkNotification(Runs.alertNotification(run, "dead", "alpha", run.id),
+                      "✖ …deadbeef died · alpha", "process died", "dead, no milestone")
+  }
+
+  function test_alertNotification_fallback_without_run() {
+    var runId = "20261008T143755Z-f18d342f"
+    var failedTree = { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "review", status: "failed", detail: "boom" }] }] }
+    var unusable = [
+      ["null", null], ["undefined", undefined], ["number", 5], ["string", "x"], ["array", []],
+      ["empty object", {}], ["empty id", { id: "" }], ["numeric id", { id: 7 }],
+      ["milestone, no id", { milestone_id: "m9" }],
+      ["normalised garbage", Runs.normalizeRun(undefined)],
+      ["empty id with a failed phase", { id: "", milestone_id: "m9", tree: failedTree }]
+    ]
+    for (var i = 0; i < unusable.length; i++) {
+      var label = unusable[i][0]
+      checkNotification(Runs.alertNotification(unusable[i][1], "escalated", "alpha", runId),
+                        "‼ …f18d342f escalated · alpha", "escalated", label + ", escalated")
+      checkNotification(Runs.alertNotification(unusable[i][1], "dead", "alpha", runId),
+                        "✖ …f18d342f died · alpha", "process died", label + ", dead")
+    }
+  }
+
+  function test_alertNotification_short_runId_and_garbage_runId() {
+    checkNotification(Runs.alertNotification(null, "escalated", "alpha", "abc"),
+                      "‼ …abc escalated · alpha", "escalated", "short runId")
+    checkNotification(Runs.alertNotification(null, "dead", "alpha", "abc"),
+                      "✖ …abc died · alpha", "process died", "short runId, dead")
+    var garbage = [["null", null], ["number", 7], ["undefined", undefined]]
+    for (var i = 0; i < garbage.length; i++) {
+      checkNotification(Runs.alertNotification(null, "escalated", "alpha", garbage[i][1]),
+                        "‼ … escalated · alpha", "escalated", garbage[i][0] + " runId")
+      checkNotification(Runs.alertNotification(null, "dead", "alpha", garbage[i][1]),
+                        "✖ … died · alpha", "process died", garbage[i][0] + " runId, dead")
+    }
+  }
+
+  function test_alertNotification_empty_project() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var runId = "20261008T143755Z-f18d342f"
+    var projects = [["empty", ""], ["null", null], ["undefined", undefined], ["number", 5]]
+    for (var i = 0; i < projects.length; i++) {
+      var p = projects[i][1]
+      var label = projects[i][0] + " project"
+      checkNotification(Runs.alertNotification(run, "escalated", p, runId),
+                        "‼ f18d342f-4887-4cd8-a86e-dd2755237c2c escalated", anFixtureReason(), label + ", fixture")
+      checkNotification(Runs.alertNotification(run, "dead", p, runId),
+                        "✖ f18d342f-4887-4cd8-a86e-dd2755237c2c died", "process died", label + ", fixture, dead")
+      checkNotification(Runs.alertNotification(null, "escalated", p, runId),
+                        "‼ …f18d342f escalated", "escalated", label + ", no run")
+      checkNotification(Runs.alertNotification(null, "dead", p, runId),
+                        "✖ …f18d342f died", "process died", label + ", no run, dead")
+    }
+
+    // whitespace is a non-empty string: shown verbatim, not trimmed
+    checkNotification(Runs.alertNotification(null, "dead", "  ", runId),
+                      "✖ …f18d342f died ·   ", "process died", "whitespace project")
+  }
+
+  function test_alertNotification_other_state_is_escalated() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var states = [["empty", ""], ["null", null], ["running", "running"], ["DEAD", "DEAD"],
+                  ["undefined", undefined], ["number", 5]]
+    for (var i = 0; i < states.length; i++) {
+      checkNotification(Runs.alertNotification(run, states[i][1], "alpha", run.id),
+                        "‼ f18d342f-4887-4cd8-a86e-dd2755237c2c escalated · alpha", Runs.escalationReason(run),
+                        states[i][0] + " state, fixture")
+      checkNotification(Runs.alertNotification(null, states[i][1], "alpha", "20261008T143755Z-f18d342f"),
+                        "‼ …f18d342f escalated · alpha", "escalated", states[i][0] + " state, no run")
+    }
+  }
+
+  function test_alertNotification_shape_and_purity() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var before = JSON.stringify(run)
+    var a = Runs.alertNotification(run, "escalated", "alpha", run.id)
+    var b = Runs.alertNotification(run, "escalated", "alpha", run.id)
+    compare(Object.keys(a).sort().join(","), "body,title", "exactly title and body")
+    compare(typeof a.title, "string", "title is a string")
+    compare(typeof a.body, "string", "body is a string")
+    verify(a !== b, "distinct result objects")
+    a.title = "changed"
+    a.body = "changed"
+    compare(b.title, "‼ f18d342f-4887-4cd8-a86e-dd2755237c2c escalated · alpha", "mutating one result leaves the other")
+    compare(Runs.alertNotification(run, "escalated", "alpha", run.id).body, anFixtureReason(),
+            "mutating a result does not change the next one")
+    compare(JSON.stringify(run), before, "run unchanged")
+
+    checkNotification(Runs.alertNotification(), "‼ … escalated", "escalated", "no arguments")
+
+    // every argument combination: two strings, never a throw
+    var bare = Object.create(null)
+    var vals = [undefined, null, 5, "x", true, [], {}, bare, { id: "" }, { id: "r", milestone_id: 3 }]
+    var states = vals.concat(["dead", "escalated"])
+    for (var i = 0; i < vals.length; i++) {
+      for (var j = 0; j < states.length; j++) {
+        for (var k = 0; k < vals.length; k++) {
+          for (var m = 0; m < vals.length; m++) {
+            var n = Runs.alertNotification(vals[i], states[j], vals[k], vals[m])
+            if (Object.keys(n).sort().join(",") !== "body,title" || typeof n.title !== "string"
+                || typeof n.body !== "string" || n.title === "" || n.body === "")
+              fail("bad result for " + [i, j, k, m].join("/") + ": " + JSON.stringify(n))
+          }
+        }
+      }
+    }
+  }
+
   // ---- S2 4.1: workflow and control requests ----------------------------------------------
 
   function test_normalize_workflow() {

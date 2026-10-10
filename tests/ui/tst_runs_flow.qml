@@ -687,23 +687,19 @@ TestCase {
   }
 
   // 29
-  function test_with_the_setting_on_an_escalation_also_notifies() {
+  function test_with_the_setting_on_an_escalation_only_toasts() {
     var p = make(); if (!p) return
     compare(p.app.runControl.setNotifyOnEscalation(true), true)
     reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
     compare(p.app.runControl.notifySaved, true)
     feed(p, [snapEntry("run-0000000000b2", "started", true, "beta")])
     feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta")])
-    compare(p.app.runAlerts.notifyRunners.length, 1)
-    var cmd = p.app.runAlerts.notifyRunners[0].current.command
-    compare(cmd[1], p.pluginDir + "core/backend/runs/notify.py")
-    compare(cmd[cmd.length - 2], "beta")
-    compare(cmd[cmd.length - 1], "escalated")
+    compare(p.app.runAlerts.toasts.length, 1)
+    compare(typeof p.app.runAlerts.notifyRunners, "undefined", "the alerts store launches no notification")
     p.app.runControl.setNotifyOnEscalation(false)
     reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
     feed(p, [snapEntry("run-0000000000b2", "escalated", null, "beta"), snapEntry("run-0000000000c3", "escalated", null, "gamma")])
     compare(p.app.runAlerts.toasts.length, 2)
-    compare(p.app.runAlerts.notifyRunners.length, 1, "off: no new launch")
   }
 
   // 30

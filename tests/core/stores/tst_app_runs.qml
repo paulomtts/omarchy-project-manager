@@ -192,9 +192,6 @@ TestCase {
     return saves.length > 0 ? saves[saves.length - 1] : null
   }
 
-  // The argv prefix of a notify.py command.
-  property string notifyCmd: "python3|/plugin/core/backend/runs/notify.py|"
-
   function test_app_composes_a_run_store_with_no_project_and_closed() {
     var app = makeBare(); if (!app) return
     verify(app.runs, "App composes the run store as app.runs")
@@ -483,18 +480,19 @@ TestCase {
     compare(app.runDispatch.dispatchState, "idle")
   }
 
-  function test_an_escalation_through_app_notifies_only_with_the_switch_on() {
+  function test_an_escalation_through_app_toasts_with_the_switch_off_or_on() {
     var app = openApp([runningIn("r1"), runningIn("r2")], []); if (!app) return
     compare(app.runControl.notifyOnEscalation, false)
     snapshot(app, listReply([escalatedIn("r1"), runningIn("r2")], []))
     compare(app.runAlerts.toasts.length, 1)
-    compare(app.runAlerts.notifyRunners.length, 0, "the switch is off: a toast only")
+    compare(typeof app.runAlerts.notifyRunners, "undefined")
+    compare(helpersOf(app.runAlerts).join(","), "", "the switch is off: a toast only")
     reply(app.runControl.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
     compare(app.runControl.notifyOnEscalation, true)
     snapshot(app, listReply([escalatedIn("r1"), escalatedIn("r2")], []))
     compare(app.runAlerts.toasts.length, 2)
-    compare(app.runAlerts.notifyRunners.length, 1, "one notification, for r2")
-    compare(argv(app.runAlerts.notifyRunners[0].current), tc.notifyCmd + "m-r2|escalated")
+    compare(typeof app.runAlerts.notifyRunners, "undefined")
+    compare(helpersOf(app.runAlerts).join(","), "", "the switch is on: still a toast only")
   }
 
   function test_a_project_leaving_the_registry_through_app_loses_its_arming() {
@@ -522,8 +520,8 @@ TestCase {
     "confirmCancel", "setNotifyOnEscalation", "lastControlErrorType", "resumeRunId", "resumeVerify",
     "resumeAllowNoVerification", "resumeError", "resumeOpenFor", "resumeClose", "resumeConfirm", "resumeSaveRunner"]
   property var renamedOnControl: ["runSettings", "runSettingsRunner"]
-  property var movedToAlerts: ["armedRoots", "alertsArmed", "toasts", "toastMs", "toastTimer", "notifyRunners",
-    "raiseAlerts", "expireToasts", "dismissToast", "dismissAllToasts", "notify"]
+  property var movedToAlerts: ["armedRoots", "alertsArmed", "toasts", "toastMs", "toastTimer",
+    "raiseAlerts", "expireToasts", "dismissToast", "dismissAllToasts"]
   property var movedToDispatch: ["dispatchState", "dispatchTarget", "dispatchTargetLabel", "dispatchForm",
     "dispatchPreview", "dispatchError", "dispatchErrorType", "dispatchErrors", "dispatchSuggest", "dispatchRunId",
     "dispatchMessage", "dispatchLog", "dispatchLogTail", "dispatchExitCode", "dispatchDefaultsRunner",
@@ -541,10 +539,22 @@ TestCase {
     return names.filter(function(name) { return (typeof obj[name] !== "undefined") === present })
   }
 
+  // The entries of store `obj`'s data that could launch a helper: an object
+  // with a `script` or `command` property, or a Component.
+  function helpersOf(obj) {
+    var found = []
+    for (var i = 0; i < obj.data.length; i++) {
+      var o = obj.data[i]
+      if (o && (typeof o.script !== "undefined" || typeof o.command !== "undefined" || typeof o.createObject === "function"))
+        found.push(String(o))
+    }
+    return found
+  }
+
   function test_the_run_store_has_none_of_the_moved_members() {
     var app = makeBare(); if (!app) return
     var names = tc.movedToControl.concat(tc.renamedOnControl, tc.movedToAlerts, tc.movedToDispatch, tc.runStoreHandles)
-    compare(names.length, 93, "90 moved members and 3 handles")
+    compare(names.length, 91, "88 moved members and 3 handles")
     compare(answered(app.runs, names, true).join(", "), "", "the run store still answers to these")
     compare(answered(app.runs, ["runs", "project", "refresh", "requestSnapshot", "snapshotReplied", "runsChanged"],
                      false).join(", "), "", "members that stay are still there")
@@ -565,17 +575,13 @@ TestCase {
   function test_app_composes_run_alerts_wired_to_the_run_store() {
     var app = makeBare(); if (!app) return
     verify(app.runAlerts, "App composes the alerts store")
-    compare(app.runAlerts.backendDir, "/plugin/core/backend/")
-    app.backendDir = "/other/"
-    compare(app.runAlerts.backendDir, "/other/", "backendDir follows App")
+    compare(typeof app.runAlerts.backendDir, "undefined", "App hands it no backend directory")
+    compare(typeof app.runAlerts.notifyOnEscalation, "undefined", "nor the notify switch")
     compare(app.runAlerts.active, false)
     app.panelOpen = true
     compare(app.runAlerts.active, true, "active follows panelOpen")
     app.panelOpen = false
     compare(app.runAlerts.active, false)
-    compare(app.runAlerts.notifyOnEscalation, false)
-    app.runControl.setNotifyOnEscalation(true)
-    compare(app.runAlerts.notifyOnEscalation, true, "the switch follows run control's")
     app.projects.applyStoredState('{"last_project": null}', 0)
     app.projects.applyProjectsList([pA, pB])
     compare(app.runAlerts.projectRoots.length, 2)
@@ -731,28 +737,24 @@ TestCase {
     compare(argv(load), tc.viewerCmd + "get-global-settings")
     reply(load, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
     compare(app.runControl.notifyOnEscalation, true)
-    compare(app.runAlerts.notifyOnEscalation, true, "the alerts input follows run control's")
-    compare(app.runControl.notifyOnEscalation, true)
   }
 
   // A9
-  function test_with_run_controls_switch_on_an_escalation_launches_notify() {
+  function test_with_run_controls_switch_on_an_escalation_only_toasts() {
     var app = openApp([runningIn("r1")], []); if (!app) return
     reply(app.runControl.settingsLoadRunner.current, JSON.stringify({ notifyOnEscalation: true }) + "\n", 0)
-    compare(app.runAlerts.notifyOnEscalation, true)
+    compare(app.runControl.notifyOnEscalation, true)
     snapshot(app, listReply([escalatedIn("r1")], []))
     compare(app.runAlerts.toasts.length, 1)
-    compare(app.runAlerts.notifyRunners.length, 1, "the switch is on: a notification")
-    compare(argv(app.runAlerts.notifyRunners[0].current), tc.notifyCmd + "m-r1|escalated")
-    reply(app.runAlerts.notifyRunners[0].current, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
-    compare(app.runAlerts.notifyRunners.length, 0)
+    compare(helpersOf(app.runAlerts).join(","), "", "the switch is on: a toast only")
     compare(app.runControl.setNotifyOnEscalation(false), true)
     reply(app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
-    compare(app.runAlerts.notifyOnEscalation, false)
+    compare(app.runControl.notifyOnEscalation, false)
     snapshot(app, listReply([escalatedIn("r1"), runningIn("r2")], []))
     snapshot(app, listReply([escalatedIn("r1"), escalatedIn("r2")], []))
     compare(app.runAlerts.toasts.length, 2, "r2's escalation is raised")
-    compare(app.runAlerts.notifyRunners.length, 0, "the switch is off: a toast only")
+    compare(helpersOf(app.runAlerts).join(","), "", "the switch is off: a toast only")
+    compare(typeof app.runAlerts.notifyRunners, "undefined")
   }
 
   // ---- app.runDispatch (split-runstore 4.1)

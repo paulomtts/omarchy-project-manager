@@ -1417,6 +1417,19 @@ function newAlerts(prevRuns, nextRuns) {
   return out
 }
 
+// {title, body} of the desktop notification for one alert. run is usable when it is an
+// object with a non-empty string id; then the title is runTitle(run), else the short id of
+// runId. state "dead": "✖ <title> died", body "process died"; any other state:
+// "‼ <title> escalated", body escalationReason(run) for a usable run, else "escalated". A
+// non-empty string project appends " · <project>" to the title. Fresh object; never throws.
+function alertNotification(run, state, project, runId) {
+  var usable = _isObject(run) && _isRunId(run.id)
+  var title = usable ? runTitle(run) : shortId({ id: runId })
+  var suffix = _stringOr(project) !== "" ? " · " + project : ""
+  if (state === "dead") return { title: "✖ " + title + " died" + suffix, body: _REASON_DEAD }
+  return { title: "‼ " + title + " escalated" + suffix, body: usable ? escalationReason(run) : "escalated" }
+}
+
 
 // ---- Dispatch (S3 1.1) -------------------------------------------------------------------
 //
