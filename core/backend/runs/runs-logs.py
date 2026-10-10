@@ -3,12 +3,14 @@
 
     runs-logs.py <project_root> RUN CARD PHASE ATTEMPT
 
-Runs `am logs RUN CARD --phase PHASE --attempt ATTEMPT --repo-dir ROOT` as an
-argv list (no shell, stdin /dev/null, 60 s timeout). With ATTEMPT `0` no
---attempt is sent (`am logs RUN CARD --phase PHASE --repo-dir ROOT`), so am
-returns the phase's newest recorded output: this is how a step's output is read,
-since steps record no attempts in `am status`. Any other ATTEMPT is sent verbatim
-with --attempt. The arguments reach am unvalidated, attempt `0` being the one
+The first argument is the repository am resolves the run against; the helper's
+cwd never matters. Runs
+`am logs RUN CARD --phase PHASE --attempt ATTEMPT --repo-dir ROOT` as an argv
+list (no shell, stdin /dev/null, 60 s timeout). With ATTEMPT `0` no --attempt
+is sent (`am logs RUN CARD --phase PHASE --repo-dir ROOT`), so am returns the
+phase's newest recorded output: this is how a step's output is read, since
+steps record no attempts in `am status`. Any other ATTEMPT is sent verbatim with
+--attempt. The arguments reach am unvalidated, attempt `0` being the one
 exception; am refuses bad ones itself.
 
 Prints exactly one JSON line on EVERY path:

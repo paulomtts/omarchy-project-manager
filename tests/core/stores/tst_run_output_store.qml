@@ -1,0 +1,1009 @@
+// tests/core/stores/tst_run_output_store.qml
+// Run detail's live output store: when runs-logs-follow.py starts and stops
+// for the selected attempt or step, its exact argv (OFFSET on a resume), how
+// its stdout lines fold into the live buffer, the end line, typed failure
+// lines, the restart backoff and its limit, and latest wins. Built directly
+// and driven through stubbed Process objects and the aliased retryTimer.
+import QtQuick
+import QtTest
+import "../../../core/domain/runs.js" as Runs
+import "../../helpers/amFixtures.js" as F
+
+TestCase {
+  id: tc
+  name: "StoresRunOutputStore"
+
+  // status-started.json: its run, its repo_dir (runs.json's first row), its
+  // open subtask (worktree step done, explore attempt 1 started) and a done
+  // subtask (spec attempt 1 ok).
+  readonly property string runId: "20261008T143823Z-e795ad19"
+  readonly property string repo: "/home/user/Code/omarchy-project-manager"
+  readonly property string openCard: "2280a6ab-9c40-434b-9729-63fd1f373754"
+  readonly property string doneCard: "5560d0fe-2b8e-4ef9-ad71-96b50ee89daa"
+  readonly property string followCmd: "python3|/plugin/core/backend/runs/runs-logs-follow.py|" + repo + "|"
+  readonly property string chunkLine: '{"offset":0,"text":"stub claude ok phase=review\\n"}'
+  // A hello on a resumed follow: am repeats the offset it resumes from.
+  readonly property string resumeHello: '{"event":"logs","offset":28,"path":"/x/stdout.log","schema":1}'
+  // The chunk right after chunkLine (which ends at byte 28).
+  readonly property string moreLine: '{"offset":28,"text":"more\\n"}'
+
+  Component { id: spyC; SignalSpy {} }
+
+  function make() {
+    var comp = Qt.createComponent("../../../core/stores/RunOutputStore.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
+    return comp.createObject(tc, { backendDir: "/plugin/core/backend/" })
+  }
+
+  // One am run as RunStore hands it to normalizeRun, fresh on every call:
+  // runs.json's row with the fixture's run id, without `status`, and the
+  // fixture's `am status` data.
+  function amRun(name) {
+    var fixture = F.load(name)
+    var runs = F.load("runs.json").data.runs
+    var row = fixture._am_runs_row
+    for (var i = 0; i < runs.length; i++) {
+      if (runs[i].id === fixture.data.run.id) row = runs[i]
+    }
+    delete row.status
+    return { row: row, status: fixture.data }
+  }
+
+  function rawSubtask(raw, cardId) {
+    var stories = raw.status.stories
+    for (var i = 0; i < stories.length; i++) {
+      for (var j = 0; j < stories[i].subtasks.length; j++) {
+        if (stories[i].subtasks[j].card_id === cardId) return stories[i].subtasks[j]
+      }
+    }
+    return null
+  }
+
+  // The started capture, normalized: explore.1 is live.
+  function startedRun() { return Runs.normalizeRun(amRun("status-started.json")) }
+
+  // The started capture with a deterministic `verify` phase started on
+  // openCard; explore.1 stays started unless `exploreDone`.
+  function stepRun(exploreDone) {
+    var raw = amRun("status-started.json")
+    var subtask = rawSubtask(raw, tc.openCard)
+    // synthetic: a deterministic phase in flight -- no capture has one
+    if (exploreDone) {
+      subtask.phases[1].status = "done"
+      subtask.phases[1].attempts[0].status = "ok"
+    }
+    subtask.phases.push({ name: "verify", kind: "deterministic", status: "started", started_at: "",
+                          ended_at: null, detail: null, attempts: [] })
+    return Runs.normalizeRun(raw)
+  }
+
+  // The started capture with explore.1 finished `ok` (its phase done).
+  function exploreOkRun() {
+    var raw = amRun("status-started.json")
+    var subtask = rawSubtask(raw, tc.openCard)
+    // synthetic: explore.1 finished
+    subtask.phases[1].status = "done"
+    subtask.phases[1].attempts[0].status = "ok"
+    return Runs.normalizeRun(raw)
+  }
+
+  // The started capture under another run id; explore.1 is `status` there.
+  function otherRun(id, status) {
+    var raw = amRun("status-started.json")
+    // synthetic: another running run
+    raw.row.id = id
+    raw.status.run.id = id
+    rawSubtask(raw, tc.openCard).phases[1].attempts[0].status = status
+    return Runs.normalizeRun(raw)
+  }
+
+  function explore() { return { card_id: tc.openCard, phase: "explore", attempt: 1 } }
+  function verifyStep() { return { card_id: tc.openCard, phase: "verify", attempt: 0, step: true } }
+
+  // The raw non-empty lines of tests/fixtures/am/<name>, as strings.
+  function streamLines(name) {
+    var xhr = new XMLHttpRequest()
+    xhr.open("GET", Qt.resolvedUrl("../../fixtures/am/" + name), false)
+    xhr.send()
+    return xhr.responseText.split("\n").filter(function(r) { return r !== "" })
+  }
+
+  function argv(proc) { return proc.command.join("|") }
+  function send(proc, line) { proc.stdout.read(line) }
+
+  // A store on Run detail with the panel open, following `sel` (explore.1 by
+  // default) of `run` (the started capture by default).
+  function following(run, sel) {
+    var store = make(); if (!store) return null
+    store.run = run || startedRun()
+    store.selection = sel || explore()
+    store.active = true
+    store.inRunDetail = true
+    return store
+  }
+
+  // Every follow process the store holds, in order, recorded on followProcChanged.
+  function recorder(store) {
+    var seen = []
+    store.followProcChanged.connect(function() { if (store.followProc) seen.push(store.followProc) })
+    return seen
+  }
+
+  function runningCount(procs) {
+    return procs.filter(function(p) { return p.running === true }).length
+  }
+
+  // The current follow process exits with `code` (0 by default).
+  function crash(store, code) { store.followProc.exited(code === undefined ? 0 : code) }
+
+  // One exit at each epoch-ms time in `times`, each followed by its restart.
+  function crashesAt(store, times) {
+    for (var i = 0; i < times.length; i++) {
+      store.nowMs = times[i]
+      crash(store)
+      store.retryTimer.triggered()
+    }
+  }
+
+  // A runs-logs-follow.py failure line of `type` with `message`.
+  function refusal(type, message) { return JSON.stringify({ ok: false, error: { type: type, message: message } }) }
+
+  // T1
+  function test_defaults() {
+    var store = make(); if (!store) return
+    compare(store.followKey, null)
+    compare(store.followStatus, "idle")
+    compare(store.endStatus, "")
+    compare(store.liveText, "")
+    compare(store.liveDropped, 0)
+    compare(store.hasOutput, false)
+    compare(store.followError, "")
+    compare(store.followProc, null)
+  }
+
+  // T2
+  function test_starts_on_a_live_agent_attempt() {
+    var store = following(); if (!store) return
+    var proc = store.followProc
+    verify(proc, "a follow process")
+    compare(proc.objectName, "followProc")
+    compare(proc.running, true)
+    compare(proc.command.length, 7, "no OFFSET")
+    compare(argv(proc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+    compare(JSON.stringify(store.followKey),
+            JSON.stringify({ run_id: tc.runId, card_id: tc.openCard, phase: "explore", attempt: 1 }))
+    compare(store.followStatus, "connecting")
+  }
+
+  // T3
+  function test_starts_on_a_live_step_with_attempt_0() {
+    var store = following(stepRun(true), verifyStep()); if (!store) return
+    var proc = store.followProc
+    verify(proc, "a follow process")
+    compare(proc.command.length, 7)
+    compare(argv(proc), tc.followCmd + tc.runId + "|" + tc.openCard + "|verify|0")
+    compare(store.followKey.attempt, 0)
+    compare(store.followStatus, "connecting")
+  }
+
+  // T4
+  function test_no_start_without_presence_or_a_live_selection() {
+    var noRepo = amRun("status-started.json")
+    // synthetic: a run with no repo_dir anywhere
+    noRepo.row.repo_dir = ""
+    noRepo.status.run.repo_dir = ""
+    var cases = [
+      ["not active", startedRun(), explore(), false, true],
+      ["not in Run detail", startedRun(), explore(), true, false],
+      ["a done step", startedRun(), { card_id: tc.openCard, phase: "worktree", attempt: 0, step: true }, true, true],
+      ["a finished attempt", startedRun(), { card_id: tc.doneCard, phase: "spec", attempt: 1 }, true, true],
+      ["no selection", startedRun(), null, true, true],
+      ["no run", null, explore(), true, true],
+      ["no repo_dir", Runs.normalizeRun(noRepo), explore(), true, true]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var store = make(); if (!store) return
+      store.run = cases[i][1]
+      store.selection = cases[i][2]
+      store.active = cases[i][3]
+      store.inRunDetail = cases[i][4]
+      compare(store.followProc, null, cases[i][0])
+      compare(store.followStatus, "idle", cases[i][0])
+    }
+  }
+
+  // Review Focus 5
+  function test_malformed_inputs_start_nothing() {
+    var runs = [startedRun(), "run", [], { id: "" }, { id: 7, repo_dir: tc.repo }]
+    var sels = [explore(), { card_id: "", phase: "explore", attempt: 1 }, { card_id: tc.openCard, phase: 7, attempt: 1 },
+                { card_id: tc.openCard, phase: "explore", attempt: "1" }, "explore", [explore()]]
+    for (var i = 0; i < runs.length; i++) {
+      for (var j = 0; j < sels.length; j++) {
+        if (i === 0 && j === 0) continue
+        var store = make(); if (!store) return
+        store.active = true
+        store.inRunDetail = true
+        store.run = runs[i]
+        store.selection = sels[j]
+        compare(store.followProc, null, "run " + i + ", selection " + j)
+        compare(store.followStatus, "idle", "run " + i + ", selection " + j)
+      }
+    }
+  }
+  // T5
+  function test_lines_fold_into_the_live_text() {
+    var store = following(); if (!store) return
+    var proc = store.followProc
+    var lines = streamLines("logs-follow-agent.jsonl")
+    send(proc, lines[0])
+    compare(store.followStatus, "following", "the hello")
+    compare(store.hasOutput, false)
+    compare(store.liveText, "")
+    send(proc, lines[1])
+    compare(store.liveText, "stub claude ok phase=review")
+    compare(store.hasOutput, true)
+    compare(store.liveDropped, 0)
+    compare(store.followStatus, "following")
+    send(proc, "")
+    send(proc, "   ")
+    send(proc, "not json")
+    compare(store.liveText, "stub claude ok phase=review", "blank and unparseable lines change nothing")
+    compare(store.followStatus, "following")
+    compare(store.followError, "")
+  }
+
+  // T7
+  function test_a_non_live_selection_stops_and_clears() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, tc.chunkLine)
+    store.selection = { card_id: tc.openCard, phase: "worktree", attempt: 0, step: true }
+    compare(old.running, false)
+    compare(store.followProc, null)
+    compare(store.followKey, null)
+    compare(store.liveText, "")
+    compare(store.hasOutput, false)
+    compare(store.followStatus, "idle")
+    compare(seen.length, 0, "no new process")
+  }
+
+  // T8
+  function test_another_run_or_none_stops_and_clears() {
+    var store = following(); if (!store) return
+    var old = store.followProc
+    send(old, tc.chunkLine)
+    store.run = otherRun("20261009T000000Z-0th3r000", "ok")
+    compare(old.running, false)
+    compare(store.followProc, null)
+    compare(store.followKey, null)
+    compare(store.liveText, "")
+    compare(store.followStatus, "idle")
+    store.selection = null
+    compare(store.followProc, null)
+    compare(store.followKey, null)
+
+    var again = following(); if (!again) return
+    var proc = again.followProc
+    send(proc, tc.chunkLine)
+    again.run = null
+    compare(proc.running, false)
+    compare(again.followProc, null)
+    compare(again.followKey, null)
+    compare(again.liveText, "")
+    compare(again.followStatus, "idle")
+  }
+
+  // T9
+  function test_latest_wins_the_older_process_is_ignored() {
+    var store = following(stepRun(false), explore()); if (!store) return
+    var a = store.followProc
+    verify(a, "process A follows explore.1")
+    store.selection = verifyStep()
+    var b = store.followProc
+    compare(a.running, false, "A is stopped")
+    verify(b && b !== a, "B is the current one")
+    compare(argv(b), tc.followCmd + tc.runId + "|" + tc.openCard + "|verify|0")
+    send(a, tc.chunkLine)
+    compare(store.liveText, "", "A's late line is dropped")
+    compare(store.followStatus, "connecting")
+    a.exited(0)
+    compare(store.followProc, b, "A's late exit does not null out B")
+    compare(store.followStatus, "connecting")
+    compare(store.followError, "")
+    var lines = streamLines("logs-follow-step.jsonl")
+    send(b, lines[0])
+    send(b, lines[1])
+    compare(store.liveText, "==> verify-ok (exit 0)\nverified")
+    compare(store.followStatus, "following")
+  }
+
+  // T11
+  function test_a_new_snapshot_of_the_same_key_does_not_restart() {
+    var store = following(); if (!store) return
+    var proc = store.followProc
+    send(proc, tc.chunkLine)
+    store.run = startedRun()
+    compare(store.followProc, proc)
+    compare(proc.running, true)
+    compare(store.liveText, "stub claude ok phase=review")
+    compare(store.followStatus, "following")
+  }
+
+  // T12
+  function test_the_end_of_an_agent_attempt_keeps_the_buffer() {
+    var store = following(); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+    var proc = store.followProc
+    var lines = streamLines("logs-follow-agent.jsonl")
+    for (var i = 0; i < lines.length; i++) send(proc, lines[i])
+    compare(store.followStatus, "ended")
+    compare(store.endStatus, "ok")
+    compare(store.liveText, "stub claude ok phase=review")
+    compare(spy.count, 0, "an agent attempt asks for no snapshot")
+    send(proc, '{"offset":28,"text":"late\\n"}')
+    compare(store.liveText, "stub claude ok phase=review", "a line after the end is ignored")
+    proc.exited(0)
+    compare(store.followStatus, "ended")
+    compare(store.followError, "")
+    compare(store.followProc, null)
+    store.run = exploreOkRun()
+    compare(store.followStatus, "ended", "a snapshot where it finished keeps the ended state")
+    compare(store.endStatus, "ok")
+    compare(store.liveText, "stub claude ok phase=review")
+    compare(store.followProc, null, "nothing starts")
+  }
+
+  // T13
+  function test_the_end_of_a_step_asks_for_one_snapshot() {
+    var store = following(stepRun(true), verifyStep()); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+    var proc = store.followProc
+    var lines = streamLines("logs-follow-step.jsonl")
+    for (var i = 0; i < lines.length; i++) send(proc, lines[i])
+    compare(store.followStatus, "ended")
+    compare(store.endStatus, "ok")
+    compare(store.liveText, "==> verify-ok (exit 0)\nverified")
+    compare(spy.count, 1)
+    send(proc, lines[2])
+    compare(spy.count, 1, "a repeated end line asks again for nothing")
+    proc.exited(0)
+    compare(spy.count, 1, "nor does the exit")
+    compare(store.followStatus, "ended")
+  }
+
+  // T14
+  function test_an_end_without_a_string_status() {
+    var store = following(); if (!store) return
+    var proc = store.followProc
+    send(proc, streamLines("logs-follow-agent.jsonl")[0])
+    // synthetic: an end line with no status
+    send(proc, '{"event":"end"}')
+    compare(store.followStatus, "ended")
+    compare(store.endStatus, "")
+  }
+
+  // T15
+  function test_an_error_line() {
+    var store = following(); if (!store) return
+    var proc = store.followProc
+    send(proc, tc.chunkLine)
+    var envelope = F.load("logs-follow-refusal.json")
+    send(proc, JSON.stringify(envelope))
+    compare(store.followStatus, "error")
+    compare(store.followError, Runs.errorText(envelope))
+    compare(store.liveText, "stub claude ok phase=review", "the buffer stays")
+    proc.exited(0)
+    compare(store.followStatus, "error")
+    compare(store.followError, Runs.errorText(envelope), "the exit after it changes nothing")
+    compare(store.followProc, null)
+  }
+
+  // T16
+  function test_an_exit_with_no_end_line() {
+    var store = following(); if (!store) return
+    var proc = store.followProc
+    send(proc, tc.chunkLine)
+    proc.exited(0)
+    compare(store.followProc, null)
+    compare(store.followStatus, "following", "a restart is pending, not an error")
+    compare(store.followError, "")
+    compare(store.reconnects, 1)
+    compare(store.retryTimer.running, true)
+    compare(store.retryTimer.interval, 1000)
+    compare(store.liveText, "stub claude ok phase=review")
+    store.retryTimer.stop()
+  }
+
+  // Review Focus 1
+  function test_an_equal_selection_object_does_not_restart() {
+    var store = following(); if (!store) return
+    var proc = store.followProc
+    send(proc, tc.chunkLine)
+    store.selection = explore()
+    compare(store.followProc, proc)
+    compare(proc.running, true)
+    compare(store.liveText, "stub claude ok phase=review")
+  }
+
+  // Review Focus 2
+  function test_a_key_that_stops_being_live_keeps_its_process() {
+    var store = following(); if (!store) return
+    var proc = store.followProc
+    var lines = streamLines("logs-follow-agent.jsonl")
+    send(proc, lines[0])
+    send(proc, lines[1])
+    store.run = exploreOkRun()
+    compare(store.followProc, proc, "the process stays for the end line")
+    compare(proc.running, true)
+    send(proc, lines[2])
+    compare(store.followStatus, "ended")
+    compare(store.endStatus, "ok")
+    compare(store.liveText, "stub claude ok phase=review")
+  }
+
+  // Review Focus 4
+  function test_a_new_run_with_the_old_selection_then_its_own() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var a = store.followProc
+    var other = "20261009T000000Z-0th3r000"
+    store.run = otherRun(other, "started")
+    compare(a.running, false, "the old run's process stops")
+    compare(runningCount(seen), 1, "the old selection is live in the new run too")
+    compare(store.followKey.run_id, other)
+    compare(argv(store.followProc), tc.followCmd + other + "|" + tc.openCard + "|explore|1")
+    var b = store.followProc
+    store.selection = null
+    compare(b.running, false)
+    compare(store.followProc, null)
+    compare(store.followKey, null)
+    send(a, tc.chunkLine)
+    send(b, tc.chunkLine)
+    compare(store.liveText, "", "neither stopped process folds")
+  }
+  // T6
+  function test_leaving_run_detail_stops_and_keeps_then_returning_restarts() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    var key = JSON.stringify(store.followKey)
+    store.inRunDetail = false
+    compare(old.running, false, "SIGTERM")
+    compare(store.followProc, null)
+    compare(JSON.stringify(store.followKey), key, "the key stays")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer stays")
+    compare(store.followStatus, "following")
+    store.inRunDetail = true
+    compare(seen.length, 1, "exactly one new process")
+    verify(store.followProc !== old)
+    compare(store.followProc.running, true)
+    compare(store.followProc.command.length, 8, "OFFSET")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer it resumes")
+    compare(store.followStatus, "connecting")
+  }
+
+  // T6
+  function test_closing_the_panel_stops_and_keeps_then_reopening_restarts() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    var key = JSON.stringify(store.followKey)
+    store.active = false
+    compare(old.running, false, "SIGTERM")
+    compare(store.followProc, null)
+    compare(JSON.stringify(store.followKey), key, "the key stays")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer stays")
+    compare(store.followStatus, "following")
+    store.active = true
+    compare(seen.length, 1, "exactly one new process")
+    verify(store.followProc !== old)
+    compare(store.followProc.running, true)
+    compare(store.followProc.command.length, 8, "OFFSET")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer it resumes")
+    compare(store.followStatus, "connecting")
+  }
+
+  // B2 step 5: back on the same key after it stopped being live off Run detail
+  function test_returning_to_a_key_that_is_no_longer_live_clears() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    store.inRunDetail = false
+    store.run = exploreOkRun()
+    compare(store.liveText, "stub claude ok phase=review", "off Run detail the buffer stays")
+    compare(store.followStatus, "following")
+    store.inRunDetail = true
+    compare(seen.length, 0, "nothing starts")
+    compare(store.followProc, null)
+    compare(store.followKey, null)
+    compare(store.liveText, "")
+    compare(store.hasOutput, false)
+    compare(store.followStatus, "idle")
+  }
+
+  // T10
+  function test_at_most_one_follow_process_runs() {
+    var store = make(); if (!store) return
+    var seen = recorder(store)
+    store.run = stepRun(false)
+    store.selection = explore()
+    store.active = true
+    store.inRunDetail = true
+    compare(runningCount(seen), 1, "A")
+    store.selection = verifyStep()
+    compare(runningCount(seen), 1, "B replaces A")
+    store.inRunDetail = false
+    compare(runningCount(seen), 0, "left Run detail")
+    store.inRunDetail = true
+    compare(runningCount(seen), 1, "back on Run detail")
+    store.selection = explore()
+    compare(runningCount(seen), 1, "back to explore.1")
+    store.active = false
+    compare(runningCount(seen), 0, "panel closed")
+    store.active = true
+    compare(runningCount(seen), 1, "panel open")
+    compare(seen.length, 5)
+    for (var i = 0; i < seen.length; i++) compare(seen[i].objectName, "followProc")
+  }
+
+  // Review Focus 3
+  function test_an_ended_or_failed_follow_survives_leave_and_return() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var proc = store.followProc
+    var lines = streamLines("logs-follow-agent.jsonl")
+    for (var i = 0; i < lines.length; i++) send(proc, lines[i])
+    store.active = false
+    store.active = true
+    compare(seen.length, 0, "an ended follow does not restart")
+    compare(store.followStatus, "ended")
+    compare(store.liveText, "stub claude ok phase=review")
+
+    var failed = following(); if (!failed) return
+    var seen2 = recorder(failed)
+    var p2 = failed.followProc
+    send(p2, tc.chunkLine)
+    send(p2, '{"ok":false,"error":{"type":"StreamError","message":"am logs: run left"}}')
+    p2.exited(0)
+    failed.inRunDetail = false
+    failed.inRunDetail = true
+    compare(seen2.length, 0, "a failed follow does not restart")
+    compare(failed.followStatus, "error")
+    compare(failed.liveText, "stub claude ok phase=review")
+  }
+
+  // N1
+  function test_reopening_the_panel_resumes_from_next_offset() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    compare(store.buffer.nextOffset, 28)
+    store.active = false
+    store.active = true
+    compare(seen.length, 1, "exactly one new process")
+    var proc = store.followProc
+    compare(proc.command.length, 8)
+    compare(argv(proc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    compare(store.liveText, "stub claude ok phase=review")
+    compare(store.followStatus, "connecting")
+    send(proc, tc.moreLine)
+    compare(store.liveText, "stub claude ok phase=review\nmore")
+    compare(store.followStatus, "following")
+  }
+
+  // N2, Review Focus 2 (3.3): the resumed hello repeats offset 28
+  function test_returning_to_run_detail_resumes_from_next_offset() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    store.inRunDetail = false
+    store.inRunDetail = true
+    compare(seen.length, 1, "exactly one new process")
+    var proc = store.followProc
+    compare(proc.command.length, 8)
+    compare(argv(proc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    send(proc, tc.resumeHello)
+    compare(store.buffer.nextOffset, 28, "the hello does not move the offset")
+    compare(store.liveText, "stub claude ok phase=review", "no gap marker")
+    send(proc, tc.moreLine)
+    compare(store.liveText, "stub claude ok phase=review\nmore")
+  }
+
+  // N3
+  function test_resuming_with_nothing_read_omits_the_offset() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    send(store.followProc, streamLines("logs-follow-agent.jsonl")[0])
+    store.inRunDetail = false
+    store.inRunDetail = true
+    compare(seen.length, 1)
+    compare(store.followProc.command.length, 7, "no OFFSET at 0")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+  }
+
+  // N4
+  function test_a_crash_resumes_from_next_offset() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    old.exited(0)
+    compare(store.followProc, null)
+    compare(store.reconnects, 1)
+    compare(store.retryTimer.running, true)
+    compare(store.retryTimer.interval, 1000)
+    compare(seen.length, 0, "nothing starts before the timer fires")
+    store.retryTimer.triggered()
+    compare(seen.length, 1)
+    compare(store.retryTimer.running, false)
+    compare(store.followProc.command.length, 8)
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    compare(store.followStatus, "connecting")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer is kept")
+  }
+
+  // N5
+  function test_restarts_back_off_1_2_4_seconds() {
+    var store = following(); if (!store) return
+    store.nowMs = 100000
+    send(store.followProc, tc.chunkLine)
+    var expected = [1000, 2000, 4000]
+    for (var i = 0; i < expected.length; i++) {
+      crash(store)
+      compare(store.reconnects, i + 1)
+      compare(store.retryTimer.interval, expected[i])
+      compare(store.retryTimer.running, true)
+      store.retryTimer.triggered()
+      verify(store.followProc, "restarted after exit " + (i + 1))
+    }
+    store.retryTimer.stop()
+  }
+
+  // N6, Review Focus 3 (3.3): a stray fire after the error starts nothing
+  function test_the_fourth_exit_within_60_s_is_an_error() {
+    var codes = [0, 1]
+    for (var c = 0; c < codes.length; c++) {
+      var store = following(); if (!store) return
+      var seen = recorder(store)
+      store.nowMs = 100000
+      send(store.followProc, tc.chunkLine)
+      for (var i = 0; i < 3; i++) {
+        crash(store, codes[c])
+        store.retryTimer.triggered()
+      }
+      compare(seen.length, 3)
+      crash(store, codes[c])
+      compare(store.reconnects, 4)
+      compare(store.followStatus, "error")
+      compare(store.followError, "Live output stopped: the helper exited with code " + codes[c])
+      compare(store.retryTimer.running, false)
+      compare(store.followProc, null)
+      compare(store.liveText, "stub claude ok phase=review")
+      store.retryTimer.triggered()
+      compare(seen.length, 3, "a stray fire after the error starts nothing")
+      store.inRunDetail = false
+      store.inRunDetail = true
+      compare(seen.length, 3, "nor does a return")
+    }
+  }
+
+  // N9
+  function test_exits_older_than_60_s_leave_the_window() {
+    var store = following(); if (!store) return
+    send(store.followProc, tc.chunkLine)
+    crashesAt(store, [10000, 11000, 13000])
+    store.nowMs = 80000
+    crash(store)
+    compare(store.reconnects, 1)
+    compare(store.retryTimer.interval, 1000)
+    store.retryTimer.stop()
+
+    var edge = following(); if (!edge) return
+    send(edge.followProc, tc.chunkLine)
+    crashesAt(edge, [10000, 11000, 13000])
+    edge.nowMs = 69999
+    crash(edge)
+    compare(edge.reconnects, 4, "59999 ms after the first still counts")
+    compare(edge.followStatus, "error")
+
+    var past = following(); if (!past) return
+    send(past.followProc, tc.chunkLine)
+    crashesAt(past, [10000, 11000, 13000])
+    past.nowMs = 70000
+    crash(past)
+    compare(past.reconnects, 3, "60000 ms after the first drops it")
+    compare(past.retryTimer.interval, 4000)
+    compare(past.followStatus, "connecting", "a restart is pending, not an error")
+    past.retryTimer.stop()
+  }
+
+  // N7
+  function test_a_good_chunk_resets_the_count() {
+    var store = following(); if (!store) return
+    store.nowMs = 100000
+    send(store.followProc, tc.chunkLine)
+    crash(store); store.retryTimer.triggered()
+    crash(store); store.retryTimer.triggered()
+    compare(store.reconnects, 2)
+    send(store.followProc, tc.moreLine)
+    compare(store.reconnects, 0)
+    compare(store.liveText, "stub claude ok phase=review\nmore")
+    crash(store)
+    compare(store.reconnects, 1)
+    compare(store.retryTimer.interval, 1000)
+    store.retryTimer.stop()
+  }
+
+  // N8
+  function test_a_hello_or_a_duplicate_chunk_is_not_a_good_chunk() {
+    var store = following(); if (!store) return
+    store.nowMs = 100000
+    send(store.followProc, tc.chunkLine)
+    compare(store.buffer.nextOffset, 28)
+    crash(store); store.retryTimer.triggered()
+    crash(store); store.retryTimer.triggered()
+    send(store.followProc, tc.resumeHello)
+    send(store.followProc, tc.chunkLine)
+    compare(store.reconnects, 2)
+    compare(store.liveText, "stub claude ok phase=review", "the duplicate is dropped")
+    crash(store)
+    compare(store.reconnects, 3)
+    compare(store.retryTimer.interval, 4000)
+    store.retryTimer.stop()
+  }
+
+  // N10
+  function test_a_pending_restart_is_cancelled() {
+    var props = ["inRunDetail", "active"]
+    for (var i = 0; i < props.length; i++) {
+      var store = following(); if (!store) return
+      send(store.followProc, tc.chunkLine)
+      crash(store)
+      var seen = recorder(store)
+      store[props[i]] = false
+      compare(store.retryTimer.running, false, props[i] + " false cancels")
+      store.retryTimer.triggered()
+      compare(seen.length, 0, props[i] + ": a stray fire starts nothing")
+      compare(store.reconnects, 1, "the count stays")
+      compare(store.followStatus, "following")
+      store[props[i]] = true
+      compare(seen.length, 1, props[i] + ": the return resumes at once")
+      compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    }
+
+    var sel = following(stepRun(false), explore()); if (!sel) return
+    send(sel.followProc, tc.chunkLine)
+    crash(sel)
+    var seenSel = recorder(sel)
+    sel.selection = verifyStep()
+    compare(sel.retryTimer.running, false, "another selection cancels")
+    compare(seenSel.length, 1, "verify starts")
+    var b = sel.followProc
+    sel.retryTimer.triggered()
+    compare(seenSel.length, 1, "a stray fire starts nothing")
+    compare(sel.followProc, b)
+    compare(argv(b), tc.followCmd + tc.runId + "|" + tc.openCard + "|verify|0")
+
+    var cases = [
+      ["another run", function(s) { s.run = otherRun("20261009T000000Z-0th3r000", "ok") }],
+      ["a non-live selection", function(s) { s.selection = { card_id: tc.openCard, phase: "worktree", attempt: 0, step: true } }]
+    ]
+    for (var j = 0; j < cases.length; j++) {
+      var st = following(); if (!st) return
+      send(st.followProc, tc.chunkLine)
+      crash(st)
+      var seenSt = recorder(st)
+      cases[j][1](st)
+      compare(st.retryTimer.running, false, cases[j][0] + " cancels")
+      compare(st.followKey, null, cases[j][0])
+      st.retryTimer.triggered()
+      compare(seenSt.length, 0, cases[j][0] + ": a stray fire starts nothing")
+    }
+  }
+
+  // N11
+  function test_a_new_snapshot_during_the_wait_starts_nothing() {
+    var store = following(); if (!store) return
+    send(store.followProc, tc.chunkLine)
+    crash(store)
+    var seen = recorder(store)
+    store.run = startedRun()
+    compare(seen.length, 0, "no early start")
+    compare(store.retryTimer.running, true)
+    compare(store.followStatus, "following")
+    store.retryTimer.triggered()
+    compare(seen.length, 1, "the pending restart stays in charge")
+  }
+
+  // N12
+  function test_a_key_that_stops_being_live_during_the_wait_clears() {
+    var store = following(); if (!store) return
+    send(store.followProc, tc.chunkLine)
+    crash(store)
+    var seen = recorder(store)
+    store.run = exploreOkRun()
+    compare(store.followKey, null)
+    compare(store.followStatus, "idle")
+    compare(store.liveText, "")
+    compare(store.reconnects, 0)
+    compare(store.retryTimer.running, false)
+    store.retryTimer.triggered()
+    compare(seen.length, 0, "a stray fire starts nothing")
+  }
+
+  // A key that stopped being live while its process ran: its exit schedules
+  // the restart, and the restart clears it instead of starting.
+  function test_a_restart_due_on_a_key_no_longer_live_clears() {
+    var store = following(); if (!store) return
+    send(store.followProc, tc.chunkLine)
+    store.run = exploreOkRun()
+    verify(store.followProc, "the process stays for the end line")
+    crash(store)
+    compare(store.retryTimer.running, true)
+    var seen = recorder(store)
+    store.retryTimer.triggered()
+    compare(seen.length, 0, "no process for a key that is not live")
+    compare(store.followKey, null)
+    compare(store.followStatus, "idle")
+    compare(store.liveText, "")
+    compare(store.reconnects, 0)
+  }
+
+  // Review Focus 1 (3.3)
+  function test_away_during_the_wait_and_back_starts_fresh() {
+    var store = following(stepRun(false), explore()); if (!store) return
+    store.nowMs = 100000
+    send(store.followProc, tc.chunkLine)
+    crash(store)
+    store.selection = verifyStep()
+    store.selection = explore()
+    compare(store.followProc.command.length, 7, "from offset 0")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+    compare(store.liveText, "")
+    compare(store.reconnects, 0)
+    compare(store.retryTimer.running, false)
+  }
+
+  // N13
+  function test_follow_unsupported_falls_back_to_snapshots() {
+    var store = following(); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+    var seen = recorder(store)
+    var proc = store.followProc
+    send(proc, refusal("FollowUnsupported", "am logs cannot follow (exit 2)."))
+    compare(store.followStatus, "unsupported")
+    compare(store.endStatus, "")
+    compare(store.followError, "This am cannot stream output (am logs --follow is missing)")
+    compare(spy.count, 1)
+    proc.exited(0)
+    compare(store.followProc, null)
+    compare(store.retryTimer.running, false, "no reconnect")
+    store.inRunDetail = false
+    store.inRunDetail = true
+    compare(seen.length, 0, "no process on return")
+    compare(store.followStatus, "unsupported")
+    compare(spy.count, 1)
+  }
+
+  // N14, Review Focus 4 (3.3)
+  function test_schema_mismatch_falls_back_with_its_schema() {
+    var cases = [
+      ["am logs speaks schema 3; this helper reads schema 1 or 2.", "Unknown output stream schema 3"],
+      ["am logs speaks schema null; this helper reads schema 1 or 2.", "Unknown output stream schema null"],
+      ['am logs speaks schema "1"; this helper reads schema 1 or 2.', 'Unknown output stream schema "1"'],
+      ["weird", "Unknown output stream schema"],
+      [7, "Unknown output stream schema"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var store = following(); if (!store) return
+      var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+      var proc = store.followProc
+      send(proc, refusal("SchemaMismatch", cases[i][0]))
+      compare(store.followStatus, "unsupported", String(cases[i][0]))
+      compare(store.followError, cases[i][1])
+      compare(spy.count, 1)
+      proc.exited(0)
+      compare(store.retryTimer.running, false, "no reconnect")
+    }
+  }
+
+  // N15
+  function test_am_missing_stops_silently() {
+    var store = following(stepRun(false), explore()); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+    var proc = store.followProc
+    send(proc, streamLines("logs-follow-agent.jsonl")[0])
+    send(proc, tc.chunkLine)
+    send(proc, refusal("AmMissing", "am is not installed."))
+    compare(store.followStatus, "idle")
+    compare(store.followError, "")
+    compare(store.endStatus, "")
+    compare(store.followKey.phase, "explore", "the key is held")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer is held")
+    compare(spy.count, 0)
+    var seen = recorder(store)
+    proc.exited(0)
+    compare(store.retryTimer.running, false)
+    store.run = stepRun(false)
+    compare(seen.length, 0, "a new snapshot starts nothing")
+    store.inRunDetail = false
+    store.inRunDetail = true
+    compare(seen.length, 0, "a return starts nothing")
+    store.selection = verifyStep()
+    compare(seen.length, 1, "another selection starts normally")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|verify|0")
+    compare(store.followStatus, "connecting")
+  }
+
+  // N16, Review Focus 5 (3.3): malformed envelopes are errors too
+  function test_a_refusal_or_a_stream_error_is_an_error() {
+    var envelope = F.load("logs-follow-refusal.json")
+    var cases = [
+      [JSON.stringify(envelope), Runs.errorText(envelope)],
+      [refusal("StreamError", "am logs: run left"), "StreamError: am logs: run left"],
+      ['{"ok":false,"error":"boom"}', Runs.errorText({ ok: false, error: "boom" })],
+      ['{"ok":false}', Runs.errorText({ ok: false })]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var store = following(); if (!store) return
+      var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+      var proc = store.followProc
+      send(proc, tc.chunkLine)
+      send(proc, cases[i][0])
+      compare(store.followStatus, "error", cases[i][0])
+      compare(store.followError, cases[i][1])
+      compare(store.liveText, "stub claude ok phase=review")
+      compare(spy.count, 0)
+      proc.exited(0)
+      compare(store.retryTimer.running, false, "no reconnect")
+      compare(store.followStatus, "error")
+    }
+  }
+
+  // N17
+  function test_a_step_with_no_recorded_attempt_has_no_output() {
+    var store = following(stepRun(true), verifyStep()); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+    var seen = recorder(store)
+    var proc = store.followProc
+    send(proc, JSON.stringify(F.load("logs-follow-refusal.json")))
+    compare(store.followStatus, "ended")
+    compare(store.endStatus, "")
+    compare(store.followError, "This step records no output")
+    compare(spy.count, 0)
+    proc.exited(0)
+    compare(store.retryTimer.running, false)
+    store.active = false
+    store.active = true
+    compare(seen.length, 0, "no restart on return")
+    compare(store.followStatus, "ended")
+  }
+
+  // N18
+  function test_lines_after_a_fallback_or_am_missing_are_ignored() {
+    var cases = [["FollowUnsupported", "unsupported"], ["AmMissing", "idle"]]
+    for (var i = 0; i < cases.length; i++) {
+      var store = following(); if (!store) return
+      var proc = store.followProc
+      send(proc, tc.chunkLine)
+      send(proc, refusal(cases[i][0], "x"))
+      send(proc, tc.moreLine)
+      compare(store.liveText, "stub claude ok phase=review", cases[i][0])
+      compare(store.followStatus, cases[i][1])
+    }
+  }
+}

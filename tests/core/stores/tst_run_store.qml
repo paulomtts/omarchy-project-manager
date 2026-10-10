@@ -2440,6 +2440,7 @@ TestCase {
     compare(store.logsLoading, false)
     compare(store.logsError, "")
     compare(store.logsStatus, "")
+    compare(store.logsNote, "")
     verify(!store.logsRunner.current, "no logs fetch at start")
   }
 
@@ -2686,28 +2687,272 @@ TestCase {
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
   }
 
-  // The logs launch: python3, the script, then the project root and the
-  // attempt, five arguments; the root is the selected run's project.root, one
-  // element.
-  function test_logs_argv_leads_with_the_runs_project_root() {
-    var store = opened(); if (!store) return
-    var procA = store.logsRunner.current
-    compare(argv(procA), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/my proj|r1|" + tc.openCard + "|explore|1")
-    compare(procA.command.length, 7, "five arguments after python3 and the script")
-    compare(procA.command[2], "/home/u/my proj", "the root with a space is one argument")
+  // The logs launch: python3, the script, then the run's repo_dir and the
+  // attempt, five arguments; the repository is the selected run's repo_dir,
+  // one element, never its project root.
+  function test_logs_argv_leads_with_the_runs_repo_dir() {
+    var store = crossStore("", [], [bWork(treeEntry("rb", "started", rootB))]); if (!store) return
+    compare(store.runById("rb").project.root, "/home/u/b", "the run is rootB's")
+    store.selectedRunId = "rb"
+    var proc = store.logsRunner.current
+    verify(proc, "the default attempt's logs were asked for")
+    compare(argv(proc), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/b-work|rb|" + tc.openCard + "|explore|1")
+    compare(proc.command.length, 7, "five arguments after python3 and the script")
+    compare(proc.command[2], "/home/u/b-work", "the run's repo_dir")
+    verify(proc.command.indexOf("/home/u/b") < 0, "never the project root")
   }
 
-  // The run's project.root reaches the runner byte-for-byte.
-  function test_logs_argv_keeps_an_odd_root_verbatim() {
+  // The run's repo_dir reaches the runner byte-for-byte.
+  function test_logs_argv_keeps_an_odd_repo_dir_verbatim() {
     var odd = "/home/u/o'dd; $x"
     var store = makeWithProject(odd); if (!store) return
     reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started", odd)]), 0)
+    compare(store.runById("r1").repo_dir, odd)
     store.selectedRunId = "r1"
     var proc = store.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
     compare(proc.command.length, 7)
     compare(proc.command[2], odd, "not split, quoted, trimmed or normalised")
     compare(proc.command[3], "r1")
+  }
+
+  // ---- selecting a step (3.1)
+
+  // treeEntry with openCard's `worktree` step (phase 0, done in the capture)
+  // at `status`; its explore attempt 1 stays started.
+  function stepEntry(id, status) {
+    var e = treeEntry(id, "started")
+    // synthetic: the worktree step's status is the test's; no capture has a started step
+    e.status.stories[1].subtasks[1].phases[0].status = status
+    return e
+  }
+
+  // logs-follow-refusal.json, am's refusal for a step with no log, as one JSON line.
+  function refusalReply() {
+    return JSON.stringify(F.load("logs-follow-refusal.json")) + "\n"
+  }
+
+  function test_selecting_a_step_stores_the_step_form_and_its_phase_status() {
+    var store = opened(); if (!store) return
+    compare(store.selectedAttempt.phase, "explore", "the capture opens explore 1")
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    compare(JSON.stringify(store.selectedAttempt),
+            JSON.stringify({ card_id: tc.openCard, phase: "worktree", attempt: 0, step: true }))
+    compare(store.logsLoading, true)
+    compare(store.logsStatus, "done", "the worktree phase's own status")
+  }
+
+  function test_a_step_launches_with_attempt_0() {
+    var store = opened(); if (!store) return
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    var proc = store.logsRunner.current
+    compare(argv(proc), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+    compare(proc.command.length, 7)
+  }
+
+  // Review Focus 1.
+  function test_a_step_needs_step_true_and_attempt_0() {
+    var store = opened(); if (!store) return
+    var seq = store.logsRunner.seq
+    var shown = JSON.stringify(store.selectedAttempt)
+    store.selectAttempt(tc.doneCard, "spec", 1, true)
+    store.selectAttempt(tc.doneCard, "spec", "0", true)
+    store.selectAttempt(tc.doneCard, "spec", -1, true)
+    store.selectAttempt(tc.doneCard, "spec", NaN, true)
+    store.selectAttempt(tc.doneCard, "", 0, true)
+    store.selectAttempt("", "worktree", 0, true)
+    compare(store.logsRunner.seq, seq, "nothing launched")
+    compare(JSON.stringify(store.selectedAttempt), shown, "the selection is unchanged")
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    compare(Object.keys(store.selectedAttempt).join(","), "card_id,phase,attempt", "no step key with step absent")
+    store.selectAttempt(tc.doneCard, "spec", 1, false)
+    compare(Object.keys(store.selectedAttempt).join(","), "card_id,phase,attempt", "no step key with step false")
+    compare(JSON.stringify(store.selectedAttempt), JSON.stringify({ card_id: tc.doneCard, phase: "spec", attempt: 1 }))
+  }
+
+  function test_a_step_without_a_selected_run_launches_nothing() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "started")]), 0)
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    verify(!store.logsRunner.current, "no run selected")
+    compare(store.selectedAttempt, null)
+  }
+
+  function test_a_step_and_an_attempt_are_different_selections() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("explore text\n"), 0)
+    compare(store.logsText, "explore text")
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    compare(store.logsText, "", "the attempt's text is never shown under the step")
+    compare(store.logsFetchedMs, 0)
+    compare(store.logsTruncated, false)
+    compare(store.logsError, "")
+    reply(store.logsRunner.current, logsReply("worktree text\n"), 0)
+    compare(store.logsText, "worktree text")
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    compare(store.logsText, "worktree text", "the same step keeps its text until the reply")
+    verify(store.logsFetchedMs > 0)
+    compare(store.logsLoading, true)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+  }
+
+  function test_a_step_with_no_log_says_so_without_an_error() {
+    var store = opened(); if (!store) return
+    reply(store.logsRunner.current, logsReply("explore text\n"), 0)
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    var before = Date.now()
+    reply(store.logsRunner.current, refusalReply(), 0)
+    var after = Date.now()
+    compare(store.logsText, "")
+    compare(store.logsTruncated, false)
+    compare(store.logsError, "", "not an error")
+    compare(store.logsNote, "This step records no output")
+    compare(store.logsLoading, false)
+    verify(store.logsFetchedMs >= before && store.logsFetchedMs <= after, "a reply landed: " + store.logsFetchedMs)
+    compare(store.amStatus, "ok")
+    compare(store.lastError, "")
+    store.refreshLogs()
+    compare(store.logsNote, "This step records no output", "a refresh keeps the note until its reply")
+    reply(store.logsRunner.current, logsReply("worktree text\n"), 0)
+    compare(store.logsNote, "", "a good reply clears the note")
+    compare(store.logsText, "worktree text")
+    compare(store.logsError, "")
+  }
+
+  function test_the_note_is_only_for_a_steps_unknown_attempt() {
+    var store = opened(); if (!store) return
+    var refusal = F.load("logs-follow-refusal.json")
+    reply(store.logsRunner.current, logsReply("explore text\n"), 0)
+    store.refreshLogs()
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsError, "UnknownAttemptError: " + refusal.error.message, "an attempt's refusal is an error")
+    compare(store.logsNote, "")
+    compare(store.logsText, "explore text", "the text is kept")
+
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsNote, "This step records no output")
+    store.refreshLogs()
+    reply(store.logsRunner.current, JSON.stringify({ ok: false, error: { type: "HelperError", message: "boom" } }) + "\n", 1)
+    compare(store.logsError, "HelperError: boom", "another failure of a step is an error")
+    compare(store.logsNote, "", "and drops the note")
+    store.refreshLogs()
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsNote, "This step records no output")
+    compare(store.logsError, "", "the note replaces the error")
+    store.refreshLogs()
+    reply(store.logsRunner.current, "not json", 1)
+    compare(store.logsError, "The logs snapshot gave no usable result (exit 1).")
+    compare(store.logsNote, "", "an unusable reply drops the note")
+    // synthetic: an ok:false envelope whose error is not an object
+    store.refreshLogs()
+    reply(store.logsRunner.current, JSON.stringify({ ok: false, error: "UnknownAttemptError" }) + "\n", 1)
+    compare(store.logsNote, "", "only error.type UnknownAttemptError is the note")
+    compare(store.logsError, "unknown error")
+  }
+
+  // Review Focus 2.
+  function test_a_late_step_refusal_after_switching_to_an_attempt_is_dropped() {
+    var store = opened(); if (!store) return
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    var stepFetch = store.logsRunner.current
+    store.selectAttempt(tc.openCard, "explore", 1)
+    var attemptFetch = store.logsRunner.current
+    reply(stepFetch, refusalReply(), 0)
+    compare(store.logsNote, "", "the step's late reply is dropped")
+    reply(attemptFetch, refusalReply(), 0)
+    compare(store.logsNote, "", "the attempt's refusal is no note")
+    verify(store.logsError.indexOf("UnknownAttemptError: ") === 0, store.logsError)
+  }
+
+  function test_another_selection_empties_the_note_and_the_same_step_keeps_it() {
+    var store = opened(); if (!store) return
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    reply(store.logsRunner.current, refusalReply(), 0)
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    compare(store.logsNote, "This step records no output", "the same step keeps the note until its reply")
+    store.selectAttempt(tc.openCard, "explore", 1)
+    compare(store.logsNote, "", "another selection starts without it")
+  }
+
+  // Review Focus 5.
+  function test_clearing_the_run_clears_the_note() {
+    var store = opened(); if (!store) return
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsNote, "This step records no output")
+    store.selectedRunId = ""
+    compare(store.logsNote, "")
+    compare(store.selectedAttempt, null)
+  }
+
+  function test_the_default_opens_a_started_step() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([stepEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    compare(JSON.stringify(store.selectedAttempt),
+            JSON.stringify({ card_id: tc.openCard, phase: "worktree", attempt: 0, step: true }))
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+    compare(store.logsStatus, "started")
+  }
+
+  // Review Focus 4.
+  function test_a_run_opened_before_its_first_phase_picks_a_started_step() {
+    var store = makeWithProject(rootA); if (!store) return
+    // synthetic: the run before any phase exists; shape kept
+    var bare = treeEntry("r1", "started")
+    var stories = bare.status.stories
+    for (var i = 0; i < stories.length; i++) {
+      for (var j = 0; j < stories[i].subtasks.length; j++) stories[i].subtasks[j].phases = []
+    }
+    bare.status.rows = []
+    reply(store.snapshotRunner.current, okReply([bare]), 0)
+    store.selectedRunId = "r1"
+    compare(store.selectedAttempt, null)
+    verify(!store.logsRunner.current)
+    snapshot(store, [stepEntry("r1", "started")])
+    compare(JSON.stringify(store.selectedAttempt),
+            JSON.stringify({ card_id: tc.openCard, phase: "worktree", attempt: 0, step: true }))
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+  }
+
+  function test_a_snapshot_that_changes_the_steps_status_fetches_once() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([stepEntry("r1", "started")]), 0)
+    store.selectedRunId = "r1"
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    reply(store.logsRunner.current, refusalReply(), 0)
+    compare(store.logsStatus, "started")
+    var seq = store.logsRunner.seq
+    snapshot(store, [stepEntry("r1", "started")])
+    compare(store.logsRunner.seq, seq, "an unchanged step status fetches nothing")
+    snapshot(store, [stepEntry("r1", "done")])
+    compare(store.logsRunner.seq, seq + 1, "started -> done fetches the step again")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+    compare(store.logsStatus, "done")
+    snapshot(store, [stepEntry("r1", "done")])
+    compare(store.logsRunner.seq, seq + 1, "only once")
+  }
+
+  // Review Focus 3.
+  function test_a_step_whose_phase_disappears_refetches_once() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([stepEntry("r1", "done")]), 0)
+    store.selectedRunId = "r1"
+    store.selectAttempt(tc.openCard, "worktree", 0, true)
+    compare(store.logsStatus, "done")
+    var seq = store.logsRunner.seq
+    // synthetic: openCard's worktree phase gone from the snapshot
+    var gone = stepEntry("r1", "done")
+    gone.status.stories[1].subtasks[1].phases.splice(0, 1)
+    snapshot(store, [gone])
+    compare(store.logsRunner.seq, seq + 1, "the status moved to \"\"")
+    compare(store.logsStatus, "")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|worktree|0")
+    var again = stepEntry("r1", "done")
+    again.status.stories[1].subtasks[1].phases.splice(0, 1)
+    snapshot(store, [again])
+    compare(store.logsRunner.seq, seq + 1, "then nothing")
   }
 
   // ---- stopped run opens its failed attempt (2.2)
@@ -2730,7 +2975,7 @@ TestCase {
   // treeEntry(id, "ok") escalated at a failed step: openCard's explore is done
   // and its verify failed with no attempt. Its stop report names openCard
   // verify 0; Runs.defaultAttempt names openCard explore 1 (the last row).
-  function stepEntry(id) {
+  function failedStepEntry(id) {
     var e = treeEntry(id, "ok")
     // synthetic: the run escalated at openCard's verify, a step that records no attempt.
     e.status.run.status = "escalated"
@@ -2765,7 +3010,7 @@ TestCase {
 
   // Review Focus 1.
   function test_a_failed_step_opens_attempt_0() {
-    var store = openOn(stepEntry("r1")); if (!store) return
+    var store = openOn(failedStepEntry("r1")); if (!store) return
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
     compare(store.selectedAttempt.card_id, tc.openCard)
     compare(store.selectedAttempt.phase, "verify")
@@ -2819,12 +3064,12 @@ TestCase {
     var store = openOn(treeEntry("r1", "started")); if (!store) return
     reply(store.logsRunner.current, logsReply("a\n"), 0)
     var seq = store.logsRunner.seq
-    snapshot(store, [stepEntry("r1")])
+    snapshot(store, [failedStepEntry("r1")])
     compare(store.logsRunner.seq, seq + 1, "running -> escalated re-targets")
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
     compare(store.logsText, "", "a new attempt starts empty")
     compare(store.logsRunState, "escalated")
-    snapshot(store, [stepEntry("r1")])
+    snapshot(store, [failedStepEntry("r1")])
     compare(store.logsRunner.seq, seq + 1, "only once")
     snapshot(store, [treeEntry("r1", "started")])
     compare(store.logsRunner.seq, seq + 2, "escalated -> running re-targets")
@@ -2844,7 +3089,7 @@ TestCase {
     compare(store.selectedAttempt.phase, "spec")
     compare(store.selectedAttempt.attempt, 1)
     compare(store.logsText, "spec text")
-    snapshot(store, [stepEntry("r1")])
+    snapshot(store, [failedStepEntry("r1")])
     compare(store.logsRunner.seq, seq + 1, "a state move re-targets")
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
   }
@@ -2887,7 +3132,7 @@ TestCase {
     compare(store.logsRunState, "", "the run is not in the snapshot")
     compare(store.selectedAttempt, null)
     verify(!store.logsRunner.current, "no logs launch")
-    snapshot(store, [stepEntry("r1")])
+    snapshot(store, [failedStepEntry("r1")])
     compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
     compare(store.logsRunState, "escalated")
   }
@@ -7335,14 +7580,28 @@ TestCase {
   }
 
   // 10
-  function test_no_logs_for_a_selected_run_without_a_project_root() {
-    var store = make(); if (!store) return
-    store.runs = [held(treeEntry("r1", "started"))]
-    compare(store.runs[0].project.root, undefined, "normalizeRun's project has no root")
-    store.selectedRunId = "r1"
-    verify(store.selectedAttempt !== null, "the default attempt is selected")
-    verify(!store.logsRunner.current, "no logs launch")
-    compare(store.logsLoading, false)
+  function test_no_logs_for_a_selected_run_without_a_repo_dir() {
+    var bad = ["", null, 7]
+    for (var i = 0; i < bad.length; i++) {
+      var label = "repo_dir " + JSON.stringify(bad[i])
+      var store = make(); if (!store) return
+      var run = held(treeEntry("r1", "started"), rootA)
+      run.repo_dir = bad[i]
+      store.runs = [run]
+      store.selectedRunId = "r1"
+      verify(store.selectedAttempt !== null, label + ": the default attempt is selected")
+      verify(!store.logsRunner.current, label + ": no logs launch")
+      compare(store.logsLoading, false, label)
+      compare(store.logsStatus, "", label + ": untouched")
+    }
+    var noRoot = make(); if (!noRoot) return
+    noRoot.runs = [held(treeEntry("r2", "started"))]
+    compare(noRoot.runs[0].project.root, undefined, "normalizeRun's project has no root")
+    noRoot.selectedRunId = "r2"
+    var proc = noRoot.logsRunner.current
+    verify(proc, "a run with a repo_dir but no project root launches")
+    compare(argv(proc), "python3|/plugin/core/backend/runs/runs-logs.py|/home/u/my proj|r2|" + tc.openCard + "|explore|1")
+    compare(noRoot.logsLoading, true)
   }
 
   // Review Focus 3.
