@@ -91,15 +91,15 @@ Scope {
 
   // Another key: stop, clear, and start when it can be followed. The same key
   // off Run detail or with the panel closed: stop and keep the rest. The same
-  // key back with no process: follow it again from offset 0 while live (clear
-  // once it is not), unless it ended or failed. A running process of the same
-  // key is left alone.
+  // key back with no process: resume it from the buffer's nextOffset while
+  // live (clear once it is not), unless it ended or failed. A running process
+  // of the same key is left alone.
   function reconcile() {
     var k = store.selectionKey(store.run, store.selection)
     if (!store.sameKey(k, store.followKey)) {
       if (store.followProc) store.stop()
       store.clear()
-      if (store.canStart(k)) store.start(k)
+      if (store.canStart(k)) store.start(k, 0)
       return
     }
     if (k === null) return
@@ -110,21 +110,23 @@ Scope {
     if (store.followProc) return
     var s = store.followStatus
     if (s === "ended" || s === "error" || s === "unsupported") return
-    if (store.canStart(k)) store.start(k)
+    if (store.canStart(k)) store.start(k, store.buffer.nextOffset)
     else if (!store.isLive()) store.clear()
   }
 
-  // runs-logs-follow.py REPO RUN CARD PHASE ATTEMPT, from offset 0, into a fresh buffer.
-  function start(k) {
+  // runs-logs-follow.py REPO RUN CARD PHASE ATTEMPT, plus OFFSET when offset
+  // > 0. The buffer is kept: a new key reaches here only after clear().
+  function start(k, offset) {
     store.followSeq += 1
     store.followKey = k
-    store.setBuffer(LogStream.emptyBuffer())
     store.followStatus = "connecting"
     store.endStatus = ""
     store.followError = ""
     var proc = followC.createObject(store, { launchSeq: store.followSeq })
-    proc.command = ["python3", store.backendDir + "runs/runs-logs-follow.py", store.run.repo_dir,
-                    k.run_id, k.card_id, k.phase, String(k.attempt)]
+    var command = ["python3", store.backendDir + "runs/runs-logs-follow.py", store.run.repo_dir,
+                   k.run_id, k.card_id, k.phase, String(k.attempt)]
+    if (offset > 0) command.push(String(offset))
+    proc.command = command
     store.followProc = proc
     proc.running = true
   }

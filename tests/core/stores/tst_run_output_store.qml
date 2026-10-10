@@ -21,6 +21,10 @@ TestCase {
   readonly property string doneCard: "5560d0fe-2b8e-4ef9-ad71-96b50ee89daa"
   readonly property string followCmd: "python3|/plugin/core/backend/runs/runs-logs-follow.py|" + repo + "|"
   readonly property string chunkLine: '{"offset":0,"text":"stub claude ok phase=review\\n"}'
+  // A hello on a resumed follow: am repeats the offset it resumes from.
+  readonly property string resumeHello: '{"event":"logs","offset":28,"path":"/x/stdout.log","schema":1}'
+  // The chunk right after chunkLine (which ends at byte 28).
+  readonly property string moreLine: '{"offset":28,"text":"more\\n"}'
 
   Component { id: spyC; SignalSpy {} }
 
@@ -456,7 +460,9 @@ TestCase {
     compare(seen.length, 1, "exactly one new process")
     verify(store.followProc !== old)
     compare(store.followProc.running, true)
-    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+    compare(store.followProc.command.length, 8, "OFFSET")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer it resumes")
     compare(store.followStatus, "connecting")
   }
 
@@ -478,7 +484,9 @@ TestCase {
     compare(seen.length, 1, "exactly one new process")
     verify(store.followProc !== old)
     compare(store.followProc.running, true)
-    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+    compare(store.followProc.command.length, 8, "OFFSET")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer it resumes")
     compare(store.followStatus, "connecting")
   }
 
@@ -550,5 +558,58 @@ TestCase {
     compare(seen2.length, 0, "a failed follow does not restart")
     compare(failed.followStatus, "error")
     compare(failed.liveText, "stub claude ok phase=review")
+  }
+
+  // N1
+  function test_reopening_the_panel_resumes_from_next_offset() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    compare(store.buffer.nextOffset, 28)
+    store.active = false
+    store.active = true
+    compare(seen.length, 1, "exactly one new process")
+    var proc = store.followProc
+    compare(proc.command.length, 8)
+    compare(argv(proc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    compare(store.liveText, "stub claude ok phase=review")
+    compare(store.followStatus, "connecting")
+    send(proc, tc.moreLine)
+    compare(store.liveText, "stub claude ok phase=review\nmore")
+    compare(store.followStatus, "following")
+  }
+
+  // N2, Review Focus 2 (3.3): the resumed hello repeats offset 28
+  function test_returning_to_run_detail_resumes_from_next_offset() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    store.inRunDetail = false
+    store.inRunDetail = true
+    compare(seen.length, 1, "exactly one new process")
+    var proc = store.followProc
+    compare(proc.command.length, 8)
+    compare(argv(proc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    send(proc, tc.resumeHello)
+    compare(store.buffer.nextOffset, 28, "the hello does not move the offset")
+    compare(store.liveText, "stub claude ok phase=review", "no gap marker")
+    send(proc, tc.moreLine)
+    compare(store.liveText, "stub claude ok phase=review\nmore")
+  }
+
+  // N3
+  function test_resuming_with_nothing_read_omits_the_offset() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    send(store.followProc, streamLines("logs-follow-agent.jsonl")[0])
+    store.inRunDetail = false
+    store.inRunDetail = true
+    compare(seen.length, 1)
+    compare(store.followProc.command.length, 7, "no OFFSET at 0")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
   }
 }
