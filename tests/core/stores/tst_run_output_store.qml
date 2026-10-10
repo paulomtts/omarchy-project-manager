@@ -845,6 +845,24 @@ TestCase {
     compare(seen.length, 0, "a stray fire starts nothing")
   }
 
+  // A key that stopped being live while its process ran: its exit schedules
+  // the restart, and the restart clears it instead of starting.
+  function test_a_restart_due_on_a_key_no_longer_live_clears() {
+    var store = following(); if (!store) return
+    send(store.followProc, tc.chunkLine)
+    store.run = exploreOkRun()
+    verify(store.followProc, "the process stays for the end line")
+    crash(store)
+    compare(store.retryTimer.running, true)
+    var seen = recorder(store)
+    store.retryTimer.triggered()
+    compare(seen.length, 0, "no process for a key that is not live")
+    compare(store.followKey, null)
+    compare(store.followStatus, "idle")
+    compare(store.liveText, "")
+    compare(store.reconnects, 0)
+  }
+
   // Review Focus 1 (3.3)
   function test_away_during_the_wait_and_back_starts_fresh() {
     var store = following(stepRun(false), explore()); if (!store) return
