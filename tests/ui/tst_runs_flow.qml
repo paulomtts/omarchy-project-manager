@@ -427,6 +427,35 @@ TestCase {
     compare(controlOf(p, "Cancel").text, "Cancel requested…")
   }
 
+  // make(): the open project is /home/u/a, whose map mirrors its board.
+  function test_the_cancel_dialog_detail_is_the_runs_title() {
+    var p = make(); if (!p) return
+    p.app.board.applyTreeData([{ id: "alpha", title: "Alpha work", status: "todo", description: "",
+                                 blocked_by: [], children: [] }])
+    compare(p.app.runTitles.titlesByRoot["/home/u/a"].alpha, "Alpha work", "the open project's map")
+    compare(p.app.runControl.openCancel("run-0000000000a1"), true)
+    wait(50)
+    var modal = cancelModal(p)
+    compare(modal.visible, true)
+    compare(modal.detail, "Alpha work")
+    compare(modal.message, "Cancel run …000000a1? Cancel is final. The run cannot be resumed, only relaunched; cards keep their current status. A phase in flight finishes first.")
+    p.app.runControl.closeCancel()
+  }
+
+  // makeTwo(): run-0000000000f6 is beta's (/home/u/b), milestone zeta.
+  function test_the_cancel_dialog_detail_of_another_projects_run_reads_its_own_map() {
+    var p = makeTwo(); if (!p) return
+    p.app.runTitles.titlesRunner.cancel()
+    var maps = Runs.copyMap(p.app.runTitles.titlesByRoot)
+    maps["/home/u/a"] = { zeta: "Alpha zeta" }
+    maps["/home/u/b"] = { zeta: "Beta zeta" }
+    p.app.runTitles.titlesByRoot = maps
+    compare(p.app.runControl.openCancel("run-0000000000f6"), true)
+    wait(50)
+    compare(cancelModal(p).detail, "Beta zeta")
+    p.app.runControl.closeCancel()
+  }
+
   // 17 (Review Focus: a handled letter never types; Escape closes only the dialog)
   function test_c_in_the_empty_search_opens_the_dialog_without_typing_and_escape_closes_it() {
     var p = make(); if (!p) return
