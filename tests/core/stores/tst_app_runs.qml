@@ -11,10 +11,12 @@
 // noticeRequested, runSettingsWanted and runSettingsSaveRequested App routes,
 // as it routes run control's runSettingsSaveFailed back to the dispatch, and
 // `app.runTitles`, which App feeds with the registry, the open project's root
-// and card map, the run list and the panel-open flag. The stores' own
-// behaviour is tested in tst_run_store.qml, tst_run_alerts_store.qml,
-// tst_run_control_store.qml, tst_run_dispatch_store.qml and
-// tst_run_titles_store.qml.
+// and card map, the run list and the panel-open flag, and `app.runHistory`,
+// which App feeds with the backend dir, the panel-open flag, the run store's
+// per-project snapshot and its chip. The stores' own behaviour is tested in
+// tst_run_store.qml, tst_run_alerts_store.qml, tst_run_control_store.qml,
+// tst_run_dispatch_store.qml, tst_run_titles_store.qml and
+// tst_run_history_store.qml.
 import QtQuick
 import QtTest
 
@@ -894,5 +896,29 @@ TestCase {
             "python3|/plugin/core/backend/boards/board-titles.py|" + tc.pB.root_path)
     compare(app.runTitles.fetchingRoot, tc.pB.root_path)
     compare(app.runTitles.titleStatus[tc.pB.root_path], "loading")
+  }
+
+  function test_app_composes_run_history_wired_to_the_run_store() {
+    var app = make(); if (!app) return
+    verify(app.runHistory, "App composes the history store as app.runHistory")
+    compare(app.runHistory.backendDir, "/plugin/core/backend/")
+    compare(JSON.stringify(app.runHistory.snapshotByProject), JSON.stringify(app.runs.runsByProject))
+    compare(app.runHistory.finishedState, "", "not bound yet: every finished state")
+    compare(app.runHistory.finishedAge, "all", "not bound yet: all time")
+    compare(app.runHistory.active, false)
+    app.panelOpen = true
+    compare(app.runHistory.active, true, "active follows app.panelOpen")
+    var text = listReply([runningIn("r1")], [])
+    reply(app.runs.snapshotRunner.current, text, 0)
+    reply(app.runs.snapshotRunner.current, text, 0)
+    compare(app.runs.runsByProject[tc.pA.root_path].length, 1)
+    compare(JSON.stringify(app.runHistory.snapshotByProject), JSON.stringify(app.runs.runsByProject),
+            "snapshotByProject follows app.runs.runsByProject after an ok snapshot reply")
+    app.runs.toggleRunFilter("parked")
+    compare(app.runHistory.runFilter, "parked", "runFilter follows app.runs.runFilter")
+    app.runs.toggleRunFilter("all")
+    compare(app.runHistory.runFilter, "")
+    app.panelOpen = false
+    compare(app.runHistory.active, false)
   }
 }

@@ -164,6 +164,16 @@ QtObject {
     runs: app.runs.runs
   }
 
+  // The run history never imports the run store: App hands it the backend
+  // directory, the panel-open flag, the run store's per-project snapshot and
+  // its chip. App routes no signal from it.
+  readonly property RunHistoryStore runHistory: RunHistoryStore {
+    backendDir: app.backendDir
+    active: app.panelOpen
+    snapshotByProject: app.runs.runsByProject
+    runFilter: app.runs.runFilter
+  }
+
   // The dispatch never imports the run store or run control: App hands it the
   // backend directory, the open project's root, the panel-open flag, the run
   // list and the open project's run settings from run control, routes its
