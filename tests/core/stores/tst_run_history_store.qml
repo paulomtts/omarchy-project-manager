@@ -399,9 +399,11 @@ TestCase {
 
   // ---- dropped pages
 
-  // The processes `procs` (from inFlight) reply after their roots were
-  // dropped: no entry comes back.
+  // Both roots' fetches were cancelled, and the processes `procs` (from
+  // inFlight) reply after their roots were dropped: no entry comes back.
   function lateRepliesLandNowhere(s, procs) {
+    compare(s.runnerFor(tc.rootA).busy, false, "rootA's fetch is cancelled")
+    compare(s.runnerFor(tc.rootB).busy, false, "rootB's fetch is cancelled")
     reply(procs.a, pageOk([h2()], false), 0)
     reply(procs.b, pageOk([hb2()], false), 0)
     compare(JSON.stringify(Object.keys(s.historyByProject)), "[]", "the dropped roots' old replies create no entry")
@@ -412,8 +414,6 @@ TestCase {
     var procs = inFlight(s)
     s.finishedAge = "week"
     compare(JSON.stringify(Object.keys(s.historyByProject)), "[]")
-    compare(s.runnerFor(tc.rootA).busy, false, "rootA's fetch is cancelled")
-    compare(s.runnerFor(tc.rootB).busy, false)
     lateRepliesLandNowhere(s, procs)
   }
 
