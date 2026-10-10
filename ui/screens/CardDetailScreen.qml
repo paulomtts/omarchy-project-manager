@@ -243,19 +243,26 @@ Column {
       spacing: Style.space(8)
 
       UI.RunBadge {
+        id: runBadge
         theme: detailCard.theme
         state: Runs.runState(runRow.run)
         active: !detailCard.app.runs.stale
       }
 
+      // Takes the width the others leave and elides, so they stay on the row.
       UI.ThemedText {
         objectName: "cardRunTitle" + runRow.modelData
         variant: "small"
         theme: detailCard.theme
+        width: Math.max(0, Math.min(implicitWidth, parent.width - runBadge.width - runId.width - parent.spacing * 2
+          - (runPhase.visible ? runPhase.width + parent.spacing : 0)
+          - (runAge.visible ? runAge.width + parent.spacing : 0)))
         text: Runs.runTitle(runRow.run, Runs.titlesOfRun(runRow.run, detailCard.app.runTitles.titlesByRoot))
+        elide: Text.ElideRight
       }
 
       UI.ThemedText {
+        id: runId
         objectName: "cardRunId" + runRow.modelData
         variant: "caption"
         theme: detailCard.theme
@@ -264,6 +271,7 @@ Column {
       }
 
       UI.ThemedText {
+        id: runPhase
         objectName: "cardRunPhase" + runRow.modelData
         variant: "caption"
         theme: detailCard.theme
@@ -272,6 +280,7 @@ Column {
       }
 
       UI.ThemedText {
+        id: runAge
         objectName: "cardRunAge" + runRow.modelData
         variant: "caption"
         theme: detailCard.theme
