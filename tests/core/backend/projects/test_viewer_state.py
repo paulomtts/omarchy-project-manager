@@ -110,10 +110,15 @@ def test_a_newly_created_state_file_is_private(env):
     assert (state_file(env).stat().st_mode & 0o777) == 0o600
 
 
+def test_the_script_runs_by_its_own_path(env):
+    proc = subprocess.run([SCRIPT, "get"], env=env, capture_output=True, text=True)
+    assert (proc.returncode, json.loads(proc.stdout)) == (0, {"last_project": None})
+
+
 # --- run settings ----------------------------------------------------------------
 
 USAGE = ("usage: viewer-state.py get | set-project <root_path> | get-run-settings <root_path>"
-         " | set-run-settings <root_path> <json>")
+         " | set-run-settings <root_path> <json> | get-global-settings | set-global-settings <json>")
 DEFAULTS = {"verify": [], "allowNoVerification": False, "notifyOnEscalation": False,
             "prefixHistory": [], "parallelism": 4, "confirmDispatch": True, "prefixByMilestone": {}}
 
@@ -689,3 +694,290 @@ def test_set_prefix_by_milestone_merges_into_the_legacy_map(env):
     assert json.loads(state_file(env).read_text()) == {
         "run_settings": {"/p": {"prefixByMilestone": {"m1": "a", "m2": "b"}}}}
     assert old.read_text() == '{"run_settings": {"/p": {"prefixByMilestone": {"m1": "a"}}}}'
+
+
+# --- global settings ---------------------------------------------------------------
+
+GLOBAL_TRUE = '{"notifyOnEscalation": true}'
+GLOBAL_FALSE = '{"notifyOnEscalation": false}'
+
+
+def get_global(env):
+    """get-global-settings as (exit code, output as JSON text): a 1 cannot pass for true, nor extra keys slip by."""
+    code, result = run(env, "get-global-settings")
+    return code, json.dumps(result)
+
+
+def legacy_file(env):
+    return Path(env["XDG_STATE_HOME"]) / "brd-viewer" / "state.json"
+
+
+def test_get_global_settings_with_no_file_is_false(env):
+    assert get_global(env) == (0, GLOBAL_FALSE)
+
+
+def test_get_global_settings_writes_nothing(env):
+    run(env, "get-global-settings")
+    assert not Path(env["XDG_STATE_HOME"]).exists()
+
+
+@pytest.mark.parametrize("content", ["", "not json", "[1]", '"text"',
+                                     pytest.param("[" * 100000, id="nested-past-the-recursion-limit")])
+def test_get_global_settings_treats_bad_files_as_false(env, content):
+    write_state(env, content)
+    before = state_file(env).read_bytes()
+    assert get_global(env) == (0, GLOBAL_FALSE)
+    assert state_file(env).read_bytes() == before
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_get_global_settings_unreadable_file_is_false(env):
+    write_state(env, {"global_settings": {"notifyOnEscalation": True}})
+    state_file(env).chmod(0o000)
+    try:
+        assert get_global(env) == (0, GLOBAL_FALSE)
+    finally:
+        state_file(env).chmod(0o600)
+
+
+@pytest.mark.parametrize("run_settings", [
+    {"/a": {"notifyOnEscalation": True}, "/b": {"notifyOnEscalation": False}, "/c": {"verify": ["x"]}},
+    {"/a": {"notifyOnEscalation": False}, "/b": {"verify": ["x"]}, "/c": {"notifyOnEscalation": True}},
+], ids=["true-first", "true-last"])
+def test_migration_read_is_true_when_any_project_is_true(env, run_settings):
+    write_state(env, {"run_settings": run_settings})
+    assert get_global(env) == (0, GLOBAL_TRUE)
+
+
+@pytest.mark.parametrize("run_settings", [
+    {"/a": {"notifyOnEscalation": False}, "/b": {"notifyOnEscalation": False}},
+    {"/a": {"verify": ["x"]}, "/b": {}},
+    {},
+], ids=["all-false", "no-key", "empty"])
+def test_migration_read_is_false_when_no_project_is_true(env, run_settings):
+    write_state(env, {"run_settings": run_settings})
+    assert get_global(env) == (0, GLOBAL_FALSE)
+
+
+@pytest.mark.parametrize("value", [1, "true", "yes", [True], {"x": True}])
+def test_migration_read_counts_only_the_boolean_true(env, value):
+    write_state(env, {"run_settings": {"/a": {"notifyOnEscalation": value}, "/b": {"notifyOnEscalation": value}}})
+    assert get_global(env) == (0, GLOBAL_FALSE)
+
+
+@pytest.mark.parametrize("run_settings", [5, "x", [], None])
+def test_migration_read_with_damaged_run_settings_is_false(env, run_settings):
+    write_state(env, {"run_settings": run_settings})
+    assert get_global(env) == (0, GLOBAL_FALSE)
+
+
+@pytest.mark.parametrize("entry", ["x", None, [True]])
+def test_migration_read_skips_damaged_entries(env, entry):
+    write_state(env, {"run_settings": {"/bad": entry, "/good": {"notifyOnEscalation": True}}})
+    assert get_global(env) == (0, GLOBAL_TRUE)
+    write_state(env, {"run_settings": {"/bad": entry}})
+    assert get_global(env) == (0, GLOBAL_FALSE)
+
+
+DAMAGED_GLOBAL_SETTINGS = [5, "x", [], None, {}, {"notifyOnEscalation": 1}, {"notifyOnEscalation": "true"},
+                           {"notifyOnEscalation": None}]
+
+
+@pytest.mark.parametrize("stored", DAMAGED_GLOBAL_SETTINGS)
+def test_damaged_global_settings_fall_through_to_the_migration_read(env, stored):
+    write_state(env, {"global_settings": stored, "run_settings": {"/p": {"notifyOnEscalation": True}}})
+    assert get_global(env) == (0, GLOBAL_TRUE)
+
+
+@pytest.mark.parametrize("stored", DAMAGED_GLOBAL_SETTINGS)
+def test_damaged_global_settings_with_no_project_true_is_false(env, stored):
+    write_state(env, {"global_settings": stored, "run_settings": {"/p": {"notifyOnEscalation": False}}})
+    assert get_global(env) == (0, GLOBAL_FALSE)
+
+
+def test_migration_read_uses_the_legacy_file(env):
+    legacy_file(env).parent.mkdir(parents=True)
+    legacy_file(env).write_text('{"run_settings": {"/p": {"notifyOnEscalation": true}}}')
+    assert get_global(env) == (0, GLOBAL_TRUE)
+    assert not state_file(env).parent.exists()
+    assert legacy_file(env).read_text() == '{"run_settings": {"/p": {"notifyOnEscalation": true}}}'
+
+
+def test_get_global_settings_new_file_wins_over_legacy(env):
+    legacy_file(env).parent.mkdir(parents=True)
+    legacy_file(env).write_text('{"run_settings": {"/p": {"notifyOnEscalation": true}}}')
+    write_state(env, {"last_project": "/p"})
+    assert get_global(env) == (0, GLOBAL_FALSE)
+
+
+def test_stored_global_value_wins_over_the_migration_read(env):
+    write_state(env, {"global_settings": {"notifyOnEscalation": False},
+                      "run_settings": {"/p": {"notifyOnEscalation": True}}})
+    assert get_global(env) == (0, GLOBAL_FALSE)
+    write_state(env, {"global_settings": {"notifyOnEscalation": True},
+                      "run_settings": {"/p": {"notifyOnEscalation": False}}})
+    assert get_global(env) == (0, GLOBAL_TRUE)
+
+
+def test_get_global_settings_prints_only_notify_on_escalation(env):
+    write_state(env, {"global_settings": {"notifyOnEscalation": True, "theme": "dark"}})
+    assert get_global(env) == (0, GLOBAL_TRUE)
+
+
+@pytest.mark.parametrize("args", [
+    ("get-global-settings", "x"), ("set-global-settings",), ("set-global-settings", "{}", "x"),
+])
+def test_global_settings_bad_usage_is_rejected(env, args):
+    assert run(env, *args) == (2, {"ok": False, "error": USAGE})
+    assert not Path(env["XDG_STATE_HOME"]).exists()
+
+
+@pytest.mark.parametrize("first, second", [(True, False), (False, True)])
+def test_set_then_get_global_settings_round_trips(env, first, second):
+    for value in (first, second):
+        assert run(env, "set-global-settings", json.dumps({"notifyOnEscalation": value})) == (0, {"ok": True})
+        assert get_global(env) == (0, json.dumps({"notifyOnEscalation": value}))
+
+
+def test_set_global_false_sticks_while_a_project_is_true(env):
+    write_state(env, {"run_settings": {"/p": {"notifyOnEscalation": True}}})
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": false}') == (0, {"ok": True})
+    assert get_global(env) == (0, GLOBAL_FALSE)
+    assert run(env, "get-run-settings", "/p") == (0, {**DEFAULTS, "notifyOnEscalation": True})
+
+
+def test_set_global_settings_empty_object_is_accepted(env):
+    assert run(env, "set-global-settings", "{}") == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {"global_settings": {}}
+    assert get_global(env) == (0, GLOBAL_FALSE)
+    write_state(env, {"run_settings": {"/p": {"notifyOnEscalation": True}}})
+    assert run(env, "set-global-settings", "{}") == (0, {"ok": True})
+    assert json.loads(state_file(env).read_text()) == {
+        "run_settings": {"/p": {"notifyOnEscalation": True}}, "global_settings": {}}
+    assert get_global(env) == (0, GLOBAL_TRUE)
+
+
+def test_set_global_settings_preserves_other_keys(env):
+    before = {"last_project": "/p", "other": {"x": 1},
+              "run_settings": {"/a": {"notifyOnEscalation": True, "verify": ["a"]},
+                               "/b": {"notifyOnEscalation": False, "future": 1}}}
+    write_state(env, before)
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": false}') == (0, {"ok": True})
+    assert same_json(json.loads(state_file(env).read_text()),
+                     {**before, "global_settings": {"notifyOnEscalation": False}})
+
+
+@pytest.mark.parametrize("stored", [5, "x", [], None])
+def test_set_global_settings_replaces_a_damaged_global_settings(env, stored):
+    write_state(env, {"last_project": "/p", "global_settings": stored})
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": true}') == (0, {"ok": True})
+    assert same_json(json.loads(state_file(env).read_text()),
+                     {"last_project": "/p", "global_settings": {"notifyOnEscalation": True}})
+
+
+def test_set_global_settings_keeps_keys_it_was_not_given(env):
+    stored = {"global_settings": {"notifyOnEscalation": 1, "theme": "dark"}}
+    write_state(env, stored)
+    assert run(env, "set-global-settings", "{}") == (0, {"ok": True})
+    assert same_json(json.loads(state_file(env).read_text()), stored)
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": true}') == (0, {"ok": True})
+    assert same_json(json.loads(state_file(env).read_text()),
+                     {"global_settings": {"notifyOnEscalation": True, "theme": "dark"}})
+
+
+def test_set_global_settings_carries_legacy_state_forward(env):
+    legacy = '{"last_project": "/home/u/old", "run_settings": {"/p": {"notifyOnEscalation": true}}}'
+    legacy_file(env).parent.mkdir(parents=True)
+    legacy_file(env).write_text(legacy)
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": false}') == (0, {"ok": True})
+    assert same_json(json.loads(state_file(env).read_text()),
+                     {**json.loads(legacy), "global_settings": {"notifyOnEscalation": False}})
+    assert legacy_file(env).read_text() == legacy
+    assert get_global(env) == (0, GLOBAL_FALSE)
+
+
+@pytest.mark.parametrize("content", ["", "not json", "[1]", '"text"'])
+def test_set_global_settings_replaces_a_corrupt_file(env, content):
+    write_state(env, content)
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": true}') == (0, {"ok": True})
+    assert same_json(json.loads(state_file(env).read_text()), {"global_settings": {"notifyOnEscalation": True}})
+
+
+def test_set_global_settings_leaves_no_temp_files_and_a_private_file(env):
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": true}') == (0, {"ok": True})
+    assert [p.name for p in state_file(env).parent.iterdir()] == ["state.json"]
+    assert (state_file(env).stat().st_mode & 0o777) == 0o600
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_set_global_settings_unwritable_directory_fails_cleanly(env):
+    d = state_file(env).parent
+    d.mkdir(parents=True)
+    d.chmod(0o500)
+    try:
+        code, result = run(env, "set-global-settings", '{"notifyOnEscalation": true}')
+    finally:
+        d.chmod(0o700)
+    assert code == 1 and result["ok"] is False and result["error"]
+
+
+def test_other_setters_keep_the_stored_global_settings(env):
+    stored = {"notifyOnEscalation": False, "theme": "dark"}
+    write_state(env, {"global_settings": stored})
+    assert run(env, "set-project", "/p") == (0, {"ok": True})
+    assert run(env, "set-run-settings", "/p", '{"notifyOnEscalation": true}') == (0, {"ok": True})
+    assert same_json(json.loads(state_file(env).read_text())["global_settings"], stored)
+    assert get_global(env) == (0, GLOBAL_FALSE)
+    assert run(env, "get-run-settings", "/p") == (0, {**DEFAULTS, "notifyOnEscalation": True})
+
+
+GLOBAL_NOT_JSON = "The global settings are not valid JSON."
+GLOBAL_NOT_OBJECT = "The global settings must be a JSON object."
+GLOBAL_NOT_BOOLEAN = "notifyOnEscalation must be true or false."
+GLOBAL_REFUSALS = [
+    ("", GLOBAL_NOT_JSON), ("{", GLOBAL_NOT_JSON), ('{"notifyOnEscalation": tru', GLOBAL_NOT_JSON),
+    pytest.param("[" * 100000, GLOBAL_NOT_JSON, id="nested-past-the-recursion-limit"),
+    pytest.param('{"notifyOnEscalation": 1%s}' % ("0" * 5000), GLOBAL_NOT_JSON, id="integer-of-5001-digits"),
+    ("[]", GLOBAL_NOT_OBJECT), ('"x"', GLOBAL_NOT_OBJECT), ("5", GLOBAL_NOT_OBJECT),
+    ("true", GLOBAL_NOT_OBJECT), ("null", GLOBAL_NOT_OBJECT),
+    ('{"notify": true}', "Unknown global setting: notify."),
+    ('{"notifyOnEscalation": true, "verify": []}', "Unknown global setting: verify."),
+    ('{"café": true}', "Unknown global setting: café."),
+    ('{"notifyOnEscalation": 0}', GLOBAL_NOT_BOOLEAN), ('{"notifyOnEscalation": 1}', GLOBAL_NOT_BOOLEAN),
+    ('{"notifyOnEscalation": "true"}', GLOBAL_NOT_BOOLEAN), ('{"notifyOnEscalation": null}', GLOBAL_NOT_BOOLEAN),
+    ('{"notifyOnEscalation": []}', GLOBAL_NOT_BOOLEAN), ('{"notifyOnEscalation": {}}', GLOBAL_NOT_BOOLEAN),
+]
+
+
+@pytest.mark.parametrize("update, error", GLOBAL_REFUSALS)
+def test_set_global_settings_refusal_is_exact_and_creates_nothing(env, update, error):
+    assert run(env, "set-global-settings", update) == (2, {"ok": False, "error": error})
+    assert not Path(env["XDG_STATE_HOME"]).exists()
+
+
+@pytest.mark.parametrize("update, error", GLOBAL_REFUSALS)
+def test_set_global_settings_refusal_leaves_the_file_untouched(env, update, error):
+    write_state(env, {"last_project": "/p", "global_settings": {"notifyOnEscalation": True}})
+    before = state_file(env).read_bytes()
+    assert run(env, "set-global-settings", update) == (2, {"ok": False, "error": error})
+    assert state_file(env).read_bytes() == before
+    assert [p.name for p in state_file(env).parent.iterdir()] == ["state.json"]
+
+
+def test_set_global_settings_reports_the_first_bad_key_in_input_order(env):
+    assert run(env, "set-global-settings", '{"a": 1, "b": 2}') == (
+        2, {"ok": False, "error": "Unknown global setting: a."})
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": 0, "z": true}') == (
+        2, {"ok": False, "error": GLOBAL_NOT_BOOLEAN})
+    assert run(env, "set-global-settings", '{"z": true, "notifyOnEscalation": 0}') == (
+        2, {"ok": False, "error": "Unknown global setting: z."})
+    assert not Path(env["XDG_STATE_HOME"]).exists()
+
+
+def test_set_global_settings_duplicate_key_last_wins(env):
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": 0, "notifyOnEscalation": true}') == (
+        0, {"ok": True})
+    assert get_global(env) == (0, GLOBAL_TRUE)
+    assert run(env, "set-global-settings", '{"notifyOnEscalation": false, "notifyOnEscalation": 1}') == (
+        2, {"ok": False, "error": GLOBAL_NOT_BOOLEAN})
+    assert get_global(env) == (0, GLOBAL_TRUE)

@@ -101,14 +101,20 @@ QtObject {
   }
 
   // The run store never imports the project or board store: App hands it the
-  // selected project's root path (never the project object) and the panel-open
-  // flag that starts and stops its watch.
+  // registry's roots and names in registry order, the selected project's root
+  // path (never the project object) and the panel-open flag that starts and
+  // stops its watch.
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
+    projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
     project: app.projects.selectedProject ? app.projects.selectedProject.root_path : ""
     active: app.panelOpen
     searchQuery: app.nav.searchQuery
     onRunFilterToggled: {
+      app.nav.cursorIndex = 0
+      app.nav.scrollOnCursor = false
+    }
+    onProjectFilterToggled: {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
     }

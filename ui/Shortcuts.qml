@@ -52,18 +52,19 @@ QtObject {
               || keys.app.runs.dispatchState !== "idle")
   }
 
-  // p / r / c with no modifier at all pause, resume or cancel a run: on Run
-  // detail the open run, on the Runs list the cursor row -- there only while
-  // the search is empty, since the search field has the focus and every letter
-  // types once it holds text (Shift+letter always types). A refused key
-  // flashes why; c opens the cancel confirmation. Returns true when it handled
-  // the key; with no target run the letter is left alone.
+  // p / r / c with no modifier at all pause, resume or cancel a run, with or
+  // without a project open: on Run detail the open run, on the Runs list the
+  // cursor row -- there only while the search is empty, since the search field
+  // has the focus and every letter types once it holds text (Shift+letter
+  // always types). A refused key flashes why; c opens the cancel confirmation.
+  // Returns true when it handled the key; with no target run the letter is
+  // left alone.
   function handleRunKey(event) {
     if (event.modifiers !== Qt.NoModifier) return false
     var action = event.key === Qt.Key_P ? "pause" : event.key === Qt.Key_R ? "resume" : event.key === Qt.Key_C ? "cancel" : ""
     if (action === "") return false
     var mode = keys.app.nav.viewMode
-    if (!keys.app.projects.selectedProject || (mode !== "runs" && mode !== "run")) return false
+    if (mode !== "runs" && mode !== "run") return false
     if (keys.modalOpen() || keys.app.nav.dropdownOpen) return false
     if (mode === "runs" && keys.app.nav.searchQuery !== "") return false
     var run = mode === "run" ? keys.app.runs.runById(keys.app.runs.selectedRunId) : keys.app.runs.filteredRuns[keys.app.nav.cursorIndex]

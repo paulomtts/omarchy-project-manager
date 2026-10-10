@@ -20,7 +20,7 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..", "..", "..", "..")
 SCRIPT = os.path.join(ROOT, "core", "backend", "runs", "runs-watch.py")
-USAGE = "usage: runs-watch.py [--since-seq N]"
+USAGE = "usage: runs-watch.py <root> [<root> ...] [run_id ...] [--since-seq N]"
 
 FAKE_AM = r'''#!/usr/bin/env python3
 import json, os, sys, time
@@ -63,6 +63,12 @@ def events():
 
 # The run of every captured journal line.
 RUN = events()[0]["run_id"]
+# The project root of the captured run: its run_upsert's payload.repo_dir.
+CAPTURE_ROOT = events()[1]["payload"]["repo_dir"]
+# The default argv: the capture's root, the captured run and the synthetic r2.
+ARGS = [CAPTURE_ROOT, RUN, "r2"]
+# A root for argv tests; it never has to exist.
+SOME_ROOT = "/some/root"
 # The event kinds am 0.2.0 writes; the helper nudges on exactly these.
 KINDS = ["run_upsert", "story_upsert", "subtask_upsert", "phase_upsert", "attempt_upsert",
          "lease_acquired", "lease_taken_over", "control_requested", "control_handled",
@@ -172,11 +178,12 @@ def set_script(world, steps, exit=0, stderr=""):
         json.dumps({"steps": steps, "exit": exit, "stderr": stderr}))
 
 
-def run_helper(world, args=(), timeout=30, **extra):
-    """Run the helper until it exits (default argv: none). Every stdout line must
-    be JSON. Returns (exit code, parsed lines, stderr)."""
+def run_helper(world, args=ARGS, timeout=30, cwd=None, **extra):
+    """Run the helper until it exits (default argv: ARGS) in `cwd` (default: this
+    process's). Every stdout line must be JSON. Returns (exit code, parsed lines,
+    stderr)."""
     p = subprocess.run([sys.executable, SCRIPT, *args], capture_output=True, text=True,
-                       env=env_for(world, **extra), timeout=timeout)
+                       env=env_for(world, **extra), timeout=timeout, cwd=cwd)
     return p.returncode, [json.loads(line) for line in p.stdout.splitlines()], p.stderr
 
 
@@ -234,6 +241,11 @@ def test_lines_are_capture_copies():
     assert [e["gseq"] for e in captured] == list(range(358, 358 + len(captured)))
     assert all(e["seq"] != e["gseq"] for e in captured)
     assert gseq(ev()) == 376
+    # The capture's only run_upsert is nth(1); nth(0) (lease_acquired) comes before it.
+    assert [i for i, e in enumerate(captured) if e["event"] == "run_upsert"] == [1]
+    assert captured[0]["event"] == "lease_acquired"
+    assert CAPTURE_ROOT == nth(1)["line"]["payload"]["repo_dir"]
+    assert CAPTURE_ROOT == "/home/user/Code/omarchy-project-manager"
 
 
 # --- argv, am missing, clean exit -----------------------------------------------
@@ -250,21 +262,39 @@ def test_argv_default(world):
 @pytest.mark.parametrize("value, passed", [("0", "0"), ("1005", "1005"), ("007", "7")])
 def test_argv_since_seq(world, value, passed):
     set_script(world, [hello()])
-    code, lines, _ = run_helper(world, ["--since-seq", value])
+    code, lines, _ = run_helper(world, [CAPTURE_ROOT, "--since-seq", value])
     assert code == 0
     assert lines == [HELLO]
     assert calls(world) == [["watch", "--all-projects", "--follow", "--since-seq", passed]]
 
 
+@pytest.mark.parametrize("args, passed", [
+    (["/repoA", RUN, "/repoB", "--since-seq", "7", "x1"], ["--since-seq", "7"]),
+    (["x1", "/repoA"], []),
+], ids=["mixed-with-since-seq", "run-id-first"])
+def test_argv_roots_and_run_ids_never_reach_am(world, args, passed):
+    set_script(world, [hello()])
+    code, lines, _ = run_helper(world, args)
+    assert code == 0
+    assert lines == [HELLO]
+    assert calls(world) == [["watch", "--all-projects", "--follow", *passed]]
+
+
 @pytest.mark.parametrize("args", [
-    ["/some/root"], ["/root", RUN], [RUN], ["--since-seq"], ["--since-seq", "-1"],
+    [RUN], ["--since-seq"], ["--since-seq", "-1"],
     ["--since-seq", "abc"], ["--since-seq", "5.0"], ["--since-seq", ""],
     ["--since-seq", "1", "--since-seq", "2"], ["--since-seq=5"], ["--from-now"],
     ["--since-seq", "5", "extra"], ["--since-seq", "٣"], ["--since-seq", "+5"],
     ["--since-seq", " 5"],
-], ids=["root", "root-and-run", "run", "no-value", "negative", "letters", "float", "empty",
+    [SOME_ROOT, "--since-seq"], [SOME_ROOT, "--since-seq", "-1"],
+    [SOME_ROOT, "--since-seq", "abc"], [SOME_ROOT, "--since-seq", "1", "--since-seq", "2"],
+    [SOME_ROOT, "--since-seq=5"], [SOME_ROOT, "--from-now"], [SOME_ROOT, "-x"],
+    [SOME_ROOT, ""], [RUN, "--since-seq", "5"], [],
+], ids=["run", "no-value", "negative", "letters", "float", "empty",
         "twice", "equals-form", "other-flag", "trailing-arg", "arabic-indic-digit", "plus-sign",
-        "leading-space"])
+        "leading-space",
+        "root-no-value", "root-negative", "root-letters", "root-twice", "root-equals-form",
+        "root-other-flag", "root-dash-x", "root-empty", "run-since-seq-no-root", "no-argument"])
 def test_usage(world, args):
     set_script(world, [hello()])
     code, lines, _ = run_helper(world, args)
@@ -276,7 +306,7 @@ def test_usage(world, args):
 def test_usage_before_am_lookup(world):
     empty = world["tmp"] / "empty-bin"
     empty.mkdir()
-    code, lines, _ = run_helper(world, ["/some/root"], PATH=str(empty))
+    code, lines, _ = run_helper(world, [RUN], PATH=str(empty))  # no root
     assert code == 2
     assert lines == [{"ok": False, "error": {"type": "Usage", "message": USAGE}}]
 
@@ -588,6 +618,174 @@ def test_pending_batch_flushed_at_eof(world):
                      {"cursor": gseq(nth(3))}]
 
 
+# --- the watched set: argv run ids and runs upserted under a root ----------------
+
+def upsert(run_id, seq, repo_dir):
+    """synthetic: a run_upsert of `run_id` at gseq `seq` whose payload.repo_dir
+    is `repo_dir`."""
+    return other(run_id, seq, "run_upsert", payload_keys={"repo_dir": repo_dir})
+
+
+def test_single_root_watches_runs_upserted_there(world):
+    steps = [nth(i) for i in range(1, 20)]
+    top = gseq(nth(19))
+    set_script(world, [hello(), *steps, pause(0.6)])
+    code, lines, _ = run_helper(world, [CAPTURE_ROOT])
+    assert code == 0
+    assert changed(split(lines)) == [([(RUN, top)], top)]
+
+
+def test_event_before_its_run_upsert_is_dropped(world):
+    # nth(0) (lease_acquired, 358) comes before the run_upsert (359).
+    set_script(world, [hello(), nth(0), pause(0.6), nth(1), pause(0.6)])
+    code, lines, _ = run_helper(world, [CAPTURE_ROOT])
+    assert code == 0
+    assert lines == [HELLO, {"changed": [{"run": RUN, "seq": gseq(nth(1))}]},
+                     {"cursor": gseq(nth(1))}]
+
+
+def test_run_id_arg_is_watched_without_run_upsert(world):
+    set_script(world, [hello(), nth(0)])
+    code, lines, _ = run_helper(world, ["/elsewhere", RUN])
+    assert code == 0
+    assert changed(split(lines)) == [([(RUN, gseq(nth(0)))], gseq(nth(0)))]
+
+
+def test_run_id_arg_of_an_unrelated_repo_is_watched(world):
+    # synthetic: rX lives in /repoZ, which is not a root.
+    set_script(world, [hello(), upsert("rX", 400, "/repoZ"), pause(0.6),
+                       other("rX", 401), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA", "rX"])
+    assert code == 0
+    assert changed(split(lines)) == [([("rX", 400)], 400), ([("rX", 401)], 401)]
+
+
+def test_two_repos_in_one_stream(world):
+    # synthetic: rA in /repoA and rB in /repoB (both roots), rC in /repoC (not a
+    # root); then each run's phase_upsert, and the captured nth(18) of RUN, whose
+    # repo is not a root. rC's 500 and RUN's 376 are the highest gseqs.
+    set_script(world, [hello(), upsert("rA", 100, "/repoA"), upsert("rB", 101, "/repoB"),
+                       upsert("rC", 102, "/repoC"), other("rA", 103), other("rB", 104),
+                       other("rC", 500), nth(18), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA", "/repoB"])
+    assert code == 0
+    pairs = changed(split(lines))
+    assert pairs == [([("rA", 103), ("rB", 104)], 104)]
+    assert gseq(nth(18)) == 376
+
+
+@pytest.mark.parametrize("case", ["trailing-slash-root", "dot-in-repo-dir", "dotdot-root",
+                                  "symlink-root", "symlink-repo-dir"])
+def test_root_matches_by_realpath(world, case):
+    real = world["tmp"] / "real"
+    real.mkdir()
+    link = world["tmp"] / "link"
+    link.symlink_to(real)
+    root, repo_dir = {
+        "trailing-slash-root": ("/repoA/", "/repoA"),
+        "dot-in-repo-dir": ("/repoA", "/repoA/./"),
+        "dotdot-root": ("/x/../repoA", "/repoA"),
+        "symlink-root": (str(link), str(real)),
+        "symlink-repo-dir": (str(real), str(link)),
+    }[case]
+    set_script(world, [hello(), upsert("rA", 400, repo_dir), pause(0.6)])
+    code, lines, _ = run_helper(world, [root])
+    assert code == 0
+    assert changed(split(lines)) == [([("rA", 400)], 400)]
+
+
+@pytest.mark.parametrize("repo_dir", ["/repoAB", "/repo", "repoA"],
+                         ids=["longer", "prefix", "relative"])
+def test_root_mismatch_is_not_watched(world, repo_dir):
+    # A relative repo_dir resolves against the helper's cwd, here tmp.
+    set_script(world, [hello(), upsert("rA", 400, repo_dir), other("rA", 401), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA"], cwd=str(world["tmp"]))
+    assert code == 0
+    assert lines == [HELLO]
+
+
+@pytest.mark.parametrize("key, value", [
+    ("payload", ["/repoA"]), ("payload", "/repoA"), ("payload", None), ("payload", MISSING),
+    ("repo_dir", MISSING), ("repo_dir", 5), ("repo_dir", None), ("repo_dir", ["/repoA"]),
+    ("repo_dir", "/repoA\u0000x"),
+], ids=["payload-list", "payload-string", "payload-null", "payload-missing",
+        "repo-dir-missing", "repo-dir-number", "repo-dir-null", "repo-dir-list",
+        "nul-in-repo-dir"])
+def test_run_upsert_without_usable_repo_dir_is_ignored(world, key, value):
+    # synthetic: a run_upsert of rX whose payload or payload.repo_dir is edited.
+    step = upsert("rX", 400, "/repoA")
+    target = step["line"] if key == "payload" else step["line"]["payload"]
+    if value is MISSING:
+        del target[key]
+    else:
+        target[key] = value
+    set_script(world, [hello(), step, other("rX", 401), pause(0.6)])
+    code, lines, err = run_helper(world, ["/repoA"])
+    assert code == 0
+    assert "Traceback" not in err
+    assert lines == [HELLO]
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "400"],
+                         ids=["zero", "negative", "true", "string"])
+def test_invalid_run_upsert_does_not_watch(world, bad):
+    # synthetic: a run_upsert of rX in /repoA that is not a nudge, then a valid
+    # phase_upsert of rX.
+    set_script(world, [hello(), upsert("rX", bad, "/repoA"), other("rX", 401), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA"])
+    assert code == 0
+    assert lines == [HELLO]
+
+
+def test_watched_run_keeps_nudging_after_upsert(world):
+    # synthetic: rA's later lines, across two windows.
+    set_script(world, [hello(), upsert("rA", 400, "/repoA"), other("rA", 401, "story_upsert"),
+                       other("rA", 402), pause(0.6), other("rA", 403, "attempt_upsert"),
+                       other("rA", 404, "control_requested"), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA"])
+    assert code == 0
+    assert changed(split(lines)) == [([("rA", 402)], 402), ([("rA", 404)], 404)]
+
+
+def test_watched_run_out_of_order_gseqs_keep_the_highest(world):
+    # synthetic: rA's gseqs arrive out of order; the second window holds a
+    # lower gseq than the cursor.
+    set_script(world, [hello(), upsert("rA", 400, "/repoA"), other("rA", 900),
+                       other("rA", 500), pause(0.6), other("rA", 450), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA"])
+    assert code == 0
+    assert changed(split(lines)) == [([("rA", 900)], 900), ([("rA", 450)], 900)]
+
+
+def test_watched_run_stays_watched_after_repo_dir_changes(world):
+    # synthetic: rA is upserted again under /repoZ, which is not a root.
+    set_script(world, [hello(), upsert("rA", 400, "/repoA"), pause(0.6),
+                       upsert("rA", 401, "/repoZ"), pause(0.6), other("rA", 402), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA"])
+    assert code == 0
+    assert changed(split(lines)) == [([("rA", 400)], 400), ([("rA", 401)], 401),
+                                     ([("rA", 402)], 402)]
+
+
+def test_two_roots_naming_one_repo_list_the_run_once(world):
+    # synthetic: rA in /repoA, which both roots name. changed() asserts no run
+    # appears twice in a line.
+    set_script(world, [hello(), upsert("rA", 400, "/repoA"), other("rA", 401), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA", "/repoA/"])
+    assert code == 0
+    assert changed(split(lines)) == [([("rA", 401)], 401)]
+
+
+def test_dropped_lines_never_move_the_cursor(world):
+    # synthetic: rZ is upserted under /repoZ (not a root) at 9000, then nudges
+    # again; rA is watched at 100 and 101.
+    set_script(world, [hello(), upsert("rZ", 9000, "/repoZ"), other("rZ", 9001),
+                       upsert("rA", 100, "/repoA"), other("rA", 101), pause(0.6)])
+    code, lines, _ = run_helper(world, ["/repoA"])
+    assert code == 0
+    assert changed(split(lines)) == [([("rA", 101)], 101)]
+
+
 # --- how am ended ----------------------------------------------------------------
 
 def test_exit_3_corrupt_journal(world):
@@ -674,7 +872,7 @@ def test_refusal_store_busy_after_batch_is_reemitted(world):
 
 # --- stopping: signals and a closed stdout ---------------------------------------
 
-def start_helper(world, args=()):
+def start_helper(world, args=ARGS):
     return subprocess.Popen([sys.executable, SCRIPT, *args], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             env=env_for(world))

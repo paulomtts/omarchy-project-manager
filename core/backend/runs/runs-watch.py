@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Nudge the plugin when am runs change, from `am watch --all-projects --follow`.
 
-    runs-watch.py [--since-seq N]
+    runs-watch.py <root> [<root> ...] [run_id ...] [--since-seq N]
 
+Arguments, in any order: one beginning with `/` is a root (used as given, never
+checked for existence), `--since-seq` takes the next one as N (one or more ASCII
+decimal digits, passed as its integer), and any other non-empty one not
+beginning with `-` is a run id. No root, a second --since-seq, or any other
+argument is a Usage error (exit 2) and am is not looked up or started.
 Long-lived. Spawns `am watch --all-projects --follow`, plus `--since-seq N` when
-given (N: one or more ASCII decimal digits, passed as its integer), as an argv
-list, never a shell. Any other argv is a Usage error (exit 2) and am is not
-started. Prints one JSON object per line, flushed at once:
+given, as an argv list, never a shell; roots and run ids never reach am. Prints
+one JSON object per line, flushed at once:
   {"hello": {"schema": N, "am": V, "head": H, "cursorReset": B, "storeId": S}}
       for the first hello line (event "watch") only. Every hello must carry an
       integer schema of 1 or higher and a non-negative integer head, else
@@ -14,9 +18,9 @@ started. Prints one JSON object per line, flushed at once:
       true only for a JSON true. No other hello key is forwarded.
   {"changed": [{"run": "<run id>", "seq": G}, ...]}
       at most once per 250 ms, never empty, one entry per run holding the
-      highest gseq of that run's nudges in the window; directly followed by
+      highest gseq of that run's kept nudges in the window; directly followed by
   {"cursor": C}
-      the highest gseq of every nudge since the helper started.
+      the highest gseq of every kept nudge since the helper started.
   {"ok": false, "error": {"type", "message"}}
       then exit 1, with type SchemaMismatch, CorruptJournal (am exited 3),
       HelperError or AmMissing (Usage exits 2). An am refusal envelope is
@@ -24,7 +28,11 @@ started. Prints one JSON object per line, flushed at once:
       StoreBusyError.
 A nudge is a JSON object whose event is one of EVENTS, whose run_id is a
 non-empty string and whose gseq is an integer of 1 or more. Every other line is
-ignored; event contents are never forwarded. am exiting 0, SIGINT, SIGTERM or a
+ignored; event contents are never forwarded. A nudge is kept when its run is
+watched: the argv run ids, plus every run whose run_upsert nudge has a
+payload.repo_dir naming the same directory (realpath) as any root, from that
+run_upsert on, for good. Every other nudge is dropped: it prints nothing and
+moves neither the batch nor the cursor. am exiting 0, SIGINT, SIGTERM or a
 closed stdout end the helper with exit 0. Only the `am` command is used; am's
 database and on-disk layout are never read.
 """
@@ -41,7 +49,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = "usage: runs-watch.py [--since-seq N]"
+USAGE = "usage: runs-watch.py <root> [<root> ...] [run_id ...] [--since-seq N]"
 IDLE_POLL = 1.0  # seconds; the longest the main loop blocks with nothing pending
 WINDOW = 0.25  # seconds; at most one {"changed": [...]} line per window
 EOF = object()
@@ -76,17 +84,33 @@ def failure(kind, message, code=1):
 
 
 def parse_args(argv):
-    """The arguments after `am watch --all-projects --follow` for the helper's
-    argv: [] for none, ["--since-seq", N] for `--since-seq N` (N one or more
-    ASCII decimal digits, passed as its integer's decimal text), None for
-    anything else."""
-    if not argv:
-        return []
-    if len(argv) == 2 and argv[0] == "--since-seq":
-        value = argv[1]
-        if value and value.isascii() and value.isdigit():
-            return ["--since-seq", value.lstrip("0") or "0"]
-    return None
+    """(roots, run ids, extra) for the helper's argv, or None for a Usage error.
+    Left to right: `--since-seq` takes the next argument as N (one or more ASCII
+    decimal digits; extra is ["--since-seq", N's integer as decimal text], else
+    []); an argument beginning with `/` is a root; any other non-empty argument
+    not beginning with `-` is a run id. No root, a second --since-seq, or an
+    empty or other `-` argument is None."""
+    roots, run_ids, extra = [], [], None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--since-seq":
+            value = argv[i + 1] if i + 1 < len(argv) else ""
+            if extra is not None or not (value and value.isascii() and value.isdigit()):
+                return None
+            extra = ["--since-seq", value.lstrip("0") or "0"]
+            i += 2
+            continue
+        if arg.startswith("/"):
+            roots.append(arg)
+        elif not arg or arg.startswith("-"):
+            return None
+        else:
+            run_ids.append(arg)
+        i += 1
+    if not roots:
+        return None
+    return roots, run_ids, extra or []
 
 
 def check_hello(hello):
@@ -116,6 +140,32 @@ def nudge(line):
     if not (isinstance(run_id, str) and run_id and type(gseq) is int and gseq >= 1):
         return None
     return run_id, gseq
+
+
+def same_dir(path, roots):
+    """True when `path` names the same directory as one of `roots` (realpaths).
+    A path realpath cannot take (an embedded NUL) names none."""
+    try:
+        return os.path.realpath(path) in roots
+    except (ValueError, OSError):
+        return False
+
+
+def watch(line, run_id, watched, roots):
+    """True when the nudge `line` of `run_id` is kept: the run is in `watched`,
+    or the line is a run_upsert whose payload.repo_dir is a string naming the
+    same directory as one of `roots` (realpaths), which adds the run to
+    `watched` for good."""
+    if run_id in watched:
+        return True
+    payload = line.get("payload")
+    if not (line.get("event") == "run_upsert" and isinstance(payload, dict)):
+        return False
+    repo_dir = payload.get("repo_dir")
+    if not (isinstance(repo_dir, str) and same_dir(repo_dir, roots)):
+        return False
+    watched.add(run_id)
+    return True
 
 
 def spawn(am, extra):
@@ -154,10 +204,12 @@ def flush(batch, cursor):
     say({"cursor": cursor})
 
 
-def stream(lines):
+def stream(lines, roots, watched):
     """Turn am's stream into the hello line and debounced changed + cursor lines
     until it ends. Every hello line (event "watch") is checked; the first is
-    printed at once without touching the batch; later ones print nothing.
+    printed at once without touching the batch; later ones print nothing. Only
+    nudges `watch` keeps (`roots`: realpaths; `watched`: run ids, grown in
+    place) reach the batch and the cursor.
     Trailing edge: the first nudge into an empty batch opens a WINDOW; when it
     closes the batch is printed once and cleared. A pending batch is printed
     when the stream ends. Returns am's refusal envelope (the last line with an
@@ -193,6 +245,8 @@ def stream(lines):
         if hit is None:
             continue
         run_id, gseq = hit
+        if not watch(line, run_id, watched, roots):
+            continue
         batch[run_id] = max(gseq, batch.get(run_id, 0))
         cursor = max(cursor, gseq)
         if deadline is None:
@@ -217,9 +271,10 @@ def finish(code, refusal, stderr):
 
 
 def main(argv):
-    extra = parse_args(argv)
-    if extra is None:
+    parsed = parse_args(argv)
+    if parsed is None:
         return failure("Usage", USAGE, 2)
+    roots, run_ids, extra = parsed
     am = shutil.which("am")
     if am is None:
         return failure("AmMissing", "am is not installed.")
@@ -230,7 +285,7 @@ def main(argv):
     err_reader.start()
     try:
         try:
-            refusal = stream(lines)
+            refusal = stream(lines, {os.path.realpath(root) for root in roots}, set(run_ids))
         except SchemaMismatch as e:
             return failure("SchemaMismatch", str(e))
         code = proc.wait()

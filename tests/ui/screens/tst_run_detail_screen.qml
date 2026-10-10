@@ -367,7 +367,7 @@ TestCase {
     compare(s.screen.visible, false)
     s.nav.viewMode = "run"
     s.app.projects = { selectedProject: null }
-    compare(s.screen.visible, false)
+    compare(s.screen.visible, true, "no project: Run detail still shows")
   }
 
   // ---- run controls (S2 4.2)

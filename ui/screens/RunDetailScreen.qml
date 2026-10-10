@@ -37,7 +37,7 @@ Column {
   // Re-read whenever a logs reply lands or a snapshot replaces the runs.
   readonly property real nowMs: screen.app.runs.logsFetchedMs >= 0 && screen.app.runs.runs ? Date.now() : 0
 
-  visible: screen.app.nav.viewMode === "run" && !!screen.app.projects.selectedProject
+  visible: screen.app.nav.viewMode === "run"
   spacing: Style.space(6)
 
   function runById(list, id) {
