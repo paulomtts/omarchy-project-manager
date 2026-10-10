@@ -751,6 +751,23 @@ function filterFinished(runs, finishedState, finishedAge, nowMs, utcOffsetMinute
   return out
 }
 
+// The `--status` list for one history page of a chip, a new array per call.
+// "live" is [] (a live run is never terminal); "parked" is ["stopped"];
+// "attention" is ["escalated"]; "finished" is the statuses of `finishedState`
+// ("done", "escalated", or "cancelled" with both spellings; any other value is
+// all four finished statuses). "all" and any other `filter` is all five
+// terminal statuses.
+function historyStatuses(filter, finishedState) {
+  if (filter === "live") return []
+  if (filter === "parked") return ["stopped"]
+  if (filter === "attention") return ["escalated"]
+  if (filter !== "finished") return ["done", "escalated", "stopped", "cancelled", "canceled"]
+  if (finishedState === "done") return ["done"]
+  if (finishedState === "escalated") return ["escalated"]
+  if (finishedState === "cancelled") return ["cancelled", "canceled"]
+  return ["done", "escalated", "cancelled", "canceled"]
+}
+
 // The titles map of run's project: titlesByRoot's own entry for runRoot(run)
 // when titlesByRoot is a plain object and that entry a plain object; {} for
 // anything else, and always for a run whose root is "".

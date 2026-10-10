@@ -1925,6 +1925,29 @@ TestCase {
     compare(ids(list), before, "input unchanged")
   }
 
+  function test_history_statuses() {
+    var all = "done,escalated,stopped,cancelled,canceled"
+    var finishedAll = "done,escalated,cancelled,canceled"
+    compare(Runs.historyStatuses("all").join(","), all)
+    compare(Runs.historyStatuses("parked").join(","), "stopped")
+    compare(Runs.historyStatuses("attention").join(","), "escalated")
+    compare(Runs.historyStatuses("live").length, 0, "a live run is never terminal")
+    compare(Runs.historyStatuses("finished", "done").join(","), "done")
+    compare(Runs.historyStatuses("finished", "escalated").join(","), "escalated")
+    compare(Runs.historyStatuses("finished", "cancelled").join(","), "cancelled,canceled")
+    var anyState = ["all", "", "bogus", "canceled", undefined, null, 5, [], {}, "constructor"]
+    for (var i = 0; i < anyState.length; i++)
+      compare(Runs.historyStatuses("finished", anyState[i]).join(","), finishedAll, "finishedState " + i)
+    var badFilter = ["", "bogus", "Finished", undefined, null, "x", 5, [], {}, "constructor", "__proto__"]
+    for (var j = 0; j < badFilter.length; j++)
+      compare(Runs.historyStatuses(badFilter[j], "done").join(","), all, "filter " + j + " is All")
+    compare(Runs.historyStatuses("parked", "done").join(","), "stopped", "finishedState only matters to finished")
+    var a = Runs.historyStatuses("all"), b = Runs.historyStatuses("all")
+    compare(a === b, false, "a new array per call")
+    a.push("x")
+    compare(Runs.historyStatuses("all").join(","), all, "a caller's change never leaks")
+  }
+
   // ---- Run detail (5.2)
 
   function test_normalize_branch_fields() {
