@@ -39,6 +39,9 @@ Scope {
 
   property var historyByProject: ({})   // {root: {runs, more, loading, error}}
 
+  onSnapshotByProjectChanged: history.snapshotChanged()
+  Component.onCompleted: historyState.previous = history.snapshotByProject
+
   // The HelperRunner that serves `root`; null when there is none.
   function runnerFor(root) {
     return Runs.hasKey(historyState.runners, root) ? historyState.runners[root] : null
@@ -169,10 +172,73 @@ Scope {
     history.setEntry(root, { runs: runs, more: env.more === true, loading: false, error: "" })
   }
 
+
+  // Whether `run` is terminal: parked, done, escalated or cancelled.
+  function isTerminal(run) {
+    var state = Runs.runState(run)
+    return state === "parked" || state === "done" || state === "escalated" || state === "cancelled"
+  }
+
+  // Whether `a` and `b` hold the same runs, in the same order.
+  function sameRuns(a, b) {
+    if (a.length !== b.length) return false
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false
+    }
+    return true
+  }
+
+  // Cancels root's fetch in flight, if any, so its reply changes nothing.
+  function cancelRunner(root) {
+    var runner = history.runnerFor(root)
+    if (runner !== null && runner.busy) runner.cancel()
+  }
+
+  // snapshotByProject changed. A root with history the new value lacks loses
+  // its entry and its fetch in flight. For every other root with history,
+  // the terminal runs of its previous snapshot list that the new list lacks
+  // move to the front of its history, in their previous order, an id the
+  // history holds not added twice; then every history run the new list
+  // holds leaves. An entry is replaced only when its runs changed. Never
+  // fetches.
+  function snapshotChanged() {
+    var previous = historyState.previous
+    historyState.previous = history.snapshotByProject
+    var roots = Object.keys(history.historyByProject)
+    var map = Runs.copyMap(history.historyByProject)
+    var changed = false
+    for (var r = 0; r < roots.length; r++) {
+      var root = roots[r]
+      if (!history.isSnapshotRoot(root)) {
+        history.cancelRunner(root)
+        delete map[root]
+        changed = true
+        continue
+      }
+      var entry = map[root]
+      var now = history.idsOf(history.snapshotOf(root))
+      var before = Runs.hasKey(previous, root) && Array.isArray(previous[root]) ? previous[root] : []
+      var held = history.idsOf(entry.runs)
+      var moved = []
+      for (var i = 0; i < before.length; i++) {
+        var run = before[i]
+        if (!history.isTerminal(run) || now.indexOf(run.id) >= 0 || held.indexOf(run.id) >= 0) continue
+        held.push(run.id)
+        moved.push(run)
+      }
+      var runs = moved.concat(entry.runs).filter(function(kept) { return now.indexOf(kept.id) < 0 })
+      if (history.sameRuns(runs, entry.runs)) continue
+      map[root] = { runs: runs, more: entry.more, loading: entry.loading, error: entry.error }
+      changed = true
+    }
+    if (changed) history.historyByProject = map
+  }
+
   // Bookkeeping kept apart so consumers cannot write it.
   QtObject {
     id: historyState
-    property var runners: ({})   // {root: HelperRunner}, made on each root's first launch
+    property var runners: ({})    // {root: HelperRunner}, made on each root's first launch
+    property var previous: ({})   // the snapshotByProject value the last change left
   }
 
   // One runs-history.py runner per root. Guard "": the store cancels a

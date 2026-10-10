@@ -326,4 +326,74 @@ TestCase {
     compare(idsOf(s, tc.rootB), "hb1")
     compare(s.historyByProject[tc.rootB].runs[0].project.root, tc.rootB)
   }
+
+  // ---- snapshot changes
+
+  function test_a_terminal_run_leaving_the_snapshot_moves_into_history() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    page(s, tc.rootA, [h1()], true)
+    var spy = spyC.createObject(tc, { target: s, signalName: "historyByProjectChanged" })
+    var a0 = runOf("a0", tc.rootA, "started", "2026-10-06T00:00:00Z")
+    var base = baseA()
+    s.snapshotByProject = snap([a0, base[0], base[1]], baseB())
+    compare(idsOf(s, tc.rootA), "a3,h1", "a3 left the window: it moves to the front")
+    var e = s.historyByProject[tc.rootA]
+    compare(e.runs[0].status, "stopped")
+    compare(e.runs[0].project.root, tc.rootA)
+    compare(e.more, true, "`more` is kept")
+    compare(e.loading, false)
+    compare(e.error, "")
+    compare(spy.count, 1)
+    s.snapshotByProject = snap([a0, base[1]], baseB())
+    compare(idsOf(s, tc.rootA), "a3,h1", "the live a1 leaving moves nothing")
+    compare(spy.count, 1, "an entry whose runs did not change is not replaced")
+    s.snapshotByProject = snap([a0, base[1]], [])
+    compare(Runs.hasKey(s.historyByProject, tc.rootB), false, "rootB has no history: b1 leaving creates no entry")
+    compare(spy.count, 1)
+  }
+
+  function test_overflow_keeps_the_previous_snapshot_order() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    page(s, tc.rootA, [h1()], true)
+    var base = baseA()
+    s.snapshotByProject = snap([base[0]], null)
+    compare(idsOf(s, tc.rootA), "a2,a3,h1", "a2 and a3 in their snapshot order, in front")
+    s.snapshotByProject = snap([base[0], runOf("h1", tc.rootA, "done", "2026-10-02T00:00:00Z")], null)
+    s.snapshotByProject = snap([base[0]], null)
+    compare(idsOf(s, tc.rootA), "h1,a2,a3", "h1 came back and left again: moved once, to the front")
+  }
+
+  function test_a_history_run_the_snapshot_lists_again_leaves_the_history() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    page(s, tc.rootA, [h1(), h2()], true)
+    s.snapshotByProject = snap(baseA().concat([runOf("h1", tc.rootA, "started", "2026-10-02T00:00:00Z")]), null)
+    compare(idsOf(s, tc.rootA), "h2", "h1 was resumed: the snapshot wins")
+  }
+
+  function test_a_snapshot_change_never_fetches() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    s.snapshotByProject = snap(baseA().slice(1), baseB())
+    compare(s.runnerFor(tc.rootA), null, "no history: no runs-history.py")
+    page(s, tc.rootA, [h1()], true)
+    var runner = s.runnerFor(tc.rootA)
+    var seq = runner.seq
+    s.snapshotByProject = snap(baseA().slice(0, 2), [])
+    s.snapshotByProject = snap(baseA(), baseB())
+    compare(runner.seq, seq, "with history: still no launch")
+    compare(runner.busy, false)
+    compare(s.runnerFor(tc.rootB), null)
+  }
+
+  function test_a_root_leaving_the_snapshot_loses_its_pages() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    var procs = inFlight(s)
+    s.snapshotByProject = snap(baseA(), null)
+    compare(Runs.hasKey(s.historyByProject, tc.rootB), false, "rootB left: its entry is gone")
+    compare(s.runnerFor(tc.rootB).busy, false, "and its fetch is cancelled")
+    compare(s.historyByProject[tc.rootA].loading, true, "rootA keeps its entry and its page in flight")
+    reply(procs.b, pageOk([hb2()], false), 0)
+    compare(Runs.hasKey(s.historyByProject, tc.rootB), false, "rootB's old reply creates no entry")
+    reply(procs.a, pageOk([h2()], false), 0)
+    compare(idsOf(s, tc.rootA), "h1,h2", "rootA's reply still lands")
+  }
 }
