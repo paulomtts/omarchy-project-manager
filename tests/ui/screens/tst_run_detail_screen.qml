@@ -1,11 +1,14 @@
 // tests/ui/screens/tst_run_detail_screen.qml
-// ui/screens/RunDetailScreen.qml on its own: the header, the story > subtask >
-// attempt tree with its bookkeeping rows, the Output / Events tabs with the
-// output pane (snapshot or live) and the events pane, and the missing-run
-// line. A stub app: a REAL NavigationStore, a plain object carrying the
-// RunStore properties the screen reads (with recorders for selectAttempt,
-// refreshLogs and setDetailTab), a plain object carrying the RunOutputStore
-// properties, and a board whose cardMap lends titles and brd statuses.
+// ui/screens/RunDetailScreen.qml on its own: the header, the Why it stopped
+// block and what feeds it, the story > subtask > attempt tree with its
+// bookkeeping rows, the Output / Events tabs with the output pane (snapshot or
+// live) and the events pane, and the missing-run line. A stub app: a REAL
+// NavigationStore, a plain object carrying the RunStore properties the screen
+// reads (with recorders for selectAttempt, refreshLogs, setDetailTab, control,
+// relaunchOpenFor and flash), a plain object carrying the RunOutputStore
+// properties, an extras stub whose commentsFor reads a settable map, a board
+// whose cardMap lends titles and brd statuses, and a navigator stub recording
+// openCard.
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
@@ -72,6 +75,41 @@ TestCase {
         rs.controlCalls = rs.controlCalls.concat([action + "|" + id])
         return true
       }
+      // The open project's root (RunStore.project); "" when none is open.
+      property string project: "/home/u/a"
+      property string lastControlErrorType: ""
+      // relaunchOpenFor and flash only record.
+      property var relaunchCalls: []
+      function relaunchOpenFor(card, cardMap, relaunch) {
+        rs.relaunchCalls = rs.relaunchCalls.concat([{ card: card, cardMap: cardMap, relaunch: relaunch }])
+        return true
+      }
+      property var flashes: []
+      function flash(text) {
+        rs.flashes = rs.flashes.concat([text])
+        rs.flashText = text
+      }
+    }
+  }
+
+  Component {
+    id: extrasC
+    QtObject {
+      id: ex
+      // {cardId: comments}, as ExtrasStore.commentsByEntity: replaced, never edited.
+      property var comments: ({})
+      function commentsFor(id) {
+        return Object.prototype.hasOwnProperty.call(ex.comments, id) ? ex.comments[id] : []
+      }
+    }
+  }
+
+  Component {
+    id: naviC
+    QtObject {
+      id: nv
+      property var opened: []
+      function openCard(id) { nv.opened = nv.opened.concat([id]) }
     }
   }
 
@@ -95,13 +133,15 @@ TestCase {
       property var nav: null
       property var runs: null
       property var runOutput: null
+      property var extras: null
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" } })
       property var board: ({ cardMap: {
         s1: { id: "s1", title: "Runs screens", status: "in_progress" },
         t1: { id: "t1", title: "RunDetailScreen", status: "in_progress" },
         t2: { id: "t2", title: "Old work", status: "merged" },
         s2: { id: "s2", title: "Dropped story", status: "canceled" },
-        t3: { id: "t3", title: "Shelved", status: "archived" }
+        t3: { id: "t3", title: "Shelved", status: "archived" },
+        M3: { id: "M3", title: "Milestone three", status: "in_progress" }
       } })
     }
   }
@@ -113,16 +153,18 @@ TestCase {
     var nav = navComp.createObject(host)
     var runs = runsC.createObject(host)
     var ro = roC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runOutput: ro })
+    var extras = extrasC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runOutput: ro, extras: extras })
+    var navi = naviC.createObject(host)
     var sC = Qt.createComponent("../../../ui/screens/RunDetailScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
-    var screen = sC.createObject(host, { width: 500, app: app, navigator: null })
+    var screen = sC.createObject(host, { width: 500, app: app, navigator: navi })
     nav.viewMode = "run"
     runs.runs = list || []
     runs.selectedRunId = selectedId === undefined ? "run-20261004-19efcddc" : selectedId
     runs.selectedAttempt = attempt === undefined ? null : attempt
     wait(20)
-    return { app: app, runs: runs, nav: nav, screen: screen, ro: ro }
+    return { app: app, runs: runs, nav: nav, screen: screen, ro: ro, extras: extras, navi: navi }
   }
 
   // Colours that differ only in the colour spec (Qt.darker's HSV against a
@@ -158,14 +200,20 @@ TestCase {
   }
 
   // A normalised run, as RunStore holds them. live === null means no lease.
+  // It belongs to the open project unless opts.project says otherwise (null:
+  // no project at all); opts.workflow and opts.card set workflow and card_id.
   function run(id, status, live, opts) {
     var o = opts || {}
-    return { id: id, repo_dir: "/home/u/a", milestone_id: o.milestone === undefined ? "M3" : o.milestone,
-             base_branch: o.base === undefined ? "master" : o.base,
-             branch_prefix: o.prefix === undefined ? "m3" : o.prefix,
-             status: status, started_at: "",
-             lease: live === null ? null : { pid: 4121, host: "h", heartbeat_at: "", accepting: true, live: live },
-             rows: o.rows || [], tree: o.tree || { stories: [], subtasks: [] } }
+    var r = { id: id, repo_dir: "/home/u/a", milestone_id: o.milestone === undefined ? "M3" : o.milestone,
+              base_branch: o.base === undefined ? "master" : o.base,
+              branch_prefix: o.prefix === undefined ? "m3" : o.prefix,
+              status: status, started_at: "",
+              lease: live === null ? null : { pid: 4121, host: "h", heartbeat_at: "", accepting: true, live: live },
+              rows: o.rows || [], tree: o.tree || { stories: [], subtasks: [] } }
+    if (o.project !== null) r.project = o.project === undefined ? { root: "/home/u/a", name: "alpha" } : o.project
+    if (o.workflow !== undefined) r.workflow = o.workflow
+    if (o.card !== undefined) r.card_id = o.card
+    return r
   }
 
   function detailTree() {
@@ -193,6 +241,23 @@ TestCase {
   function stepRun() { return [run("run-20261004-19efcddc", "started", true, { tree: stepTree() })] }
   function stepSel(card, phase) { return { card_id: card, phase: phase, attempt: 0, step: true } }
 
+  // The escalated run of the reason test: t1's review failed.
+  function failedTree() {
+    return { stories: [], subtasks: [{ card_id: "t1", phases: [
+      { name: "review", status: "failed", detail: "tests red after 3 attempts" }] }] }
+  }
+  function escalatedRun(opts) {
+    return run("run-x-escl0002", "escalated", null, Object.assign({ tree: failedTree() }, opts || {}))
+  }
+  // One am note on cardId for runId, as ExtrasStore.commentsFor gives it.
+  function amNote(runId, cardId, kind, fieldLines, createdAt) {
+    var body = ["am · " + kind + " · run " + runId].concat(fieldLines)
+      .concat(["am-key: " + runId + "/" + cardId + "/" + kind + ":0a1b2c3d"]).join("\n")
+    return { id: "c-" + createdAt, entityId: cardId, author: "am", body: body, createdAt: createdAt }
+  }
+  function stop(s) { return H.find(s.screen, "runDetailStop") }
+  function part(s, name) { return H.find(stop(s), name) }
+
   // One am run as RunStore hands it to normalizeRun, fresh on every call: the
   // fixture's `am runs` row (runs.json's entry with the same run id, else the
   // fixture's own _am_runs_row) without `status`, and the fixture's `am status`
@@ -215,7 +280,8 @@ TestCase {
     compare(H.find(s.screen, "runDetailTitle").text, "Run …19efcddc")
     compare(H.find(s.screen, "runDetailState").text, RG.glyphOf("running") + " running")
     compare(H.find(s.screen, "runDetailMeta").text, "Milestone M3 · prefix m3 · base master · lease pid 4121 live")
-    compare(H.find(s.screen, "runDetailReason").visible, false, "only an escalated run has a reason")
+    compare(H.find(s.screen, "runDetailReason"), null, "the block replaced the reason line")
+    compare(stop(s).visible, false, "a running run has no Why it stopped")
   }
 
   function test_a_dead_lease_and_no_lease() {
@@ -229,15 +295,182 @@ TestCase {
   }
 
   function test_an_escalated_run_shows_its_reason_in_urgent() {
-    var s = make([run("run-x-escl0002", "escalated", null, { tree: { stories: [], subtasks: [
-      { card_id: "t1", phases: [{ name: "review", status: "failed", detail: "tests red after 3 attempts" }] }] } })],
-      "run-x-escl0002"); if (!s) return
+    var s = make([escalatedRun()], "run-x-escl0002"); if (!s) return
     compare(H.find(s.screen, "runDetailState").text, RG.glyphOf("escalated") + " escalated")
     verify(Qt.colorEqual(H.find(s.screen, "runDetailState").color, s.screen.theme.urgent))
-    var reason = H.find(s.screen, "runDetailReason")
+    compare(stop(s).visible, true)
+    compare(part(s, "stopHeadline").text, RG.glyphOf("escalated") + " Escalated at review · #t1")
+    var reason = part(s, "stopDetail")
     compare(reason.visible, true)
     compare(reason.text, "tests red after 3 attempts")
     verify(Qt.colorEqual(reason.color, s.screen.theme.urgent))
+  }
+
+  // ---- why it stopped (RR 3.3)
+
+  // 12
+  function test_the_block_sits_between_the_header_and_the_controls() {
+    var s = make([escalatedRun()], "run-x-escl0002"); if (!s) return
+    var block = stop(s)
+    compare(block.visible, true)
+    verify(block.y > H.find(s.screen, "runDetailMeta").y, "below the meta line")
+    verify(block.y < H.find(s.screen, "runDetailControls").y, "above the controls")
+  }
+
+  // 13
+  function test_ams_note_comes_from_the_escalated_card_and_open_card_opens_it() {
+    var s = make([escalatedRun()], "run-x-escl0002"); if (!s) return
+    compare(part(s, "stopNoteHeading").visible, false, "no comments yet")
+    s.extras.comments = { t1: [amNote("run-x-escl0002", "t1", "escalated",
+                                      ["reason: tests do not cover the empty list"], "2026-10-04T17:45:00Z")] }
+    compare(part(s, "stopNoteHeading").visible, true, "re-read when the comments are replaced")
+    compare(part(s, "stopNoteField0").text, "reason  tests do not cover the empty list")
+    compare(s.screen.stopNoteCardId, "t1")
+    var open = part(s, "stopOpenCard")
+    compare(open.visible, true)
+    compare(open.enabled, true)
+    tap(open)
+    compare(s.navi.opened.join(","), "t1")
+  }
+
+  // 14
+  function test_the_note_falls_back_to_the_milestone_card() {
+    var s = make([escalatedRun()], "run-x-escl0002"); if (!s) return
+    s.extras.comments = {
+      t1: [amNote("run-x-other0009", "t1", "escalated", ["reason: someone else"], "2026-10-04T17:40:00Z")],
+      M3: [amNote("run-x-escl0002", "M3", "run-end", ["next: am resume run-x-escl0002"], "2026-10-04T17:46:00Z")] }
+    compare(part(s, "stopNoteField0").text, "next  am resume run-x-escl0002")
+    compare(s.screen.stopNoteCardId, "M3")
+    compare(H.find(s.screen, "runDetailStop").openCardId, "t1", "the escalated card is still the one to open")
+    // Review Focus 2: a synthetic escalation opens the milestone card of its run-end note.
+    s.runs.runs = [run("run-x-escl0002", "escalated", null,
+                       { rows: [{ card_id: "integrate", phase: "integrate", status: "failed" }] })]
+    compare(part(s, "stopHeadline").text, RG.glyphOf("escalated") + " Escalated at Integrate")
+    compare(H.find(s.screen, "runDetailStop").openCardId, "M3")
+    tap(part(s, "stopOpenCard"))
+    compare(s.navi.opened.join(","), "M3")
+  }
+
+  // 15
+  function test_a_run_of_another_project_shows_no_note_and_disables_its_buttons() {
+    var other = { root: "/home/u/b", name: "beta" }
+    var s = make([escalatedRun({ workflow: "task", card: "t1", project: other })], "run-x-escl0002"); if (!s) return
+    s.extras.comments = {
+      t1: [amNote("run-x-escl0002", "t1", "escalated", ["reason: tests red"], "2026-10-04T17:45:00Z")],
+      M3: [amNote("run-x-escl0002", "M3", "run-end", ["next: relaunch"], "2026-10-04T17:46:00Z")] }
+    var both = "Open this run's project to open its card · Open this run's project to relaunch it"
+    compare(stop(s).visible, true)
+    compare(part(s, "stopNoteHeading").visible, false, "no note from another project")
+    compare(part(s, "stopOpenCard").visible, true)
+    compare(part(s, "stopOpenCard").enabled, false)
+    compare(part(s, "stopRelaunch").visible, true)
+    compare(part(s, "stopRelaunch").enabled, false)
+    compare(part(s, "stopActionReason").text, both)
+    tap(part(s, "stopRelaunch"))
+    tap(part(s, "stopOpenCard"))
+    compare(s.runs.relaunchCalls.length, 0, "a disabled Relaunch dispatches nothing")
+    compare(s.navi.opened.length, 0, "a disabled Open card navigates nowhere")
+
+    s.runs.runs = [escalatedRun({ workflow: "task", card: "t1" })]
+    compare(part(s, "stopNoteHeading").visible, true, "the open project's run shows its note")
+    compare(part(s, "stopActionReason").visible, false)
+    s.runs.project = ""
+    compare(part(s, "stopNoteHeading").visible, false, "no project open")
+    compare(part(s, "stopActionReason").text, both)
+    // Review Focus 1.
+    s.runs.project = "/home/u/a/"
+    compare(part(s, "stopNoteHeading").visible, true, "the open root is compared without its trailing /")
+    compare(part(s, "stopActionReason").visible, false)
+    s.runs.runs = [escalatedRun({ workflow: "task", card: "t1", project: null })]
+    compare(part(s, "stopNoteHeading").visible, false, "a run with no project")
+    compare(part(s, "stopActionReason").text, both)
+    s.runs.runs = [run("run-x-escl0002", "cancelled", null, { project: other })]
+    compare(part(s, "stopOpenCard").visible, false, "a cancelled run names no card")
+    compare(part(s, "stopRelaunch").enabled, false)
+    compare(part(s, "stopActionReason").text, "Open this run's project to relaunch it")
+  }
+
+  // 16
+  function test_a_cancelled_run_relaunches_its_milestone() {
+    var s = make([run("run-x-canc0004", "cancelled", null, {})], "run-x-canc0004"); if (!s) return
+    compare(part(s, "stopOpenCard").visible, false, "a cancelled run with no note names no card")
+    var relaunch = part(s, "stopRelaunch")
+    compare(relaunch.visible, true)
+    compare(relaunch.enabled, true)
+    tap(relaunch)
+    compare(s.runs.relaunchCalls.length, 1)
+    var call = s.runs.relaunchCalls[0]
+    verify(call.card === s.app.board.cardMap.M3, "the milestone card")
+    verify(call.cardMap === s.app.board.cardMap, "the board's cardMap")
+    compare(JSON.stringify(call.relaunch), '{"level":"milestone","cardId":"M3","prefix":"m3","base":"master"}')
+    compare(s.runs.flashes.length, 0)
+  }
+
+  // 17
+  function test_a_relaunch_target_missing_from_the_board_flashes_why() {
+    var s = make([run("run-x-canc0004", "cancelled", null, { milestone: "M404" })], "run-x-canc0004"); if (!s) return
+    var relaunch = part(s, "stopRelaunch")
+    compare(relaunch.enabled, true)
+    tap(relaunch)
+    compare(s.runs.relaunchCalls.length, 0)
+    compare(s.runs.flashes.join("|"), "The card to relaunch is no longer on the board")
+    compare(H.find(s.screen, "runDetailFlash").text, "The card to relaunch is no longer on the board")
+  }
+
+  // 18
+  function test_a_refused_resume_of_this_run_offers_relaunch() {
+    var s = make([escalatedRun()], "run-x-escl0002"); if (!s) return
+    var relaunch = part(s, "stopRelaunch")
+    compare(relaunch.visible, false, "a resumable escalated run: Resume is in the controls")
+    s.runs.lastControlErrorType = "NotResumableError"
+    s.runs.lastControlErrorRunId = "run-x-escl0002"
+    compare(relaunch.visible, true)
+    compare(relaunch.enabled, true)
+    s.runs.lastControlErrorRunId = "run-x-other0009"
+    compare(relaunch.visible, false, "another run's refusal")
+    s.runs.lastControlErrorRunId = "run-x-escl0002"
+    s.runs.lastControlErrorType = "RunIsLiveError"
+    compare(relaunch.visible, false, "a refusal relaunching does not answer")
+    s.runs.lastControlErrorType = "CheckpointMismatchError"
+    compare(relaunch.visible, true)
+    s.runs.runs = [escalatedRun({ milestone: "" })]
+    compare(relaunch.visible, false, "no relaunch target, whatever the refusal")
+  }
+
+  // 19
+  function test_an_escalated_task_run_offers_relaunch() {
+    var s = make([escalatedRun({ workflow: "task", card: "t1" })], "run-x-escl0002"); if (!s) return
+    var relaunch = part(s, "stopRelaunch")
+    compare(relaunch.visible, true)
+    compare(relaunch.enabled, true)
+    tap(relaunch)
+    compare(s.runs.relaunchCalls.length, 1)
+    verify(s.runs.relaunchCalls[0].card === s.app.board.cardMap.t1)
+    compare(s.runs.relaunchCalls[0].relaunch.level, "card")
+  }
+
+  // 20
+  function test_a_dead_run_shows_its_last_heartbeat_age() {
+    var tree = { stories: [], subtasks: [{ card_id: "t1", phases: [
+      { name: "implement", status: "started", attempts: [{ n: 1, status: "started" }] }] }] }
+    var r = run("run-x-dead0005", "started", false, { tree: tree })
+    r.lease.heartbeat_at = new Date(Date.now() - 150000).toISOString()
+    var s = make([r], "run-x-dead0005"); if (!s) return
+    compare(part(s, "stopHeadline").text, RG.glyphOf("dead") + " The run's process died · #t1 · at implement")
+    compare(part(s, "stopHeartbeat").visible, true)
+    compare(part(s, "stopHeartbeat").text, "Last heartbeat 2m ago")
+    var bad = run("run-x-dead0005", "started", false, { tree: tree })
+    bad.lease.heartbeat_at = "garbage"
+    s.runs.runs = [bad]
+    compare(part(s, "stopHeartbeat").visible, false, "an unparseable heartbeat")
+  }
+
+  // 21
+  function test_the_heading_for_attempt_0_says_newest() {
+    var s = make(detail(), undefined, sel("t1", "verify", 0)); if (!s) return
+    compare(H.find(s.screen, "runOutputHeading").text, "Output · t1 verify (newest)")
+    s.runs.selectedAttempt = sel("t1", "implement", 2)
+    compare(H.find(s.screen, "runOutputHeading").text, "Output · t1 implement.2")
   }
 
   // ---- tree

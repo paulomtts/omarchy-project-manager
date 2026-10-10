@@ -8,6 +8,7 @@ import QtTest
 import "../helpers/find.js" as H
 import "../helpers/amFixtures.js" as F
 import "../../core/domain/runs.js" as Runs
+import "../../ui/components/runGlyphs.js" as RG
 
 TestCase {
   id: tc
@@ -867,23 +868,6 @@ TestCase {
     compare(H.find(p, "noProjectsText").visible, false)
   }
 
-  // F6
-  function test_start_run_without_a_project_is_disabled_with_why() {
-    var p = makeNoProject(); if (!p) return
-    p.navigator.showSection("runs")
-    wait(50)
-    var button = H.find(p, "startRunButton")
-    compare(button.visible, true)
-    compare(button.enabled, false)
-    compare(String(button.tooltipText), "Open a project to dispatch")
-    mouseClick(button)
-    compare(p.dispatchOpen, false, "a click opens nothing")
-    compare(p.app.runs.dispatchState, "idle")
-    p.app.runs.amStatus = "missing"
-    compare(button.enabled, false)
-    compare(String(button.tooltipText), "Open a project to dispatch", "no project wins over am missing")
-  }
-
   // ---- Open project (4.4)
 
   // make() with pA and pB registered and pA open; filteredRuns is alpha's
@@ -974,6 +958,588 @@ TestCase {
     compare(p.app.projects.selectedProject.root_path, "/home/u/a")
     compare(p.app.nav.viewMode, "runs")
     verify(p.app.memories.memoryOpError.indexOf("unsaved changes") >= 0, p.app.memories.memoryOpError)
+  }
+
+  // ---- the Runs dispatch (3.3)
+
+  // A brd card as board-tree.py lists it; blockedBy undefined leaves
+  // blocked_by out.
+  function card(id, title, status, children, blockedBy) {
+    var c = { id: id, title: title, status: status, description: "d", children: children || [] }
+    if (blockedBy !== undefined) c.blocked_by = blockedBy
+    return c
+  }
+
+  // m1 > s1 > t0 (done), t1 (blocked by t0, issue i1 and an unknown id), t2;
+  // m9 is a done milestone. Its target rows: board, m1, s1, t1, t2.
+  function tree() {
+    return [
+      card("m1", "M one", "todo", [
+        card("s1", "Story one", "todo", [
+          card("t0", "Prep", "done", [], []),
+          card("t1", "Do it", "todo", [], ["t0", "i1", "ghost"]),
+          card("t2", "Loose end", "todo")
+        ])
+      ]),
+      card("m9", "M nine", "done")
+    ]
+  }
+
+  // A Panel on the Runs list whose helpers never run (each launch a test
+  // cares about is answered through reply()): `registry` registered, pA open
+  // when `open`, else no project open.
+  function makeDispatch(registry, open) {
+    var host = createTemporaryObject(hostC, tc)
+    var comp = Qt.createComponent("../../ui/Panel.qml")
+    if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
+    var p = comp.createObject(host)
+    p.app.backendDir = "/plugin/core/backend/"
+    p.opened = true
+    p.app.projects.stateLoaded = true
+    p.app.projects.applyProjectsList(registry)
+    disarmSwitch(p)
+    p.app.extras.extrasLoading = false
+    p.app.runs.snapshotRunner.cancel()
+    if (!open) p.app.projects.selectedProject = null
+    p.app.runs.runSettings = { verify: ["uv run pytest"] }
+    p.app.runs.runs = sampleRuns()
+    ctrl6(p)
+    compare(p.app.nav.viewMode, "runs")
+    return p
+  }
+
+  function dialog(p) { return H.find(p, "dispatchDialog") }
+  function textOf(p, name) { return String(H.find(p, name).text) }
+
+  // board-tree.py --probe's reply: every root in `roots` readable.
+  function probeOk(p, roots) {
+    reply(p.app.runs.dispatchProjectRunner.current,
+          JSON.stringify({ ok: true, projects: roots.map(function(r) { return { root: r, ok: true } }) }) + "\n", 0)
+  }
+
+  // Start run clicked and the probe answered: the project step.
+  function startRun(p) {
+    H.find(p, "startRunButton").clicked()
+    compare(p.app.runs.dispatchStep, "project")
+    probeOk(p, p.app.runs.usableRoots().map(function(r) { return r.root }))
+    wait(50)
+  }
+
+  // The dialog's pick of the project at `root`, then the tree read answered
+  // with tree(): the target step.
+  function toTarget(p, root) {
+    dialog(p).projectChosen(root)
+    compare(p.app.runs.dispatchStep, "target")
+    reply(p.app.runs.dispatchTargetRunner.current, JSON.stringify({ ok: true, data: tree() }) + "\n", 0)
+    compare(p.app.runs.dispatchTargetRows.map(function(r) { return r.key }).join(","),
+            "board,card:m1,card:s1,card:t1,card:t2")
+    wait(50)
+  }
+
+  // The dialog's pick of the target row `key`: the form step.
+  function toForm(p, key) {
+    dialog(p).targetPicked(key)
+    compare(p.app.runs.dispatchStep, "form")
+    wait(50)
+  }
+
+  // 2
+  function test_start_run_with_an_empty_registry_is_disabled_with_why() {
+    var p = makeDispatch([], false); if (!p) return
+    wait(50)
+    var button = H.find(p, "startRunButton")
+    compare(button.visible, true)
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "No projects registered")
+    mouseClick(button)
+    compare(p.dispatchOpen, false, "a click opens nothing")
+    compare(p.app.runs.dispatchStep, "")
+  }
+
+  // 3
+  function test_start_run_with_am_missing_is_disabled_with_why() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    p.app.runs.amStatus = "missing"
+    wait(50)
+    var button = H.find(p, "startRunButton")
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "am is not installed or not on PATH")
+    p.app.projects.applyProjectsList([])
+    p.app.runs.snapshotRunner.cancel()
+    compare(p.app.runs.usableRoots().length, 0)
+    compare(button.enabled, false)
+    compare(String(button.tooltipText), "am is not installed or not on PATH", "am missing wins over an empty registry")
+  }
+
+  // 4
+  function test_back_and_escape_in_the_runs_dialog() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    var button = H.find(p, "startRunButton")
+    compare(button.enabled, true)
+    compare(String(button.tooltipText), "Start an am run")
+    startRun(p)
+    compare(dialog(p).visible, true)
+    compare(String(dialog(p).step), "project")
+    compare(p.focusItem.objectName, "dispatchProjectKeys")
+    verify(H.find(p, "dispatchProjectKeys").activeFocus, "the project step has the keyboard")
+    toTarget(p, "/home/u/a")
+    compare(p.focusItem.objectName, "dispatchTargetFilter")
+    verify(H.find(p, "dispatchTargetFilter").activeFocus, "the target step has the keyboard")
+    H.find(p, "dispatchBack").clicked()
+    compare(p.app.runs.dispatchStep, "project")
+    compare(dialog(p).visible, true)
+    wait(50)
+    verify(H.find(p, "dispatchProjectKeys").activeFocus, "Back to the project step moves the keyboard there")
+    toTarget(p, "/home/u/a")
+    toForm(p, "card:t1")
+    compare(p.dispatchCardId, "t1")
+    H.find(p, "dispatchBack").clicked()
+    compare(p.app.runs.dispatchStep, "target")
+    compare(p.app.runs.dispatchTargetKey, "card:t1")
+    wait(50)
+    compare(dialog(p).targetCursor, 3, "the picked row is under the cursor")
+    verify(H.find(p, "dispatchTargetFilter").activeFocus, "Back to the target step moves the keyboard there")
+    H.find(p, "dispatchBack").clicked()
+    wait(50)
+    verify(H.find(p, "dispatchProjectKeys").activeFocus)
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.dispatchStep, "")
+    compare(dialog(p).visible, false)
+    compare(p.app.nav.viewMode, "runs", "that Escape closed the dialog only")
+    compare(p.opened, true)
+    wait(50)
+    compare(p.focusItem.objectName, "searchField")
+    verify(H.find(p, "searchField").activeFocus, "the focus is back on the Runs search")
+  }
+
+  // Review Focus 2
+  function test_escape_in_the_target_filter_closes_the_runs_dialog() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    verify(H.find(p, "dispatchTargetFilter").activeFocus)
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.dispatchStep, "")
+    compare(dialog(p).visible, false)
+    compare(p.app.nav.viewMode, "runs")
+    wait(50)
+    verify(H.find(p, "searchField").activeFocus, "the focus is back on the Runs search")
+  }
+
+  // Review Focus 5
+  function test_d_typed_in_the_target_filter_filters() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    keyClick("d")
+    compare(String(H.find(p, "dispatchTargetFilter").text), "d", "the letter went into the filter")
+    compare(p.app.runs.dispatchStep, "target")
+    compare(p.app.runs.dispatchRoot, "/home/u/a")
+    p.app.runs.closeDispatch()
+  }
+
+  // Review Focus 4
+  function test_the_board_row_dispatches_the_whole_board() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    toForm(p, "card:m1")
+    compare(p.dispatchCardId, "m1")
+    compare(textOf(p, "dispatchTarget"), "Target   Milestone \"M one\"")
+    H.find(p, "dispatchBack").clicked()
+    toForm(p, "board")
+    compare(p.dispatchCardId, "", "the board row has no card")
+    compare(textOf(p, "dispatchTarget"), "Target   Whole board")
+    p.app.runs.closeDispatch()
+  }
+
+  // Review Focus 1
+  function test_a_registry_emptied_under_the_project_step_keeps_the_dialog() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    p.app.projects.applyProjectsList([])
+    p.app.runs.snapshotRunner.cancel()
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(dialog(p).visible, true)
+    compare(p.app.runs.dispatchStep, "project")
+    compare(H.find(p, "dispatchProjectEmpty").visible, true)
+    compare(textOf(p, "dispatchProjectEmpty"), "No projects registered")
+    compare(H.find(p, "startRunButton").enabled, false)
+    compare(String(H.find(p, "startRunButton").tooltipText), "No projects registered")
+    p.app.runs.closeDispatch()
+  }
+
+  // B5 through the panel: d in the empty Runs search.
+  function test_d_in_the_empty_runs_search_opens_the_runs_dialog_without_typing() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    wait(50)
+    var field = H.find(p, "searchField")
+    field.forceActiveFocus()
+    keyClick("d")
+    compare(p.app.runs.dispatchStep, "project")
+    compare(dialog(p).visible, true)
+    compare(String(field.text), "", "the handled letter was not typed")
+    wait(50)
+    verify(H.find(p, "dispatchProjectKeys").activeFocus, "the dialog took the keyboard")
+    p.app.runs.closeDispatch()
+  }
+
+  // 1
+  function test_with_no_project_start_run_walks_the_steps_and_lands_on_the_new_run() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    var button = H.find(p, "startRunButton")
+    compare(button.visible, true)
+    compare(button.enabled, true)
+    compare(String(button.tooltipText), "Start an am run")
+    button.clicked()
+    compare(dialog(p).visible, true)
+    compare(p.app.runs.dispatchStep, "project")
+    probeOk(p, ["/home/u/a"])
+    wait(50)
+    compare(p.focusItem.objectName, "dispatchProjectKeys")
+    verify(H.find(p, "dispatchProjectKeys").activeFocus, "the project step has the keyboard")
+    keyClick(Qt.Key_Return)
+    compare(p.app.runs.dispatchStep, "target")
+    compare(p.app.runs.dispatchRoot, "/home/u/a")
+    compare(String(dialog(p).projectName), "alpha")
+    compare(textOf(p, "dispatchHeading"), "Dispatch · 2 Target in alpha")
+    reply(p.app.runs.dispatchTargetRunner.current, JSON.stringify({ ok: true, data: tree() }) + "\n", 0)
+    wait(50)
+    compare(p.focusItem.objectName, "dispatchTargetFilter")
+    verify(H.find(p, "dispatchTargetFilter").activeFocus, "the target step has the keyboard")
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    compare(dialog(p).targetCursor, 3)
+    keyClick(Qt.Key_Return)
+    compare(p.app.runs.dispatchStep, "form")
+    compare(p.dispatchCardId, "t1")
+    compare(textOf(p, "dispatchTarget"), "Target   Subtask \"Do it\"")
+    compare(textOf(p, "dispatchStory"), "Story   \"Story one\"")
+    compare(textOf(p, "dispatchBlocked"),
+            "Blocked by: \"Prep\" (Done), i1 (not on this board), ghost (not on this board)")
+    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}\n', 0)
+    reply(p.app.runs.dispatchSettingsRunner.current, '{"verify":["uv run pytest"]}\n', 0)
+    compare(p.app.runs.dispatchState, "ready")
+    var start = H.find(p, "dispatchStart")
+    start.clicked()
+    compare(p.app.runs.dispatchState, "ready", "the first click only arms")
+    start.clicked()
+    compare(p.app.runs.dispatchState, "starting")
+    reply(p.app.runs.dispatchStartRunners[0].current, '{"ok":true,"run_id":"run-0000000000b2","message":"started"}\n', 0)
+    // A good start fetches the runs again; that launch cannot run here.
+    p.app.runs.snapshotRunner.cancel()
+    compare(dialog(p).visible, false)
+    compare(p.app.runs.dispatchStep, "")
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000b2")
+    compare(p.app.projects.selectedProject, null, "no project was opened")
+  }
+
+  // 5
+  function test_a_runs_dialog_keeps_its_project_across_a_project_switch() {
+    var p = makeDispatch([tc.pA, tc.pB], true); if (!p) return
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    toForm(p, "card:t1")
+    compare(textOf(p, "dispatchStory"), "Story   \"Story one\"")
+    p.navigator.chooseProject(tc.pB)
+    disarmSwitch(p)
+    compare(p.app.projects.selectedProject.root_path, "/home/u/b")
+    compare(dialog(p).visible, true)
+    compare(p.app.runs.dispatchRoot, "/home/u/a")
+    compare(p.app.runs.dispatchStep, "form")
+    compare(p.dispatchCardId, "t1")
+    compare(textOf(p, "dispatchStory"), "Story   \"Story one\"", "still the picked tree's story")
+    compare(textOf(p, "dispatchBlocked"),
+            "Blocked by: \"Prep\" (Done), i1 (not on this board), ghost (not on this board)",
+            "another project is open: its issues name nothing here")
+    p.app.runs.closeDispatch()
+  }
+
+  // 6 and Review Focus 3
+  function test_the_open_board_does_not_feed_a_runs_dispatch() {
+    var p = makeDispatch([tc.pA], true); if (!p) return
+    p.app.board.applyTreeData([card("m1", "Board milestone", "todo", [
+      card("s1", "Board story", "todo", [card("t1", "Board task", "todo", [], ["i1"])])])])
+    p.app.board.applyIssueData([{ id: "i1", title: "Broken build", status: "open" }])
+    wait(50)
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    toForm(p, "card:t1")
+    compare(textOf(p, "dispatchTarget"), "Target   Subtask \"Do it\"")
+    compare(textOf(p, "dispatchStory"), "Story   \"Story one\"", "the replied tree's story, not the board's")
+    compare(textOf(p, "dispatchBlocked"),
+            "Blocked by: \"Prep\" (Done), \"Broken build\" (Issue · open), ghost (not on this board)",
+            "the open project's issues name a blocker of its own tree")
+    p.app.runs.closeDispatch()
+  }
+
+  // B4: the milestone offer of a blocked story reads the picked tree.
+  function test_a_blocked_story_of_a_runs_dispatch_offers_its_milestone() {
+    var p = makeDispatch([tc.pA], false); if (!p) return
+    startRun(p)
+    toTarget(p, "/home/u/a")
+    toForm(p, "card:s1")
+    compare(p.dispatchCardId, "s1")
+    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}\n', 0)
+    reply(p.app.runs.dispatchSettingsRunner.current, '{"verify":["uv run pytest"]}\n', 0)
+    compare(p.app.runs.dispatchState, "previewing")
+    reply(p.app.runs.dispatchPreviewRunner.current,
+          '{"ok":false,"error":{"type":"StoryBlockedError","message":"Story blocked by s0"}}\n', 0)
+    compare(p.app.runs.dispatchState, "refused")
+    var offer = H.find(p, "dispatchSuggest")
+    compare(offer.visible, true, "the milestone is in the picked tree")
+    offer.clicked()
+    compare(p.dispatchCardId, "m1")
+    compare(p.app.runs.dispatchTarget.level, "milestone")
+    compare(textOf(p, "dispatchTarget"), "Target   Milestone \"M one\"")
+    compare(p.app.runs.dispatchStep, "form")
+    p.app.runs.closeDispatch()
+  }
+
+  // ---- the Resume dialog (3.2)
+
+  function resumeDialog(p) { return H.find(p, "resumeVerifyDialog") }
+  function argv(proc) { return proc.command.join("|") }
+  function endsWith(text, tail) { return text.slice(-tail.length) === tail }
+  // filteredRuns' index of the run `id`: the cursor row that names it.
+  function indexOfRun(p, id) { return p.app.runs.filteredRuns.map(function(r) { return r.id }).indexOf(id) }
+
+  // The Runs list with the cursor on the escalated milestone run, `r` in the
+  // empty search, and get-run-settings answering with nothing stored.
+  function openResumeByKey(p) {
+    p.navigator.showSection("runs")
+    wait(50)
+    var field = H.find(p, "searchField")
+    field.forceActiveFocus()
+    p.app.nav.cursorIndex = indexOfRun(p, "run-0000000000b2")
+    keyClick("r")
+    compare(p.app.runs.controlRunners.length, 1, "one runner reads the run settings")
+    verify(argv(p.app.runs.controlRunners[0].current).indexOf("get-run-settings") >= 0,
+           "the runner reads get-run-settings")
+    reply(p.app.runs.controlRunners[0].current,
+          JSON.stringify({ verify: [], allowNoVerification: false }) + "\n", 0)
+    wait(50)
+    return field
+  }
+
+  // 11
+  function test_r_with_no_stored_set_opens_the_dialog_and_resume_launches_with_the_typed_commands() {
+    var p = make(); if (!p) return
+    var field = openResumeByKey(p)
+    var dialog = resumeDialog(p)
+    verify(dialog, "the Resume dialog is mounted")
+    compare(dialog.visible, true)
+    compare(p.app.runs.resumeRunId, "run-0000000000b2")
+    compare(Object.keys(p.app.runs.pending).length, 0, "nothing pending")
+    compare(H.find(p, "resumeDialogTitle").text, "Resume run …000000b2")
+    compare(p.focusItem.objectName, "resumeVerify0")
+    verify(p.focusItem.activeFocus, "row 0 has the keyboard")
+    compare(field.text, "", "the handled r was not typed")
+
+    H.find(p, "resumeVerify0").text = "bash tests/run.sh"
+    compare(p.app.runs.resumeVerify.length, 1)
+    compare(p.app.runs.resumeVerify[0], "bash tests/run.sh")
+    mouseClick(H.find(p, "resumeVerifyAdd"))
+    wait(50)
+    var row1 = H.find(p, "resumeVerify1")
+    verify(row1, "+ added a row")
+    row1.text = "uv run pytest"
+    compare(p.app.runs.resumeVerify.length, 2)
+    wait(450)
+    var accept = H.find(p, "resumeDialogAccept")
+    compare(accept.enabled, true)
+    mouseClick(accept)
+
+    compare(dialog.visible, false)
+    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.runs.pending["run-0000000000b2"], "resume")
+    compare(p.app.runs.controlRunners.length, 1)
+    var launched = argv(p.app.runs.controlRunners[0].current)
+    verify(endsWith(launched, "run-control.py|resume|run-0000000000b2|/home/u/a|--verify|bash tests/run.sh|--verify|uv run pytest"),
+           "run-control got the typed commands in order: " + launched)
+    compare(p.app.runs.resumeSaveRunner.seq, 1, "the set was saved")
+    verify(argv(p.app.runs.resumeSaveRunner.current).indexOf("set-run-settings|/home/u/a|") >= 0,
+           "saved for the run's project")
+    wait(50)
+    compare(p.focusItem.objectName, "searchField")
+    verify(field.activeFocus, "the focus is back in the search field")
+  }
+
+  // 12
+  function test_escape_closes_only_the_resume_dialog_and_the_run_keys_are_dead_under_it() {
+    var p = make(); if (!p) return
+    var field = openResumeByKey(p)
+    var row0 = H.find(p, "resumeVerify0")
+    verify(row0.activeFocus, "row 0 has the keyboard")
+    compare(p.shortcuts.modalOpen(), true)
+    keyClick("p")
+    keyClick("c")
+    compare(row0.text, "pc", "the letters were typed into the row")
+    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runs.controlRunners.length, 0)
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.resumeRunId, "")
+    compare(resumeDialog(p).visible, false)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.opened, true, "the panel stays open")
+    compare(Object.keys(p.app.runs.pending).length, 0)
+    compare(p.shortcuts.modalOpen(), false)
+    wait(50)
+    verify(field.activeFocus, "the focus is back in the search field")
+    compare(field.text, "")
+  }
+
+  // 13
+  function test_a_refused_confirm_keeps_the_dialog_with_the_reason_and_the_rows() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    wait(50)
+    H.find(p, "resumeVerify0").text = "bash tests/run.sh"
+    p.app.runs.runs = [run("run-0000000000b2", "started", true, "beta")]
+    var reason = p.app.runs.refusalOf("resume", "run-0000000000b2")
+    verify(reason !== "", "a live run cannot be resumed")
+    wait(450)
+    mouseClick(H.find(p, "resumeDialogAccept"))
+    compare(resumeDialog(p).visible, true)
+    compare(p.app.runs.resumeRunId, "run-0000000000b2")
+    var error = H.find(p, "resumeDialogError")
+    compare(error.visible, true)
+    compare(error.text, reason)
+    compare(H.find(p, "resumeVerify0").text, "bash tests/run.sh", "the typed row is kept")
+    compare(p.app.runs.controlRunners.length, 0, "run-control was never launched")
+    compare(p.app.runs.resumeSaveRunner.seq, 0, "nothing saved")
+  }
+
+  // Review Focus 2
+  function test_escape_at_the_panel_closes_only_the_resume_dialog_and_keeps_the_toast() {
+    var p = withToast("runs"); if (!p) return
+    p.app.runs.runs = sampleRuns()
+    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    wait(50)
+    p.shortcuts.closeRequested()
+    compare(p.app.runs.resumeRunId, "")
+    compare(resumeDialog(p).visible, false)
+    compare(p.app.runs.toasts.length, 1, "the toast is kept")
+    compare(p.opened, true)
+    compare(p.app.nav.viewMode, "runs")
+  }
+
+  // Review Focus 3
+  function test_global_chords_and_run_keys_are_dead_under_the_resume_dialog() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    p.app.nav.cursorIndex = indexOfRun(p, "run-0000000000b2")
+    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_1 }), false)
+    compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 }), false)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_R)), false)
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), false)
+    compare(p.app.runs.controlRunners.length, 0)
+    compare(p.app.runs.cancelOpen, false)
+    compare(p.app.runs.resumeRunId, "run-0000000000b2")
+  }
+
+  // Review Focus 4
+  function test_a_second_open_replaces_the_run_and_resets_the_rows() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    p.app.runs.resumeOpenFor("run-0000000000b2")
+    wait(50)
+    H.find(p, "resumeVerify0").text = "a"
+    mouseClick(H.find(p, "resumeVerifyAdd"))
+    wait(50)
+    verify(H.find(p, "resumeVerify1"), "two rows")
+    compare(p.app.runs.resumeOpenFor("run-0000000000d4"), true)
+    wait(50)
+    compare(H.find(p, "resumeDialogTitle").text, "Resume run …000000d4")
+    compare(H.find(p, "resumeVerify0").text, "")
+    verify(!H.find(p, "resumeVerify1"), "one empty row again")
+    compare(p.focusItem.objectName, "resumeVerify0")
+    verify(p.focusItem.activeFocus, "row 0 has the keyboard")
+  }
+
+  // Review Focus 5
+  function test_the_opt_out_resumes_without_verification() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    wait(50)
+    p.app.runs.resumeOpenFor("run-0000000000b2")
+    wait(50)
+    var accept = H.find(p, "resumeDialogAccept")
+    compare(accept.enabled, false, "blank rows, no opt-out")
+    mouseClick(H.find(p, "resumeNoVerify"))
+    compare(p.app.runs.resumeAllowNoVerification, true)
+    compare(accept.enabled, true)
+    wait(450)
+    mouseClick(accept)
+    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.runs.controlRunners.length, 1)
+    var launched = argv(p.app.runs.controlRunners[0].current)
+    verify(endsWith(launched, "run-control.py|resume|run-0000000000b2|/home/u/a|--allow-no-verification"),
+           "run-control got the opt-out: " + launched)
+    verify(endsWith(argv(p.app.runs.resumeSaveRunner.current),
+                    "set-run-settings|/home/u/a|" + JSON.stringify({ verify: [], allowNoVerification: true })),
+           "the opt-out was saved")
+  }
+
+  // Review Focus 5
+  function test_closing_on_run_detail_gives_the_focus_back_to_the_key_catcher() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    p.navigator.openRun("run-0000000000b2")
+    wait(50)
+    compare(p.app.runs.resumeOpenFor("run-0000000000b2"), true)
+    wait(50)
+    compare(p.focusItem.objectName, "resumeVerify0")
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runs.resumeRunId, "")
+    compare(p.app.nav.viewMode, "run", "Escape closed only the dialog")
+    wait(50)
+    compare(p.focusItem.objectName, "keyCatcher")
+    verify(p.focusItem.activeFocus, "the key catcher has the keyboard")
+  }
+
+  // ---- why it stopped (RR 3.3)
+
+  // 22
+  function test_a_cancelled_run_relaunches_into_the_prefilled_dispatch_dialog() {
+    var p = make(); if (!p) return
+    p.app.backendDir = "/plugin/core/backend/"
+    p.app.runs.runSettings = { verify: ["uv run pytest"] }
+    p.app.board.applyTreeData([{ id: "m1", title: "M one", status: "todo", description: "d", children: [] }])
+    var r = run("run-0000000000f7", "cancelled", null, "m1")
+    r.branch_prefix = "old-m1"
+    r.base_branch = "release"
+    p.app.runs.runs = [r]
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    p.shortcuts.handleSearchKey(key(Qt.Key_Return))
+    compare(p.app.nav.viewMode, "run")
+    compare(p.app.runs.selectedRunId, "run-0000000000f7")
+    wait(50)
+    var block = H.find(p, "runDetailStop")
+    compare(block.visible, true)
+    compare(H.find(block, "stopHeadline").text, RG.glyphOf("cancelled") + " " + Runs.stopReport(r).headline)
+    var relaunch = H.find(block, "stopRelaunch")
+    compare(relaunch.visible, true)
+    compare(relaunch.enabled, true)
+    mouseClick(relaunch)
+    compare(p.app.runs.dispatchState, "previewing")
+    wait(50)
+    compare(H.find(p, "dispatchDialog").visible, true)
+    compare(H.find(p, "dispatchPrefix").text, "old-m1")
+    compare(H.find(p, "dispatchBase").text, "release")
+    reply(p.app.runs.dispatchDefaultsRunner.current, '{"ok":true,"data":{"default_branch":"main"}}', 0)
+    compare(H.find(p, "dispatchBase").text, "release", "the run's base is kept over the default branch")
   }
 
   // ---- the Output / Events tabs (4.3)

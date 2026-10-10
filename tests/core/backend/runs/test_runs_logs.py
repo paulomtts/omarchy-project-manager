@@ -172,6 +172,71 @@ def test_exact_am_argv(world):
     assert "--pretty" not in made[0]
 
 
+# --- attempt 0: the phase's newest output ------------------------------------
+
+@pytest.mark.parametrize("phase", ["verify", "implement"])
+def test_attempt_zero_sends_no_attempt_flag(world, phase):
+    # Attempt 0 means "no --attempt": am returns the phase's newest recorded output,
+    # the only way to read a step, which records no attempts in `am status`.
+    proj = str(world["proj"])
+    envelope = {"ok": True, "data": logs_data()}
+    set_logs(world, envelope)
+    code, out = run(world, [proj, "r1", "c1", phase, "0"])
+    assert code == 0
+    assert out == envelope
+    made = calls(world)
+    assert made == [["logs", "r1", "c1", "--phase", phase, "--repo-dir", proj]]
+    assert "--attempt" not in made[0]
+    assert "0" not in made[0]
+
+
+@pytest.mark.parametrize("attempt", ["2", "1"])
+def test_nonzero_attempt_is_sent_verbatim(world, attempt):
+    proj = str(world["proj"])
+    set_logs(world, {"ok": True, "data": logs_data()})
+    code, _ = run(world, [proj, "r1", "c1", "verify", attempt])
+    assert code == 0
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "verify", "--attempt", attempt,
+                             "--repo-dir", proj]]
+
+
+@pytest.mark.parametrize("attempt", ["00", "-0", " 0", "", "+0", "0 ", "0\n"],
+                         ids=["double-zero", "minus-zero", "leading-space", "empty",
+                              "plus-zero", "trailing-space", "trailing-newline"])
+def test_only_exact_zero_is_special(world, attempt):
+    # Only the exact string "0" drops --attempt: the helper parses no integers and
+    # strips nothing, so am refuses these itself.
+    proj = str(world["proj"])
+    set_logs(world, {"ok": True, "data": logs_data()})
+    code, _ = run(world, [proj, "r1", "c1", "verify", attempt])
+    assert code == 0
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "verify", "--attempt", attempt,
+                             "--repo-dir", proj]]
+
+
+def test_attempt_zero_refusal_passed_through(world):
+    proj = str(world["proj"])
+    # synthetic: am's refusal when the phase has no recorded output; no capture holds one.
+    refusal = {"ok": False, "error": {"type": "NotFoundError",
+                                      "message": "no output recorded for phase verify"}}
+    set_logs(world, refusal, code=3)
+    code, out = run(world, [proj, "r1", "c1", "verify", "0"])
+    assert code == 0
+    assert out == refusal
+    assert calls(world) == [["logs", "r1", "c1", "--phase", "verify", "--repo-dir", proj]]
+
+
+def test_attempt_zero_bad_output_is_am_bad_output(world):
+    # synthetic: am output that is not JSON.
+    set_raw(world, "not json\n", 1)
+    code, out = run(world, [str(world["proj"]), "r1", "c1", "verify", "0"])
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert "am logs" in out["error"]["message"]
+    assert "(exit 1)" in out["error"]["message"]
+
+
 def test_args_reach_am_verbatim(world):
     # Spaces, shell metacharacters and a leading dash must each arrive as one argv
     # element: no shell, no validation by the helper. The root does not exist.

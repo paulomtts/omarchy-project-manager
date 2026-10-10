@@ -2,8 +2,9 @@ import QtQuick
 import qs.Commons
 
 // Every key the panel reacts to, in one place: the Ctrl chords, the run keys
-// (p / r / c), the dispatch key (d), the events key (e), the Escape chain, the
-// arrows the key catcher reports, and the search field's own keys.
+// (p / r / c), the dispatch key (d: a card's dispatch on the board list and
+// a card, the Runs dispatch on the Runs list), the events key (e), the Escape
+// chain, the arrows the key catcher reports, and the search field's own keys.
 // The ORDER of the guards here is load bearing -- a modal must swallow the
 // global shortcuts, and Escape must unwind the modals before it unwinds the
 // navigation -- so nothing in this file may be reordered.
@@ -39,17 +40,22 @@ QtObject {
   // Escape (and the key catcher's close gesture): innermost thing first. The
   // run toasts come right after the modals: they are not a modal, but an
   // Escape with toasts showing never goes Back or closes the panel. An open
-  // dispatch closes like the other modals; while its start is in flight
-  // closeDispatch() refuses, so that Escape does nothing at all.
+  // dispatch -- any state but idle, or a Runs dispatch at any step -- closes
+  // like the other modals; while its start is in flight closeDispatch()
+  // refuses, so that Escape does nothing at all. The Resume dialog closes
+  // after the cancel confirmation and before the toasts.
   function closeRequested() {
-    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : keys.app.runs.dispatchState !== "idle" ? keys.app.runs.closeDispatch() : keys.app.runs.cancelOpen ? keys.app.runs.closeCancel() : keys.app.runs.toasts.length > 0 ? keys.app.runs.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
+    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.runs.dispatchState !== "idle" || keys.app.runs.dispatchStep !== "") ? keys.app.runs.closeDispatch() : keys.app.runs.cancelOpen ? keys.app.runs.closeCancel() : keys.app.runs.resumeRunId !== "" ? keys.app.runs.resumeClose() : keys.app.runs.toasts.length > 0 ? keys.app.runs.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
   }
 
-  // A modal is open: the global shortcuts, the run keys and d do nothing under it.
+  // A modal is open: the global shortcuts, the run keys and d do nothing under
+  // it. A dispatch is one in any state but idle, and a Runs dispatch at any
+  // step.
   function modalOpen() {
     return !!(keys.app.deleter.deleteTarget || keys.app.memories.memoryDeleteOpen || keys.app.memories.newMemoryOpen
               || keys.app.milestones.dialogOpen || keys.app.board.archiveOpen || keys.app.runs.cancelOpen
-              || keys.app.runs.dispatchState !== "idle")
+              || keys.app.runs.dispatchState !== "idle" || keys.app.runs.dispatchStep !== ""
+              || keys.app.runs.resumeRunId !== "")
   }
 
   // p / r / c with no modifier at all pause, resume or cancel a run, with or
@@ -78,14 +84,23 @@ QtObject {
   }
 
   // d with no modifier at all opens the dispatch dialog -- it never starts
-  // anything: on the board list for the cursor card, there only while the
-  // search is empty (the search field has the focus and every letter types
-  // once it holds text; Shift+D always types), and on a card for that card.
-  // Needs a project and am; under a modal or the open dropdown, or anywhere
-  // else, the letter is left alone.
+  // anything. On the Runs list it opens the Runs dispatch at its project
+  // step (dispatchOpenFromRuns), with or without a project open; it needs am
+  // and a usable registered root. On the board list it opens the cursor
+  // card's dispatch and on a card that card's (actions.openDispatch); those
+  // need a project and am. On both lists only while the search is empty: the
+  // search field has the focus and every letter types once it holds text
+  // (Shift+D always types). Under a modal or the open dropdown, on Run
+  // detail, or anywhere else, the letter is left alone.
   function handleDispatchKey(event) {
     if (event.modifiers !== Qt.NoModifier || event.key !== Qt.Key_D) return false
     var mode = keys.app.nav.viewMode
+    if (mode === "runs") {
+      if (keys.app.nav.searchQuery !== "" || keys.modalOpen() || keys.app.nav.dropdownOpen) return false
+      if (keys.app.runs.amStatus === "missing" || keys.app.runs.usableRoots().length === 0) return false
+      keys.app.runs.dispatchOpenFromRuns()
+      return true
+    }
     if (!keys.app.projects.selectedProject || (mode !== "board" && mode !== "entry")) return false
     if (keys.app.runs.amStatus === "missing" || keys.modalOpen() || keys.app.nav.dropdownOpen) return false
     if (mode === "board" && keys.app.nav.searchQuery !== "") return false
