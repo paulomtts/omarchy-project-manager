@@ -768,6 +768,26 @@ function historyStatuses(filter, finishedState) {
   return ["done", "escalated", "cancelled", "canceled"]
 }
 
+// The `--before` time for the next history page of the project at `root`: the
+// `started_at` string, exactly as given, of the run with the smallest start
+// instant (see _startMs) among the terminal runs (finished or parked) whose
+// runRoot(run) === root; the first in input order on a tie. "" when there is
+// no such run, `root` is not a non-empty string or `runs` is not an array.
+// Never mutates, never throws.
+function historyCursor(runs, root) {
+  if (typeof root !== "string" || root === "" || !Array.isArray(runs)) return ""
+  var best = "", bestMs = NaN
+  for (var i = 0; i < runs.length; i++) {
+    var run = runs[i]
+    if (runRoot(run) !== root) continue
+    var state = runState(run)
+    if (state !== "parked" && !_isFinishedState(state)) continue
+    var t = _startMs(run)
+    if (isFinite(t) && (isNaN(bestMs) || t < bestMs)) { best = run.started_at; bestMs = t }
+  }
+  return best
+}
+
 // The titles map of run's project: titlesByRoot's own entry for runRoot(run)
 // when titlesByRoot is a plain object and that entry a plain object; {} for
 // anything else, and always for a run whose root is "".

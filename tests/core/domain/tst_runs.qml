@@ -1948,6 +1948,67 @@ TestCase {
     compare(Runs.historyStatuses("all").join(","), all, "a caller's change never leaks")
   }
 
+  function test_history_cursor_per_root() {
+    var list = [
+      rootedRun("a-live", "started", true, "/a", "2026-09-01T00:00:00Z"),
+      rootedRun("b-canc", "canceled", null, "/b", "2026-10-03T02:00:00Z"),
+      rootedRun("a-done", "done", null, "/a", "2026-10-03 10:00:00+00:00"),
+      rootedRun("a-dead", "started", false, "/a", "2026-09-02 00:00:00+00:00"),
+      rootedRun("b-live", "started", true, "/b", "2026-01-01T00:00:00Z"),
+      rootedRun("a-esc", "escalated", null, "/a", "2026-10-03T12:00:00+05:00"),
+      rootedRun("a-bad", "cancelled", null, "/a", "not a date"),
+      rootedRun("b-park", "stopped", null, "/b", "2026-10-02 23:00:00-02:00"),
+      rootedRun("a-unk", "weird", null, "/a", "2026-08-01T00:00:00Z")
+    ]
+    var before = JSON.stringify(list)
+    compare(Runs.historyCursor(list, "/a"), "2026-10-03T12:00:00+05:00",
+            "the oldest instant (07:00Z), not the smallest string; running, dead, unknown and unparsable ignored")
+    compare(Runs.historyCursor(list, "/b"), "2026-10-02 23:00:00-02:00", "a parked run can be the cursor")
+    compare(JSON.stringify(list), before, "input unchanged")
+  }
+
+  function test_history_cursor_ties_and_empty() {
+    var tie = [rootedRun("t1", "done", null, "/a", "2026-10-03T10:00:00Z"),
+               rootedRun("t2", "escalated", null, "/a", "2026-10-03 10:00:00+00:00"),
+               rootedRun("t3", "stopped", null, "/a", "2026-10-03 07:00:00-03:00")]
+    compare(Runs.historyCursor(tie, "/a"), "2026-10-03T10:00:00Z", "a tie goes to the first in input order")
+    compare(Runs.historyCursor(tie.slice(1), "/a"), "2026-10-03 10:00:00+00:00", "verbatim, am's format")
+    var unfinished = [rootedRun("l", "started", true, "/a", "2026-10-01T00:00:00Z"),
+                      rootedRun("d", "started", false, "/a", "2026-10-01T00:00:00Z"),
+                      rootedRun("u", "weird", null, "/a", "2026-10-01T00:00:00Z")]
+    compare(Runs.historyCursor(unfinished, "/a"), "", "no terminal run")
+    compare(Runs.historyCursor(tie, "/zzz"), "", "an unknown root")
+    compare(Runs.historyCursor(tie, "/a/"), "", "roots compare exactly")
+    compare(Runs.historyCursor([], "/a"), "", "no runs")
+    compare(Runs.historyCursor([mkRun("n", "done", null, { started_at: "2026-10-01T00:00:00Z" })], "/a"), "",
+            "a run with no project")
+    var odd = ["x", 5, null, [], { root: 5 }, { name: "/a" }]
+    for (var k = 0; k < odd.length; k++) {
+      var r = mkRun("o", "done", null, { started_at: "2026-10-01T00:00:00Z" })
+      r.project = odd[k]
+      compare(Runs.historyCursor([r], "/a"), "", "project " + k + " never matches")
+    }
+    var badStart = [undefined, "", "not a date", 5, null, {}]
+    for (var m = 0; m < badStart.length; m++)
+      compare(Runs.historyCursor([rootedRun("s", "done", null, "/a", badStart[m])], "/a"), "", "started_at " + m)
+  }
+
+  function test_history_cursor_garbage() {
+    var list = [rootedRun("a", "done", null, "/a", "2026-10-03T10:00:00Z")]
+    var bad = [undefined, null, "x", 5, [], {}]
+    for (var i = 0; i < bad.length; i++) {
+      compare(Runs.historyCursor(bad[i], "/a"), "", "runs " + i)
+      compare(Runs.historyCursor(list, bad[i]), "", "root " + i)
+    }
+    compare(Runs.historyCursor(list, ""), "", "an empty root")
+    compare(Runs.historyCursor([undefined, null, "x", 5, [], {}, list[0]], "/a"), "2026-10-03T10:00:00Z",
+            "junk entries are skipped")
+    compare(Runs.historyCursor([rootedRun("c", "done", null, "constructor", "2026-10-03T10:00:00Z")], "constructor"),
+            "2026-10-03T10:00:00Z", "a root named constructor")
+    compare(Runs.historyCursor(list, "__proto__"), "", "a root named __proto__")
+    compare(ids(list), "a", "input unchanged")
+  }
+
   // ---- Run detail (5.2)
 
   function test_normalize_branch_fields() {
