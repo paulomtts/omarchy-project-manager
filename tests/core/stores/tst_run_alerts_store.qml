@@ -1,8 +1,9 @@
 // tests/core/stores/tst_run_alerts_store.qml
-// The run alerts store: per-project arming, the toast queue, the toast expiry
-// and the notify.py desktop notification. Built alone and driven through
-// snapshotReplied, active and projectRoots; and, through a RunStore wired to
-// it the way App wires them, a real snapshot reply turning into a toast.
+// The run alerts store: per-project arming, the toast queue, the toast expiry,
+// the toasts' titles and the notify.py desktop notification. Built alone and
+// driven through snapshotReplied, active, projectRoots and titlesByRoot; and,
+// through a RunStore wired to it the way App wires them, a real snapshot reply
+// turning into a toast.
 // Stubbed Process objects stand in for every helper.
 import QtQuick
 import QtTest
@@ -288,6 +289,91 @@ TestCase {
     a.snapshotReplied(tc.rootA, "ok", [escalatedRun("a1")], [escalatedRun("a1"), deadRun("a2")])
     compare(toastIdsOf(a), "a1,a2")
     compare(a.notifyRunners.length, 0, "the switch is off: toasts only")
+  }
+
+
+  // ---- titled alerts (history-and-titles 3.4)
+
+  // The titles map {root: titles}, as App hands it over.
+  function titlesOf(root, titles) {
+    var m = {}
+    m[root] = titles
+    return m
+  }
+
+  // The title of the toast an armed rootB store raises for b1's escalation,
+  // with titlesByRoot `titles` (left at its default when undefined).
+  function escalationTitle(titles) {
+    var a = armedAlerts([tc.rootB]); if (!a) return null
+    if (titles !== undefined) a.titlesByRoot = titles
+    a.snapshotReplied(tc.rootB, "ok", [runningRun("b1", tc.rootB)], [escalatedRun("b1", tc.rootB)])
+    compare(a.toasts.length, 1, "one toast")
+    return a.toasts[0].title
+  }
+
+  // T1
+  function test_a_run_of_a_project_that_is_not_open_toasts_with_its_title() {
+    var a = armedAlerts([tc.rootB]); if (!a) return
+    a.titlesByRoot = titlesOf(tc.rootB, { "m-b1": "Ship it" })
+    a.snapshotReplied(tc.rootB, "ok", [runningRun("b1", tc.rootB)], [escalatedRun("b1", tc.rootB)])
+    compare(toastIdsOf(a), "b1")
+    compare(a.toasts[0].title, "Ship it")
+    compare(a.toasts[0].project, "beta")
+    compare(a.toasts[0].state, "escalated")
+  }
+
+  // T2
+  function test_without_a_map_for_the_runs_project_the_toast_falls_back_to_the_id() {
+    var bare = makeAlerts(); if (!bare) return
+    compare(JSON.stringify(bare.titlesByRoot), "{}", "the default is the empty map")
+    compare(escalationTitle(undefined), "milestone …m-b1", "no map at all")
+    compare(escalationTitle(titlesOf(tc.rootA, { "m-b1": "Wrong" })), "milestone …m-b1", "a map is per project")
+    compare(escalationTitle("x"), "milestone …m-b1", "a titlesByRoot that is not an object")
+    compare(escalationTitle(titlesOf(tc.rootB, { "m-other": "Other" })), "milestone …m-b1", "a map that does not name the run")
+    compare(escalationTitle(titlesOf(tc.rootB, null)), "milestone …m-b1", "a null project entry")
+    compare(escalationTitle(titlesOf(tc.rootB, "x")), "milestone …m-b1", "a project entry that is not an object")
+  }
+
+  // T3
+  function test_the_notification_carries_the_runs_title() {
+    var a = armedAlerts([tc.rootA]); if (!a) return
+    a.notifyOnEscalation = true
+    a.titlesByRoot = titlesOf(tc.rootA, { "m-a1": "Ship it", "m-a2": "Second" })
+    a.snapshotReplied(tc.rootA, "ok", [runningRun("a1")], [escalatedRun("a1")])
+    compare(a.notifyRunners.length, 1)
+    compare(argv(a.notifyRunners[0].current), tc.notifyCmd + "Ship it|escalated")
+    a.snapshotReplied(tc.rootA, "ok", [escalatedRun("a1"), runningRun("a2")], [escalatedRun("a1"), deadRun("a2")])
+    compare(a.notifyRunners.length, 2)
+    compare(argv(a.notifyRunners[1].current), tc.notifyCmd + "Second|process died", "a dead run's notification is titled too")
+  }
+
+  // T4
+  function test_a_titles_change_retitles_no_raised_toast() {
+    var a = armedAlerts([tc.rootA]); if (!a) return
+    a.snapshotReplied(tc.rootA, "ok", [runningRun("a1")], [escalatedRun("a1")])
+    compare(a.toasts[0].title, "milestone …m-a1")
+    var toasts = a.toasts
+    a.titlesByRoot = titlesOf(tc.rootA, { "m-a1": "Ship it", "m-a2": "Second" })
+    verify(a.toasts === toasts, "toasts is not replaced")
+    compare(toastIdsOf(a), "a1", "nothing new is raised")
+    compare(a.toasts[0].title, "milestone …m-a1", "the raised toast keeps its title")
+    a.snapshotReplied(tc.rootA, "ok", [escalatedRun("a1"), runningRun("a2")], [escalatedRun("a1"), deadRun("a2")])
+    compare(toastIdsOf(a), "a1,a2")
+    compare(a.toasts[0].title, "milestone …m-a1", "still not re-titled")
+    compare(a.toasts[1].title, "Second", "the next armed ok reply reads the new map")
+  }
+
+  // T4b
+  function test_the_titles_map_outlives_closing_the_panel() {
+    var a = armedAlerts([tc.rootA]); if (!a) return
+    a.titlesByRoot = titlesOf(tc.rootA, { "m-a1": "Ship it" })
+    a.active = false
+    a.active = true
+    a.snapshotReplied(tc.rootA, "ok", [], [runningRun("a1")])
+    compare(a.toasts.length, 0, "the reopening's first ok reply only arms")
+    a.snapshotReplied(tc.rootA, "ok", [runningRun("a1")], [escalatedRun("a1")])
+    compare(toastIdsOf(a), "a1")
+    compare(a.toasts[0].title, "Ship it")
   }
 
 
