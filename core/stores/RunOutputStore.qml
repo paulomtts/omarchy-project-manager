@@ -85,19 +85,24 @@ Scope {
     store.hasOutput = b.lines.length > 0 || b.partial !== "" || b.dropped > 0
   }
 
+  // No key, idle, an empty buffer, no counted exits and no pending restart.
   function clear() {
+    store.retryTimer.stop()
     store.followKey = null
     store.followStatus = "idle"
     store.endStatus = ""
     store.followError = ""
+    store.reconnects = 0
+    store.exitTimes = []
     store.setBuffer(LogStream.emptyBuffer())
   }
 
   // Another key: stop, clear, and start when it can be followed. The same key
-  // off Run detail or with the panel closed: stop and keep the rest. The same
-  // key back with no process: resume it from the buffer's nextOffset while
-  // live (clear once it is not), unless it ended or failed. A running process
-  // of the same key is left alone.
+  // off Run detail or with the panel closed: stop, cancel a pending restart
+  // and keep the rest. The same key back with no process while connecting or
+  // following: clear it once it is not live, leave a pending restart in
+  // charge, else resume it from the buffer's nextOffset. A running process of
+  // the same key is left alone.
   function reconcile() {
     var k = store.selectionKey(store.run, store.selection)
     if (!store.sameKey(k, store.followKey)) {
@@ -109,13 +114,15 @@ Scope {
     if (k === null) return
     if (!store.isPresent()) {
       if (store.followProc) store.stop()
+      store.retryTimer.stop()
       return
     }
     if (store.followProc) return
     var s = store.followStatus
-    if (s === "ended" || s === "error" || s === "unsupported") return
-    if (store.canStart(k)) store.start(k, store.buffer.nextOffset)
-    else if (!store.isLive()) store.clear()
+    if (s !== "connecting" && s !== "following") return
+    if (!store.isLive()) store.clear()
+    else if (store.retryTimer.running) return
+    else if (store.canStart(k)) store.start(k, store.buffer.nextOffset)
   }
 
   // runs-logs-follow.py REPO RUN CARD PHASE ATTEMPT, plus OFFSET when offset
@@ -136,8 +143,10 @@ Scope {
     proc.running = true
   }
 
-  // SIGTERM; the stopped process's later lines and exit are ignored.
+  // SIGTERM and no pending restart; the stopped process's later lines and
+  // exit are ignored.
   function stop() {
+    store.retryTimer.stop()
     store.followSeq += 1
     if (store.followProc) store.followProc.running = false
     store.followProc = null
@@ -149,7 +158,8 @@ Scope {
 
   // One stdout line of the current process, after its end or error ignored:
   // trimmed and parsed (blank or not JSON is null), then one LogStream.foldLine.
-  // A hello or a chunk replaces the buffer and is `following`; the end is
+  // A hello or a chunk replaces the buffer and is `following`; a chunk (new
+  // output, not a duplicate) also resets `reconnects`. The end is
   // `ended` with am's status, and asks for a logs snapshot for a step (attempt
   // 0); an {"ok": false} line is `error` with its Runs.errorText. The buffer
   // stays on the end and on an error.
@@ -165,6 +175,10 @@ Scope {
     if (r.kind === "hello" || r.kind === "chunk") {
       store.setBuffer(r.buffer)
       store.followStatus = "following"
+      if (r.kind === "chunk") {
+        store.reconnects = 0
+        store.exitTimes = []
+      }
     } else if (r.kind === "end") {
       store.followStatus = "ended"
       store.endStatus = typeof value.status === "string" ? value.status : ""

@@ -726,4 +726,133 @@ TestCase {
     compare(past.followStatus, "connecting", "a restart is pending, not an error")
     past.retryTimer.stop()
   }
+
+  // N7
+  function test_a_good_chunk_resets_the_count() {
+    var store = following(); if (!store) return
+    store.nowMs = 100000
+    send(store.followProc, tc.chunkLine)
+    crash(store); store.retryTimer.triggered()
+    crash(store); store.retryTimer.triggered()
+    compare(store.reconnects, 2)
+    send(store.followProc, tc.moreLine)
+    compare(store.reconnects, 0)
+    compare(store.liveText, "stub claude ok phase=review\nmore")
+    crash(store)
+    compare(store.reconnects, 1)
+    compare(store.retryTimer.interval, 1000)
+    store.retryTimer.stop()
+  }
+
+  // N8
+  function test_a_hello_or_a_duplicate_chunk_is_not_a_good_chunk() {
+    var store = following(); if (!store) return
+    store.nowMs = 100000
+    send(store.followProc, tc.chunkLine)
+    compare(store.buffer.nextOffset, 28)
+    crash(store); store.retryTimer.triggered()
+    crash(store); store.retryTimer.triggered()
+    send(store.followProc, tc.resumeHello)
+    send(store.followProc, tc.chunkLine)
+    compare(store.reconnects, 2)
+    compare(store.liveText, "stub claude ok phase=review", "the duplicate is dropped")
+    crash(store)
+    compare(store.reconnects, 3)
+    compare(store.retryTimer.interval, 4000)
+    store.retryTimer.stop()
+  }
+
+  // N10
+  function test_a_pending_restart_is_cancelled() {
+    var props = ["inRunDetail", "active"]
+    for (var i = 0; i < props.length; i++) {
+      var store = following(); if (!store) return
+      send(store.followProc, tc.chunkLine)
+      crash(store)
+      var seen = recorder(store)
+      store[props[i]] = false
+      compare(store.retryTimer.running, false, props[i] + " false cancels")
+      store.retryTimer.triggered()
+      compare(seen.length, 0, props[i] + ": a stray fire starts nothing")
+      compare(store.reconnects, 1, "the count stays")
+      compare(store.followStatus, "following")
+      store[props[i]] = true
+      compare(seen.length, 1, props[i] + ": the return resumes at once")
+      compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    }
+
+    var sel = following(stepRun(false), explore()); if (!sel) return
+    send(sel.followProc, tc.chunkLine)
+    crash(sel)
+    var seenSel = recorder(sel)
+    sel.selection = verifyStep()
+    compare(sel.retryTimer.running, false, "another selection cancels")
+    compare(seenSel.length, 1, "verify starts")
+    var b = sel.followProc
+    sel.retryTimer.triggered()
+    compare(seenSel.length, 1, "a stray fire starts nothing")
+    compare(sel.followProc, b)
+    compare(argv(b), tc.followCmd + tc.runId + "|" + tc.openCard + "|verify|0")
+
+    var cases = [
+      ["another run", function(s) { s.run = otherRun("20261009T000000Z-0th3r000", "ok") }],
+      ["a non-live selection", function(s) { s.selection = { card_id: tc.openCard, phase: "worktree", attempt: 0, step: true } }]
+    ]
+    for (var j = 0; j < cases.length; j++) {
+      var st = following(); if (!st) return
+      send(st.followProc, tc.chunkLine)
+      crash(st)
+      var seenSt = recorder(st)
+      cases[j][1](st)
+      compare(st.retryTimer.running, false, cases[j][0] + " cancels")
+      compare(st.followKey, null, cases[j][0])
+      st.retryTimer.triggered()
+      compare(seenSt.length, 0, cases[j][0] + ": a stray fire starts nothing")
+    }
+  }
+
+  // N11
+  function test_a_new_snapshot_during_the_wait_starts_nothing() {
+    var store = following(); if (!store) return
+    send(store.followProc, tc.chunkLine)
+    crash(store)
+    var seen = recorder(store)
+    store.run = startedRun()
+    compare(seen.length, 0, "no early start")
+    compare(store.retryTimer.running, true)
+    compare(store.followStatus, "following")
+    store.retryTimer.triggered()
+    compare(seen.length, 1, "the pending restart stays in charge")
+  }
+
+  // N12
+  function test_a_key_that_stops_being_live_during_the_wait_clears() {
+    var store = following(); if (!store) return
+    send(store.followProc, tc.chunkLine)
+    crash(store)
+    var seen = recorder(store)
+    store.run = exploreOkRun()
+    compare(store.followKey, null)
+    compare(store.followStatus, "idle")
+    compare(store.liveText, "")
+    compare(store.reconnects, 0)
+    compare(store.retryTimer.running, false)
+    store.retryTimer.triggered()
+    compare(seen.length, 0, "a stray fire starts nothing")
+  }
+
+  // Review Focus 1 (3.3)
+  function test_away_during_the_wait_and_back_starts_fresh() {
+    var store = following(stepRun(false), explore()); if (!store) return
+    store.nowMs = 100000
+    send(store.followProc, tc.chunkLine)
+    crash(store)
+    store.selection = verifyStep()
+    store.selection = explore()
+    compare(store.followProc.command.length, 7, "from offset 0")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+    compare(store.liveText, "")
+    compare(store.reconnects, 0)
+    compare(store.retryTimer.running, false)
+  }
 }
