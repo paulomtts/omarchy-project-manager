@@ -45,12 +45,10 @@ MOVED = {
     "toasts": "runAlerts",
     "toastMs": "runAlerts",
     "toastTimer": "runAlerts",
-    "notifyRunners": "runAlerts",
     "raiseAlerts": "runAlerts",
     "expireToasts": "runAlerts",
     "dismissToast": "runAlerts",
     "dismissAllToasts": "runAlerts",
-    "notify": "runAlerts",
     "dispatchState": "runDispatch",
     "dispatchTarget": "runDispatch",
     "dispatchTargetLabel": "runDispatch",
@@ -76,6 +74,34 @@ MOVED = {
     "setDispatchField": "runDispatch",
     "dispatchStart": "runDispatch",
     "checkDispatch": "runDispatch",
+    "lastControlErrorType": "runControl",
+    "resumeRunId": "runControl",
+    "resumeVerify": "runControl",
+    "resumeAllowNoVerification": "runControl",
+    "resumeError": "runControl",
+    "resumeOpenFor": "runControl",
+    "resumeClose": "runControl",
+    "resumeConfirm": "runControl",
+    "resumeSaveRunner": "runControl",
+    "dispatchRoot": "runDispatch",
+    "dispatchRunSettings": "runDispatch",
+    "dispatchSettingsRunner": "runControl (runSettingsLoadRunner)",
+    "dispatchOpenFor": "runDispatch",
+    "dispatchStep": "runDispatch",
+    "dispatchProjectProbe": "runDispatch",
+    "dispatchProjectRows": "runDispatch",
+    "dispatchProjectRunner": "runDispatch",
+    "dispatchTargetCardMap": "runDispatch",
+    "dispatchTargetRows": "runDispatch",
+    "dispatchTargetLoading": "runDispatch",
+    "dispatchTargetKey": "runDispatch",
+    "dispatchTargetRunner": "runDispatch",
+    "dispatchProjectFailures": "runDispatch",
+    "dispatchOpenFromRuns": "runDispatch",
+    "dispatchProjectPick": "runDispatch",
+    "dispatchTargetPick": "runDispatch",
+    "dispatchBack": "runDispatch",
+    "relaunchOpenFor": "runDispatch",
 }
 
 MOVED_RE = re.compile(r"\.runs\.(" + "|".join(sorted(MOVED, key=len, reverse=True)) + r")\b")
@@ -144,7 +170,7 @@ def test_the_moved_set_is_not_empty_and_has_no_staying_member():
     assert {"cancelOpen", "toasts", "dispatchStarted"} <= set(MOVED)
     assert not {"runs", "runById", "amStatus", "selectedRunId", "project", "refresh"} & set(MOVED)
     assert set(MOVED.values()) <= {"runControl", "runAlerts", "runDispatch"} | {
-        MOVED["runSettings"], MOVED["runSettingsRunner"]}
+        MOVED["runSettings"], MOVED["runSettingsRunner"], MOVED["dispatchSettingsRunner"]}
 
 
 @pytest.mark.parametrize("path", caller_files(*CALLER_DIRS), ids=rel)

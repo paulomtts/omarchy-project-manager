@@ -4,10 +4,9 @@ import Quickshell.Io
 import "../domain/runs.js" as Runs
 
 // The run alerts (S2 4.4): a toast for every run of any registered project
-// that newly needs a human while the panel is open and, with
-// notifyOnEscalation on, a notify.py desktop notification for it. Its one
-// entry point for snapshot results is snapshotReplied, called once per
-// project reply. `armedRoots` is {root: true} of every root whose runs may be
+// that newly needs a human while the panel is open. Its one entry point for
+// snapshot results is snapshotReplied, called once per project reply.
+// `armedRoots` is {root: true} of every root whose runs may be
 // compared against, and is replaced, never changed in place: a root's first
 // ok reply after an opening, a `missing` reply or its return to the registry
 // only arms it, so history is never replayed. `alertsArmed`: some root is
@@ -15,16 +14,14 @@ import "../domain/runs.js" as Runs
 // oldest first, at most 3, and is replaced, never changed in place; `title`
 // is the run's title from its project's map in titlesByRoot (the fallback
 // title without one) and `project` is the name of the run's project. The
-// backend directory, the panel-open flag, the notify switch, the registry and
-// the run titles' map are handed to it from outside -- it never reaches for
-// another store. App composes it as `app.runAlerts` and routes the run
+// panel-open flag, the registry and the run titles' map are handed to it from
+// outside -- it never reaches for another store and launches no helper. App
+// composes it as `app.runAlerts` and routes the run
 // store's snapshotReplied here.
 Scope {
   id: alerts
 
-  property string backendDir: ""            // <plugin>/core/backend/
   property bool active: false               // App binds this to "panel open" (app.panelOpen)
-  property bool notifyOnEscalation: false   // "Notify on escalation"; App binds it to the switch
   property var projectRoots: []             // [{root, name}], the registry in its order; App binds it
   property var titlesByRoot: ({})           // {root: {id: title}}; App binds it
 
@@ -34,7 +31,6 @@ Scope {
   property int toastMs: 8000
 
   readonly property alias toastTimer: toastTimer
-  readonly property alias notifyRunners: notifyState.runners    // in-flight notify.py launches, oldest first
 
   // Opening disarms every root; closing disarms every root and empties the toasts.
   onActiveChanged: {
@@ -92,8 +88,7 @@ Scope {
   }
 
   // One toast per alert, newest last: a run's older toast goes first, then the
-  // oldest beyond three. With the setting on, each alert also notifies.
-  // It does not check `active`.
+  // oldest beyond three. It does not check `active`.
   function raiseAlerts(items) {
     var list = Array.isArray(items) ? items : []
     for (var i = 0; i < list.length; i++) {
@@ -104,7 +99,6 @@ Scope {
                   project: typeof a.project === "string" ? a.project : "", expiresMs: Date.now() + alerts.toastMs })
       while (next.length > 3) next.shift()
       alerts.toasts = next
-      if (alerts.notifyOnEscalation) alerts.notify(a)
     }
   }
 
@@ -124,20 +118,6 @@ Scope {
     if (alerts.toasts.length > 0) alerts.toasts = []
   }
 
-  // One notify.py launch for an alert, on a runner of its own so two never
-  // stop each other. The reply is not read: a failed or skipped notification
-  // changes nothing here.
-  function notify(alert) {
-    var runner = notifyC.createObject(alerts)
-    notifyState.runners = notifyState.runners.concat([runner])
-    runner.run([String(alert.title), String(alert.reason)])
-  }
-
-  function dropNotifyRunner(runner) {
-    notifyState.runners = notifyState.runners.filter(function(r) { return r !== runner })
-    runner.destroy()
-  }
-
   // Only while the panel is open and a toast shows: no timer while idle.
   Timer {
     id: toastTimer
@@ -152,24 +132,5 @@ Scope {
   QtObject {
     id: toastState
     property int nextKey: 0
-  }
-
-  // The notify.py runners in flight; kept apart so consumers cannot write it.
-  QtObject {
-    id: notifyState
-    property var runners: []
-  }
-
-  // One HelperRunner per notification. Guard "": a project switch does not
-  // stop a notification already launched. It goes when its process exits.
-  Component {
-    id: notifyC
-
-    HelperRunner {
-      id: nr
-      script: alerts.backendDir + "runs/notify.py"
-      guard: ""
-      onFinished: alerts.dropNotifyRunner(nr)
-    }
   }
 }

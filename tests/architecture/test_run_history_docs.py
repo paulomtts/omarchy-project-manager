@@ -58,7 +58,7 @@ def test_backend_paragraph_states_the_history_limit_and_default():
 def test_backend_paragraph_counts_the_helpers_it_covers():
     text = runs_paragraph()
     assert "All three use" not in text
-    assert "All five use only documented `am` commands" in text
+    assert "They all use only documented `am` commands" in text
 
 
 def test_backend_paragraph_describes_no_global_history_keyset():

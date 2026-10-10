@@ -8,16 +8,32 @@ import "../components" as UI
 import "../theme" as T
 
 // One am run (the "run" view): a header with its state, milestone, branch
-// prefix and base and lease; its story > subtask > phase > attempt tree, with
-// the orchestrator's own Integrate / Bases / Base rows when it has them; and an
-// output pane holding ONE attempt's `am logs` snapshot -- labelled with its age,
-// never presented as a live tail. Run state always comes from am (the run
-// store), never from a brd status. Titles come from the run's own project map
-// in app.runTitles: the header reads the run's title, then its short id in
-// dim; each tree card its title, else its short card id. brd's board only dims
-// the cards it has closed. It reads the run store and asks it to show another
-// attempt or fetch again; it owns no state of its own. Ages are read against
-// the clock when a logs reply lands or a snapshot replaces the runs: no timer.
+// prefix and base and lease; for a stopped run, Why it stopped
+// (StopReasonBlock: Runs.stopReport, am's note from the open project's
+// comments, Open card and Relaunch); its story > subtask > phase > attempt
+// tree (a step row reads its phase and selects the step), with the
+// orchestrator's own Integrate / Bases / Base rows when it has them; and a
+// bottom area of two tabs, app.runs.detailTab, chosen by the Output / Events
+// chips. Output shows ONE selected attempt or step. While app.runOutput's
+// followStatus is connecting, following, ended or error it is live:
+// app.runOutput's text in a TailScroll under a live / ended label, closed by
+// an end line once ended, and no Refresh. Otherwise (idle, unsupported, or no
+// app.runOutput) it is the selection's `am logs` snapshot labelled with its
+// age, with Refresh. Events is the run's event timeline (EventsPane over
+// app.runs.events); its filter chips set app.runs.eventsFilter, and a row
+// naming an attempt selects that attempt and shows Output. The Events chip
+// counts the rows held plus app.runs.eventsDropped. Run state always comes
+// from am (the run store), never from a brd status. Titles come from the
+// run's own project map in app.runTitles: the header reads the run's title,
+// then its short id in dim; each tree card its title, else its short card
+// id. brd's board only dims the cards it has closed and holds the card
+// Relaunch opens. It reads the run store, app.runControl and app.runOutput,
+// asks the run store to show another attempt or tab or fetch again, run
+// control to pause or resume and the dispatch (app.runDispatch) to open a
+// relaunch; it owns no state of its own. A run outside the open project shows
+// no note, and its Open card and Relaunch are disabled with the reason. Ages
+// are read against the clock when a logs reply lands or a snapshot replaces
+// the runs: no timer.
 Column {
   id: screen
   objectName: "runDetailView"
@@ -40,6 +56,22 @@ Column {
   readonly property var selection: screen.app.runs.selectedAttempt
   // Re-read whenever a logs reply lands or a snapshot replaces the runs.
   readonly property real nowMs: screen.app.runs.logsFetchedMs >= 0 && screen.app.runs.runs ? Date.now() : 0
+  readonly property var stopReport: Runs.stopReport(screen.run)
+  readonly property bool inOpenProject: screen.belongsTo(screen.run, screen.app.runs.project)
+  readonly property var stopNoteFound: screen.noteOf(screen.run, screen.stopReport, screen.inOpenProject)
+  readonly property var stopNote: screen.stopNoteFound.note
+  readonly property string stopNoteCardId: screen.stopNoteFound.cardId
+  // The rows the store holds; 0 when `events` is not an array.
+  readonly property int eventsHeld: Array.isArray(screen.app.runs.events) ? screen.app.runs.events.length : 0
+  // app.runOutput, or null when the app has none.
+  readonly property var ro: screen.app.runOutput || null
+  // ro's followStatus; "idle" without ro or for anything it does not name.
+  readonly property string followStatus: {
+    var f = screen.ro ? screen.ro.followStatus : "idle"
+    return ["connecting", "following", "ended", "error", "unsupported"].indexOf(f) >= 0 ? f : "idle"
+  }
+  // The pane presents ro (live mode) rather than the snapshot.
+  readonly property bool live: ["connecting", "following", "ended", "error"].indexOf(screen.followStatus) >= 0
 
   visible: screen.app.nav.viewMode === "run"
   spacing: Style.space(6)
@@ -122,9 +154,11 @@ Column {
     return subtask.currentAttempt > 0 ? subtask.currentPhase + "." + subtask.currentAttempt : subtask.currentPhase
   }
 
+  // "<glyph> <phase>.<n> <status>"; a step reads its phase alone, an
+  // unnumbered attempt "<phase>.?".
   function attemptText(a) {
     var glyph = screen.glyphOf(a.status)
-    var label = a.phase + "." + (a.attempt > 0 ? a.attempt : "?")
+    var label = a.step === true ? a.phase : a.phase + "." + (a.attempt > 0 ? a.attempt : "?")
     return (glyph !== "" ? glyph + " " : "") + label + (a.status !== "" ? " " + a.status : "")
   }
 
@@ -133,13 +167,16 @@ Column {
     return (glyph !== "" ? glyph + " " : "") + entry.label + " " + (entry.status !== "" ? entry.status : "not started")
   }
 
-  function isSelected(cardId, phase, attempt) {
+  // A step row is selected by a step selection of its card and phase; an
+  // attempt row by an attempt selection of its card, phase and number.
+  function isSelected(cardId, phase, attempt, step) {
     var s = screen.selection
-    return !!s && s.card_id === cardId && s.phase === phase && s.attempt === attempt
+    if (!s || s.card_id !== cardId || s.phase !== phase) return false
+    return step === true ? s.step === true : s.step !== true && s.attempt === attempt
   }
 
-  // The pane's age line: the snapshot's age (and "last 200 lines" when cut),
-  // "loading…" before the first reply, "" otherwise. Never "live".
+  // The snapshot's label: its age (and "last 200 lines" when cut),
+  // "loading…" before the first reply, "" otherwise or with no selection.
   function outputAge() {
     var store = screen.app.runs
     if (!screen.selection) return ""
@@ -149,6 +186,60 @@ Column {
       return store.logsTruncated ? line + " · last 200 lines" : line
     }
     return store.logsLoading ? "loading…" : ""
+  }
+
+  // A string field of ro; "" without ro or when it is not a string.
+  function roText(key) {
+    var v = screen.ro ? screen.ro[key] : ""
+    return typeof v === "string" ? v : ""
+  }
+
+  // The end statuses drawn urgent, with the escalated glyph.
+  function endIsUrgent(end) {
+    return end === "gate_failed" || end === "schema_invalid" || end === "harness_error"
+  }
+
+  // The pane's status line: live or waiting, ended with its status (or ro's
+  // sentence for an end without one), the unsupported sentence before the
+  // snapshot's label, or the snapshot's label. "" with no selection and for a
+  // follow error, which runOutputError states.
+  function statusLabel() {
+    if (!screen.selection) return ""
+    var f = screen.followStatus
+    var running = RunGlyphs.glyphOf("running")
+    if (f === "connecting" || (f === "following" && screen.ro.hasOutput !== true)) return running + " live · waiting for output"
+    if (f === "following") return running + " live"
+    if (f === "error") return ""
+    if (f === "ended") {
+      var end = screen.roText("endStatus")
+      if (end === "") return screen.roText("followError")
+      return (screen.endIsUrgent(end) ? RunGlyphs.glyphOf("escalated") + " " : "") + "ended · " + end
+    }
+    var age = screen.outputAge()
+    if (f !== "unsupported") return age
+    var sentence = screen.roText("followError")
+    return sentence !== "" && age !== "" ? sentence + " · " + age : sentence + age
+  }
+
+  // The status line is drawn urgent: an ended attempt with an urgent status.
+  function statusUrgent() {
+    return !!screen.selection && screen.followStatus === "ended" && screen.endIsUrgent(screen.roText("endStatus"))
+  }
+
+  // The live list's rows: the source text's lines (an ended step's landed
+  // snapshot, else ro's liveText; no trailing empty row), then the end line
+  // once ro has ended with a status. [] with no selection or outside live mode.
+  function liveRows() {
+    if (!screen.selection || !screen.live) return []
+    var store = screen.app.runs
+    var ended = screen.followStatus === "ended"
+    var source = ended && screen.selection.step === true && store.logsFetchedMs > 0
+      ? store.logsText : screen.roText("liveText")
+    var rows = typeof source === "string" && source !== "" ? source.split("\n") : []
+    if (rows.length > 0 && rows[rows.length - 1] === "") rows.pop()
+    var end = screen.roText("endStatus")
+    if (ended && end !== "") rows.push("— ended: " + end + " —")
+    return rows
   }
 
   // Safe reads by position: a Repeater may still bind a delegate once while
@@ -173,6 +264,61 @@ Column {
     if (id === "") return
     if (action === "cancel") screen.cancelRequested(id)
     else screen.app.runControl.control(action, id)
+  }
+
+  // The run is in the open project: both roots are non-empty and equal, the
+  // open one with trailing "/" removed as runs are tagged.
+  function belongsTo(run, openRoot) {
+    if (typeof openRoot !== "string" || openRoot === "") return false
+    if (!run || run.project === null || typeof run.project !== "object") return false
+    var root = run.project.root
+    return typeof root === "string" && root !== "" && root === Runs.withProject({}, openRoot, "").project.root
+  }
+
+  // am's note on the stopped run, {note, cardId}: from the report's card, else
+  // from the milestone card; {null, ""} outside the open project or without
+  // an extras store.
+  function noteOf(run, report, inProject) {
+    var none = { note: null, cardId: "" }
+    var extras = screen.app.extras
+    if (!inProject || !extras || !report || !run) return none
+    if (report.cardId !== "") {
+      var onCard = Runs.stopComment(extras.commentsFor(report.cardId), run.id)
+      if (onCard !== null) return { note: onCard, cardId: report.cardId }
+    }
+    if (typeof run.milestone_id === "string" && run.milestone_id !== "") {
+      var onMilestone = Runs.stopComment(extras.commentsFor(run.milestone_id), run.id)
+      if (onMilestone !== null) return { note: onMilestone, cardId: run.milestone_id }
+    }
+    return none
+  }
+
+  // A dead run's last heartbeat age without "ago"; "" otherwise or unparseable.
+  function heartbeatAgeOf(report) {
+    if (!report || report.state !== "dead") return ""
+    return Runs.snapshotAgeText(Date.parse(report.heartbeatAt), screen.nowMs)
+  }
+
+  // Relaunch shows for a run with a relaunch target that cannot be resumed,
+  // or whose last resume am refused with a type relaunching answers.
+  function offersRelaunch(run, report) {
+    if (!report || report.relaunch === null || typeof report.relaunch !== "object") return false
+    if (!Runs.controls(run).resume.enabled) return true
+    var control = screen.app.runControl
+    return control.lastControlErrorRunId === run.id && Runs.offersRelaunch({ type: control.lastControlErrorType })
+  }
+
+  // Opens the dispatch on the relaunch target's card; a card no longer on the
+  // board opens nothing and flashes why.
+  function relaunch() {
+    var report = screen.stopReport
+    if (!report || report.relaunch === null || typeof report.relaunch !== "object") return
+    var card = screen.cardOf(report.relaunch.cardId)
+    if (card === null) {
+      screen.app.runControl.flash("The card to relaunch is no longer on the board")
+      return
+    }
+    screen.app.runDispatch.relaunchOpenFor(card, screen.app.board.cardMap, report.relaunch)
   }
 
   UI.ListStatus {
@@ -232,15 +378,19 @@ Column {
       wrapMode: Text.WordWrap
     }
 
-    UI.ThemedText {
-      objectName: "runDetailReason"
-      variant: "caption"
-      theme: screen.theme
+    UI.StopReasonBlock {
+      objectName: "runDetailStop"
       width: parent.width
-      visible: screen.runState === "escalated"
-      text: Runs.escalationReason(screen.run)
-      color: screen.theme.urgent
-      wrapMode: Text.WordWrap
+      theme: screen.theme
+      report: screen.stopReport
+      note: screen.stopNote
+      heartbeatAge: screen.heartbeatAgeOf(screen.stopReport)
+      openCardId: screen.stopReport && screen.stopReport.cardId !== "" ? screen.stopReport.cardId : screen.stopNoteCardId
+      openCardReason: screen.inOpenProject ? "" : "Open this run's project to open its card"
+      relaunchOffered: screen.offersRelaunch(screen.run, screen.stopReport)
+      relaunchReason: screen.inOpenProject ? "" : "Open this run's project to relaunch it"
+      onOpenCardRequested: function(id) { if (screen.navigator) screen.navigator.openCard(id) }
+      onRelaunchRequested: screen.relaunch()
     }
 
     UI.RunControls {
@@ -267,35 +417,56 @@ Column {
       delegate: SyntheticRow {}
     }
 
+    UI.ChipRow {
+      objectName: "runTabs"
+      width: parent.width
+      theme: screen.theme
+      chipPrefix: "runTab"
+      active: screen.app.runs.detailTab
+      model: [{ id: "output", label: "Output" },
+              { id: "events", label: "Events", count: screen.eventsHeld + screen.app.runs.eventsDropped }]
+      onChosen: function(id) { screen.app.runs.setDetailTab(id) }
+    }
+
     Column {
       objectName: "runOutputPane"
       width: parent.width
       spacing: Style.space(4)
+      visible: screen.app.runs.detailTab === "output"
 
       Row {
         width: parent.width
         spacing: Style.space(10)
 
         UI.ThemedText {
+          id: outputHeading
           objectName: "runOutputHeading"
           theme: screen.theme
-          text: screen.selection
-            ? "Output · " + screen.selection.card_id + " " + screen.selection.phase + "." + screen.selection.attempt
-            : "Output"
+          text: !screen.selection ? "Output"
+            : screen.selection.step === true
+              ? "Output · " + screen.selection.card_id + " " + screen.selection.phase
+            : screen.selection.attempt > 0
+              ? "Output · " + screen.selection.card_id + " " + screen.selection.phase + "." + screen.selection.attempt
+              : "Output · " + screen.selection.card_id + " " + screen.selection.phase + " (newest)"
         }
 
         UI.ThemedText {
           objectName: "runOutputAge"
           variant: "caption"
           theme: screen.theme
+          // Wraps within the room the heading and Refresh leave, so Refresh stays on screen.
+          width: Math.min(implicitWidth, Math.max(Style.space(80), parent.width - outputHeading.width - outputRefresh.width - 2 * parent.spacing))
+          wrapMode: Text.WordWrap
           visible: text !== ""
-          text: screen.outputAge()
+          text: screen.statusLabel()
+          color: screen.statusUrgent() ? screen.theme.urgent : screen.theme.dim
         }
 
         UI.ActionButton {
+          id: outputRefresh
           objectName: "runOutputRefresh"
           theme: screen.theme
-          visible: !!screen.selection
+          visible: !!screen.selection && !screen.live
           text: "Refresh"
           tooltipText: "Fetch this attempt's output again"
           onClicked: screen.app.runs.refreshLogs()
@@ -310,27 +481,82 @@ Column {
         text: "No attempt selected"
       }
 
+      // The snapshot's fetch error, or in live mode the follow's error.
       UI.ThemedText {
         objectName: "runOutputError"
         variant: "caption"
         theme: screen.theme
         width: parent.width
-        visible: !!screen.selection && screen.app.runs.logsError !== ""
-        text: screen.app.runs.logsError
+        visible: text !== ""
+        text: !screen.selection ? ""
+          : !screen.live ? screen.app.runs.logsError
+          : screen.followStatus === "error" ? screen.roText("followError") : ""
         color: screen.theme.urgent
         wrapMode: Text.WordWrap
       }
 
-      // Read-only by nature: a Text, in the theme's font, never an editor.
+      // The snapshot's neutral note (a step that records no output), never urgent.
+      UI.ThemedText {
+        objectName: "runOutputNote"
+        variant: "dim"
+        theme: screen.theme
+        width: parent.width
+        visible: text !== ""
+        text: !!screen.selection && !screen.live && typeof screen.app.runs.logsNote === "string" ? screen.app.runs.logsNote : ""
+        wrapMode: Text.WordWrap
+      }
+
+      // The snapshot. Read-only by nature: a Text, in the theme's font, never an editor.
       UI.ThemedText {
         objectName: "runOutputText"
         variant: "small"
         theme: screen.theme
         width: parent.width
-        visible: !!screen.selection && text !== ""
+        visible: !!screen.selection && !screen.live && text !== ""
         text: screen.app.runs.logsText
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
+      }
+
+      // Live mode's text, one row per line, following its bottom; outside
+      // live mode it has no rows and takes no room.
+      UI.TailScroll {
+        objectName: "runOutputTail"
+        width: parent.width
+        theme: screen.theme
+        model: screen.liveRows()
+        listName: "runOutputList"
+        jumpName: "runOutputJump"
+
+        rowDelegate: UI.ThemedText {
+          id: outputRow
+          required property var modelData
+          required property int index
+
+          objectName: "runOutputRow" + outputRow.index
+          width: outputRow.ListView.view ? outputRow.ListView.view.width : 0
+          variant: "small"
+          theme: screen.theme
+          text: outputRow.modelData
+          textFormat: Text.PlainText
+          wrapMode: Text.WrapAnywhere
+        }
+      }
+    }
+
+    UI.EventsPane {
+      width: parent.width
+      visible: screen.app.runs.detailTab === "events"
+      theme: screen.theme
+      rows: screen.app.runs.events
+      filter: screen.app.runs.eventsFilter
+      dropped: screen.app.runs.eventsDropped
+      status: screen.app.runs.eventsStatus
+      errorMessage: screen.app.runs.eventsError
+      onFilterRequested: function(f) { screen.app.runs.eventsFilter = f }
+      onAttemptRequested: function(card, phase, attempt) {
+        screen.app.runs.selectAttempt(card, phase, attempt)
+        screen.app.runs.setDetailTab("output")
       }
     }
 
@@ -452,16 +678,19 @@ Column {
     property int subtaskIndex: -1
     readonly property var subtask: screen.subtaskAt(attemptRow.storyIndex, attemptRow.subtaskIndex)
     readonly property var attempt: screen.attemptAt(attemptRow.subtask, attemptRow.index)
-    readonly property bool selected: screen.isSelected(attemptRow.subtask.card_id, attemptRow.attempt.phase, attemptRow.attempt.attempt)
+    readonly property bool isStep: attemptRow.attempt.step === true
+    readonly property bool selected: screen.isSelected(attemptRow.subtask.card_id, attemptRow.attempt.phase, attemptRow.attempt.attempt, attemptRow.isStep)
     readonly property string key: attemptRow.storyIndex + "_" + attemptRow.subtaskIndex + "_" + attemptRow.index
 
     objectName: "runAttempt" + attemptRow.key
     width: screen.width
     theme: screen.theme
     contentMargin: Style.space(32)
-    hoverCursorShape: attemptRow.attempt.attempt > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+    hoverCursorShape: attemptRow.isStep || attemptRow.attempt.attempt > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
     onActivated: {
-      if (attemptRow.attempt.attempt > 0)
+      if (attemptRow.isStep)
+        screen.app.runs.selectAttempt(attemptRow.subtask.card_id, attemptRow.attempt.phase, 0, true)
+      else if (attemptRow.attempt.attempt > 0)
         screen.app.runs.selectAttempt(attemptRow.subtask.card_id, attemptRow.attempt.phase, attemptRow.attempt.attempt)
     }
 

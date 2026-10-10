@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
+import "../domain/runEvents.js" as RunEvents
 
 // The am run monitor's data. One list snapshot covers every registered
 // project: runs-snapshot-all.py with each usable root of `projectRoots`, in
@@ -12,10 +13,9 @@ import "../domain/runs.js" as Runs
 // order, a run id listed once, under the first root that lists it. A project
 // switch leaves the run list alone: `project`, the open project's root, is an
 // input App hands on to the other run stores; the attempt logs act on each
-// run's own project root. Plus the selected run, the
-// attempt the Run detail pane shows and that
-// attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
-// asked at all. One list snapshot is in flight at a time, plus at most one
+// run's own repo_dir. Plus the selected run, the attempt or step the Run
+// detail pane shows and its `am logs` snapshot (runs-logs.py; a step is
+// fetched with attempt "0"), and whether `am` could be asked at all. One list snapshot is in flight at a time, plus at most one
 // pending request (requestSnapshot): a request never stops the snapshot in
 // flight, and when that one ends its reply is applied and the pending
 // request launches. While `active` (the panel is open) a long-lived
@@ -28,7 +28,11 @@ import "../domain/runs.js" as Runs
 // seen (storeId); the first store_id seen resets nothing. watchCursor is
 // the watch's last cursor, held in memory only. Logs are fetched on a
 // selection, on Refresh and when a snapshot changes the selected attempt's
-// status -- never on a timer.
+// status -- never on a timer. The selected run's events (runs-events.py RUN
+// --tail 200) are fetched on a selection and on refreshEvents(), and, while
+// `active`, the ones after eventsCursor (RUN --since eventsCursor) on each
+// runsNudged naming the selected run -- never on a timer, and a project
+// switch leaves them alone.
 // Each applied list snapshot reply is announced per project
 // (snapshotReplied).
 // The Runs screen's list (groups, filteredRuns) is listedRuns -- `runs`, then
@@ -144,15 +148,34 @@ Scope {
   property int watchSeq: 0            // bumped on every watch start and stop: the launch guard
   property string watchSchemaError: "" // the schema banner text while its fallback poll runs
 
-  // The Run detail pane (5.2): which attempt of the selected run it shows and
-  // that attempt's last `am logs` snapshot. Never a live tail.
-  property var selectedAttempt: null  // { card_id, phase, attempt } or null
+  // The Run detail pane (5.2): which attempt or step of the selected run it
+  // shows and its last `am logs` snapshot. Never a live tail.
+  property var selectedAttempt: null  // { card_id, phase, attempt }, a step { card_id, phase, attempt: 0, step: true }, or null
   property string logsText: ""        // Runs.logTail of the last good reply
   property bool logsTruncated: false  // lines were cut from it
   property real logsFetchedMs: 0      // Date.now() when that reply landed; 0 before any
   property bool logsLoading: false    // a fetch is in flight
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
+  property string logsNote: ""        // a neutral sentence about the selection's output, not an error; "" when none
+  property string logsRunState: ""    // the run's Runs.runState when its opening attempt was chosen; "" when not in the snapshot
+
+  // The selected run's event timeline (3.1). `titles` is the open project's
+  // card id -> title map, handed in by App. `events` is RunEvents.eventRow
+  // rows, ascending seq, at most 500, replaced, never changed in place.
+  // A selection empties them and fetches the run's last 200 events; leaving
+  // Run detail empties them and fetches nothing. While active, a runsNudged
+  // naming the selected run fetches the events after eventsCursor.
+  property var titles: ({})
+  property var events: []
+  property int eventsDropped: 0       // the selected run's events not held
+  property int eventsCursor: 0        // the highest seq seen for the selected run
+  property string eventsStatus: "idle" // idle | loading | ok | error
+  property string eventsError: ""     // why the last fetch failed; "" after a good one and after a reset
+  property string eventsFilter: "All" // All | Phases | Failures, read by RunEvents.filterRows; the store never sets it
+  // Run detail's bottom area: output | events. Every selectedRunId change
+  // sets it to output; only setDetailTab and toggleDetailTab change it otherwise.
+  property string detailTab: "output"
 
   // A debounce window's nudged run ids, each once, in first-nudge order,
   // known to the store or not. Never for a snapshot the store started itself.
@@ -178,6 +201,7 @@ Scope {
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
+  readonly property alias eventsRunner: eventsRunner
 
   // Some run is started with a live lease: its heartbeat must be re-read even
   // when the journal is quiet.
@@ -343,15 +367,18 @@ Scope {
 
   // The panel closed: no process and no timer is left running. The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
-  // and is applied. The project filter is back to All projects and the
-  // finished rows to every state and all time, with no projectFilterToggled
-  // or runFilterToggled. The runs, the history, the selection, the chip, the
-  // search and amStatus stay for the next opening.
+  // and is applied. The queued events follow-up is dropped; an events fetch
+  // in flight runs to its end and is applied. The project filter is back to
+  // All projects and the finished rows to every state and all time, with no
+  // projectFilterToggled or runFilterToggled. The runs, the history, the
+  // selection, the events, the chip, the search and amStatus stay for the
+  // next opening.
   function stopLive() {
     store.projectFilter = ""
     store.finishedState = ""
     store.finishedAge = "all"
     snapshotState.pending = null
+    eventsState.followUp = false
     store.stopWatch()
     debounceTimer.stop()
     store.nudges = {}
@@ -628,19 +655,7 @@ Scope {
   // refuses any other), each root once, at its first position with its first
   // name.
   function usableRoots() {
-    var list = store.projectRoots
-    var n = list !== null && typeof list === "object" && typeof list.length === "number" ? list.length : 0
-    var out = []
-    var seen = {}
-    for (var i = 0; i < n; i++) {
-      var p = list[i]
-      if (p === null || typeof p !== "object" || Array.isArray(p)) continue
-      var root = p.root
-      if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || Runs.hasKey(seen, root)) continue
-      seen[root] = true
-      out.push({ root: root, name: p.name })
-    }
-    return out
+    return Runs.usableRoots(store.projectRoots)
   }
 
   // byProject cut to the usable roots, each run carrying its root's current
@@ -732,22 +747,32 @@ Scope {
     return Runs.runRoot(run)
   }
 
-  // Shows (and fetches) one attempt of the selected run. Another attempt than
-  // the one shown starts from an empty pane -- its predecessor's text is never
-  // shown under its heading. Nothing happens without a selected run or a real
-  // attempt (a non-empty card and phase, a number above 0).
-  function selectAttempt(cardId, phase, attempt) {
+  // Shows (and fetches) one attempt or one step of the selected run. A step is
+  // (cardId, phase, 0, true) -- `step` exactly true, attempt exactly 0 -- and
+  // is stored as { card_id, phase, attempt: 0, step: true }; an attempt has
+  // `step` anything else and a number 0 or above (0 is the phase's newest
+  // output, am's choice), and is stored as { card_id, phase, attempt }.
+  // Another selection than the one shown (a step and an attempt of one phase
+  // differ) starts from an empty pane -- its predecessor's text is never shown
+  // under its heading. Nothing happens without a selected run, a non-empty
+  // card and phase, and one of those forms.
+  function selectAttempt(cardId, phase, attempt, step) {
     if (store.selectedRunId === "") return
     if (typeof cardId !== "string" || cardId === "" || typeof phase !== "string" || phase === "") return
-    if (typeof attempt !== "number" || !isFinite(attempt) || attempt <= 0) return
+    var isStep = step === true
+    if (isStep && attempt !== 0) return
+    if (!isStep && (typeof attempt !== "number" || !isFinite(attempt) || attempt < 0)) return
     var old = store.selectedAttempt
-    if (!old || old.card_id !== cardId || old.phase !== phase || old.attempt !== attempt) {
+    if (!old || old.card_id !== cardId || old.phase !== phase || old.attempt !== attempt
+        || (old.step === true) !== isStep) {
       store.logsText = ""
       store.logsTruncated = false
       store.logsFetchedMs = 0
       store.logsError = ""
+      store.logsNote = ""
     }
-    store.selectedAttempt = { card_id: cardId, phase: phase, attempt: attempt }
+    store.selectedAttempt = isStep ? { card_id: cardId, phase: phase, attempt: 0, step: true }
+                                   : { card_id: cardId, phase: phase, attempt: attempt }
     store.fetchLogs()
   }
 
@@ -756,22 +781,28 @@ Scope {
     store.fetchLogs()
   }
 
-  // One runs-logs.py launch for the selected attempt, the selected run's
-  // project root first, remembering the status it was launched for (a
-  // snapshot that changes it fetches again). Nothing launches for a run
-  // runById does not find or one with no project root.
+  // The selection's status in `run`: its phase's for a step, its attempt's otherwise.
+  function selectionStatus(run, sel) {
+    return sel.step === true ? Runs.phaseStatus(run, sel.card_id, sel.phase)
+                             : Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
+  }
+
+  // One runs-logs.py launch for the selection, the selected run's repo_dir
+  // first, remembering the status it was launched for (a snapshot that changes
+  // it fetches again). Nothing launches for a run runById does not find or one
+  // with no repo_dir.
   function fetchLogs() {
     var sel = store.selectedAttempt
     if (store.selectedRunId === "" || !sel) return
     var run = store.runById(store.selectedRunId)
-    var root = store.runRoot(run)
-    if (root === "") return
-    store.logsStatus = Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
+    if (run === null || typeof run.repo_dir !== "string" || run.repo_dir === "") return
+    store.logsStatus = store.selectionStatus(run, sel)
     store.logsLoading = true
-    logsRunner.run([root, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
+    logsRunner.run([run.repo_dir, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
   }
 
-  // No selection and no logs; a fetch in flight is stopped and its reply dropped.
+  // No selection, no logs and no recorded run state; a fetch in flight is
+  // stopped and its reply dropped.
   function clearLogs() {
     logsRunner.cancel()
     store.selectedAttempt = null
@@ -780,42 +811,242 @@ Scope {
     store.logsFetchedMs = 0
     store.logsLoading = false
     store.logsError = ""
+    store.logsNote = ""
     store.logsStatus = ""
+    store.logsRunState = ""
   }
 
-  // The selected run's default attempt, when it has one.
+  // The selected run's opening selection: the attempt its stop report names,
+  // else its default attempt or step. It is selected when there is one; with
+  // none the selection is left alone. Either way logsRunState becomes the
+  // run's Runs.runState, or "" when the run is not in the snapshot.
   function openDefaultAttempt() {
-    var d = Runs.defaultAttempt(store.runById(store.selectedRunId))
-    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt)
+    var run = store.runById(store.selectedRunId)
+    var report = Runs.stopReport(run)
+    var target = report !== null && report.attempt !== null ? report.attempt : Runs.defaultAttempt(run)
+    store.logsRunState = run !== null ? Runs.runState(run) : ""
+    if (target) store.selectAttempt(target.card_id, target.phase, target.attempt, target.step === true)
   }
 
-  // After every applied snapshot: a selected run with no attempt yet gets its
-  // default once one exists; otherwise the selected attempt is fetched again
-  // only when its status moved since its fetch was launched. Nothing else
+  // After every applied snapshot, for a selected run: when the run is in the
+  // snapshot and its Runs.runState is not logsRunState, it opens on its
+  // opening selection again, over any selection picked since; otherwise a run
+  // with no selection yet gets its opening selection once one exists, and the
+  // selection is fetched again only when its status (a step's phase status,
+  // an attempt's own) moved since its fetch was launched. Nothing else
   // fetches logs on its own.
   function logsAfterSnapshot() {
     if (store.selectedRunId === "") return
+    var run = store.runById(store.selectedRunId)
+    if (run !== null && Runs.runState(run) !== store.logsRunState) {
+      store.openDefaultAttempt()
+      return
+    }
     var sel = store.selectedAttempt
     if (!sel) {
       store.openDefaultAttempt()
       return
     }
-    var status = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    var status = store.selectionStatus(run, sel)
     if (status !== store.logsStatus) store.fetchLogs()
   }
 
-  // Another run (or none): the pane starts over on that run's default attempt.
+  // Another run (or none): the pane starts over, a selected run opens on its
+  // opening attempt, the events start over (selectEvents) and the tab is
+  // Output.
   onSelectedRunIdChanged: {
     store.clearLogs()
     if (store.selectedRunId !== "") store.openDefaultAttempt()
+    store.selectEvents()
+    store.detailTab = "output"
   }
 
-  // One logs reply. ok:true replaces the text with its last 200 lines; any
-  // failure keeps the text and only says why. Never touches amStatus, runs or
+  // "output" or "events": sets detailTab and returns true; anything else
+  // leaves it and returns false.
+  function setDetailTab(tab) {
+    if (tab !== "output" && tab !== "events") return false
+    store.detailTab = tab
+    return true
+  }
+
+  // output -> events, events -> output.
+  function toggleDetailTab() {
+    store.detailTab = store.detailTab === "events" ? "output" : "events"
+  }
+
+  // ---- the selected run's events (3.1)
+
+  // No events held and no follow-up queued; then the selected run's last 200
+  // are fetched, or, with no run selected, the fetch in flight is stopped and
+  // the status is idle.
+  function selectEvents() {
+    eventsState.followUp = false
+    store.events = []
+    store.eventsDropped = 0
+    store.eventsCursor = 0
+    store.eventsError = ""
+    if (store.selectedRunId === "") {
+      eventsRunner.cancel()
+      store.eventsStatus = "idle"
+      return
+    }
+    store.fetchEvents()
+  }
+
+  // The selected run fetched again; the rows, eventsDropped, eventsCursor and
+  // eventsError stay until the reply. Nothing without a selected run.
+  function refreshEvents() {
+    if (store.selectedRunId === "") return
+    store.fetchEvents()
+  }
+
+  // runs-events.py RUN --tail 200 for the selected run, guarded by its id.
+  function fetchEvents() {
+    store.eventsStatus = "loading"
+    eventsRunner.guard = store.selectedRunId
+    eventsState.kind = "tail"
+    eventsRunner.run([store.selectedRunId, "--tail", "200"])
+  }
+
+  // A debounce window's run ids (runsNudged). While active, with ids an array
+  // holding selectedRunId: the change fetch (fetchNewEvents), or, while a
+  // fetch is in flight, one follow-up queued behind it (followUpEvents); the
+  // fetch in flight is left alone. The run's status is never read.
+  function nudgeEvents(ids) {
+    if (!store.active || store.selectedRunId === "" || !Array.isArray(ids)) return
+    if (ids.indexOf(store.selectedRunId) < 0) return
+    if (eventsRunner.busy) {
+      eventsState.followUp = true
+      return
+    }
+    store.fetchNewEvents()
+  }
+
+  onRunsNudged: function(ids) { store.nudgeEvents(ids) }
+
+  // The change fetch: runs-events.py RUN --since eventsCursor, guarded by the
+  // run id; with eventsCursor 0, fetchEvents (--tail 200). The rows,
+  // eventsDropped, eventsCursor and eventsError stay until the reply.
+  function fetchNewEvents() {
+    if (store.eventsCursor <= 0) {
+      store.fetchEvents()
+      return
+    }
+    store.eventsStatus = "loading"
+    eventsRunner.guard = store.selectedRunId
+    eventsState.kind = "since"
+    eventsRunner.run([store.selectedRunId, "--since", String(store.eventsCursor)])
+  }
+
+  // The fetch in flight ended and its reply is applied: a queued follow-up is
+  // taken and, while active with a run selected, the change fetch launches
+  // from the state that reply left.
+  function followUpEvents() {
+    if (!eventsState.followUp) return
+    eventsState.followUp = false
+    if (store.active && store.selectedRunId !== "") store.fetchNewEvents()
+  }
+
+  // The labels for an events reply, a fresh object: every own key of
+  // `titles` holding a non-empty string, then, for each story of the
+  // selected run's tree with a string card_id and a non-empty string title,
+  // that title where `titles` has none. `titles` is never modified.
+  function eventTitles() {
+    var out = {}
+    var own = store.titles
+    if (own !== null && typeof own === "object" && !Array.isArray(own)) {
+      for (var key in own) {
+        if (Runs.hasKey(own, key) && typeof own[key] === "string" && own[key] !== "") out[key] = own[key]
+      }
+    }
+    var run = store.runById(store.selectedRunId)
+    var tree = run !== null && typeof run === "object" && run.tree !== null && typeof run.tree === "object" ? run.tree : {}
+    var stories = Array.isArray(tree.stories) ? tree.stories : []
+    for (var i = 0; i < stories.length; i++) {
+      var s = stories[i]
+      if (s === null || typeof s !== "object") continue
+      if (typeof s.card_id !== "string" || typeof s.title !== "string" || s.title === "") continue
+      if (!Runs.hasKey(out, s.card_id)) out[s.card_id] = s.title
+    }
+    return out
+  }
+
+  // One events reply, applied only while `launchedGuard` is still the
+  // selected run. ok true with an events array: foldReply, unless its
+  // last_seq is a non-negative integer below eventsCursor, which keeps
+  // events, eventsDropped and eventsCursor. Either way ok, no error. ok
+  // false: error with Runs.errorText. Anything else: error, "no usable
+  // result". A failure keeps events, eventsDropped and eventsCursor. Never
+  // touches any other state.
+  function applyEvents(stdout, exitCode, launchedGuard) {
+    if (launchedGuard !== store.selectedRunId) return
+    var envelope = Results.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true && Array.isArray(envelope.events)) {
+      if (store.isSeq(envelope.last_seq) && envelope.last_seq < store.eventsCursor) {
+        store.eventsStatus = "ok"
+        store.eventsError = ""
+        return
+      }
+      store.foldReply(envelope)
+      return
+    }
+    store.eventsStatus = "error"
+    if (envelope !== null && envelope.ok === false) store.eventsError = Runs.errorText(envelope)
+    else store.eventsError = "The events snapshot gave no usable result (exit " + exitCode + ")."
+  }
+
+  // A good reply. Its events become RunEvents.eventRow rows, labelled from
+  // eventTitles() at the local UTC offset (null rows skipped), folded into
+  // the held rows, at most 500.
+  // eventsDropped, after a --tail launch: (total - received) less the held
+  // rows below the reply's lowest seq, at least 0, plus the rows the cap
+  // removed; total is the reply's when an integer >= received, else
+  // received. After a --since launch: its value plus the rows the cap
+  // removed. eventsCursor: the highest of itself, a non-negative integer
+  // last_seq and the held rows' seqs.
+  function foldReply(envelope) {
+    var list = envelope.events
+    var titles = store.eventTitles()
+    var offset = -new Date().getTimezoneOffset()
+    var fresh = []
+    var lowest = null
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i]
+      if (e !== null && typeof e === "object" && typeof e.seq === "number" && isFinite(e.seq)
+          && (lowest === null || e.seq < lowest)) lowest = e.seq
+      var row = RunEvents.eventRow(e, titles, offset)
+      if (row !== null) fresh.push(row)
+    }
+    var held = store.events
+    var priorBelow = 0
+    for (var h = 0; h < held.length; h++) {
+      if (lowest !== null && held[h].seq < lowest) priorBelow += 1
+    }
+    var fold = RunEvents.foldEvents(held, fresh, 500)
+    var received = list.length
+    var total = Number.isInteger(envelope.total) && envelope.total >= received ? envelope.total : received
+    var cursor = store.eventsCursor
+    if (store.isSeq(envelope.last_seq) && envelope.last_seq > cursor) cursor = envelope.last_seq
+    var rows = fold.rows
+    if (rows.length > 0 && rows[rows.length - 1].seq > cursor) cursor = rows[rows.length - 1].seq
+    store.events = rows
+    if (eventsState.kind === "since") store.eventsDropped = store.eventsDropped + fold.dropped
+    else store.eventsDropped = Math.max(0, total - received - priorBelow) + fold.dropped
+    store.eventsCursor = cursor
+    store.eventsStatus = "ok"
+    store.eventsError = ""
+  }
+
+  // One logs reply. ok:true replaces the text with its last 200 lines; a
+  // step's UnknownAttemptError (am has no log for it) empties the text and
+  // sets logsNote "This step records no output", with no error; any other
+  // failure keeps the text and only says why. Every reply but the step's
+  // UnknownAttemptError leaves logsNote "". Never touches amStatus, runs or
   // lastError: those belong to the snapshot. A reply for an older fetch never
   // gets here (the runner's latest-wins).
   function applyLogs(stdout, exitCode) {
     store.logsLoading = false
+    store.logsNote = ""
     var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var tail = Runs.logTail(envelope.data, 200)
@@ -825,11 +1056,42 @@ Scope {
       store.logsError = ""
       return
     }
+    var sel = store.selectedAttempt
+    if (envelope !== null && envelope.ok === false && sel && sel.step === true
+        && envelope.error !== null && typeof envelope.error === "object"
+        && envelope.error.type === "UnknownAttemptError") {
+      store.logsText = ""
+      store.logsTruncated = false
+      store.logsError = ""
+      store.logsNote = "This step records no output"
+      store.logsFetchedMs = Date.now()
+      return
+    }
     if (envelope !== null && envelope.ok === false) {
       store.logsError = Runs.errorText(envelope)
       return
     }
     store.logsError = "The logs snapshot gave no usable result (exit " + exitCode + ")."
+  }
+
+  // The helper prints exactly one JSON line; anything before it (a warning) and
+  // blank lines after it are ignored.
+  function lastLine(text) {
+    var lines = String(text || "").split("\n")
+    for (var i = lines.length - 1; i >= 0; i--) {
+      var line = lines[i].trim()
+      if (line !== "") return line
+    }
+    return ""
+  }
+
+  // The reply's envelope object, or null when there is none to read.
+  function parseEnvelope(text) {
+    var line = store.lastLine(text)
+    if (line === "") return null
+    var value = null
+    try { value = JSON.parse(line) } catch (e) { return null }
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
   }
 
   // The `am runs` summary without its `status` key: the helper replaced the
@@ -1033,6 +1295,19 @@ Scope {
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
   }
 
+  // The selected run's events helper. Guard: the run id a fetch was launched
+  // for, never the open project. A newer fetch wins over an older one, and a
+  // reply is applied only while its run is still the selected one; then a
+  // queued follow-up launches (followUpEvents).
+  HelperRunner {
+    id: eventsRunner
+    script: store.backendDir + "runs/runs-events.py"
+    onFinished: function(stdout, exitCode, launchedGuard) {
+      store.applyEvents(stdout, exitCode, launchedGuard)
+      store.followUpEvents()
+    }
+  }
+
   // A burst of changed lines is taken in one go (triggerNudges).
   Timer {
     id: debounceTimer
@@ -1087,6 +1362,16 @@ Scope {
     id: snapshotState
     property var roots: []
     property var pending: null
+  }
+
+  // The selected run's events fetches' own state; kept apart so consumers
+  // cannot write it. `kind` is the newest launch's: "tail" (RUN --tail 200)
+  // or "since" (RUN --since eventsCursor). `followUp`: one change fetch
+  // waits behind the fetch in flight.
+  QtObject {
+    id: eventsState
+    property string kind: "tail"
+    property bool followUp: false
   }
 
   // One Process per watch launch, so each carries what it was launched with.

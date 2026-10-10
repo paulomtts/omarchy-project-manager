@@ -42,6 +42,8 @@ TestCase {
     compare(r.status, "", label)
     compare(r.base_branch, "", label)
     compare(r.branch_prefix, "", label)
+    compare(r.card_id, "", label)
+    compare(r.story_id, "", label)
     compare(r.lease, null, label)
     compare(r.project, null, label)
     compare(Array.isArray(r.rows), true, label)
@@ -240,6 +242,8 @@ TestCase {
     compare(r.workflow, "milestone")
     compare(r.base_branch, "main")
     compare(r.branch_prefix, "dsp")
+    compare(r.card_id, "", "a milestone run names no card")
+    compare(r.story_id, "", "a milestone run names no story")
     compare(r.started_at, "2026-10-08 14:38:23.739155+00:00")
     compare(Object.keys(r.lease).sort().join(","), "accepting,heartbeat_at,host,live,pid", "acquired_at is not kept")
     compare(r.lease.pid, 1991)
@@ -575,6 +579,8 @@ TestCase {
       verify(hasOwn(fixture.row, rowKeys[i]), "the capture's row carries " + rowKeys[i])
       compare(keys.indexOf(rowKeys[i]), -1, "row " + rowKeys[i] + " is not kept")
     }
+    verify(hasOwn(fixture.row, "story_id") && hasOwn(fixture.row, "card_id"), "the capture's row carries story_id and card_id")
+    verify(keys.indexOf("story_id") >= 0 && keys.indexOf("card_id") >= 0, "row story_id and card_id are kept (RR 1.2)")
     var statusKeys = ["warnings", "integrity"]
     for (var j = 0; j < statusKeys.length; j++) {
       verify(hasOwn(fixture.status, statusKeys[j]), "the capture's am status carries " + statusKeys[j])
@@ -693,7 +699,7 @@ TestCase {
         var node = done.stories[i].subtasks[j]
         compare(node.status, "done", node.card_id)
         compare(node.phases.length, 14, node.card_id + " phases")
-        compare(node.attempts.length, 7, node.card_id + " attempts")
+        compare(node.attempts.length, 14, node.card_id + " attempts")
         compare(opensOn(node), "review/1", node.card_id + ": the last phase with a numbered attempt, past verify and mark_done")
         count++
       }
@@ -745,6 +751,179 @@ TestCase {
 
     var node = treeNode(Runs.runTree(Runs.normalizeRun(raw)), "2280a6ab-9c40-434b-9729-63fd1f373754")
     compare(opensOn(node), "mark_in_progress/0", "a started phase wins over an earlier numbered one, attempt 0 without attempts")
+  }
+
+  // ---- Live output 2.2: step entries, a started step, live selections ------------------------
+
+  // The am subtask with this card id in a raw amRun's stories, else null.
+  function rawSubtask(raw, cardId) {
+    var stories = raw.status.stories
+    for (var i = 0; i < stories.length; i++) {
+      for (var j = 0; j < stories[i].subtasks.length; j++) {
+        if (stories[i].subtasks[j].card_id === cardId) return stories[i].subtasks[j]
+      }
+    }
+    return null
+  }
+
+  // status-started.json, raw, with 2280a6ab's explore finished and a
+  // deterministic phase `name` started after it.
+  function startedStepRaw(name) {
+    var raw = amRun("status-started.json")
+    var subtask = rawSubtask(raw, "2280a6ab-9c40-434b-9729-63fd1f373754")
+    // synthetic: explore finished (phase done, attempt 1 ok) and a deterministic phase in flight -- no capture has one
+    subtask.phases[1].status = "done"
+    subtask.phases[1].attempts[0].status = "ok"
+    subtask.phases.push({ name: name, kind: "deterministic", status: "started", started_at: "", ended_at: null, detail: null, attempts: [] })
+    return raw
+  }
+
+  // "phase.attempt[:step]:status" for each attempts entry of a tree node, comma-joined.
+  function entries(node) {
+    return node.attempts.map(function(a) {
+      return a.phase + "." + a.attempt + (a.step === true ? ":step" : "") + ":" + a.status
+    }).join(",")
+  }
+
+  function test_fixture_normalized_phases_keep_kind() {
+    var names = ["status-started.json", "status-done.json", "status-escalated.json", "status-done-integrate.json"]
+    var runs = fixtureRuns()
+    for (var i = 0; i < runs.length; i++) {
+      var raw = amRun(names[i])
+      var subtasks = runs[i].tree.subtasks
+      var checked = 0
+      for (var j = 0; j < subtasks.length; j++) {
+        var am = rawSubtask(raw, subtasks[j].card_id)
+        verify(am !== null, names[i] + " " + subtasks[j].card_id + " is in the capture")
+        var phases = subtasks[j].phases
+        for (var k = 0; k < phases.length; k++) {
+          var label = names[i] + " " + subtasks[j].card_id + " " + phases[k].name
+          verify(phases[k].kind === "agent" || phases[k].kind === "deterministic", label + " kind " + phases[k].kind)
+          compare(phases[k].kind, am.phases[k].kind, label + " matches the capture")
+          checked++
+        }
+      }
+      verify(checked > 0, names[i] + " has phases")
+    }
+  }
+
+  function test_fixture_run_tree_step_entries() {
+    var done = amRun("status-done.json")
+    var tree = Runs.runTree(Runs.normalizeRun(done))
+    var nodes = 0
+    for (var i = 0; i < tree.stories.length; i++) {
+      for (var j = 0; j < tree.stories[i].subtasks.length; j++) {
+        var node = tree.stories[i].subtasks[j]
+        var am = rawSubtask(done, node.card_id)
+        var stepNames = am.phases.filter(function(p) { return p.kind === "deterministic" })
+                                 .map(function(p) { return p.name }).join(",")
+        compare(stepNames, "worktree,mark_in_progress,plan_check,mark_validated,docs_commit,verify,mark_done", node.card_id + " capture")
+        compare(node.attempts.length, 14, node.card_id + " attempts")
+        var steps = node.attempts.filter(function(a) { return a.step === true })
+        compare(steps.length, 7, node.card_id + " steps")
+        compare(steps.map(function(a) { return a.phase }).join(","), stepNames, node.card_id + " steps in phase order")
+        for (var s = 0; s < steps.length; s++) {
+          compare(Object.keys(steps[s]).join(","), "phase,attempt,step,status", node.card_id + " step shape")
+          compare(steps[s].attempt, 0, node.card_id + " " + steps[s].phase)
+          compare(steps[s].status, "done", node.card_id + " " + steps[s].phase)
+        }
+        var agents = node.attempts.filter(function(a) { return !("step" in a) })
+        compare(agents.length, 7, node.card_id + " agent attempts")
+        for (var g = 0; g < agents.length; g++)
+          compare(Object.keys(agents[g]).join(","), "phase,attempt,status", node.card_id + " agent shape")
+        nodes++
+      }
+    }
+    compare(nodes, 10, "every done subtask is a node")
+
+    var escalated = Runs.runTree(Runs.normalizeRun(amRun("status-escalated.json")))
+    var node10 = treeNode(escalated, "10e26d57-374c-48d3-bc45-09389b42cfac")
+    compare(entries(node10),
+            "worktree.0:step:done,explore.1:ok,mark_in_progress.0:step:done,plan_check.0:step:done," +
+            "spec.1:ok,validate_spec.1:ok,plan.1:ok,validate_plan.1:ok," +
+            "mark_validated.0:step:done,docs_commit.0:step:done,implement.1:ok,review.1:gate_failed")
+    compare(node10.attempts[11].phase + "." + node10.attempts[11].attempt, "review.1")
+    compare(node10.attempts[1].phase + "." + node10.attempts[1].attempt, "explore.1")
+  }
+
+  function test_fixture_run_tree_started_step_entry() {
+    var node = treeNode(Runs.runTree(Runs.normalizeRun(startedStepRaw("verify"))), "2280a6ab-9c40-434b-9729-63fd1f373754")
+    compare(entries(node), "worktree.0:step:done,explore.1:ok,verify.0:step:started")
+    compare(opensOn(node), "verify/0")
+  }
+
+  function test_fixture_default_attempt_on_a_started_step() {
+    compare(JSON.stringify(Runs.defaultAttempt(Runs.normalizeRun(startedStepRaw("verify")))),
+            JSON.stringify({ card_id: "2280a6ab-9c40-434b-9729-63fd1f373754", phase: "verify", attempt: 0, step: true }))
+    var runs = fixtureRuns()
+    for (var i = 0; i < runs.length; i++) {
+      var d = Runs.defaultAttempt(runs[i])
+      verify(d !== null, "a default for " + runs[i].id)
+      verify(!("step" in d), "an agent attempt carries no step key: " + runs[i].id)
+    }
+  }
+
+  function test_fixture_is_live_selection_by_run_state() {
+    var card = "2280a6ab-9c40-434b-9729-63fd1f373754"
+    var explore = { card_id: card, phase: "explore", attempt: 1 }
+    var verifyStep = { card_id: card, phase: "verify", attempt: 0, step: true }
+    // [label, synthetic edit of the capture copy, runState, live]
+    var cases = [
+      ["running", function(raw) {}, "running", true],
+      // synthetic: the lease edited to not live
+      ["lease not live", function(raw) { raw.status.control.lease.live = false }, "dead", false],
+      // synthetic: am's control removed, so no lease
+      ["no control", function(raw) { delete raw.status.control }, "dead", false],
+      // synthetic: the run status edited to stopped
+      ["stopped", function(raw) { raw.status.run.status = "stopped" }, "parked", false],
+      // synthetic: the run status edited to escalated
+      ["escalated", function(raw) { raw.status.run.status = "escalated" }, "escalated", false],
+      // synthetic: the run status edited to done
+      ["done", function(raw) { raw.status.run.status = "done" }, "done", false],
+      // synthetic: the run status edited to a status am does not give
+      ["unknown", function(raw) { raw.status.run.status = "weird" }, "unknown", false]
+    ]
+    var spellings = cancelSpellings()
+    for (var c = 0; c < spellings.length; c++) {
+      // synthetic: the run status edited to a cancelled spelling
+      cases.push([spellings[c], (function(s) { return function(raw) { raw.status.run.status = s } })(spellings[c]), "cancelled", false])
+    }
+    for (var i = 0; i < cases.length; i++) {
+      var agentRaw = amRun("status-started.json")
+      cases[i][1](agentRaw)
+      var agentRun = Runs.normalizeRun(agentRaw)
+      compare(Runs.runState(agentRun), cases[i][2], cases[i][0] + ": the edit gives the state")
+      compare(Runs.isLiveSelection(agentRun, explore), cases[i][3], cases[i][0] + ": explore.1, attempt started")
+
+      var stepRaw = startedStepRaw("verify")
+      cases[i][1](stepRaw)
+      var stepRun = Runs.normalizeRun(stepRaw)
+      compare(Runs.runState(stepRun), cases[i][2], cases[i][0] + ": the edit gives the state (step)")
+      compare(Runs.isLiveSelection(stepRun, verifyStep), cases[i][3], cases[i][0] + ": the verify step, phase started")
+    }
+  }
+
+  function test_fixture_is_live_selection_by_attempt_status() {
+    var card = "2280a6ab-9c40-434b-9729-63fd1f373754"
+    var explore = { card_id: card, phase: "explore", attempt: 1 }
+    var statuses = [["started", true], ["ok", false], ["gate_failed", false], ["schema_invalid", false],
+                    ["harness_error", false], ["", false]]
+    for (var i = 0; i < statuses.length; i++) {
+      var raw = amRun("status-started.json")
+      var attempt = rawSubtask(raw, card).phases[1].attempts[0]
+      compare(rawSubtask(raw, card).phases[1].name + "." + attempt.n, "explore.1", "the capture's explore.1")
+      // synthetic: explore.1's status edited
+      attempt.status = statuses[i][0]
+      compare(Runs.isLiveSelection(Runs.normalizeRun(raw), explore), statuses[i][1], "attempt status '" + statuses[i][0] + "'")
+    }
+    var started = Runs.normalizeRun(amRun("status-started.json"))
+    compare(Runs.isLiveSelection(started, { card_id: "5560d0fe-2b8e-4ef9-ad71-96b50ee89daa", phase: "review", attempt: 1 }), false,
+            "a finished attempt of a running run")
+    compare(Runs.isLiveSelection(started, { card_id: card, phase: "worktree", attempt: 0, step: true }), false,
+            "a done step of a running run")
+    var escalated = Runs.normalizeRun(amRun("status-escalated.json"))
+    compare(Runs.isLiveSelection(escalated, { card_id: "10e26d57-374c-48d3-bc45-09389b42cfac", phase: "review", attempt: 1 }), false,
+            "the escalated capture's gate_failed review.1")
   }
 
   function test_state_running() {
@@ -2344,6 +2523,36 @@ TestCase {
     compare(opensOn(treeNode(t, "i")), "spec/2", "a legacy attempt number counts")
   }
 
+  function test_run_tree_step_entries_rule() {
+    function det(name, status) { return { name: name, kind: "deterministic", status: status, attempts: [] } }
+    function other(name, kind) { return { name: name, kind: kind, status: "done", attempts: [] } }
+    // synthetic: hand-built normalized subtasks, one per case of the step-entry rule
+    var run = mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "a", phases: [
+        det("s1", "started"), det("s2", "done"), det("s3", "failed"), det("s4", "escalated"),
+        det("s5", "stopped"), det("s6", "cancelled"), det("s7", "canceled"),
+        det("p1", "pending"), det("p2", ""), det("p3", "running"), det("p4", null), det("p5", 5),
+        det("p6", "Started"), det("p7", "constructor"), { name: "p8", kind: "deterministic", attempts: [] },
+        other("k1", "agent"), { name: "k2", status: "done", attempts: [] }, other("k3", "Deterministic"), other("k4", 5),
+        { name: "x", kind: "deterministic", status: "done", attempts: [{ n: 1, status: "ok" }] },
+        det("", "done"), { kind: "deterministic", status: "done", attempts: [] }, { name: 7, kind: "deterministic", status: "done" }
+      ] },
+      { card_id: "b", phases: [det("verify", "done"), det("verify", "started")] }
+    ] } })
+    var before = JSON.stringify(run)
+    var t = Runs.runTree(run)
+    compare(JSON.stringify(run), before, "the run is not mutated")
+    var a = treeNode(t, "a")
+    compare(entries(a),
+            "s1.0:step:started,s2.0:step:done,s3.0:step:failed,s4.0:step:escalated," +
+            "s5.0:step:stopped,s6.0:step:cancelled,s7.0:step:canceled,x.0:step:done,x.1:ok")
+    compare(Object.keys(a.attempts[0]).join(","), "phase,attempt,step,status", "step entry key order")
+    compare(Object.keys(a.attempts[8]).join(","), "phase,attempt,status", "a step phase's own attempt has no step key")
+    compare(Object.keys(a.phases[0]).join(","), "name,status", "phases entries carry no kind")
+    compare(opensOn(a), "s1/0", "the current-phase rule is unchanged")
+    compare(entries(treeNode(t, "b")), "verify.0:step:done,verify.0:step:started", "one step entry per phase object")
+  }
+
   function at(d) { return d === null ? "null" : d.card_id + "/" + d.phase + "/" + d.attempt }
 
   function test_default_attempt() {
@@ -2371,6 +2580,34 @@ TestCase {
     for (var i = 0; i < bad.length; i++) compare(Runs.defaultAttempt(bad[i]), null, "garbage " + i)
   }
 
+  function test_default_attempt_prefers_the_first_started_phase() {
+    function step(name, status) { return { name: name, kind: "deterministic", status: status, attempts: [] } }
+    function agent(name, status, attempts) { return { name: name, kind: "agent", status: status, attempts: attempts } }
+    function dflt(subtasks, rows) {
+      // synthetic: hand-built normalized subtasks for the default-attempt rule
+      var run = mkRun("r", "started", true, { rows: rows || [], tree: { stories: [], subtasks: subtasks } })
+      var before = JSON.stringify(run)
+      var d = Runs.defaultAttempt(run)
+      compare(JSON.stringify(run), before, "the run is not mutated")
+      return JSON.stringify(d)
+    }
+    compare(dflt([{ card_id: "a", phases: [step("worktree", "done"), step("verify", "started")] },
+                  { card_id: "b", phases: [agent("implement", "started", [{ n: 1, status: "started" }])] }]),
+            JSON.stringify({ card_id: "a", phase: "verify", attempt: 0, step: true }),
+            "a started step of an earlier subtask wins over a later numbered attempt")
+    compare(dflt([{ card_id: "a", phases: [agent("plan", "started", []), step("verify", "started")] }]),
+            JSON.stringify({ card_id: "a", phase: "verify", attempt: 0, step: true }),
+            "a started agent phase without numbers is passed over for a later started step")
+    compare(dflt([{ card_id: "a", phases: [agent("implement", "started", [{ n: 2, status: "started" }]), step("verify", "started")] }]),
+            JSON.stringify({ card_id: "a", phase: "implement", attempt: 2 }),
+            "a started agent attempt before a started step wins, with no step key")
+    compare(dflt([{ card_id: "integrate", phases: [step("integrate", "started")] }]), "null",
+            "a bookkeeping id with a started step is never a card")
+    compare(dflt([{ card_id: "a", phases: [step("", "started"), step("verify", "running"), step("verify", "done")] }],
+                 [{ card_id: "a", phase: "verify", attempt: null, status: "done" }]), "null",
+            "an unnamed or not-started step is not chosen, and the row fallback never yields a step")
+  }
+
   function test_attempt_status() {
     var run = detailRun()
     compare(Runs.attemptStatus(run, "t1", "implement", 2), "started")
@@ -2385,6 +2622,116 @@ TestCase {
     compare(Runs.attemptStatus(run, null, "spec", 1), "")
     compare(Runs.attemptStatus(run, "t1", null, 1), "")
     compare(Runs.attemptStatus(run, "t1", "spec", "1"), "", "a string attempt is not a number")
+  }
+
+  function test_phase_status() {
+    var card = "2280a6ab-9c40-434b-9729-63fd1f373754"
+    var started = Runs.normalizeRun(amRun("status-started.json"))
+    var before = JSON.stringify(started)
+    compare(Runs.phaseStatus(started, card, "worktree"), "done", "the capture's worktree step")
+    compare(Runs.phaseStatus(started, card, "explore"), "started", "an agent phase's own status")
+    compare(Runs.phaseStatus(started, "00000000-0000-0000-0000-000000000000", "worktree"), "", "an unknown card")
+    compare(Runs.phaseStatus(started, card, "verify"), "", "an unknown phase")
+    var phases = ["", null, undefined, 3, {}, []]
+    for (var i = 0; i < phases.length; i++)
+      compare(Runs.phaseStatus(started, card, phases[i]), "", "phase " + JSON.stringify(phases[i]))
+    var cards = ["", null, undefined, 7, {}]
+    for (var c = 0; c < cards.length; c++)
+      compare(Runs.phaseStatus(started, cards[c], "worktree"), "", "card " + JSON.stringify(cards[c]))
+    var runs = [null, undefined, {}, "x", 5, []]
+    for (var r = 0; r < runs.length; r++)
+      compare(Runs.phaseStatus(runs[r], card, "worktree"), "", "run " + JSON.stringify(runs[r]))
+    compare(JSON.stringify(started), before, "the run is not changed")
+
+    // synthetic: a non-string status, a repeated phase name and bookkeeping ids with started phases
+    var odd = { tree: { subtasks: [
+      { card_id: "t9", phases: [{ name: "verify", status: 5 }, { name: "verify", status: "done" }] },
+      { card_id: "t8", phases: [{ name: "verify", kind: "deterministic", status: "started" }, { name: "verify", status: "done" }] },
+      { card_id: "integrate", phases: [{ name: "integrate", status: "started" }] },
+      { card_id: "bases", phases: [{ name: "bases", status: "started" }] },
+      { card_id: "base-s1", phases: [{ name: "worktree", status: "started" }] }
+    ] } }
+    compare(Runs.phaseStatus(odd, "t9", "verify"), "", "the first phase of the name has no string status")
+    compare(Runs.phaseStatus(odd, "t8", "verify"), "started", "the first phase of that name decides")
+    compare(Runs.phaseStatus(odd, "integrate", "integrate"), "", "integrate is not a card")
+    compare(Runs.phaseStatus(odd, "bases", "bases"), "", "bases is not a card")
+    compare(Runs.phaseStatus(odd, "base-s1", "worktree"), "", "base-* is not a card")
+  }
+
+  function test_is_live_selection_garbage() {
+    var results = []
+    function live(run, sel, label) {
+      var r = Runs.isLiveSelection(run, sel)
+      results.push([r, label])
+      return r
+    }
+    var run = detailRun()
+    var good = { card_id: "t1", phase: "implement", attempt: 2 }
+    compare(live(run, good, "baseline"), true, "the baseline selection is live")
+
+    var badRuns = [undefined, null, "x", 5, [], {}, { tree: "x" }]
+    for (var i = 0; i < badRuns.length; i++) compare(live(badRuns[i], good, "run " + i), false, "garbage run " + i)
+
+    var badSels = [undefined, null, "x", 5, [], {},
+      { card_id: "", phase: "implement", attempt: 2 }, { card_id: 7, phase: "implement", attempt: 2 },
+      { card_id: null, phase: "implement", attempt: 2 }, { phase: "implement", attempt: 2 },
+      { card_id: "t1", attempt: 2 }, { card_id: "t1", phase: "", attempt: 2 }, { card_id: "t1", phase: 5, attempt: 2 },
+      { card_id: "t1", phase: null, attempt: 2, step: true },
+      { card_id: "zz", phase: "implement", attempt: 2 }, { card_id: "zz", phase: "implement", attempt: 0, step: true },
+      { card_id: "t1", phase: "verify", attempt: 2 }, { card_id: "t1", phase: "verify", attempt: 0, step: true },
+      { card_id: "t1", phase: "implement", attempt: "2" }, { card_id: "t1", phase: "implement", attempt: 0 },
+      { card_id: "t1", phase: "implement", attempt: -2 }, { card_id: "t1", phase: "implement", attempt: NaN },
+      { card_id: "t1", phase: "implement", attempt: Infinity }, { card_id: "t1", phase: "implement" }]
+    for (var j = 0; j < badSels.length; j++) compare(live(run, badSels[j], "sel " + j), false, "garbage selection " + j)
+
+    // synthetic: bookkeeping ids carrying a started attempt and a started step
+    var books = mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "integrate", phases: [{ name: "integrate", status: "started", attempts: [{ n: 1, status: "started" }] }] },
+      { card_id: "bases", phases: [{ name: "bases", kind: "deterministic", status: "started", attempts: [{ n: 1, status: "started" }] }] },
+      { card_id: "base-s1", phases: [{ name: "base", status: "started", attempts: [{ n: 1, status: "started" }] }] }] } })
+    var ids = [["integrate", "integrate"], ["bases", "bases"], ["base-s1", "base"]]
+    for (var k = 0; k < ids.length; k++) {
+      compare(live(books, { card_id: ids[k][0], phase: ids[k][1], attempt: 1 }, ids[k][0]), false, ids[k][0] + " attempt")
+      compare(live(books, { card_id: ids[k][0], phase: ids[k][1], attempt: 0, step: true }, ids[k][0] + " step"), false, ids[k][0] + " step")
+    }
+
+    var before = JSON.stringify(run) + JSON.stringify(good)
+    live(run, good, "again")
+    compare(JSON.stringify(run) + JSON.stringify(good), before, "neither argument is mutated")
+    for (var r = 0; r < results.length; r++) compare(typeof results[r][0], "boolean", "a boolean: " + results[r][1])
+  }
+
+  function test_is_live_selection_step_flag() {
+    // synthetic: a running run with a started agent phase, a started step and a re-run step
+    var run = mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "t1", phases: [
+        { name: "spec", kind: "agent", status: "done", attempts: [{ n: 1, status: "ok" }] },
+        { name: "implement", kind: "agent", status: "started", attempts: [{ n: 1, status: "gate_failed" }, { n: 2, status: "started" }] }] },
+      { card_id: "t2", phases: [
+        { name: "worktree", kind: "deterministic", status: "done", attempts: [] },
+        { name: "verify", kind: "deterministic", status: "started", attempts: [] }] },
+      { card_id: "t3", phases: [
+        { name: "verify", kind: "deterministic", status: "done", attempts: [] },
+        { name: "verify", kind: "deterministic", status: "started", attempts: [] }] }] } })
+    var cases = [
+      [{ card_id: "t1", phase: "implement", attempt: 2 }, true, "a started attempt"],
+      [{ card_id: "t1", phase: "implement", attempt: 0, step: true }, true, "step: true reads the phase, which is started"],
+      [{ card_id: "t1", phase: "implement", attempt: 0 }, false, "attempt 0 without step"],
+      [{ card_id: "t1", phase: "implement", attempt: 2, step: "true" }, true, "step \"true\" is the agent branch"],
+      [{ card_id: "t1", phase: "implement", attempt: 0, step: "true" }, false, "step \"true\" with attempt 0"],
+      [{ card_id: "t1", phase: "implement", attempt: 0, step: 1 }, false, "step 1 with attempt 0"],
+      [{ card_id: "t1", phase: "implement", attempt: 2, step: false, extra: "x" }, true, "step false and extra keys: the agent branch"],
+      [{ card_id: "t1", phase: "implement", attempt: 1 }, false, "a gate_failed attempt of a started phase"],
+      [{ card_id: "t1", phase: "spec", attempt: 0, step: true }, false, "a done phase as a step"],
+      [{ card_id: "t2", phase: "verify", attempt: 0, step: true }, true, "a started step"],
+      [{ card_id: "t2", phase: "verify", attempt: 5, step: true }, true, "a step selection's attempt is not read"],
+      [{ card_id: "t2", phase: "verify", attempt: "x", step: true }, true, "not even a non-number"],
+      [{ card_id: "t2", phase: "verify", attempt: 0 }, false, "a started step without step: true"],
+      [{ card_id: "t2", phase: "worktree", attempt: 0, step: true }, false, "a done step"],
+      [{ card_id: "t3", phase: "verify", attempt: 0, step: true }, false, "a repeated name reads the first phase, which is done"]
+    ]
+    for (var i = 0; i < cases.length; i++)
+      compare(Runs.isLiveSelection(run, cases[i][0]), cases[i][1], cases[i][2])
   }
 
   // ---- 5.3: the runs that touch one card (card detail's RUNS list) --------------------------
@@ -2419,11 +2766,19 @@ TestCase {
   readonly property string ctlResumeRunning: "The run is still running"
   readonly property string ctlResumeCancelled: "A cancelled run cannot be resumed"
   readonly property string ctlCancelCancelled: "The run is already cancelled"
+  readonly property string ctlResumeEscalatedCard: "An escalated card run cannot be resumed; relaunch it"
 
   // mkRun with the lease's accepting flag set; live === null still means no lease.
   function ctlRun(status, live, accepting) {
     var r = mkRun("rc", status, live)
     if (r.lease !== null) r.lease.accepting = accepting
+    return r
+  }
+
+  // ctlRun with a `workflow` (mkRun sets none); an escalated "task" run is an escalated card run.
+  function ctlRunOf(status, live, accepting, workflow) {
+    var r = ctlRun(status, live, accepting)
+    r.workflow = workflow
     return r
   }
 
@@ -2549,15 +2904,99 @@ TestCase {
     checkControls(Runs.controls(Runs.normalizeRun(raw(null))), ctlPauseNotRunning, "", "", "no lease: dead")
   }
 
+  function test_controls_escalated_card_run() {
+    var run = ctlRunOf("escalated", false, true, "task")
+    compare(Runs.runState(run), "escalated", "fixture")
+    checkControls(Runs.controls(run), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, accepting")
+    checkControls(Runs.controls(ctlRunOf("escalated", false, false, "task")),
+                  ctlPauseNotRunning, ctlResumeEscalatedCard, ctlIntegrate, "task, Integrate")
+    checkControls(Runs.controls(ctlRunOf("escalated", null, false, "task")),
+                  ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, no lease is not Integrate")
+    checkControls(Runs.controls(ctlRunOf("escalated", false, true, "  task  ")),
+                  ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, padded")
+    checkControls(Runs.controls(ctlRunOf("escalated", false, true, "\ttask\n")),
+                  ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, tab and newline")
+    var liveRun = ctlRunOf("escalated", true, true, "task")
+    compare(Runs.runState(liveRun), "escalated", "a live lease does not change an escalated state")
+    checkControls(Runs.controls(liveRun), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "task, live lease")
+  }
+
+  function test_controls_escalated_card_run_from_fixture() {
+    var r = Runs.normalizeRun(amRun("status-escalated.json"))
+    compare(r.workflow, "milestone", "recorded workflow")
+    r.workflow = "task"
+    compare(r.lease, null, "the capture has no lease")
+    checkControls(Runs.controls(r), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "escalated capture as a task run")
+  }
+
+  function test_controls_escalated_milestone_run_unchanged() {
+    var r = Runs.normalizeRun(amRun("status-escalated.json"))
+    compare(r.workflow, "milestone", "recorded workflow")
+    compare(Runs.runState(r), "escalated", "recorded state")
+    checkControls(Runs.controls(r), ctlPauseNotRunning, "", "", "escalated milestone capture")
+  }
+
+  function test_controls_escalated_card_run_normalized() {
+    // synthetic: the workflow from only the `am runs` row, or only `am status`
+    var fromRow = Runs.normalizeRun({ row: { id: "r", status: "escalated", workflow: " task " } })
+    checkControls(Runs.controls(fromRow), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "workflow on the row")
+    var fromStatus = Runs.normalizeRun({ status: { run: { id: "r", status: "escalated", workflow: "task" } } })
+    checkControls(Runs.controls(fromStatus), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "workflow in am status")
+    var rowWins = Runs.normalizeRun({ row: { id: "r", workflow: "milestone" },
+                                      status: { run: { id: "r", status: "escalated", workflow: "task" } } })
+    checkControls(Runs.controls(rowWins), ctlPauseNotRunning, "", "", "the row's milestone workflow wins")
+  }
+
+  function test_controls_escalated_other_workflows_resumable() {
+    var noProto = Object.create(null)
+    var workflows = ["", "Task", "TASK", "tasks", "task run", "milestone", 5, {}, null, undefined, noProto]
+    for (var i = 0; i < workflows.length; i++)
+      checkControls(Runs.controls(ctlRunOf("escalated", false, true, workflows[i])), ctlPauseNotRunning, "", "",
+                    "escalated, workflow " + i)
+    checkControls(Runs.controls(ctlRun("escalated", false, true)), ctlPauseNotRunning, "", "",
+                  "escalated, workflow missing")
+  }
+
+  function test_controls_task_run_other_states() {
+    checkControls(Runs.controls(ctlRunOf("started", false, true, "task")), ctlPauseNotRunning, "", "", "dead task run")
+    checkControls(Runs.controls(ctlRunOf("started", null, true, "task")), ctlPauseNotRunning, "", "",
+                  "dead task run, no lease")
+    checkControls(Runs.controls(ctlRunOf("stopped", false, true, "task")), ctlPauseNotRunning, "", "", "parked task run")
+    checkControls(Runs.controls(ctlRunOf("started", true, true, "task")), "", ctlResumeRunning, "", "running task run")
+    var spellings = cancelSpellings()
+    for (var i = 0; i < spellings.length; i++)
+      checkControls(Runs.controls(ctlRunOf(spellings[i], false, true, "task")),
+                    ctlFinished, ctlResumeCancelled, ctlCancelCancelled, spellings[i] + " task run")
+    checkControls(Runs.controls(ctlRunOf("done", false, true, "task")), ctlFinished, ctlFinished, ctlFinished,
+                  "done task run")
+    checkControls(Runs.controls(ctlRunOf("weird", true, true, "task")), ctlUnknown, ctlUnknown, ctlUnknown,
+                  "unknown task run")
+  }
+
+  function test_controls_escalated_card_run_fresh() {
+    var run = ctlRunOf("escalated", false, true, "task")
+    var a = Runs.controls(run)
+    var b = Runs.controls(run)
+    verify(a !== b, "a fresh result per call")
+    verify(a.pause !== b.pause && a.resume !== b.resume && a.cancel !== b.cancel, "fresh actions per call")
+    verify(a.pause !== a.resume && a.resume !== a.cancel && a.pause !== a.cancel, "no action shared within a result")
+    a.resume.enabled = true
+    a.resume.reason = ""
+    delete a.pause
+    checkControls(b, ctlPauseNotRunning, ctlResumeEscalatedCard, "", "the second result after mutating the first")
+    checkControls(Runs.controls(run), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "a third call")
+  }
+
   // [type, sentence] for every am control error controlError knows.
   function controlErrorTable() {
     return [
       ["UnknownRunError", "The run no longer exists"],
       ["NotRunningError", "The run is not running"],
-      ["DeadRunError", "The run's process has died; resume it instead"],
+      ["DeadRunError", "The run's process has died, so nobody can act on this request. Resume picks the run up."],
       ["NotAcceptingError", ctlIntegrate],
-      ["RunIsLiveError", "The run is still live; only a dead run can be resumed"],
-      ["NotResumableError", "The run cannot be resumed"],
+      ["RunIsLiveError", "Another am process is still driving this run. Wait for it to stop, or pause it; resume only takes over a run whose process died."],
+      ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
+      ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
       ["ClaimedError", "Another run has already claimed this work"],
       ["LockTimeoutError", "am is busy; try again in a moment"]
     ]
@@ -2565,7 +3004,7 @@ TestCase {
 
   function test_control_error_table() {
     var table = controlErrorTable()
-    compare(table.length, 8)
+    compare(table.length, 9)
     for (var i = 0; i < table.length; i++)
       compare(Runs.controlError({ ok: false, error: { type: table[i][0], message: "am said so" } }), table[i][1],
               table[i][0])
@@ -2583,7 +3022,8 @@ TestCase {
             "Another run has already claimed this work", "type is trimmed")
     compare(Runs.controlError({ type: "\tLockTimeoutError\n" }), "am is busy; try again in a moment", "trimmed, bare")
     compare(Runs.controlError({ ok: false, error: { type: "DeadRunError", message: "pid 42 is gone" } }),
-            "The run's process has died; resume it instead", "the message is not shown for a known type")
+            "The run's process has died, so nobody can act on this request. Resume picks the run up.",
+            "the message is not shown for a known type")
     compare(Runs.controlError({ ok: false, error: { type: "claimederror", message: "m" } }), "claimederror: m",
             "case-sensitive")
     compare(Runs.controlError({ type: "CLAIMEDERROR" }), "CLAIMEDERROR", "case-sensitive, bare")
@@ -2618,6 +3058,109 @@ TestCase {
     compare(Runs.controlError({ ok: false, error: { type: noProto, message: "m" } }), "m",
             "a prototype-less type object reads as no type")
     compare(Runs.controlError({ type: noProto }), "unknown error", "a prototype-less type object alone")
+  }
+
+  function test_control_sentences_are_ascii() {
+    var texts = [Runs.controls(ctlRunOf("escalated", false, true, "task")).resume.reason]
+    var table = controlErrorTable()
+    for (var i = 0; i < table.length; i++)
+      texts.push(Runs.controlError({ ok: false, error: { type: table[i][0], message: "m" } }))
+    for (var j = 0; j < texts.length; j++) {
+      for (var k = 0; k < texts[j].length; k++)
+        verify(texts[j].charCodeAt(k) < 128, "plain ASCII: text " + j + " at " + k)
+    }
+  }
+
+  // offersRelaunch(error) is exactly the boolean `want`, never another falsy or truthy value.
+  function checkRelaunch(error, want, label) {
+    var got = Runs.offersRelaunch(error)
+    compare(typeof got, "boolean", label + " is a boolean")
+    compare(got, want, label)
+  }
+
+  function test_offers_relaunch_table() {
+    var table = controlErrorTable()
+    var offered = 0
+    for (var i = 0; i < table.length; i++) {
+      var type = table[i][0]
+      var want = type === "NotResumableError" || type === "CheckpointMismatchError"
+      if (want) offered++
+      checkRelaunch({ ok: false, error: { type: type, message: "m" } }, want, "envelope " + type)
+      checkRelaunch({ type: type }, want, "bare " + type)
+      checkRelaunch({ type: type, message: "m" }, want, "bare with message " + type)
+    }
+    compare(offered, 2, "two types offer relaunch")
+  }
+
+  function test_offers_relaunch_reading() {
+    checkRelaunch({ ok: false, error: { type: "  NotResumableError\n", message: "m" } }, true, "trimmed envelope")
+    checkRelaunch({ type: "  NotResumableError\n" }, true, "trimmed bare")
+    checkRelaunch({ type: " CheckpointMismatchError " }, true, "trimmed bare checkpoint")
+    checkRelaunch({ ok: false, error: { type: "notresumableerror", message: "m" } }, false, "case-sensitive envelope")
+    checkRelaunch({ type: "CHECKPOINTMISMATCHERROR" }, false, "case-sensitive bare")
+    var bare = Object.create(null)
+    bare.type = "CheckpointMismatchError"
+    checkRelaunch(bare, true, "prototype-less bare error")
+    checkRelaunch({ ok: false, type: "NotResumableError", error: { type: "Foo" } }, false,
+                  "the envelope's error wins over a stray outer type")
+    checkRelaunch({ ok: false, type: "Foo", error: { type: "NotResumableError" } }, true,
+                  "the envelope's error is read")
+    checkRelaunch({ ok: true, error: { type: "NotResumableError" } }, false, "ok:true")
+    checkRelaunch({ ok: false, error: "NotResumableError" }, false, "a string error reads the outer object")
+  }
+
+  function test_offers_relaunch_unknown_and_garbage() {
+    checkRelaunch({ ok: false, error: { type: "Foo", message: "bar" } }, false, "unknown type")
+    checkRelaunch({ ok: false, error: { type: "", message: "bar" } }, false, "empty type")
+    checkRelaunch({ type: "" }, false, "empty bare type")
+    var protoNames = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]
+    for (var k = 0; k < protoNames.length; k++) {
+      checkRelaunch({ ok: false, error: { type: protoNames[k], message: "m" } }, false, "envelope " + protoNames[k])
+      checkRelaunch({ type: protoNames[k] }, false, "bare " + protoNames[k])
+    }
+    var noProto = Object.create(null)
+    checkRelaunch({ ok: false, error: { type: noProto, message: "m" } }, false, "prototype-less type object, envelope")
+    checkRelaunch({ type: noProto }, false, "prototype-less type object, bare")
+    var arrayError = []
+    arrayError.type = "NotResumableError"
+    var garbage = [undefined, null, "NotResumableError", 5, true, [], {}, { ok: false }, { ok: true },
+                   Object.create(null), arrayError]
+    for (var i = 0; i < garbage.length; i++)
+      checkRelaunch(garbage[i], false, "garbage " + i)
+  }
+
+  function test_offers_relaunch_parsed_json() {
+    // synthetic: am's reply text as RunStore parses it
+    checkRelaunch(JSON.parse('{"ok": false, "error": {"type": "NotResumableError", "message": "run r1 is cancelled"}}'),
+                  true, "parsed NotResumableError")
+    checkRelaunch(JSON.parse('{"ok": false, "error": {"type": "CheckpointMismatchError", "message": "m"}}'),
+                  true, "parsed CheckpointMismatchError")
+    checkRelaunch(JSON.parse('{"ok": false, "error": {"type": "RunIsLiveError", "message": "run r1 is live"}}'),
+                  false, "parsed RunIsLiveError")
+    checkRelaunch(JSON.parse('{"__proto__": {"type": "NotResumableError"}}'), false,
+                  "an own __proto__ key is not read as the prototype")
+    checkRelaunch(JSON.parse('{"ok": false, "error": {"__proto__": {"type": "NotResumableError"}}}'), false,
+                  "an own __proto__ key inside the envelope")
+  }
+
+  function test_offers_relaunch_agrees_with_control_error() {
+    var relaunchSentences = [controlErrorTable()[5][1], controlErrorTable()[6][1]]
+    var noProto = Object.create(null)
+    noProto.type = "NotResumableError"
+    var inputs = [undefined, null, "x", 5, [], {}, { ok: true }, { ok: false }, noProto,
+                  { type: "Foo" }, { ok: false, error: "CheckpointMismatchError" },
+                  { ok: false, type: "NotResumableError", error: { type: "Foo" } },
+                  { ok: false, type: "Foo", error: { type: "CheckpointMismatchError" } }]
+    var table = controlErrorTable()
+    for (var i = 0; i < table.length; i++) {
+      inputs.push({ ok: false, error: { type: table[i][0], message: "m" } })
+      inputs.push({ type: " " + table[i][0] + " " })
+    }
+    for (var j = 0; j < inputs.length; j++) {
+      var sentence = Runs.controlError(inputs[j])
+      var isRelaunchSentence = sentence === relaunchSentences[0] || sentence === relaunchSentences[1]
+      compare(Runs.offersRelaunch(inputs[j]), isRelaunchSentence, "input " + j + ": " + sentence)
+    }
   }
 
   // ---- S2 1.2: run alerts ------------------------------------------------------------------
@@ -2856,6 +3399,160 @@ TestCase {
     compare(JSON.stringify(next), nextJson, "nextRuns unchanged")
     compare(prev.length, 2, "prevRuns length")
     compare(next.length, 3, "nextRuns length")
+  }
+
+  // ---- 1.1 (alerts while closed): alert notification --------------------------------------
+
+  // The reason status-escalated.json escalated with (its failed review phase's detail).
+  function anFixtureReason() {
+    return "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-10e26d57"
+  }
+
+  function checkNotification(n, title, body, label) {
+    compare(Object.keys(n).sort().join(","), "body,title", label + ": keys")
+    compare(n.title, title, label + ": title")
+    compare(n.body, body, label + ": body")
+  }
+
+  function test_alertNotification_escalated_fixture() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var n = Runs.alertNotification(run, "escalated", "omarchy-project-manager", run.id)
+    checkNotification(n, "‼ milestone …55237c2c escalated · omarchy-project-manager",
+                      anFixtureReason(), "fixture")
+    compare(n.body, Runs.escalationReason(run), "body is the run's escalation reason")
+  }
+
+  function test_alertNotification_dead() {
+    var run = mkRun("20261008T000000Z-deadbeef", "started", false)
+    var n = Runs.alertNotification(run, "dead", "alpha", run.id)
+    checkNotification(n, "✖ milestone …m1 died · alpha", "process died", "dead")
+
+    // exact code points: glyph + space, then space, U+00B7, space before the project
+    var t = n.title
+    compare(t.charCodeAt(0), 0x2716, "heavy multiplication x")
+    compare(t.charCodeAt(1), 0x20, "space after the glyph")
+    compare(t.charCodeAt(t.length - 8), 0x20, "space before the dot")
+    compare(t.charCodeAt(t.length - 7), 0xB7, "middle dot")
+    compare(t.charCodeAt(t.length - 6), 0x20, "space after the dot")
+    var e = Runs.alertNotification(run, "escalated", "alpha", run.id).title
+    compare(e.charCodeAt(0), 0x203C, "double exclamation mark")
+    compare(e.charCodeAt(1), 0x20, "space after the escalated glyph")
+
+    // runId is not compared with run.id: a usable run titles from itself
+    checkNotification(Runs.alertNotification(run, "dead", "alpha", "20261008T143755Z-f18d342f"),
+                      "✖ milestone …m1 died · alpha", "process died", "runId differs from run.id")
+  }
+
+  function test_alertNotification_title_without_milestone() {
+    var run = mkRun("20261008T000000Z-deadbeef", "escalated", null, { milestone_id: "" })
+    checkNotification(Runs.alertNotification(run, "escalated", "alpha", run.id),
+                      "‼ …deadbeef escalated · alpha", "escalated", "escalated, no milestone")
+    checkNotification(Runs.alertNotification(run, "dead", "alpha", run.id),
+                      "✖ …deadbeef died · alpha", "process died", "dead, no milestone")
+  }
+
+  function test_alertNotification_fallback_without_run() {
+    var runId = "20261008T143755Z-f18d342f"
+    var failedTree = { stories: [], subtasks: [{ card_id: "t1", phases: [{ name: "review", status: "failed", detail: "boom" }] }] }
+    var unusable = [
+      ["null", null], ["undefined", undefined], ["number", 5], ["string", "x"], ["array", []],
+      ["empty object", {}], ["empty id", { id: "" }], ["numeric id", { id: 7 }],
+      ["milestone, no id", { milestone_id: "m9" }],
+      ["normalised garbage", Runs.normalizeRun(undefined)],
+      ["empty id with a failed phase", { id: "", milestone_id: "m9", tree: failedTree }]
+    ]
+    for (var i = 0; i < unusable.length; i++) {
+      var label = unusable[i][0]
+      checkNotification(Runs.alertNotification(unusable[i][1], "escalated", "alpha", runId),
+                        "‼ …f18d342f escalated · alpha", "escalated", label + ", escalated")
+      checkNotification(Runs.alertNotification(unusable[i][1], "dead", "alpha", runId),
+                        "✖ …f18d342f died · alpha", "process died", label + ", dead")
+    }
+  }
+
+  function test_alertNotification_short_runId_and_garbage_runId() {
+    checkNotification(Runs.alertNotification(null, "escalated", "alpha", "abc"),
+                      "‼ …abc escalated · alpha", "escalated", "short runId")
+    checkNotification(Runs.alertNotification(null, "dead", "alpha", "abc"),
+                      "✖ …abc died · alpha", "process died", "short runId, dead")
+    var garbage = [["null", null], ["number", 7], ["undefined", undefined]]
+    for (var i = 0; i < garbage.length; i++) {
+      checkNotification(Runs.alertNotification(null, "escalated", "alpha", garbage[i][1]),
+                        "‼ … escalated · alpha", "escalated", garbage[i][0] + " runId")
+      checkNotification(Runs.alertNotification(null, "dead", "alpha", garbage[i][1]),
+                        "✖ … died · alpha", "process died", garbage[i][0] + " runId, dead")
+    }
+  }
+
+  function test_alertNotification_empty_project() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var runId = "20261008T143755Z-f18d342f"
+    var projects = [["empty", ""], ["null", null], ["undefined", undefined], ["number", 5]]
+    for (var i = 0; i < projects.length; i++) {
+      var p = projects[i][1]
+      var label = projects[i][0] + " project"
+      checkNotification(Runs.alertNotification(run, "escalated", p, runId),
+                        "‼ milestone …55237c2c escalated", anFixtureReason(), label + ", fixture")
+      checkNotification(Runs.alertNotification(run, "dead", p, runId),
+                        "✖ milestone …55237c2c died", "process died", label + ", fixture, dead")
+      checkNotification(Runs.alertNotification(null, "escalated", p, runId),
+                        "‼ …f18d342f escalated", "escalated", label + ", no run")
+      checkNotification(Runs.alertNotification(null, "dead", p, runId),
+                        "✖ …f18d342f died", "process died", label + ", no run, dead")
+    }
+
+    // whitespace is a non-empty string: shown verbatim, not trimmed
+    checkNotification(Runs.alertNotification(null, "dead", "  ", runId),
+                      "✖ …f18d342f died ·   ", "process died", "whitespace project")
+  }
+
+  function test_alertNotification_other_state_is_escalated() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var states = [["empty", ""], ["null", null], ["running", "running"], ["DEAD", "DEAD"],
+                  ["undefined", undefined], ["number", 5]]
+    for (var i = 0; i < states.length; i++) {
+      checkNotification(Runs.alertNotification(run, states[i][1], "alpha", run.id),
+                        "‼ milestone …55237c2c escalated · alpha", Runs.escalationReason(run),
+                        states[i][0] + " state, fixture")
+      checkNotification(Runs.alertNotification(null, states[i][1], "alpha", "20261008T143755Z-f18d342f"),
+                        "‼ …f18d342f escalated · alpha", "escalated", states[i][0] + " state, no run")
+    }
+  }
+
+  function test_alertNotification_shape_and_purity() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    var before = JSON.stringify(run)
+    var a = Runs.alertNotification(run, "escalated", "alpha", run.id)
+    var b = Runs.alertNotification(run, "escalated", "alpha", run.id)
+    compare(Object.keys(a).sort().join(","), "body,title", "exactly title and body")
+    compare(typeof a.title, "string", "title is a string")
+    compare(typeof a.body, "string", "body is a string")
+    verify(a !== b, "distinct result objects")
+    a.title = "changed"
+    a.body = "changed"
+    compare(b.title, "‼ milestone …55237c2c escalated · alpha", "mutating one result leaves the other")
+    compare(Runs.alertNotification(run, "escalated", "alpha", run.id).body, anFixtureReason(),
+            "mutating a result does not change the next one")
+    compare(JSON.stringify(run), before, "run unchanged")
+
+    checkNotification(Runs.alertNotification(), "‼ … escalated", "escalated", "no arguments")
+
+    // every argument combination: two strings, never a throw
+    var bare = Object.create(null)
+    var vals = [undefined, null, 5, "x", true, [], {}, bare, { id: "" }, { id: "r", milestone_id: 3 }]
+    var states = vals.concat(["dead", "escalated"])
+    for (var i = 0; i < vals.length; i++) {
+      for (var j = 0; j < states.length; j++) {
+        for (var k = 0; k < vals.length; k++) {
+          for (var m = 0; m < vals.length; m++) {
+            var n = Runs.alertNotification(vals[i], states[j], vals[k], vals[m])
+            if (Object.keys(n).sort().join(",") !== "body,title" || typeof n.title !== "string"
+                || typeof n.body !== "string" || n.title === "" || n.body === "")
+              fail("bad result for " + [i, j, k, m].join("/") + ": " + JSON.stringify(n))
+          }
+        }
+      }
+    }
   }
 
   // ---- S2 4.1: workflow and control requests ----------------------------------------------
@@ -4756,15 +5453,15 @@ TestCase {
 
     var both = Runs.normalizeRun({ row: { story_id: "s-row", card_id: "c-row" },
                                    status: { run: { story_id: "s-st", card_id: "c-st" } } })
-    compare(both.story_id, "s-st", "the am status run wins over the row")
-    compare(both.card_id, "c-st", "the am status run wins over the row (card)")
+    compare(both.story_id, "s-row", "the row wins over the am status run")
+    compare(both.card_id, "c-row", "the row wins over the am status run (card)")
 
-    var missing = [null, 5, "", true, {}, []]
+    var missing = [null, undefined, ""]
     for (var i = 0; i < missing.length; i++) {
-      var r = Runs.normalizeRun({ row: { story_id: "s-row", card_id: "c-row" },
-                                  status: { run: { story_id: missing[i], card_id: missing[i] } } })
-      compare(r.story_id, "s-row", "status story " + JSON.stringify(missing[i]) + " counts as missing")
-      compare(r.card_id, "c-row", "status card " + JSON.stringify(missing[i]) + " counts as missing")
+      var r = Runs.normalizeRun({ row: { story_id: missing[i], card_id: missing[i] },
+                                  status: { run: { story_id: "s-st", card_id: "c-st" } } })
+      compare(r.story_id, "s-st", "row story " + JSON.stringify(missing[i]) + " counts as missing")
+      compare(r.card_id, "c-st", "row card " + JSON.stringify(missing[i]) + " counts as missing")
       var bare = Runs.normalizeRun({ row: { story_id: missing[i], card_id: missing[i] } })
       compare(bare.story_id, "", "row story " + JSON.stringify(missing[i]) + " gives empty")
       compare(bare.card_id, "", "row card " + JSON.stringify(missing[i]) + " gives empty")
@@ -5139,5 +5836,1146 @@ TestCase {
     var rootsJson = JSON.stringify(byRoot)
     Runs.titlesOfRun(a, byRoot)
     compare(JSON.stringify(byRoot), rootsJson, "titlesByRoot unchanged")
+  }
+
+  function dispatchRoots(rows) {
+    var out = []
+    for (var i = 0; i < rows.length; i++) out.push(rows[i].root)
+    return out.join(",")
+  }
+
+  function test_dispatch_projects_order() {
+    // synthetic: three registered projects, no open project, an empty probe
+    var roots = [{ root: "/p/b", name: "b" }, { root: "/p/a", name: "A" }, { root: "/p/c", name: "c" }]
+    var rows = Runs.dispatchProjects(roots, { ok: true, projects: [] }, "")
+    compare(dispatchRoots(rows), "/p/a,/p/b,/p/c", "by name, case-blind")
+    compare(rows[0].name, "A", "name as given")
+    for (var i = 0; i < rows.length; i++) {
+      compare(Object.keys(rows[i]).sort().join(","), "enabled,name,open,reason,root", "row " + i + " keys")
+      compare(rows[i].open, false, "row " + i + " not open")
+      compare(rows[i].enabled, true, "row " + i + " enabled")
+      compare(rows[i].reason, "", "row " + i + " no reason")
+    }
+    verify(rows[0] !== roots[1], "a new row object")
+    verify(rows !== roots, "a new array")
+  }
+
+  function test_dispatch_projects_open_first() {
+    // synthetic: the open project's name sorts last
+    var roots = [{ root: "/p/a", name: "alpha" }, { root: "/p/z", name: "zulu" }, { root: "/p/m", name: "mike" }]
+    var rows = Runs.dispatchProjects(roots, [], "/p/z")
+    compare(dispatchRoots(rows), "/p/z,/p/a,/p/m", "open first, then by name")
+    compare(rows[0].open, true, "the open row")
+    compare(rows[1].open, false, "alpha not open")
+    compare(rows[2].open, false, "mike not open")
+    var slashed = Runs.dispatchProjects(roots, [], "/p/z/")
+    compare(dispatchRoots(slashed), "/p/z,/p/a,/p/m", "openRoot with a trailing /")
+    compare(slashed[0].open, true, "openRoot with a trailing / is open")
+    compare(Runs.dispatchProjects(roots, [], "/p/z//")[0].open, true, "openRoot with trailing slashes")
+    var none = Runs.dispatchProjects(roots, [], "/p/q")
+    compare(dispatchRoots(none), "/p/a,/p/m,/p/z", "an unregistered openRoot")
+    for (var i = 0; i < none.length; i++) compare(none[i].open, false, "nothing open " + i)
+  }
+
+  function test_dispatch_projects_ties() {
+    // synthetic: names that differ only by case
+    var roots = [{ root: "/p/y", name: "foo" }, { root: "/p/x", name: "Foo" }, { root: "/p/a", name: "zed" }]
+    var rows = Runs.dispatchProjects(roots, [], null)
+    compare(dispatchRoots(rows), "/p/x,/p/y,/p/a", "a case-only name tie by root")
+    compare(rows[0].name, "Foo", "case kept")
+    compare(rows[1].name, "foo", "case kept")
+    // synthetic: the upper-case name on the later root
+    var flipped = Runs.dispatchProjects([{ root: "/p/y", name: "Foo" }, { root: "/p/x", name: "foo" }], [], null)
+    compare(dispatchRoots(flipped), "/p/x,/p/y", "root decides, not case or input order")
+    compare(flipped[1].name, "Foo", "case kept on the later row")
+  }
+
+  function test_dispatch_projects_unreachable() {
+    // synthetic: board-tree.py --probe output for three of four registered roots
+    var roots = [{ root: "/p/a", name: "a" }, { root: "/p/b", name: "b" }, { root: "/p/c", name: "c" },
+                 { root: "/p/d", name: "d" }]
+    var probe = { ok: true, projects: [{ root: "/p/a", ok: false, reason: "no .brd marker" },
+                                       { root: "/p/b", ok: false },
+                                       { root: "/p/c", ok: true }] }
+    var shapes = [["payload", probe], ["projects array", probe.projects]]
+    for (var s = 0; s < shapes.length; s++) {
+      var label = shapes[s][0]
+      var rows = Runs.dispatchProjects(roots, shapes[s][1], "")
+      compare(dispatchRoots(rows), "/p/a,/p/b,/p/c,/p/d", label + ": order unchanged by reachability")
+      compare(rows[0].enabled, false, label + ": no marker disabled")
+      compare(rows[0].reason, "no .brd marker", label + ": the probe's reason")
+      compare(rows[1].enabled, false, label + ": ok false disabled")
+      compare(rows[1].reason, "unreachable", label + ": no reason given")
+      compare(rows[2].enabled, true, label + ": ok true enabled")
+      compare(rows[2].reason, "", label + ": ok true no reason")
+      compare(rows[3].enabled, true, label + ": absent from the probe enabled")
+      compare(rows[3].reason, "", label + ": absent no reason")
+    }
+    var openDisabled = Runs.dispatchProjects(roots, probe, "/p/b")
+    compare(dispatchRoots(openDisabled), "/p/b,/p/a,/p/c,/p/d", "a disabled open project still first")
+    compare(openDisabled[0].open, true, "open")
+    compare(openDisabled[0].enabled, false, "and disabled")
+    compare(openDisabled[0].reason, "unreachable", "with its reason")
+    // synthetic: a probe root with a trailing /, padded, blank and numeric reasons, two entries for one root
+    var odd = [{ root: "/p/a/", ok: false, reason: "not a directory" },
+               { root: "/p/b", ok: false, reason: "  no .brd marker  " },
+               { root: "/p/c", ok: false, reason: "   " },
+               { root: "/p/d", ok: true }, { root: "/p/d", ok: false, reason: "late" },
+               { root: "/p/a", ok: true }]
+    var r = Runs.dispatchProjects(roots, odd, "")
+    compare(r[0].enabled, false, "a probe root with a trailing / matches")
+    compare(r[0].reason, "not a directory", "its reason")
+    compare(r[1].reason, "no .brd marker", "the reason trimmed")
+    compare(r[2].enabled, false, "a blank reason is still disabled")
+    compare(r[2].reason, "unreachable", "a blank reason")
+    compare(r[3].enabled, true, "the first entry for a root wins over a later ok false")
+    compare(r[3].reason, "", "the later reason is not used")
+    var numeric = Runs.dispatchProjects([{ root: "/p/a" }], [{ root: "/p/a", ok: false, reason: 5 }], "")
+    compare(numeric[0].reason, "unreachable", "a non-string reason")
+  }
+
+  function test_dispatch_projects_names() {
+    // synthetic: names that are missing, blank, padded or not a string, and roots with trailing slashes
+    var roots = [{ root: "/p/one/", name: "" }, { root: "/p/two", name: "   " }, { root: "/p/three" },
+                 { root: "/p/four", name: 4 }, { root: "/p/five", name: null }, { root: "/", name: "" },
+                 { root: "/p/six", name: "  Six  " }, { root: "/p/seven", name: "team/app" }]
+    var rows = Runs.dispatchProjects(roots, [], "")
+    var pairs = []
+    for (var i = 0; i < rows.length; i++) pairs.push(rows[i].root + "=" + rows[i].name)
+    compare(pairs.join(","),
+            "/=/,/p/five=five,/p/four=four,/p/one=one,/p/six=Six,/p/seven=team/app,/p/three=three,/p/two=two",
+            "names fall back to the root's last segment, trimmed otherwise")
+    var slashes = Runs.dispatchProjects([{ root: "//", name: "" }], [], "")
+    compare(slashes[0].root, "/", "a root of only slashes is /")
+    compare(slashes[0].name, "/", "and is named /")
+    compare(Runs.dispatchProjects([{ root: "/p/one///", name: "One" }], [], "")[0].root, "/p/one",
+            "every trailing / removed")
+  }
+
+  function test_dispatch_projects_empty() {
+    // synthetic: an empty registry with every probe shape and openRoot
+    var probes = [undefined, null, [], { ok: true, projects: [] },
+                  { ok: true, projects: [{ root: "/p/a", ok: false, reason: "no .brd marker" }] }]
+    var opens = [undefined, null, "", "/p/a"]
+    for (var p = 0; p < probes.length; p++) {
+      for (var o = 0; o < opens.length; o++) {
+        var out = Runs.dispatchProjects([], probes[p], opens[o])
+        verify(Array.isArray(out), "probe " + p + " open " + o + " is an array")
+        compare(out.length, 0, "probe " + p + " open " + o + " is empty")
+      }
+    }
+    var empty = []
+    verify(Runs.dispatchProjects(empty, [], "") !== empty, "a new array for []")
+  }
+
+  function test_dispatch_projects_garbage() {
+    // synthetic: a registry that is not an array
+    var notLists = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < notLists.length; i++) {
+      var out = Runs.dispatchProjects(notLists[i], [], "/p/a")
+      verify(Array.isArray(out), "registry " + i + " is an array")
+      compare(out.length, 0, "registry " + i + " is empty")
+    }
+    // synthetic: junk entries among good ones, and a duplicate root
+    var roots = [null, { root: "/p/b", name: "b" }, "x", [], {}, { root: 5, name: "five" },
+                 { root: "", name: "blank" }, { root: "/p/a", name: "a" }, { root: "/p/b/", name: "dup" },
+                 undefined, ["/p/c"]]
+    var rows = Runs.dispatchProjects(roots, [], "")
+    compare(dispatchRoots(rows), "/p/a,/p/b", "only valid, first-seen rows")
+    compare(rows[1].name, "b", "the first entry for a root wins")
+    // synthetic: probes that are not the helper's output, and junk probe entries
+    var probes = [undefined, null, "x", 5, {}, { projects: "x" },
+                  { ok: false, error: { type: "BrdMissing", message: "brd not found" } },
+                  [null, { root: 5, ok: false }, { root: "/p/a", ok: "no" }, "x", 5, []]]
+    for (var p = 0; p < probes.length; p++) {
+      var probed = Runs.dispatchProjects(roots, probes[p], "")
+      compare(dispatchRoots(probed), "/p/a,/p/b", "probe " + p + " rows")
+      for (var j = 0; j < probed.length; j++) {
+        compare(probed[j].enabled, true, "probe " + p + " row " + j + " enabled")
+        compare(probed[j].reason, "", "probe " + p + " row " + j + " no reason")
+      }
+    }
+    // synthetic: openRoots that are not a registered root string
+    var opens = [5, {}, null, "", undefined, ["/p/a"]]
+    for (var o = 0; o < opens.length; o++) {
+      var opened = Runs.dispatchProjects(roots, [], opens[o])
+      compare(dispatchRoots(opened), "/p/a,/p/b", "openRoot " + o + " rows")
+      for (var k = 0; k < opened.length; k++) compare(opened[k].open, false, "openRoot " + o + " row " + k)
+    }
+    // the inputs are left as they were
+    var probe = { ok: true, projects: [{ root: "/p/a/", ok: false, reason: " x " }] }
+    var beforeRoots = JSON.stringify(roots), beforeProbe = JSON.stringify(probe)
+    var result = Runs.dispatchProjects(roots, probe, "/p/b/")
+    compare(dispatchRoots(result), "/p/b,/p/a", "open first")
+    compare(result[1].reason, "x", "the reason trimmed in the row")
+    compare(JSON.stringify(roots), beforeRoots, "projectRoots unchanged")
+    compare(JSON.stringify(probe), beforeProbe, "probe unchanged")
+    compare(roots[8].root, "/p/b/", "an entry's root not trimmed in place")
+    compare(probe.projects[0].reason, " x ", "a probe reason not trimmed in place")
+  }
+
+  function test_dispatch_projects_edges() {
+    // synthetic: a padded root, roots spelled like Object.prototype keys, a non-ASCII name,
+    // a duplicate whose first entry has no name, and a prototype-less entry
+    var bare = Object.create(null)
+    bare.root = "/p/bare"
+    bare.name = "bare"
+    var roots = [{ root: " /p/pad", name: "pad" }, { root: "__proto__", name: "proto" },
+                 { root: "constructor", name: "ctor" }, { root: "/p/e", name: "éclair" },
+                 { root: "/p/z", name: "zed" }, { root: "/p/dup" }, { root: "/p/dup", name: "Named" }, bare]
+    var probe = [{ root: " /p/pad", ok: false, reason: "not a directory" }, { root: "/p/pad", ok: true },
+                 { root: "__proto__", ok: false, reason: "no .brd marker" }]
+    var rows = Runs.dispatchProjects(roots, probe, " /p/pad")
+    compare(dispatchRoots(rows), " /p/pad,/p/bare,constructor,/p/dup,__proto__,/p/z,/p/e",
+            "padded open root first, then plain comparison of lower-cased names")
+    compare(rows[0].open, true, "a padded openRoot matches the padded root exactly")
+    compare(rows[0].enabled, false, "the padded root's own probe entry")
+    compare(rows[0].reason, "not a directory", "not the unpadded entry")
+    var unpadded = Runs.dispatchProjects(roots, probe, "/p/pad")
+    compare(dispatchRoots(unpadded), "/p/bare,constructor,/p/dup, /p/pad,__proto__,/p/z,/p/e",
+            "an unpadded openRoot puts nothing first")
+    for (var i = 0; i < unpadded.length; i++) compare(unpadded[i].open, false, "nothing open " + i)
+    compare(rows[1].name, "bare", "a prototype-less entry gives a row")
+    compare(rows[2].name, "ctor", "a constructor root keeps its row")
+    compare(rows[2].enabled, true, "and is enabled")
+    compare(rows[3].name, "dup", "the first duplicate wins, its name from the root")
+    compare(rows[4].name, "proto", "a __proto__ root keeps its row")
+    compare(rows[4].enabled, false, "and its probe entry")
+    compare(rows[4].reason, "no .brd marker", "with its reason")
+    compare(rows[6].name, "éclair", "a non-ASCII name sorts after z")
+  }
+
+  // ---- dfr 1.3: dispatch targets ----------------------------------------------------------
+
+  // A card as brd tree returns it, before Board.indexTree.
+  function tnode(id, status, children) {
+    return { id: id, title: "T " + id, status: status, children: children }
+  }
+
+  function targetKeys(rows) {
+    var out = []
+    for (var i = 0; i < rows.length; i++) out.push(rows[i].key)
+    return out.join(",")
+  }
+
+  function checkWholeBoard(row, label) {
+    compare(Object.keys(row).sort().join(","), "card,depth,key,label,level", label + " keys")
+    compare(row.key, "board", label + " key")
+    compare(row.level, "board", label + " level")
+    compare(row.card, "board", label + " card")
+    compare(row.label, "Whole board", label + " label")
+    compare(row.depth, 0, label + " depth")
+  }
+
+  function test_dispatch_targets_board_first() {
+    // synthetic: one milestone with one story holding one todo subtask
+    var roots = [tnode("m1", "todo", [tnode("s1", "todo", [tnode("t1", "todo")])])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    compare(rows.length, 4, "the Whole board and three cards")
+    checkWholeBoard(rows[0], "row 0")
+    for (var i = 1; i < rows.length; i++)
+      compare(Object.keys(rows[i]).sort().join(","), "card,depth,key,label,level", "row " + i + " keys")
+  }
+
+  function test_dispatch_targets_tree_order_and_depth() {
+    // synthetic: two milestones, each with two stories, each story with two todo subtasks;
+    // t1 holds one todo card at depth 3
+    var roots = [tnode("m1", "todo", [tnode("s1", "todo", [tnode("t1", "todo", [tnode("u1", "todo")]), tnode("t2", "todo")]),
+                                      tnode("s2", "todo", [tnode("t3", "todo"), tnode("t4", "todo")])]),
+                 tnode("m2", "todo", [tnode("s3", "todo", [tnode("t5", "todo"), tnode("t6", "todo")]),
+                                      tnode("s4", "todo", [tnode("t7", "todo"), tnode("t8", "todo")])])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    compare(targetKeys(rows), "board,card:m1,card:s1,card:t1,card:u1,card:t2,card:s2,card:t3,card:t4,"
+            + "card:m2,card:s3,card:t5,card:t6,card:s4,card:t7,card:t8", "pre-order")
+    var levels = ["milestone", "story", "subtask", "subtask"]
+    for (var i = 1; i < rows.length; i++) {
+      var card = cardMap[rows[i].key.substring("card:".length)]
+      verify(rows[i].card === card, rows[i].key + " carries the node itself")
+      compare(rows[i].depth, card.depth, rows[i].key + " depth")
+      compare(rows[i].level, levels[card.depth], rows[i].key + " level")
+    }
+    compare(rows[4].level, "subtask", "a depth-3 card is a subtask")
+    compare(rows[4].depth, 3, "at depth 3")
+  }
+
+  function test_dispatch_targets_finished_omitted() {
+    var finished = ["done", "merged", "canceled", "archived"]
+    for (var f = 0; f < finished.length; f++) {
+      var st = finished[f]
+      // synthetic: a finished milestone over a todo story and subtask; a todo milestone over a
+      // finished story with a todo subtask, and over a todo story whose only subtask is finished
+      var roots = [tnode("m1", st, [tnode("s1", "todo", [tnode("t1", "todo")])]),
+                   tnode("m2", "todo", [tnode("s2", st, [tnode("t2", "todo")]),
+                                        tnode("s3", "todo", [tnode("t3", st)])])]
+      var cardMap = Board.indexTree(roots).cardMap
+      compare(targetKeys(Runs.dispatchTargets(roots, cardMap)), "board,card:s1,card:t1,card:m2,card:t2,card:s3", st)
+    }
+  }
+
+  function test_dispatch_targets_only_todo_subtasks() {
+    // synthetic: an in_progress milestone over a blocked story holding one subtask per status,
+    // and an in_progress story; a blocked milestone
+    var subtasks = [tnode("a", "in_progress"), tnode("b", "review"), tnode("c", "blocked"), tnode("d", ""),
+                    { id: "e", title: "T e" }, tnode("f", "TODO"), tnode("g", "todo")]
+    var roots = [tnode("m1", "in_progress", [tnode("s1", "blocked", subtasks), tnode("s2", "in_progress")]),
+                 tnode("m2", "blocked")]
+    var cardMap = Board.indexTree(roots).cardMap
+    compare(targetKeys(Runs.dispatchTargets(roots, cardMap)), "board,card:m1,card:s1,card:g,card:s2,card:m2",
+            "only the todo subtask; milestones and stories of any unfinished status")
+  }
+
+  function test_dispatch_targets_stories_included() {
+    // synthetic: one milestone with one in_progress story
+    var roots = [tnode("m1", "todo", [tnode("s1", "in_progress")])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    compare(targetKeys(rows), "board,card:m1,card:s1", "the story is listed")
+    compare(rows[2].level, "story", "level")
+    compare(rows[2].depth, 1, "depth")
+    compare(rows[2].label, "Story \"T s1\" (milestone \"T m1\")", "label names its milestone")
+    var bare = Runs.dispatchTargets(roots, undefined)
+    compare(targetKeys(bare), "board,card:m1,card:s1", "still listed without a cardMap")
+    compare(bare[2].label, "Story \"T s1\"", "label without its milestone")
+  }
+
+  function test_dispatch_targets_agree_with_dispatchPlan() {
+    // synthetic: a milestone per status, a story per status under each, a subtask per status
+    // under each story; under m0s0, cards with ids "-x", "" and 5, then one appended after
+    // indexing, so it has no depth
+    var statuses = ["todo", "in_progress", "review", "blocked", "", "TODO", undefined,
+                    "done", "merged", "canceled", "archived"]
+    var roots = []
+    for (var i = 0; i < statuses.length; i++) {
+      var stories = []
+      for (var j = 0; j < statuses.length; j++) {
+        var subtasks = []
+        for (var k = 0; k < statuses.length; k++) subtasks.push(tnode("m" + i + "s" + j + "t" + k, statuses[k]))
+        stories.push(tnode("m" + i + "s" + j, statuses[j], subtasks))
+      }
+      roots.push(tnode("m" + i, statuses[i], stories))
+    }
+    var odd = roots[0].children[0].children
+    odd.push(tnode("-x", "todo"), tnode("", "todo"), tnode(5, "todo"))
+    var cardMap = Board.indexTree(roots).cardMap
+    odd.push(tnode("nodepth", "todo"))
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    // 7 unfinished milestones, 11 * 7 unfinished stories, 121 todo subtasks
+    compare(rows.length, 1 + 7 + 77 + 121, "row count")
+    var rowed = {}
+    for (var r = 1; r < rows.length; r++) {
+      var plan = Runs.dispatchPlan(rows[r].card, cardMap)
+      compare(plan.offered, true, rows[r].key + " offered")
+      compare(plan.level, rows[r].level, rows[r].key + " level")
+      compare(rows[r].label, Runs.dispatchLabel(rows[r].card, cardMap), rows[r].key + " label")
+      rowed[rows[r].key] = true
+    }
+    var ids = Object.keys(cardMap)
+    for (var c = 0; c < ids.length; c++) {
+      var card = cardMap[ids[c]]
+      if (rowed["card:" + card.id] === true) continue
+      var p = Runs.dispatchPlan(card, cardMap)
+      verify(!p.offered || (p.level === "subtask" && card.status !== "todo"),
+             ids[c] + " has no row only when refused or a subtask that is not todo")
+    }
+    compare(rowed["card:-x"], undefined, "a flag-like id gives no row")
+    compare(rowed["card:"], undefined, "an empty id gives no row")
+    compare(rowed["card:5"], undefined, "a number id gives no row")
+    compare(rowed["card:nodepth"], undefined, "a card without depth gives no row")
+  }
+
+  function test_dispatch_targets_empty_tree() {
+    // synthetic: roots that hold no tree
+    var empties = [[], undefined, null, "x", 5, {}]
+    for (var e = 0; e < empties.length; e++) {
+      var rows = Runs.dispatchTargets(empties[e], {})
+      compare(rows.length, 1, "roots " + e + " gives one row")
+      checkWholeBoard(rows[0], "roots " + e)
+    }
+    // synthetic: every card finished or a subtask that is not todo
+    var roots = [tnode("m1", "done", [tnode("s1", "merged", [tnode("t1", "in_progress"), tnode("t2", "review")])]),
+                 tnode("m2", "archived", [tnode("s2", "canceled")])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var only = Runs.dispatchTargets(roots, cardMap)
+    compare(only.length, 1, "no offered target gives one row")
+    checkWholeBoard(only[0], "no offered target")
+  }
+
+  function test_dispatch_targets_garbage() {
+    // synthetic: non-object roots around one milestone, depth set by hand
+    var m = tnode("m1", "todo")
+    m.depth = 0
+    m.parentId = null
+    var mixed = [null, "x", [], 5, m]
+    var mixedBefore = JSON.stringify(mixed)
+    compare(targetKeys(Runs.dispatchTargets(mixed, {})), "board,card:m1", "only the milestone")
+    compare(JSON.stringify(mixed), mixedBefore, "mixed roots unchanged")
+
+    // synthetic: children that are not an array
+    var odd = [tnode("a", "todo", "x"), tnode("b", "todo", {}), tnode("c", "todo", null)]
+    for (var o = 0; o < odd.length; o++) {
+      odd[o].depth = 0
+      odd[o].parentId = null
+    }
+    var oddBefore = JSON.stringify(odd)
+    compare(targetKeys(Runs.dispatchTargets(odd, {})), "board,card:a,card:b,card:c", "each node listed, no children")
+    compare(JSON.stringify(odd), oddBefore, "odd children unchanged")
+
+    // synthetic: a story whose children hold its own milestone
+    var cm = tnode("m1", "todo", [])
+    var cs = tnode("s1", "todo", [cm])
+    cm.depth = 0
+    cm.parentId = null
+    cs.depth = 1
+    cs.parentId = "m1"
+    cm.children.push(cs)
+    compare(targetKeys(Runs.dispatchTargets([cm], { m1: cm, s1: cs })), "board,card:m1,card:s1", "a cycle lists each node once")
+
+    // synthetic: one subtask object in two stories' children
+    var shared = tnode("t1", "todo")
+    var sharedRoots = [tnode("m1", "todo", [tnode("s1", "todo", [shared]), tnode("s2", "todo", [shared])])]
+    var sharedMap = Board.indexTree(sharedRoots).cardMap
+    var sharedBefore = JSON.stringify(sharedRoots)
+    compare(targetKeys(Runs.dispatchTargets(sharedRoots, sharedMap)), "board,card:m1,card:s1,card:t1,card:s2",
+            "a shared child is listed once, under its first parent")
+    compare(JSON.stringify(sharedRoots), sharedBefore, "shared tree unchanged")
+
+    // synthetic: two distinct stories with the same id
+    var first = tnode("s1", "todo", [tnode("t1", "todo")])
+    var twin = tnode("s1", "todo", [tnode("t2", "todo")])
+    var twinRoots = [tnode("m1", "todo", [first, twin])]
+    var twinMap = Board.indexTree(twinRoots).cardMap
+    var twinRows = Runs.dispatchTargets(twinRoots, twinMap)
+    compare(targetKeys(twinRows), "board,card:m1,card:s1,card:t1,card:t2", "the first twin only, the later twin's children walked")
+    verify(twinRows[2].card === first, "the first twin's node")
+
+    // synthetic: a milestone whose id is "board"
+    var boardRoots = [tnode("board", "todo")]
+    var boardRows = Runs.dispatchTargets(boardRoots, Board.indexTree(boardRoots).cardMap)
+    compare(targetKeys(boardRows), "board,card:board", "a card id board is not the Whole board")
+    compare(boardRows[1].level, "milestone", "it is a milestone")
+    compare(boardRows[1].label, "Milestone \"T board\"", "with its own label")
+
+    // synthetic: cardMaps that are not a plain map, and one owning a __proto__ entry
+    var tree = [tnode("m1", "todo", [tnode("s1", "todo", [tnode("t1", "todo")])])]
+    Board.indexTree(tree)
+    var protoMap = {}
+    Object.defineProperty(protoMap, "__proto__", { value: tnode("__proto__", "todo"), enumerable: true })
+    var maps = [null, "x", [], protoMap]
+    for (var p = 0; p < maps.length; p++)
+      compare(targetKeys(Runs.dispatchTargets(tree, maps[p])), "board,card:m1,card:s1,card:t1", "cardMap " + p)
+  }
+
+  function test_dispatch_targets_deep_chain() {
+    // synthetic: a chain of 5000 todo cards, each the only child of the previous; depth and
+    // parentId set by hand, as Board.indexTree recurses past the call stack at this depth
+    var chain = []
+    var cardMap = {}
+    for (var i = 0; i < 5000; i++) {
+      var c = tnode("c" + i, "todo", [])
+      c.depth = i
+      c.parentId = i === 0 ? null : "c" + (i - 1)
+      if (i > 0) chain[i - 1].children.push(c)
+      chain.push(c)
+      cardMap[c.id] = c
+    }
+    var roots = [chain[0]]
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    compare(rows.length, 5001, "the Whole board and every card")
+    checkWholeBoard(rows[0], "row 0")
+    compare(rows[1].level, "milestone", "c0")
+    compare(rows[2].level, "story", "c1")
+    for (var r = 1; r < rows.length; r++) {
+      compare(rows[r].key, "card:c" + (r - 1), "row " + r + " key")
+      if (r >= 3) compare(rows[r].level, "subtask", "row " + r + " level")
+    }
+  }
+
+  function test_dispatch_targets_fresh() {
+    // synthetic: one milestone with one story
+    var roots = [tnode("m1", "todo", [tnode("s1", "todo")])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var a = Runs.dispatchTargets(roots, cardMap)
+    var b = Runs.dispatchTargets(roots, cardMap)
+    verify(a !== b, "a new array each call")
+    compare(a.length, b.length, "same rows")
+    for (var i = 0; i < a.length; i++) verify(a[i] !== b[i], "row " + i + " is a new object")
+    verify(a[1].card === roots[0], "row 1 carries the milestone node")
+    verify(b[2].card === roots[0].children[0], "row 2 carries the story node")
+    a[0].label = "changed"
+    checkWholeBoard(Runs.dispatchTargets(roots, cardMap)[0], "after a caller edits a row")
+  }
+
+  // ---- RR 1.2: why it stopped -------------------------------------------------------------
+
+  readonly property string stopEscCard: "10e26d57-374c-48d3-bc45-09389b42cfac"
+  readonly property string stopEscStory: "bf8154fc-e65c-46f5-b6e8-92b616a6e62b"
+  readonly property string stopEscStoryTitle: "Story B: blocked by story A"
+  readonly property string stopEscMilestone: "f18d342f-4887-4cd8-a86e-dd2755237c2c"
+  readonly property string stopEscPending: "460aaaa9-0520-40f7-aaa5-f162afab8bc0"
+  readonly property string stopReviewDetail: "phase 'review' gate 'review_blockers_gate' failed: blocked=review, detail=review left 1 unresolved blocker(s): the review-fail marker names m3/task-b1-only-subtask-of-10e26d57"
+  readonly property string stopStartedCard: "2280a6ab-9c40-434b-9729-63fd1f373754"
+  readonly property string stopStartedStory: "7a7effb4-6ec5-4596-bcf1-be24546d4ac1"
+  readonly property string stopStartedMilestone: "e795ad19-c81f-43ec-bdda-ef61ab5f860b"
+  readonly property string stopHeartbeat: "2026-10-08T14:38:28.740774+00:00"
+  readonly property string stopHeadlineDead: "The run's process died"
+  readonly property string stopHeadlineParked: "Paused at a phase boundary"
+  readonly property string stopHeadlineCancelled: "Cancelled. A cancelled run cannot be resumed, only relaunched; cards keep their status"
+
+  // The report stopReport gives when nothing is named, with `over`'s keys replacing the defaults.
+  function stopWant(over) {
+    var want = { state: "", headline: "", cardId: "", storyId: "", storyTitle: "", phase: "", detail: "",
+                 heartbeatAt: "", attempt: null, parked: [], relaunch: null }
+    var keys = Object.keys(over)
+    for (var i = 0; i < keys.length; i++) want[keys[i]] = over[keys[i]]
+    return want
+  }
+
+  // a and b, null or flat objects, have the same keys and the same values.
+  function compareFlat(a, b, label) {
+    if (b === null) { compare(a, null, label); return }
+    verify(a !== null && typeof a === "object", label + ": an object")
+    compare(Object.keys(a).sort().join(","), Object.keys(b).sort().join(","), label + ": keys")
+    var keys = Object.keys(b)
+    for (var i = 0; i < keys.length; i++) compare(a[keys[i]], b[keys[i]], label + ": " + keys[i])
+  }
+
+  // A stopReport result equals `want` (a stopWant): exactly the eleven keys, every value.
+  function checkReport(rep, want, label) {
+    verify(rep !== null && typeof rep === "object", label + ": a report")
+    compare(Object.keys(rep).sort().join(","),
+            "attempt,cardId,detail,headline,heartbeatAt,parked,phase,relaunch,state,storyId,storyTitle", label + ": keys")
+    var keys = ["state", "headline", "cardId", "storyId", "storyTitle", "phase", "detail", "heartbeatAt"]
+    for (var i = 0; i < keys.length; i++) compare(rep[keys[i]], want[keys[i]], label + ": " + keys[i])
+    compareFlat(rep.attempt, want.attempt, label + ": attempt")
+    compare(Array.isArray(rep.parked), true, label + ": parked is an array")
+    compare(JSON.stringify(rep.parked), JSON.stringify(want.parked), label + ": parked")
+    compareFlat(rep.relaunch, want.relaunch, label + ": relaunch")
+  }
+
+  // The recorded escalated run's relaunch target.
+  function stopEscRelaunch() { return { level: "milestone", cardId: stopEscMilestone, prefix: "m3", base: "main" } }
+
+  // The recorded started run's relaunch target.
+  function stopStartedRelaunch() { return { level: "milestone", cardId: stopStartedMilestone, prefix: "dsp", base: "main" } }
+
+  // The report on the recorded escalated run, with `over`'s keys replacing it.
+  function stopEscWant(over) {
+    var want = stopWant({ state: "escalated", headline: "Escalated at review", cardId: stopEscCard, storyId: stopEscStory,
+                          storyTitle: stopEscStoryTitle, phase: "review", detail: stopReviewDetail,
+                          attempt: { card_id: stopEscCard, phase: "review", attempt: 1 }, relaunch: stopEscRelaunch() })
+    var keys = Object.keys(over)
+    for (var i = 0; i < keys.length; i++) want[keys[i]] = over[keys[i]]
+    return want
+  }
+
+  // amRun("status-started.json") with its lease no longer live: a dead run.
+  function deadStartedRaw() {
+    var raw = amRun("status-started.json")
+    raw.status.control.lease.live = false
+    return raw
+  }
+
+  // The report on deadStartedRaw(), with `over`'s keys replacing it.
+  function stopDeadWant(over) {
+    var want = stopWant({ state: "dead", headline: stopHeadlineDead, cardId: stopStartedCard, storyId: stopStartedStory,
+                          storyTitle: "Dispatch backend", phase: "explore", heartbeatAt: stopHeartbeat,
+                          attempt: { card_id: stopStartedCard, phase: "explore", attempt: 1 }, relaunch: stopStartedRelaunch() })
+    var keys = Object.keys(over)
+    for (var i = 0; i < keys.length; i++) want[keys[i]] = over[keys[i]]
+    return want
+  }
+
+  function test_normalize_card_and_story_ids() {
+    var recorded = Runs.normalizeRun(amRun("status-escalated.json"))
+    compare(recorded.card_id, "", "recorded escalated: card_id null")
+    compare(recorded.story_id, "", "recorded escalated: story_id null")
+
+    // synthetic: the row names a card and a story
+    var fromRow = amRun("status-started.json")
+    fromRow.row.card_id = "c-1"
+    fromRow.row.story_id = "s-1"
+    var r = Runs.normalizeRun(fromRow)
+    compare(r.card_id, "c-1", "row card_id")
+    compare(r.story_id, "s-1", "row story_id")
+
+    // synthetic: only am status's run names them
+    var fromStatus = amRun("status-started.json")
+    fromStatus.status.run.card_id = "c-2"
+    fromStatus.status.run.story_id = "s-2"
+    r = Runs.normalizeRun(fromStatus)
+    compare(r.card_id, "c-2", "status run card_id")
+    compare(r.story_id, "s-2", "status run story_id")
+
+    // synthetic: both name them; the row wins
+    var both = amRun("status-started.json")
+    both.row.card_id = "c-1"
+    both.row.story_id = "s-1"
+    both.status.run.card_id = "c-2"
+    both.status.run.story_id = "s-2"
+    r = Runs.normalizeRun(both)
+    compare(r.card_id, "c-1", "row wins card_id")
+    compare(r.story_id, "s-1", "row wins story_id")
+
+    // synthetic: null on both sides, and numbers
+    r = Runs.normalizeRun({ row: { card_id: null, story_id: null }, status: { run: { card_id: null, story_id: null } } })
+    compare(r.card_id, "", "null card_id")
+    compare(r.story_id, "", "null story_id")
+    r = Runs.normalizeRun({ row: { card_id: 7 }, status: { run: { story_id: 8 } } })
+    compare(r.card_id, "7", "number card_id is text")
+    compare(r.story_id, "8", "number story_id is text")
+  }
+
+  function test_stopReport_escalated_recorded() {
+    checkReport(Runs.stopReport(Runs.normalizeRun(amRun("status-escalated.json"))), stopEscWant({}), "recorded escalated")
+  }
+
+  function test_stopReport_escalated_detail_from_attempt() {
+    // synthetic: the review phase's detail removed, its attempt given one
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].detail = null
+    raw.status.stories[1].subtasks[0].phases[11].attempts[0].detail = "  from the attempt \n"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({ detail: "from the attempt" }), "detail from the attempt")
+  }
+
+  function test_stopReport_escalated_failed_step() {
+    // synthetic: review done, a failed deterministic verify step appended
+    var raw = amRun("status-escalated.json")
+    var subtask = raw.status.stories[1].subtasks[0]
+    subtask.phases[11].status = "done"
+    subtask.phases.push({ name: "verify", kind: "deterministic", status: "failed",
+                          detail: "VerifyError: 2 tests failed", attempts: [] })
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ headline: "Escalated at verify", phase: "verify", detail: "VerifyError: 2 tests failed",
+                              attempt: { card_id: stopEscCard, phase: "verify", attempt: 0 } }), "failed step, attempt 0")
+  }
+
+  function test_stopReport_escalated_phase_from_row() {
+    // synthetic: the failed review phase set done; its gate_failed row remains
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].status = "done"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({}), "phase from the row")
+  }
+
+  function test_stopReport_synthetic_story() {
+    // synthetic: the done-integrate capture made escalated, its integrate story escalated
+    var raw = amRun("status-done-integrate.json")
+    raw.status.run.status = "escalated"
+    raw.status.stories[2].status = "escalated"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "escalated", headline: "Escalated at Integrate", storyId: "integrate", storyTitle: "Integrate",
+                           relaunch: { level: "milestone", cardId: "f7f73454-b9c5-464a-b8d4-659dd5b353af", prefix: "m3", base: "main" } }),
+                "integrate story")
+  }
+
+  function test_stopReport_synthetic_base_row() {
+    // synthetic: an escalated run, every subtask done, whose rows end with a failed base merge
+    var raw = amRun("status-escalated-integrate.json")
+    raw.status.rows.push({ story: "bases", subtask: "base-s1", phase: "merge", attempt: null, state: "failed" })
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "escalated", headline: "Escalated at Base s1", storyId: "base-s1", storyTitle: "Base s1",
+                           phase: "merge",
+                           relaunch: { level: "milestone", cardId: "76043cd6-2077-47d4-afbb-c0ab60e62416", prefix: "m4", base: "main" } }),
+                "base row")
+  }
+
+  function test_stopReport_escalated_nothing_named() {
+    checkReport(Runs.stopReport(Runs.normalizeRun(amRun("status-escalated-integrate.json"))),
+                stopWant({ state: "escalated", headline: "Escalated",
+                           relaunch: { level: "milestone", cardId: "76043cd6-2077-47d4-afbb-c0ab60e62416", prefix: "m4", base: "main" } }),
+                "recorded escalated integrate")
+  }
+
+  function test_stopReport_dead() {
+    var dead = Runs.normalizeRun(deadStartedRaw())
+    compare(Runs.runState(dead), "dead", "fixture")
+    checkReport(Runs.stopReport(dead), stopDeadWant({}), "dead, lease not live")
+
+    // synthetic: no lease at all
+    var raw = amRun("status-started.json")
+    delete raw.status.control.lease
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopDeadWant({ heartbeatAt: "" }), "dead, no lease")
+  }
+
+  function test_stopReport_dead_nothing_in_flight() {
+    // synthetic: the dead capture's in-flight explore phase set done
+    var raw = deadStartedRaw()
+    raw.status.stories[1].subtasks[1].phases[1].status = "done"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopDeadWant({ cardId: "", storyId: "", storyTitle: "", phase: "", attempt: null }), "dead, nothing in flight")
+  }
+
+  function test_stopReport_parked() {
+    // synthetic: the started capture stopped, its in-flight subtask stopped
+    var raw = amRun("status-started.json")
+    raw.status.run.status = "stopped"
+    raw.status.stories[1].subtasks[1].status = "stopped"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "parked", headline: stopHeadlineParked, parked: [stopStartedCard], relaunch: stopStartedRelaunch() }),
+                "parked")
+  }
+
+  function test_stopReport_cancelled_both_spellings() {
+    var spellings = ["cancelled", "canceled"]
+    for (var i = 0; i < spellings.length; i++) {
+      // synthetic: the started capture cancelled, its in-flight subtask stopped
+      var raw = amRun("status-started.json")
+      raw.status.run.status = spellings[i]
+      raw.status.stories[1].subtasks[1].status = "stopped"
+      checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                  stopWant({ state: "cancelled", headline: stopHeadlineCancelled, parked: [stopStartedCard], relaunch: stopStartedRelaunch() }),
+                  spellings[i])
+    }
+  }
+
+  function test_stopReport_escalated_lists_parked() {
+    // synthetic: the escalated capture's pending subtask stopped
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[2].subtasks[0].status = "stopped"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({ parked: [stopEscPending] }), "escalated lists parked")
+  }
+
+  function test_stopReport_task_run() {
+    // synthetic: the escalated capture as a task run of its escalated card
+    var raw = amRun("status-escalated.json")
+    raw.row.workflow = "task"
+    raw.row.card_id = stopEscCard
+    var task = { level: "card", cardId: stopEscCard, prefix: "m3", base: "main" }
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({ relaunch: task }), "task run")
+
+    // synthetic: padded workflow and card id
+    var padded = amRun("status-escalated.json")
+    padded.row.workflow = "  task "
+    padded.row.card_id = "  " + stopEscCard + "\n"
+    compareFlat(Runs.stopReport(Runs.normalizeRun(padded)).relaunch, task, "padded task run")
+
+    // synthetic: a task run that names no card
+    var noCard = amRun("status-escalated.json")
+    noCard.row.workflow = "task"
+    compare(Runs.stopReport(Runs.normalizeRun(noCard)).relaunch, null, "task run without a card")
+
+    // synthetic: workflow is case-sensitive: "Task" is a milestone run
+    var upper = amRun("status-escalated.json")
+    upper.row.workflow = "Task"
+    upper.row.card_id = stopEscCard
+    compareFlat(Runs.stopReport(Runs.normalizeRun(upper)).relaunch, stopEscRelaunch(), "Task is not task")
+  }
+
+  function test_stopReport_story_run() {
+    // synthetic: the escalated capture as a story run of its escalated story
+    var raw = amRun("status-escalated.json")
+    raw.row.workflow = "story"
+    raw.row.story_id = stopEscStory
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ relaunch: { level: "story", cardId: stopEscStory, prefix: "m3", base: "main" } }), "story run")
+
+    // synthetic: a story run that names no story
+    var noStory = amRun("status-escalated.json")
+    noStory.row.workflow = "story"
+    compare(Runs.stopReport(Runs.normalizeRun(noStory)).relaunch, null, "story run without a story")
+
+    // synthetic: a story run whose story is bookkeeping
+    var bases = amRun("status-escalated.json")
+    bases.row.workflow = "story"
+    bases.row.story_id = "bases"
+    compare(Runs.stopReport(Runs.normalizeRun(bases)).relaunch, null, "story run of bases")
+  }
+
+  function test_stopReport_milestone_run_without_milestone() {
+    var ids = ["", "integrate", "base-x"]
+    for (var i = 0; i < ids.length; i++) {
+      // synthetic: the milestone id blanked or made bookkeeping on both sides
+      var raw = amRun("status-escalated.json")
+      raw.row.milestone_id = ids[i]
+      raw.status.run.milestone_id = ids[i]
+      compare(Runs.stopReport(Runs.normalizeRun(raw)).relaunch, null, "milestone_id \"" + ids[i] + "\"")
+    }
+  }
+
+  function test_stopReport_null_unless_stopped() {
+    compare(Runs.stopReport(Runs.normalizeRun(amRun("status-started.json"))), null, "running")
+    compare(Runs.stopReport(Runs.normalizeRun(amRun("status-done.json"))), null, "done")
+    var statuses = ["", "bogus", " stopped", "Escalated"]
+    for (var i = 0; i < statuses.length; i++) {
+      // synthetic: run statuses that are unknown to runState
+      var raw = amRun("status-escalated.json")
+      raw.status.run.status = statuses[i]
+      compare(Runs.stopReport(Runs.normalizeRun(raw)), null, "status \"" + statuses[i] + "\"")
+    }
+  }
+
+  function test_stopReport_garbage() {
+    var notRuns = [undefined, null, 0, "escalated", true, [], {}]
+    for (var i = 0; i < notRuns.length; i++) compare(Runs.stopReport(notRuns[i]), null, "not a run " + i)
+
+    // synthetic: stopped runs with nothing readable
+    checkReport(Runs.stopReport({ status: "escalated" }), stopWant({ state: "escalated", headline: "Escalated" }), "bare escalated")
+    checkReport(Runs.stopReport({ status: "stopped", tree: "x" }), stopWant({ state: "parked", headline: stopHeadlineParked }), "tree not an object")
+    checkReport(Runs.stopReport({ status: "escalated",
+                                  tree: { subtasks: [null, { phases: "x" }, { card_id: 5 }], stories: [null] }, rows: [null, 3] }),
+                stopWant({ state: "escalated", headline: "Escalated" }), "broken tree and rows")
+    checkReport(Runs.stopReport({ status: "started", lease: "x" }), stopWant({ state: "dead", headline: stopHeadlineDead }), "lease not an object")
+    checkReport(Runs.stopReport({ status: "escalated", tree: { subtasks: "x" } }), stopWant({ state: "escalated", headline: "Escalated" }), "subtasks not an array")
+
+    // synthetic: a real escalated subtask with broken phases, attempts, rows, title and ids
+    var broken = { status: "escalated", workflow: 5, milestone_id: 7,
+                   tree: { stories: [null, { card_id: "s1", title: 5 }],
+                           subtasks: [{ card_id: "t1", story_id: "s1", status: "escalated",
+                                        phases: [null, 3, { name: "review", status: "failed", attempts: "x" }] }] },
+                   rows: [null, 3, { card_id: "t1", phase: "review", attempt: "x", status: "failed" }] }
+    checkReport(Runs.stopReport(broken),
+                stopWant({ state: "escalated", headline: "Escalated at review", cardId: "t1", storyId: "s1", phase: "review",
+                           attempt: { card_id: "t1", phase: "review", attempt: 0 } }), "broken escalated subtask")
+
+    // synthetic: a dead run with a numeric heartbeat and odd attempts
+    var deadOdd = { status: "started", lease: { live: false, heartbeat_at: 42 },
+                    tree: { subtasks: [{ card_id: "t1", phases: [{ name: "plan", status: "started", attempts: [null, "x", { n: 2 }] }] }] } }
+    checkReport(Runs.stopReport(deadOdd),
+                stopWant({ state: "dead", headline: stopHeadlineDead, cardId: "t1", phase: "plan", heartbeatAt: "42",
+                           attempt: { card_id: "t1", phase: "plan", attempt: 2 } }), "dead, odd attempts")
+  }
+
+  function test_stopReport_fresh_and_untouched() {
+    var run = Runs.normalizeRun(amRun("status-escalated.json"))
+    // synthetic: a stopped subtask so parked is not empty
+    run.tree.subtasks[3].status = "stopped"
+    var before = JSON.stringify(run)
+    var a = Runs.stopReport(run)
+    var b = Runs.stopReport(run)
+    compare(JSON.stringify(run), before, "the run is unchanged")
+    verify(a !== b, "a new report per call")
+    verify(a.attempt !== b.attempt, "a new attempt per call")
+    verify(a.parked !== b.parked, "a new parked list per call")
+    verify(a.relaunch !== b.relaunch, "a new relaunch per call")
+    a.headline = "x"
+    a.attempt.phase = "x"
+    a.parked.push("x")
+    a.relaunch.cardId = "x"
+    compare(JSON.stringify(run), before, "mutating a report leaves the run unchanged")
+    checkReport(Runs.stopReport(run), stopEscWant({ parked: [stopEscPending] }), "after mutating an earlier report")
+  }
+
+  function test_stopReport_other_cards_row() {
+    // synthetic: review set done, and the last (gate_failed review) row moved to another card
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].status = "done"
+    raw.status.rows[raw.status.rows.length - 1].subtask = stopEscPending
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ headline: "Escalated", phase: "", detail: "", attempt: null }), "another card's failed row")
+  }
+
+  function test_stopReport_last_failed_row_wins() {
+    // synthetic: review set done, and an earlier implement row of the same card made failed
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].status = "done"
+    var rows = raw.status.rows
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].subtask === stopEscCard && rows[i].phase === "implement") rows[i].state = "failed"
+    }
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({}), "the last failed row names the phase")
+  }
+
+  function test_stopReport_row_attempt_newer() {
+    // synthetic: review set done, its gate_failed row a second attempt the tree has not recorded
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].subtasks[0].phases[11].status = "done"
+    raw.status.rows[raw.status.rows.length - 1].attempt = 2
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ attempt: { card_id: stopEscCard, phase: "review", attempt: 2 } }), "row attempt wins")
+  }
+
+  function test_stopReport_escalated_order() {
+    // synthetic: an earlier subtask's explore phase failed; the later escalated subtask still wins
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[0].subtasks[0].phases[1].status = "failed"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({}), "escalated status wins")
+
+    // synthetic: with no escalated subtask, the first subtask with a failed phase is named
+    raw.status.stories[1].subtasks[0].status = "started"
+    var cardA = "f6ac3b15-77df-4921-a9c0-0b442db53bb5"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopEscWant({ headline: "Escalated at explore", cardId: cardA, storyId: "c16cfbe3-ca4f-4f27-8bdb-f595620296c6",
+                              storyTitle: "Story A: the first level", phase: "explore", detail: "",
+                              attempt: { card_id: cardA, phase: "explore", attempt: 1 } }), "first failed phase in tree order")
+  }
+
+  function test_stopReport_synthetic_precedence() {
+    var relaunch = { level: "milestone", cardId: "f7f73454-b9c5-464a-b8d4-659dd5b353af", prefix: "m3", base: "main" }
+    // synthetic: escalated, but the integrate story is done and a synthetic row is ok
+    var raw = amRun("status-done-integrate.json")
+    raw.status.run.status = "escalated"
+    raw.status.rows.push({ story: "bases", subtask: "base-s1", phase: "merge", attempt: null, state: "ok" })
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "escalated", headline: "Escalated", relaunch: relaunch }), "done story and ok row are not named")
+
+    // synthetic: a failed synthetic row wins over an escalated synthetic story
+    raw.status.stories[2].status = "escalated"
+    raw.status.rows.push({ story: "bases", subtask: "base-s1", phase: "merge", attempt: null, state: "failed" })
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)),
+                stopWant({ state: "escalated", headline: "Escalated at Base s1", storyId: "base-s1", storyTitle: "Base s1",
+                           phase: "merge", relaunch: relaunch }), "row wins over story")
+  }
+
+  function test_stopReport_story_title_edges() {
+    // synthetic: a padded story title
+    var raw = amRun("status-escalated.json")
+    raw.status.stories[1].title = "  " + stopEscStoryTitle + " \n"
+    checkReport(Runs.stopReport(Runs.normalizeRun(raw)), stopEscWant({}), "padded title")
+
+    var ids = ["constructor", "__proto__", "toString"]
+    for (var i = 0; i < ids.length; i++) {
+      // synthetic: the escalated subtask's story id set to a name no story has
+      var run = Runs.normalizeRun(amRun("status-escalated.json"))
+      run.tree.subtasks[2].story_id = ids[i]
+      checkReport(Runs.stopReport(run), stopEscWant({ storyId: ids[i], storyTitle: "" }), "story id " + ids[i])
+    }
+  }
+
+  // ---- RR 1.3: am's note -------------------------------------------------------------------
+
+  readonly property string noteRun: "20261004T165007Z-4a51d663"
+  readonly property string noteOtherRun: "20261004T170000Z-ffffffff"
+  readonly property string noteAt: "2026-10-04T17:45:00Z"
+  readonly property string noteLaterAt: "2026-10-04T18:00:00Z"
+
+  // One card comment as ExtrasStore.commentsFor gives it.
+  function comment(author, body, createdAt) {
+    return { id: "c-" + createdAt, entityId: "5bfe746d-8ac3-41c4-8e3e-abb939e0b45a", author: author, body: body,
+             createdAt: createdAt }
+  }
+
+  // SUBTASK_BODY's lines (RR 62-68, the ellipses kept as in RR).
+  function noteSubtaskLines() {
+    return ["am \u00b7 escalated \u00b7 run 20261004T165007Z-4a51d663",
+            "phase: verify",
+            "detail: VerifyError: could not run none (CLAUDE.md: …)",
+            "next: `am resume 20261004T165007Z-4a51d663`",
+            "why: `am logs 20261004T165007Z-4a51d663 5bfe746d-… --phase verify`",
+            "am-key: 20261004T165007Z-4a51d663/5bfe746d-…/escalated:cef56efb…"]
+  }
+
+  function noteSubtaskBody() { return noteSubtaskLines().join("\n") }
+
+  // RUN_END_BODY. synthetic: assembled from RR 71-72
+  function noteRunEndBody() {
+    return ["am \u00b7 escalated \u00b7 run 20261004T165007Z-4a51d663",
+            "escalated: [[5bfe746d-8ac3-41c4-8e3e-abb939e0b45a]] at verify",
+            "next: `am resume 20261004T165007Z-4a51d663`",
+            "am-key: 20261004T165007Z-4a51d663/76043cd6-2077-47d4-afbb-c0ab60e62416/run-end:0a1b2c3d"].join("\n")
+  }
+
+  // DONE_BODY. synthetic: a later note of the same run
+  function noteDoneBody() {
+    return ["am \u00b7 done \u00b7 run 20261004T165007Z-4a51d663",
+            "am-key: 20261004T165007Z-4a51d663/5bfe746d-8ac3-41c4-8e3e-abb939e0b45a/done:9f9f9f9f"].join("\n")
+  }
+
+  // The note stopComment reads from SUBTASK_BODY, posted at createdAt.
+  function noteSubtaskWant(createdAt) {
+    return { createdAt: createdAt, kind: "escalated", fields: [
+      { key: "detail", value: "VerifyError: could not run none (CLAUDE.md: …)" },
+      { key: "next", value: "am resume 20261004T165007Z-4a51d663" },
+      { key: "why", value: "am logs 20261004T165007Z-4a51d663 5bfe746d-… --phase verify" }] }
+  }
+
+  // got is the note want describes: exactly the keys createdAt, fields and kind,
+  // with want's values (fields compared in order); or both are null.
+  function checkNote(got, want, label) {
+    if (want === null) { compare(got, null, label); return }
+    verify(got !== null && typeof got === "object", label + ": an object")
+    compare(Object.keys(got).sort().join(","), "createdAt,fields,kind", label + ": keys")
+    compare(got.createdAt, want.createdAt, label + ": createdAt")
+    compare(got.kind, want.kind, label + ": kind")
+    verify(Array.isArray(got.fields), label + ": fields is an array")
+    compare(JSON.stringify(got.fields), JSON.stringify(want.fields), label + ": fields")
+  }
+
+  function test_stopComment_subtask_escalation() {
+    checkNote(Runs.stopComment([comment("am", noteSubtaskBody(), noteAt)], noteRun), noteSubtaskWant(noteAt), "subtask note")
+  }
+
+  function test_stopComment_milestone_run_end() {
+    checkNote(Runs.stopComment([comment("am", noteRunEndBody(), noteAt)], noteRun),
+              { createdAt: noteAt, kind: "escalated", fields: [{ key: "next", value: "am resume 20261004T165007Z-4a51d663" }] },
+              "run-end note, its escalated: line is not a field")
+  }
+
+  function test_stopComment_newest_wins() {
+    var sub = comment("am", noteSubtaskBody(), noteAt)
+    var done = comment("am", noteDoneBody(), noteLaterAt)
+    checkNote(Runs.stopComment([sub, done], noteRun), { createdAt: noteLaterAt, kind: "done", fields: [] }, "the done note is newer")
+    checkNote(Runs.stopComment([done, sub], noteRun), noteSubtaskWant(noteAt), "array order, not createdAt, says newest")
+  }
+
+  function test_stopComment_other_run() {
+    var sub = comment("am", noteSubtaskBody(), noteAt)
+    // synthetic: a newer note of another run on the same card
+    var other = comment("am", ["am \u00b7 escalated \u00b7 run " + noteOtherRun,
+                               "next: `am resume " + noteOtherRun + "`",
+                               "am-key: " + noteOtherRun + "/5bfe746d-8ac3-41c4-8e3e-abb939e0b45a/escalated:11111111"].join("\n"),
+                        noteLaterAt)
+    var list = [sub, other]
+    checkNote(Runs.stopComment(list, noteRun), noteSubtaskWant(noteAt), "the other run's newer note is skipped")
+    checkNote(Runs.stopComment(list, noteOtherRun),
+              { createdAt: noteLaterAt, kind: "escalated", fields: [{ key: "next", value: "am resume " + noteOtherRun }] },
+              "asked for the other run")
+    compare(Runs.stopComment(list, "20261004T999999Z-00000000"), null, "an unknown run")
+  }
+
+  function test_stopComment_run_id_prefix() {
+    compare(Runs.stopComment([comment("am", noteSubtaskBody(), noteAt)], "20261004T165007Z-4a51d6"), null,
+            "a prefix of the note's run id")
+    // synthetic: the am-key is the run id with no "/"
+    var bare = comment("am", "am \u00b7 done \u00b7 run " + noteRun + "\nam-key: " + noteRun, noteAt)
+    compare(Runs.stopComment([bare], noteRun), null, "no slash after the run id")
+  }
+
+  function test_stopComment_author() {
+    var am = comment("am", noteSubtaskBody(), noteAt)
+    var others = ["paulo", "AM", "am-bot"]
+    for (var i = 0; i < others.length; i++) {
+      checkNote(Runs.stopComment([am, comment(others[i], noteSubtaskBody(), noteLaterAt)], noteRun), noteSubtaskWant(noteAt),
+                "a newer comment by " + others[i])
+    }
+    compare(Runs.stopComment([comment("paulo", noteSubtaskBody(), noteAt), comment("AM", noteDoneBody(), noteLaterAt)], noteRun),
+            null, "only non-am comments")
+    checkNote(Runs.stopComment([comment(" am ", noteSubtaskBody(), noteAt)], noteRun), noteSubtaskWant(noteAt), "a padded author")
+  }
+
+  function test_stopComment_no_am_key() {
+    var am = comment("am", noteSubtaskBody(), noteAt)
+    var keyless = noteSubtaskLines()
+    keyless.pop()
+    checkNote(Runs.stopComment([am, comment("am", keyless.join("\n"), noteLaterAt)], noteRun), noteSubtaskWant(noteAt),
+              "a newer am comment with no am-key line")
+    // synthetic: a line after the am-key
+    var middle = noteSubtaskLines()
+    middle.push("note: written after the key")
+    checkNote(Runs.stopComment([am, comment("am", middle.join("\n"), noteLaterAt)], noteRun), noteSubtaskWant(noteAt),
+              "am-key on a middle line")
+    compare(Runs.stopComment([comment("am", middle.join("\n"), noteLaterAt)], noteRun), null, "am-key not last, alone")
+  }
+
+  function test_stopComment_fields() {
+    // synthetic: fields out of order, a duplicate next, look-alike keys
+    var key = "am-key: " + noteRun + "/5bfe746d-8ac3-41c4-8e3e-abb939e0b45a/escalated:22222222"
+    var lines = ["am \u00b7 escalated \u00b7 run " + noteRun,
+                 "why: `am logs " + noteRun + "`",
+                 "next: `am resume " + noteRun + "`",
+                 "reason: `tests` do not cover the empty list",
+                 "detail: VerifyError: boom",
+                 "next: something else",
+                 "Reason: capitalised",
+                 "nextstep: not a field",
+                 "phase: verify",
+                 key]
+    var want = [{ key: "reason", value: "tests do not cover the empty list" }, { key: "detail", value: "VerifyError: boom" },
+                { key: "next", value: "am resume " + noteRun }, { key: "why", value: "am logs " + noteRun }]
+    checkNote(Runs.stopComment([comment("am", lines.join("\n"), noteAt)], noteRun),
+              { createdAt: noteAt, kind: "escalated", fields: want }, "fixed order, first of each key, backticks removed")
+
+    // synthetic: an empty reason and one made only of backticks
+    var empty = lines.slice()
+    empty[3] = "reason:"
+    checkNote(Runs.stopComment([comment("am", empty.join("\n"), noteAt)], noteRun),
+              { createdAt: noteAt, kind: "escalated", fields: want.slice(1) }, "an empty reason is omitted")
+    empty[3] = "reason:  `` "
+    checkNote(Runs.stopComment([comment("am", empty.join("\n"), noteAt)], noteRun),
+              { createdAt: noteAt, kind: "escalated", fields: want.slice(1) }, "a reason of backticks only is omitted")
+
+    // synthetic: a key on the first line is not a field
+    checkNote(Runs.stopComment([comment("am", "next: `am resume " + noteRun + "`\n" + key, noteAt)], noteRun),
+              { createdAt: noteAt, kind: "", fields: [] }, "a key on the first line")
+  }
+
+  function test_stopComment_kind() {
+    var key = "am-key: " + noteRun + "/5bfe746d-8ac3-41c4-8e3e-abb939e0b45a/escalated:33333333"
+    var cases = [["am \u00b7 base failed \u00b7 run " + noteRun, "base failed"],
+                 ["am \u00b7 cancelled \u00b7 run " + noteRun, "cancelled"],
+                 ["am \u00b7 done", "done"],
+                 ["am \u00b7   done   \u00b7 run " + noteRun, "done"],
+                 ["note \u00b7 escalated \u00b7 run " + noteRun, ""]]
+    for (var i = 0; i < cases.length; i++) {
+      checkNote(Runs.stopComment([comment("am", cases[i][0] + "\n" + key, noteAt)], noteRun),
+                { createdAt: noteAt, kind: cases[i][1], fields: [] }, "first line " + i)
+    }
+    checkNote(Runs.stopComment([comment("am", key, noteAt)], noteRun), { createdAt: noteAt, kind: "", fields: [] },
+              "only the am-key line")
+  }
+
+  function test_stopComment_line_endings() {
+    var body = noteSubtaskLines().join("\r\n") + " \r\n\n  "
+    checkNote(Runs.stopComment([comment("am", body, noteAt)], noteRun), noteSubtaskWant(noteAt), "CRLF and trailing blanks")
+  }
+
+  function test_stopComment_garbage() {
+    var valid = comment("am", noteSubtaskBody(), noteAt)
+    var badComments = [undefined, null, 0, "x", {}, true]
+    for (var i = 0; i < badComments.length; i++) compare(Runs.stopComment(badComments[i], noteRun), null, "comments " + i)
+    var badIds = [undefined, null, 42, {}, "", "  "]
+    for (var j = 0; j < badIds.length; j++) compare(Runs.stopComment([valid], badIds[j]), null, "runId " + j)
+    checkNote(Runs.stopComment([valid], "  " + noteRun + " "), noteSubtaskWant(noteAt), "a padded run id is trimmed")
+
+    var junk = [undefined, null, 3, "x", [], {}, { author: "am" }, { author: "am", body: 7 },
+                { author: 5, body: noteSubtaskBody() }, { author: "am", body: "" }, { author: "am", body: "\n \n" }]
+    compare(Runs.stopComment(junk, noteRun), null, "only junk")
+    checkNote(Runs.stopComment(junk.concat([valid]), noteRun), noteSubtaskWant(noteAt), "junk, then a note")
+    checkNote(Runs.stopComment([valid].concat(junk), noteRun), noteSubtaskWant(noteAt), "a note, then newer junk")
+
+    var noTime = comment("am", noteSubtaskBody(), noteAt)
+    noTime.createdAt = 5
+    checkNote(Runs.stopComment([noTime], noteRun), noteSubtaskWant(""), "a non-string createdAt")
+  }
+
+  function test_stopComment_fresh_and_untouched() {
+    var list = [comment("am", noteSubtaskBody(), noteAt)]
+    var before = JSON.stringify(list)
+    var a = Runs.stopComment(list, noteRun)
+    var b = Runs.stopComment(list, noteRun)
+    verify(a !== b, "two calls, two objects")
+    verify(a.fields !== b.fields, "two calls, two fields arrays")
+    verify(a.fields[0] !== b.fields[0], "two calls, two field objects")
+    a.kind = "changed"
+    a.fields[0].value = "changed"
+    a.fields.push({ key: "reason", value: "added" })
+    checkNote(Runs.stopComment(list, noteRun), noteSubtaskWant(noteAt), "mutating a result leaves the next call alone")
+    compare(JSON.stringify(list), before, "the comments are untouched")
+  }
+
+  function test_stopComment_regex_id() {
+    // synthetic: a run id holding regex metacharacters
+    var c = comment("am", "am \u00b7 done \u00b7 run a.b*c\nam-key: a.b*c/x", noteAt)
+    checkNote(Runs.stopComment([c], "a.b*c"), { createdAt: noteAt, kind: "done", fields: [] }, "metacharacters match themselves")
+    compare(Runs.stopComment([c], "aXbbc"), null, "the id is not a pattern")
+  }
+
+  // ---- store helpers shared by the run stores (split-runstore merge)
+
+  function test_usable_roots_keep_each_root_once_in_registry_order() {
+    var list = [{ root: "/a", name: "A" }, null, [], { root: "" }, { root: "-x" }, { root: 7 },
+                { root: "/b", name: "B" }, { root: "/a", name: "again" }]
+    compare(JSON.stringify(Runs.usableRoots(list)), JSON.stringify([{ root: "/a", name: "A" }, { root: "/b", name: "B" }]))
+    compare(Runs.usableRoots(null).length, 0)
+    compare(Runs.usableRoots(undefined).length, 0)
+    compare(Runs.usableRoots({}).length, 0, "no numeric length")
+    compare(Runs.usableRoots([{ root: "constructor" }])[0].root, "constructor", "a root named like a prototype member")
+  }
+
+  function test_verify_commands_keep_the_non_blank_strings_in_order() {
+    compare(JSON.stringify(Runs.verifyCommands({ verify: ["a", " ", "", 5, null, " b "] })), JSON.stringify(["a", " b "]))
+    compare(Runs.verifyCommands({ verify: "a" }).length, 0)
+    compare(Runs.verifyCommands({}).length, 0)
+    compare(Runs.verifyCommands(null).length, 0)
+  }
+
+  function test_merged_prefixes_override_the_stored_entries() {
+    compare(JSON.stringify(Runs.mergedPrefixes({ m1: "a", m2: "b" }, { m2: "c" })), JSON.stringify({ m1: "a", m2: "c" }))
+    var stored = { m1: "a" }
+    var merged = Runs.mergedPrefixes(stored, { m3: "d" })
+    verify(merged !== stored, "a fresh map")
+    compare(JSON.stringify(stored), JSON.stringify({ m1: "a" }), "the stored map is not changed")
+    compare(JSON.stringify(Runs.mergedPrefixes(["x"], { m1: "a" })), JSON.stringify({ m1: "a" }), "an array merges from nothing")
+    compare(JSON.stringify(Runs.mergedPrefixes(null, { m1: "a" })), JSON.stringify({ m1: "a" }))
   }
 }

@@ -317,11 +317,12 @@ TestCase {
     p.app.runs.amStatus = "missing"
     compare(button.enabled, false)
     compare(String(button.tooltipText), "am is not installed or not on PATH")
+    p.app.runs.amStatus = "ok"
     p.app.projects.selectedProject = null
     p.app.nav.viewMode = "runs"
     compare(button.visible, true, "no project: still shown")
-    compare(button.enabled, false)
-    compare(String(button.tooltipText), "Open a project to dispatch")
+    compare(button.enabled, true, "pA is registered: there is a project to pick")
+    compare(String(button.tooltipText), "Start an am run")
   }
 
   // ---- the run indicator (4.5)

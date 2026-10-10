@@ -465,8 +465,9 @@ Column {
     rowDelegate: Component { RunEntry {} }
   }
 
-  // The global Notify on escalation setting: a desktop notification for
-  // every run toast. Shown with or without a project, and while am is missing.
+  // The global desktop-notifications setting: a desktop notification for
+  // every run alert, raised by the background service whether the panel is
+  // open or closed. Shown with or without a project, and while am is missing.
   // Beside it, while am is present, Refresh titles asks the run titles to
   // read every project's titles again.
   Row {
@@ -480,12 +481,23 @@ Column {
       onToggled: screen.app.runControl.setNotifyOnEscalation(!screen.app.runControl.notifyOnEscalation)
     }
 
-    UI.ThemedText {
-      objectName: "runsNotifyLabel"
+    // The label over its caption, centred on the toggle.
+    Column {
       anchors.verticalCenter: parent.verticalCenter
-      variant: "caption"
-      theme: screen.theme
-      text: "Notify on escalation"
+
+      UI.ThemedText {
+        objectName: "runsNotifyLabel"
+        variant: "caption"
+        theme: screen.theme
+        text: "Desktop notifications"
+      }
+
+      UI.ThemedText {
+        objectName: "runsNotifyCaption"
+        variant: "caption"
+        theme: screen.theme
+        text: "From the background, panel open or closed"
+      }
     }
 
     UI.ActionButton {
