@@ -754,7 +754,7 @@ TestCase {
     return [
       { tag: "shift" }, { tag: "ctrl" }, { tag: "search-text" }, { tag: "no-project" }, { tag: "am-missing" },
       { tag: "am-missing-on-story" },
-      { tag: "dropdown" }, { tag: "modal" }, { tag: "dispatch-open" }, { tag: "runs" }, { tag: "graph" },
+      { tag: "dropdown" }, { tag: "modal" }, { tag: "dispatch-open" }, { tag: "graph" },
       { tag: "documents" }, { tag: "empty-board" }, { tag: "cursor-past-the-end" }, { tag: "other-letter" }
     ]
   }
@@ -776,7 +776,6 @@ TestCase {
     case "dropdown": s.navigator.toggleDropdown(); break
     case "modal": s.app.runControl.cancelRunId = "run-0000000000a1"; break
     case "dispatch-open": s.app.runDispatch.dispatchState = "ready"; break
-    case "runs": s.navigator.showSection("runs"); break
     case "graph": s.navigator.showSection("graph"); break
     case "documents": s.navigator.showSection("documents"); break
     case "empty-board": s.app.board.applyTreeData([]); break
@@ -863,5 +862,169 @@ TestCase {
     compare(s.app.runDispatch.dispatchState, "starting")
     compare(s.app.nav.viewMode, "entry", "no Back")
     compare(tc.calls.indexOf("close"), -1, "no panel close")
+  }
+
+  // ---- d on the Runs list: the Runs dispatch (3.3)
+
+  // 7
+  function test_d_on_the_runs_list_opens_the_runs_dispatch_at_the_project_step() {
+    var s = inRuns(); if (!s) return
+    compare(s.app.nav.searchQuery, "")
+    compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
+    compare(s.app.runDispatch.dispatchStep, "project")
+    compare(s.app.runDispatch.dispatchState, "idle")
+    compare(s.app.runDispatch.dispatchRoot, "")
+    compare(dispatched().length, 0, "no card dispatch is asked for")
+    s.app.runDispatch.dispatchProjectRunner.cancel()
+  }
+
+  // 8
+  function test_d_on_the_runs_list_opens_the_runs_dispatch_with_no_project_open() {
+    var s = inRuns(); if (!s) return
+    s.app.projects.selectedProject = null
+    s.app.nav.viewMode = "runs"
+    compare(s.app.runs.usableRoots().length, 2, "the registry still lists A and B")
+    compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
+    compare(s.app.runDispatch.dispatchStep, "project")
+    compare(dispatched().length, 0)
+    s.app.runDispatch.dispatchProjectRunner.cancel()
+  }
+
+  // 9
+  function test_d_on_the_runs_list_is_left_alone_data() {
+    return [
+      { tag: "search-text" }, { tag: "shift" }, { tag: "ctrl" }, { tag: "dropdown" }, { tag: "modal" },
+      { tag: "dispatch-open" }, { tag: "am-missing" }, { tag: "empty-registry" }, { tag: "run-detail" }
+    ]
+  }
+
+  function test_d_on_the_runs_list_is_left_alone(data) {
+    var s = inRuns(); if (!s) return
+    var e = plain(Qt.Key_D)
+    switch (data.tag) {
+    case "search-text": s.app.nav.searchQuery = "al"; break
+    case "shift": e = shift(Qt.Key_D); break
+    case "ctrl": e = ctrl(Qt.Key_D); break
+    case "dropdown":
+      s.navigator.toggleDropdown()
+      compare(s.app.nav.dropdownOpen, true)
+      break
+    case "modal": s.app.runControl.cancelRunId = "run-0000000000a1"; break
+    case "dispatch-open": s.app.runDispatch.dispatchStep = "project"; break
+    case "am-missing": s.app.runs.amStatus = "missing"; break
+    case "empty-registry":
+      s.app.runs.projectRoots = []
+      s.app.runs.snapshotRunner.cancel()
+      compare(s.app.runs.usableRoots().length, 0)
+      break
+    case "run-detail":
+      s.navigator.openRun("run-0000000000a1", "runs")
+      compare(s.app.nav.viewMode, "run")
+      break
+    }
+    var before = s.app.runDispatch.dispatchStep
+    compare(s.handleDispatchKey(e), false)
+    compare(s.app.runDispatch.dispatchStep, before, "nothing opened")
+    compare(dispatched().length, 0)
+  }
+
+  // 10
+  function test_a_runs_dispatch_at_a_step_is_a_modal_data() {
+    return [{ tag: "project", step: "project" }, { tag: "target", step: "target" }]
+  }
+
+  function test_a_runs_dispatch_at_a_step_is_a_modal(data) {
+    var s = inRuns(); if (!s) return
+    compare(s.modalOpen(), false)
+    s.app.runDispatch.dispatchStep = data.step
+    compare(s.app.runDispatch.dispatchState, "idle")
+    compare(s.modalOpen(), true)
+    compare(s.handleGlobalKey(ctrl(Qt.Key_1)), false)
+    compare(s.app.nav.viewMode, "runs", "no chord acted")
+    compare(s.handleRunKey(plain(Qt.Key_P)), false)
+    compare(s.app.runControl.flashText, "", "no run key acted")
+    s.closeRequested()
+    compare(s.app.runDispatch.dispatchStep, "")
+    compare(s.app.nav.viewMode, "runs", "that Escape closed the dialog only")
+    compare(tc.calls.indexOf("close"), -1, "the panel stays open")
+  }
+
+  // 11
+  function test_d_on_the_board_list_leaves_the_runs_steps_shut() {
+    var s = onBoard(); if (!s) return
+    compare(s.handleDispatchKey(plain(Qt.Key_D)), true)
+    compare(dispatched().join(","), "dispatch:m1")
+    compare(s.app.runDispatch.dispatchStep, "")
+  }
+
+  // ---- e: Run detail's Output / Events tabs (4.3)
+
+  // 15
+  function test_e_toggles_the_tabs_on_run_detail() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.app.nav.viewMode, "run")
+    compare(s.app.runs.detailTab, "output")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), true)
+    compare(s.app.runs.detailTab, "events")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), true)
+    compare(s.app.runs.detailTab, "output")
+  }
+
+  // 16
+  function test_only_a_bare_e_is_the_events_key() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.handleEventsKey(shift(Qt.Key_E)), false, "Shift+E")
+    compare(s.handleEventsKey(ctrl(Qt.Key_E)), false, "Ctrl+E is the memory edit chord")
+    compare(s.handleEventsKey(plain(Qt.Key_X)), false, "another letter")
+    compare(s.app.runs.detailTab, "output")
+  }
+
+  // 17
+  function test_e_does_nothing_off_run_detail() {
+    var s = inRunKeys(); if (!s) return
+    s.app.runs.setDetailTab("events")
+    compare(s.app.nav.viewMode, "runs")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "runs")
+    s.navigator.showSection("board")
+    compare(s.app.nav.viewMode, "board")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "board")
+    s.app.board.applyTreeData([card("m1", "Milestone", "todo")])
+    wait(20)
+    s.navigator.openCard("m1")
+    compare(s.app.nav.viewMode, "entry")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "entry")
+    compare(s.app.runs.detailTab, "events", "unchanged")
+  }
+
+  // 18
+  function test_a_modal_or_the_dropdown_swallows_e() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    compare(s.app.runControl.openCancel("run-0000000000a1"), true)
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "the cancel confirmation")
+    s.app.runControl.closeCancel()
+    s.app.runDispatch.dispatchState = "ready"
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "an open dispatch")
+    s.app.runDispatch.dispatchState = "idle"
+    s.navigator.toggleDropdown()
+    compare(s.app.nav.dropdownOpen, true)
+    compare(s.handleEventsKey(plain(Qt.Key_E)), false, "the dropdown")
+    compare(s.app.runs.detailTab, "output")
+  }
+
+  // Review Focus 5
+  function test_e_with_no_run_selected_toggles_harmlessly() {
+    failOnWarning(/TypeError|ReferenceError|is not a function/)
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000a1")
+    s.app.runs.selectedRunId = ""
+    compare(s.app.nav.viewMode, "run")
+    compare(s.handleEventsKey(plain(Qt.Key_E)), true)
+    compare(s.app.runs.detailTab, "events")
+    s.navigator.goBack()
+    s.navigator.openRun("run-0000000000b2")
+    compare(s.app.runs.detailTab, "output", "the next run opens on Output")
   }
 }

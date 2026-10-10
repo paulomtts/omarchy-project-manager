@@ -102,12 +102,23 @@ QtObject {
 
   // The run store never imports the project or board store: App hands it the
   // registry's roots and names in registry order, the selected project's root
-  // path (never the project object) and the panel-open flag that starts and
-  // stops its watch.
+  // path (never the project object), the open project's card id -> title map
+  // (titles, from the board's cardMap) and the panel-open flag that starts
+  // and stops its watch.
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
     projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
     project: app.projects.selectedProject ? app.projects.selectedProject.root_path : ""
+    titles: {
+      var map = app.board.cardMap || {}
+      var out = {}
+      var ids = Object.keys(map)
+      for (var i = 0; i < ids.length; i++) {
+        var card = map[ids[i]]
+        if (card && typeof card.title === "string") out[ids[i]] = card.title
+      }
+      return out
+    }
     active: app.panelOpen
     searchQuery: app.nav.searchQuery
     onRunFilterToggled: {
@@ -127,8 +138,9 @@ QtObject {
   // The run controls never import the run store: App hands them the backend
   // directory, the open project's root, the panel-open flag and the run list,
   // settles their requests on each ok snapshot reply, routes their
-  // refreshRequested to the run store and their runSettingsSaveFailed to the
-  // dispatch's dispatchSaveFailed.
+  // refreshRequested to the run store, their runSettingsSaveFailed to the
+  // dispatch's dispatchSaveFailed and their runSettingsLoaded to the
+  // dispatch's dispatchSettingsReplied.
   readonly property RunControlStore runControl: RunControlStore {
     backendDir: app.backendDir
     project: app.runs.project
@@ -139,6 +151,7 @@ QtObject {
       else app.runs.requestSnapshot(roots)
     }
     onRunSettingsSaveFailed: function(root, patch) { app.runDispatch.dispatchSaveFailed(root, patch) }
+    onRunSettingsLoaded: function(root, settings) { app.runDispatch.dispatchSettingsReplied(root, settings) }
   }
 
   // The run alerts never import the run store: App hands them the panel-open
@@ -150,17 +163,18 @@ QtObject {
   }
 
   // The dispatch never imports the run store or run control: App hands it the
-  // backend directory, the open project's root, the panel-open flag, the run
-  // list and the open project's run settings from run control, routes its
-  // refreshRequested to the run store, its noticeRequested to run control's
-  // flash, and its runSettingsWanted and runSettingsSaveRequested to run
-  // control's loadRunSettings and saveRunSettings.
+  // backend directory, the open project's root, the registry, the panel-open
+  // flag, the run list and the open project's run settings from run control,
+  // routes its refreshRequested to the run store, its noticeRequested to run
+  // control's flash, and its runSettingsWanted and runSettingsSaveRequested
+  // to run control's loadRunSettings and saveRunSettings.
   readonly property RunDispatchStore runDispatch: RunDispatchStore {
     backendDir: app.backendDir
     project: app.runs.project
     active: app.panelOpen
     runs: app.runs.runs
     runSettings: app.runControl.runSettingsOf(app.runs.project)
+    projectRoots: app.runs.projectRoots
     onRefreshRequested: function(roots) {
       if (roots === "all") app.runs.refresh()
       else app.runs.requestSnapshot(roots)
@@ -168,6 +182,20 @@ QtObject {
     onNoticeRequested: function(text) { app.runControl.flash(text) }
     onRunSettingsWanted: function(root) { app.runControl.loadRunSettings(root) }
     onRunSettingsSaveRequested: function(root, patch) { app.runControl.saveRunSettings(root, patch) }
+  }
+
+  // The live output store never imports the run store: App hands it the
+  // selected run (normalized, from the run store's snapshot), the attempt or
+  // step Run detail shows (selectedAttempt) and the two presence flags --
+  // the panel open and the view mode "run" -- and routes its snapshot
+  // request to the run store's refreshLogs.
+  readonly property RunOutputStore runOutput: RunOutputStore {
+    backendDir: app.backendDir
+    active: app.panelOpen
+    inRunDetail: app.nav.viewMode === "run"
+    run: app.runs.runById(app.runs.selectedRunId)
+    selection: app.runs.selectedAttempt
+    onSnapshotWanted: app.runs.refreshLogs()
   }
 
   readonly property GraphStore graph: GraphStore {

@@ -1,6 +1,6 @@
 // tests/core/stores/tst_run_control_store.qml
 // The run controls store: control requests and their settling, the resume
-// verify read, the still-waiting clock, the control error, the cancel
+// verify read and the Resume dialog, the still-waiting clock, the control error, the cancel
 // confirmation, the footer flash, the notify switch and the run settings
 // load and save. Built alone and
 // driven through its `runs` and `active` inputs and settleAfterSnapshot();
@@ -20,7 +20,6 @@ TestCase {
   property string ctlCmd: "python3|/plugin/core/backend/runs/run-control.py|"
   property string settingsCmd: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/my proj"
   property string viewerCmd: "python3|/plugin/core/backend/projects/viewer-state.py|"
-  property string noVerifySentence: "Resume needs verify commands: none are stored for this project, and running without verification was not chosen."
 
   Component { id: spyC; SignalSpy {} }
 
@@ -189,7 +188,7 @@ TestCase {
     compare(spy.count, 0, "a settings step that goes on")
     c.control("resume", "r3")
     reply(c.controlRunners[1].current, settingsReply([], false), 0)
-    compare(c.lastControlError, tc.noVerifySentence)
+    compare(c.resumeRunId, "r3", "the Resume dialog opens instead")
     compare(spy.count, 0, "a settings step with nothing stored")
     c.control("resume", "r4")
     reply(c.controlRunners[1].current, "oops\n", 2)
@@ -641,6 +640,7 @@ TestCase {
     compare(controlOf(store).stillWaitingText, "still waiting — the run may be between phases or dead")
     compare(controlOf(store).lastControlError, "")
     compare(controlOf(store).lastControlErrorRunId, "")
+    compare(controlOf(store).lastControlErrorType, "")
     compare(controlOf(store).controlRunners.length, 0)
   }
 
@@ -802,14 +802,34 @@ TestCase {
     controlOf(store).control("pause", "r1")
     reply(controlOf(store).controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
     compare(controlOf(store).lastControlError, "am is busy; try again in a moment")
+    compare(controlOf(store).lastControlErrorType, "LockTimeoutError", "am's error type is kept")
     compare(controlOf(store).control("pause", "r1"), true, "the failed request no longer blocks the run")
     compare(controlOf(store).lastControlError, "")
     compare(controlOf(store).lastControlErrorRunId, "")
+    compare(controlOf(store).lastControlErrorType, "", "a new request clears the type")
     reply(controlOf(store).controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
     compare(controlOf(store).lastControlErrorRunId, "r1")
+    compare(controlOf(store).lastControlErrorType, "LockTimeoutError")
     controlOf(store).dismissControlError()
     compare(controlOf(store).lastControlError, "")
     compare(controlOf(store).lastControlErrorRunId, "")
+    compare(controlOf(store).lastControlErrorType, "")
+  }
+
+  // Review Focus 1.
+  function test_the_control_error_type_is_empty_without_a_string_type() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    var replies = [JSON.stringify({ ok: false, error: "boom" }) + "\n",
+                   JSON.stringify({ ok: false, error: { type: 5, message: "x" } }) + "\n",
+                   JSON.stringify({ ok: false }) + "\n",
+                   "garbage\n"]
+    for (var i = 0; i < replies.length; i++) {
+      compare(controlOf(store).control("pause", "r1"), true)
+      reply(controlOf(store).controlRunners[0].current, replies[i], 1)
+      compare(controlOf(store).lastControlErrorRunId, "r1", "reply " + i + " failed the request")
+      verify(controlOf(store).lastControlError !== "", "reply " + i + " says something")
+      compare(controlOf(store).lastControlErrorType, "", "reply " + i + " carries no string type")
+    }
   }
 
   function test_milestone_resume_reads_the_settings_then_passes_the_verify_set() {
@@ -848,8 +868,9 @@ TestCase {
     compare(runner.seq, 1, "run-control was never launched")
     compare(controlOf(store).controlRunners.length, 0)
     compare(Object.keys(controlOf(store).pending).length, 0)
-    compare(controlOf(store).lastControlError, tc.noVerifySentence)
-    compare(controlOf(store).lastControlErrorRunId, "r1")
+    compare(controlOf(store).lastControlError, "")
+    compare(controlOf(store).lastControlErrorRunId, "")
+    compare(controlOf(store).resumeRunId, "r1", "the Resume dialog asks for the commands")
     compare(store.snapshotRunner.seq, seq, "nothing was asked of am, so no snapshot")
   }
 
@@ -863,6 +884,7 @@ TestCase {
     compare(Object.keys(controlOf(store).pending).length, 0)
     compare(controlOf(store).lastControlError, "The run settings gave no usable result (exit 2).")
     compare(controlOf(store).lastControlErrorRunId, "r1")
+    compare(controlOf(store).lastControlErrorType, "")
   }
 
   function test_a_card_run_resume_skips_the_settings() {
@@ -885,7 +907,8 @@ TestCase {
     var runner = controlOf(store).controlRunners[0]
     reply(runner.current, settingsReply(["a", 5], false), 0)
     compare(runner.seq, 1, "run-control was never launched")
-    compare(controlOf(store).lastControlError, tc.noVerifySentence)
+    compare(controlOf(store).resumeRunId, "r1", "the dialog opens instead")
+    compare(controlOf(store).lastControlError, "")
     controlOf(store).control("resume", "r2")
     reply(controlOf(store).controlRunners[0].current, settingsReply(["a", 5], true), 0)
     compare(argv(controlOf(store).controlRunners[0].current), tc.ctlCmd + "resume|r2|/home/u/my proj|--allow-no-verification")
@@ -1522,5 +1545,337 @@ TestCase {
     compare(c.runSettingsOf(store.project).confirmDispatch, true)
     compare(c.runSettingsOf(store.project).verify[0], "uv run pytest")
     compare(c.runSettingsOf(store.project).notifyOnEscalation, false, "the object is kept as it was read")
+  }
+
+  // ---- resume dialog (2.3)
+
+  // Project A listing `entries`, with the Resume dialog opened for `id` by a
+  // milestone resume that found nothing stored.
+  function resumeDialogStore(entries, id) {
+    var store = ctlStore(entries); if (!store) return null
+    compare(controlOf(store).control("resume", id), true)
+    reply(controlOf(store).controlRunners[controlOf(store).controlRunners.length - 1].current, settingsReply([], false), 0)
+    compare(controlOf(store).resumeRunId, id, "the dialog is open")
+    return store
+  }
+
+  // 1
+  function test_resume_dialog_defaults() {
+    var store = make(); if (!store) return
+    compare(controlOf(store).resumeRunId, "")
+    compare(controlOf(store).resumeVerify.length, 0)
+    compare(controlOf(store).resumeAllowNoVerification, false)
+    compare(controlOf(store).resumeError, "")
+  }
+
+  // 2
+  function test_nothing_stored_opens_the_dialog_and_leaves_nothing_pending() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    controlOf(store).control("resume", "r1")
+    var seq = store.snapshotRunner.seq
+    reply(controlOf(store).controlRunners[0].current, settingsReply([], false), 0)
+    compare(controlOf(store).resumeRunId, "r1")
+    compare(controlOf(store).resumeVerify.length, 0)
+    compare(controlOf(store).resumeAllowNoVerification, false)
+    compare(controlOf(store).resumeError, "")
+    compare(Object.keys(controlOf(store).pending).length, 0)
+    compare(Object.keys(controlOf(store).stillWaiting).length, 0)
+    compare(controlOf(store).refusalOf("resume", "r1"), "", "no request is left pending, so the confirm can go")
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(store.snapshotRunner.seq, seq, "no snapshot")
+    compare(controlOf(store).lastControlError, "")
+    compare(controlOf(store).lastControlErrorRunId, "")
+    compare(controlOf(store).lastControlErrorType, "")
+  }
+
+  // 3
+  function test_garbled_settings_open_no_dialog() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    controlOf(store).control("resume", "r1")
+    reply(controlOf(store).controlRunners[0].current, "oops\n", 2)
+    compare(controlOf(store).resumeRunId, "")
+    compare(controlOf(store).lastControlError, "The run settings gave no usable result (exit 2).")
+    compare(controlOf(store).lastControlErrorRunId, "r1")
+    compare(controlOf(store).lastControlErrorType, "")
+  }
+
+  // 4
+  function test_a_task_run_never_opens_the_dialog() {
+    var store = ctlStore([ctlEntry("r1", "started", false, "task")]); if (!store) return
+    compare(controlOf(store).control("resume", "r1"), true)
+    compare(argv(controlOf(store).controlRunners[0].current), tc.ctlCmd + "resume|r1|/home/u/my proj")
+    compare(controlOf(store).resumeRunId, "")
+    var other = ctlStore([ctlEntry("r1", "started", false, "task")]); if (!other) return
+    compare(controlOf(other).resumeOpenFor("r1"), false, "not even when called directly")
+    compare(controlOf(other).resumeRunId, "")
+  }
+
+  // 5 (and Review Focus 5)
+  function test_open_for_resets_the_fields_and_refuses_unknown_runs() {
+    var store = ctlStore([dead("r1"), dead("r2")]); if (!store) return
+    controlOf(store).resumeVerify = ["a"]
+    controlOf(store).resumeAllowNoVerification = true
+    controlOf(store).resumeError = "old"
+    compare(controlOf(store).resumeOpenFor("r1"), true)
+    compare(controlOf(store).resumeRunId, "r1")
+    compare(controlOf(store).resumeVerify.length, 0)
+    compare(controlOf(store).resumeAllowNoVerification, false)
+    compare(controlOf(store).resumeError, "")
+    controlOf(store).resumeVerify = ["b"]
+    controlOf(store).resumeAllowNoVerification = true
+    var refused = ["", "nope", 5]
+    for (var i = 0; i < refused.length; i++) {
+      compare(controlOf(store).resumeOpenFor(refused[i]), false, "refused: " + refused[i])
+      compare(controlOf(store).resumeRunId, "r1", "unchanged after " + refused[i])
+      compare(JSON.stringify(controlOf(store).resumeVerify), '["b"]')
+      compare(controlOf(store).resumeAllowNoVerification, true)
+    }
+    compare(controlOf(store).resumeOpenFor("r2"), true, "another run replaces the dialog")
+    compare(controlOf(store).resumeRunId, "r2")
+    compare(controlOf(store).resumeVerify.length, 0)
+    compare(controlOf(store).resumeAllowNoVerification, false)
+
+    controlOf(store).resumeVerify = ["c"]
+    controlOf(store).control("resume", "r1")
+    reply(controlOf(store).controlRunners[0].current, settingsReply([], false), 0)
+    compare(controlOf(store).resumeRunId, "r1", "a resume that finds nothing stored replaces the open dialog")
+    compare(controlOf(store).resumeVerify.length, 0)
+  }
+
+  // 6
+  function test_close_clears_every_field() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["a"]
+    controlOf(store).resumeAllowNoVerification = true
+    controlOf(store).resumeError = "old"
+    controlOf(store).resumeClose()
+    compare(controlOf(store).resumeRunId, "")
+    compare(controlOf(store).resumeVerify.length, 0)
+    compare(controlOf(store).resumeAllowNoVerification, false)
+    compare(controlOf(store).resumeError, "")
+    controlOf(store).resumeClose()
+    compare(controlOf(store).resumeRunId, "", "closing a closed dialog is harmless")
+  }
+
+  property string resumeSaveCmd: "python3|/plugin/core/backend/projects/viewer-state.py|set-run-settings|/home/u/my proj|"
+  property string resumeSaveFailed: "The verify commands could not be saved"
+
+  // 7
+  function test_confirm_with_the_dialog_closed_does_nothing() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    compare(controlOf(store).resumeConfirm(), false)
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(Object.keys(controlOf(store).pending).length, 0)
+    compare(controlOf(store).resumeSaveRunner.seq, 0, "nothing saved")
+  }
+
+  // 8
+  function test_confirm_without_commands_or_opt_out_is_refused() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["", "  "]
+    compare(controlOf(store).resumeConfirm(), false)
+    compare(controlOf(store).resumeError, "Add a verify command or choose to run without verification")
+    compare(controlOf(store).resumeRunId, "r1", "the dialog stays open")
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(Object.keys(controlOf(store).pending).length, 0)
+    compare(controlOf(store).resumeSaveRunner.seq, 0)
+  }
+
+  // 9 (and Review Focus 2)
+  function test_confirm_with_commands_passes_them_in_order_dropping_blanks() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["a", "", "  ", "-b c"]
+    compare(controlOf(store).resumeConfirm(), true)
+    compare(controlOf(store).controlRunners.length, 1)
+    var runner = controlOf(store).controlRunners[0]
+    compare(runner.runId, "r1")
+    compare(runner.action, "resume")
+    compare(runner.seq, 1, "run-control directly, no settings read")
+    compare(argv(runner.current), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a|--verify|-b c")
+    compare(runner.current.command.length, 9)
+    compare(controlOf(store).pending.r1, "resume")
+    compare(controlOf(store).resumeRunId, "")
+    compare(controlOf(store).resumeVerify.length, 0)
+    compare(controlOf(store).resumeError, "")
+    compare(controlOf(store).resumeConfirm(), false, "a second confirm finds the dialog closed")
+    compare(controlOf(store).controlRunners.length, 1, "one run-control launch")
+    compare(controlOf(store).resumeSaveRunner.seq, 1, "one save")
+  }
+
+  // 10
+  function test_confirm_with_the_opt_out_passes_allow_no_verification() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = []
+    controlOf(store).resumeAllowNoVerification = true
+    compare(controlOf(store).resumeConfirm(), true)
+    var proc = controlOf(store).controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--allow-no-verification")
+    compare(proc.command.length, 6)
+  }
+
+  // 11
+  function test_commands_win_over_the_opt_out() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["a"]
+    controlOf(store).resumeAllowNoVerification = true
+    compare(controlOf(store).resumeConfirm(), true)
+    var proc = controlOf(store).controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(proc.command.indexOf("--allow-no-verification"), -1)
+  }
+
+  // 12
+  function test_confirm_saves_the_set_for_the_runs_project() {
+    var store = resumeDialogStore([dead("r1"), dead("r2")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["a", "", "-b c"]
+    controlOf(store).resumeConfirm()
+    var save = controlOf(store).resumeSaveRunner.current
+    compare(argv(save), tc.resumeSaveCmd + '{"verify":["a","-b c"],"allowNoVerification":false}')
+    compare(save.command.length, 5, "the root with a space and the JSON are one argument each")
+    compare(save.launchGuard, "", "no guard")
+    compare(controlOf(store).resumeOpenFor("r2"), true)
+    controlOf(store).resumeAllowNoVerification = true
+    controlOf(store).resumeConfirm()
+    compare(argv(controlOf(store).resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":[],"allowNoVerification":true}')
+  }
+
+  // Review Focus 3.
+  function test_non_string_commands_are_neither_passed_nor_saved() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = [5, "a", null]
+    compare(controlOf(store).resumeConfirm(), true)
+    compare(argv(controlOf(store).controlRunners[0].current), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(argv(controlOf(store).resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":["a"],"allowNoVerification":false}')
+    var only = resumeDialogStore([dead("r1")], "r1"); if (!only) return
+    controlOf(only).resumeVerify = [5]
+    compare(controlOf(only).resumeConfirm(), false, "a non-string is not a command")
+    compare(controlOf(only).resumeError, "Add a verify command or choose to run without verification")
+  }
+
+  // Review Focus 4.
+  function test_commands_are_passed_and_saved_verbatim() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["  make test  "]
+    compare(controlOf(store).resumeConfirm(), true)
+    compare(controlOf(store).controlRunners[0].current.command[6], "  make test  ")
+    compare(argv(controlOf(store).resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":["  make test  "],"allowNoVerification":false}')
+  }
+
+  // 13
+  function test_the_resume_does_not_wait_for_the_save() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["a"]
+    compare(controlOf(store).resumeConfirm(), true)
+    compare(controlOf(store).resumeSaveRunner.busy, true, "the save has not replied")
+    var proc = controlOf(store).controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(proc.running, true)
+    compare(controlOf(store).pending.r1, "resume")
+    compare(controlOf(store).resumeRunId, "")
+  }
+
+  // 14
+  function test_a_changed_run_keeps_the_dialog_open() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["a"]
+    snapshot(store, [running("r1")])
+    compare(controlOf(store).resumeConfirm(), false)
+    compare(controlOf(store).resumeError, controlOf(store).refusalOf("resume", "r1"))
+    compare(controlOf(store).resumeError, "The run is still running")
+    compare(controlOf(store).resumeRunId, "r1")
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(controlOf(store).resumeSaveRunner.seq, 0)
+    snapshot(store, [])
+    compare(controlOf(store).resumeConfirm(), false)
+    compare(controlOf(store).resumeError, "This run is no longer in the snapshot")
+    compare(controlOf(store).resumeRunId, "r1")
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(controlOf(store).resumeSaveRunner.seq, 0)
+  }
+
+  // 15
+  function test_a_pending_request_refuses_the_confirm() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    compare(controlOf(store).control("cancel", "r1"), true)
+    controlOf(store).resumeVerify = ["a"]
+    compare(controlOf(store).resumeConfirm(), false)
+    compare(controlOf(store).resumeError, "A request for this run is pending")
+    compare(controlOf(store).resumeRunId, "r1")
+    compare(controlOf(store).controlRunners.length, 1, "only the cancel")
+    compare(controlOf(store).resumeSaveRunner.seq, 0)
+  }
+
+  // 16
+  function test_a_failed_save_flashes_but_the_resume_runs() {
+    var replies = [[JSON.stringify({ ok: false, error: { type: "X", message: "y" } }) + "\n", 1],
+                   ["garbage\n", 0],
+                   ["", 1]]
+    for (var i = 0; i < replies.length; i++) {
+      var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+      controlOf(store).resumeVerify = ["a"]
+      controlOf(store).resumeConfirm()
+      reply(controlOf(store).resumeSaveRunner.current, replies[i][0], replies[i][1])
+      compare(controlOf(store).flashText, tc.resumeSaveFailed, "reply " + i)
+      compare(controlOf(store).controlRunners.length, 1, "the run-control runner is still there")
+      compare(controlOf(store).pending.r1, "resume")
+      compare(controlOf(store).lastControlError, "")
+      compare(controlOf(store).resumeRunId, "")
+    }
+  }
+
+  // 17
+  function test_a_good_save_flashes_nothing() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["a"]
+    controlOf(store).resumeConfirm()
+    reply(controlOf(store).resumeSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(controlOf(store).flashText, "")
+    compare(controlOf(store).pending.r1, "resume")
+  }
+
+  // 18
+  function test_the_resume_save_runner_is_not_the_notify_runner() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    var resumeSeq = controlOf(store).resumeSaveRunner.seq
+    controlOf(store).setNotifyOnEscalation(true)
+    compare(controlOf(store).resumeSaveRunner.seq, resumeSeq, "the switch does not use the resume runner")
+    var notifySeq = controlOf(store).settingsSaveRunner.seq
+    var notifySave = controlOf(store).settingsSaveRunner.current
+    controlOf(store).resumeVerify = ["a"]
+    controlOf(store).resumeConfirm()
+    compare(controlOf(store).settingsSaveRunner.seq, notifySeq, "the confirm does not use the notify runner")
+    reply(notifySave, "garbage\n", 1)
+    compare(controlOf(store).flashText, "Notify on escalation could not be saved", "not the resume sentence")
+    reply(controlOf(store).resumeSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(controlOf(store).flashText, "Notify on escalation could not be saved", "a good resume save changes nothing")
+  }
+
+  // 19
+  function test_the_confirmed_resume_clears_the_control_error() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    compare(controlOf(store).control("cancel", "r1"), true)
+    reply(controlOf(store).controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
+    compare(controlOf(store).lastControlErrorRunId, "r1")
+    compare(controlOf(store).lastControlErrorType, "LockTimeoutError")
+    compare(controlOf(store).resumeOpenFor("r1"), true)
+    controlOf(store).resumeVerify = ["a"]
+    compare(controlOf(store).resumeConfirm(), true)
+    compare(controlOf(store).lastControlError, "")
+    compare(controlOf(store).lastControlErrorRunId, "")
+    compare(controlOf(store).lastControlErrorType, "")
+  }
+
+  // 20
+  function test_a_refused_confirmed_resume_keeps_ams_error_type() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    controlOf(store).resumeVerify = ["a"]
+    controlOf(store).resumeConfirm()
+    var text = ctlFail("NotResumableError", "x")
+    reply(controlOf(store).controlRunners[0].current, text, 0)
+    compare(controlOf(store).lastControlError, Runs.controlError(JSON.parse(text)))
+    compare(controlOf(store).lastControlErrorType, "NotResumableError")
+    compare(controlOf(store).lastControlErrorRunId, "r1")
+    compare(controlOf(store).pending.r1, undefined, "the request is settled")
+    compare(controlOf(store).controlRunners.length, 0)
   }
 }

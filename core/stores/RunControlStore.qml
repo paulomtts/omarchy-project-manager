@@ -21,8 +21,11 @@ import "../domain/runs.js" as Runs
 // (set-global-settings); a failed save puts it back and flashes. A project
 // switch changes nothing here. Each project's run settings (`runSettings`,
 // {root: settings}): loadRunSettings reads them and saveRunSettings merges
-// and writes a patch, each on a runner of its own; a failed save is
-// announced (runSettingsSaveFailed).
+// and writes a patch, each on a runner of its own; a load's reply is
+// announced (runSettingsLoaded) and a failed save too (runSettingsSaveFailed).
+// A milestone resume with no stored verify set opens the Resume dialog
+// (resumeOpenFor .. resumeConfirm), whose confirm saves the typed set for the
+// run's project on resumeSaveRunner.
 Scope {
   id: control
 
@@ -39,6 +42,7 @@ Scope {
   readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
   property string lastControlError: ""      // Runs.controlError sentence of the last failed request
   property string lastControlErrorRunId: "" // the run that sentence is about
+  property string lastControlErrorType: ""  // am's error type of that failure; "" when it carried none
 
   // The cancel confirmation: the run it asks about ("" = closed), the typed
   // word and why the last confirm was refused.
@@ -62,6 +66,8 @@ Scope {
   property var runSettings: ({})
   // A save's reply was not {"ok": true}: `patch` is what that save sent.
   signal runSettingsSaveFailed(var root, var patch)
+  // A load's reply was kept for root: `settings` is root's entry now.
+  signal runSettingsLoaded(var root, var settings)
 
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
@@ -71,12 +77,11 @@ Scope {
   readonly property alias runSettingsRunners: runSettingsState.runners     // in-flight run settings loads and saves, oldest first
   readonly property alias runSettingsLoadRunner: runSettingsState.lastLoad // the newest load until it replies; else null
 
-  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
-  // returns whether it started: only when refusalOf(action, runId) is "".
-  // The request acts on the run's repo_dir; a milestone resume reads the run
-  // settings of the run's project.root. Confirming a cancel is the caller's job.
-  function control(action, runId) {
-    if (control.refusalOf(action, runId) !== "") return false
+  // A new request for runId, a run in `runs`: the control error is dismissed,
+  // the request is recorded with the run's state as its baseline, pending is
+  // set, and its runner (repo_dir and project.root of the run, not launched
+  // yet) joins controlRunners and is returned.
+  function startRequest(action, runId) {
     var run = Runs.runById(control.runs, runId)
     control.dismissControlError()
     controlState.nextToken += 1
@@ -90,6 +95,17 @@ Scope {
     var runner = controlC.createObject(control, { runId: runId, action: action, token: controlState.nextToken,
                                                   repoDir: run.repo_dir, projectRoot: Runs.runRoot(run) })
     controlState.runners = controlState.runners.concat([runner])
+    return runner
+  }
+
+  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
+  // returns whether it started: only when refusalOf(action, runId) is "".
+  // The request acts on the run's repo_dir; a milestone resume reads the run
+  // settings of the run's project.root. Confirming a cancel is the caller's job.
+  function control(action, runId) {
+    if (control.refusalOf(action, runId) !== "") return false
+    var run = Runs.runById(control.runs, runId)
+    var runner = control.startRequest(action, runId)
     if (action === "resume" && run.workflow !== "task") {
       // A milestone resume reuses its project's stored verify set: read it first.
       runner.settingsStep = true
@@ -139,16 +155,19 @@ Scope {
   }
 
   // A request ended without am taking it: the buttons come back and the
-  // sentence shows under that run.
-  function failControl(runId, sentence) {
+  // sentence shows under that run. `type` is am's error type when a string,
+  // else "".
+  function failControl(runId, sentence, type) {
     control.settle(runId)
     control.lastControlError = sentence
     control.lastControlErrorRunId = runId
+    control.lastControlErrorType = typeof type === "string" ? type : ""
   }
 
   function dismissControlError() {
     control.lastControlError = ""
     control.lastControlErrorRunId = ""
+    control.lastControlErrorType = ""
   }
 
   // A runner's request is over: it leaves controlRunners and is destroyed.
@@ -182,9 +201,11 @@ Scope {
                                  launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
       controlState.requests = requests
     } else if (envelope !== null && envelope.ok === false) {
-      control.failControl(runner.runId, Runs.controlError(envelope))
+      var err = envelope.error
+      var type = err !== null && typeof err === "object" && typeof err.type === "string" ? err.type : ""
+      control.failControl(runner.runId, Runs.controlError(envelope), type)
     } else {
-      control.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").")
+      control.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").", "")
     }
     control.dropRunner(runner)
     control.refreshRequested("all")
@@ -192,13 +213,14 @@ Scope {
 
   // The run settings' reply for a milestone resume. A stored verify set (a
   // non-empty list of strings) goes to run-control as --verify pairs in its
-  // order; otherwise the stored opt-out as --allow-no-verification; with
-  // neither, or no readable reply, run-control is never launched and the
-  // request ends with a sentence -- no re-snapshot, nothing was asked of am.
+  // order; otherwise the stored opt-out as --allow-no-verification. With
+  // neither, the request is settled and the Resume dialog opens for the run;
+  // with no readable reply, the request ends with a sentence. In both,
+  // run-control is never launched and there is no re-snapshot.
   function resumeWithSettings(runner, stdout, exitCode) {
     var settings = Results.parseEnvelope(stdout)
     if (settings === null) {
-      control.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").")
+      control.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").", "")
       control.dropRunner(runner)
       return
     }
@@ -214,8 +236,10 @@ Scope {
     } else if (settings.allowNoVerification === true) {
       control.launchControl(runner, ["--allow-no-verification"])
     } else {
-      control.failControl(runner.runId, "Resume needs verify commands: none are stored for this project, and running without verification was not chosen.")
+      var runId = runner.runId
+      control.settle(runId)
       control.dropRunner(runner)
+      control.resumeOpenFor(runId)
     }
   }
 
@@ -321,6 +345,89 @@ Scope {
     return true
   }
 
+  // ---- resume dialog
+
+  // The Resume dialog: a milestone resume with no stored verify set asks for
+  // the commands here. `resumeRunId` is the run it asks about ("" = closed),
+  // `resumeVerify` the commands as typed (blanks allowed),
+  // `resumeAllowNoVerification` the opt-out, and `resumeError` why the last
+  // confirm was refused.
+  property string resumeRunId: ""
+  property var resumeVerify: []
+  property bool resumeAllowNoVerification: false
+  property string resumeError: ""
+
+  // Opens the dialog for runId with empty fields, replacing any open one, and
+  // returns true. Returns false and changes nothing when runId is not a
+  // non-empty string, its run is not in the snapshot, or it is a task run.
+  function resumeOpenFor(runId) {
+    if (typeof runId !== "string" || runId === "") return false
+    var run = Runs.runById(control.runs, runId)
+    if (run === null || run.workflow === "task") return false
+    control.resumeVerify = []
+    control.resumeAllowNoVerification = false
+    control.resumeError = ""
+    control.resumeRunId = runId
+    return true
+  }
+
+  function resumeClose() {
+    control.resumeRunId = ""
+    control.resumeVerify = []
+    control.resumeAllowNoVerification = false
+    control.resumeError = ""
+  }
+
+  // The dialog's confirm. Refused, with resumeError and the dialog left open,
+  // when the form has no non-blank command and no opt-out, or when the run
+  // cannot be resumed now (refusalOf). Otherwise the resume starts as
+  // control() starts one and launches run-control at once: the non-blank
+  // commands as --verify pairs in order, else --allow-no-verification. The
+  // set is saved for the run's project without waiting for the reply, the
+  // dialog closes, and true is returned.
+  function resumeConfirm() {
+    if (control.resumeRunId === "") return false
+    var form = { verify: control.resumeVerify, allowNoVerification: control.resumeAllowNoVerification }
+    var missing = Runs.validateDispatch(form).errors.filter(function(e) { return e.field === "verify" })
+    if (missing.length > 0) {
+      control.resumeError = missing[0].message
+      return false
+    }
+    var runId = control.resumeRunId
+    var reason = control.refusalOf("resume", runId)
+    if (reason !== "") {
+      control.resumeError = reason
+      return false
+    }
+    var commands = Runs.verifyCommands(form)
+    var extra = []
+    for (var i = 0; i < commands.length; i++) extra.push("--verify", commands[i])
+    if (commands.length === 0) extra = ["--allow-no-verification"]
+    var runner = control.startRequest("resume", runId)
+    control.launchControl(runner, extra)
+    resumeSaveRunner.run(["set-run-settings", runner.projectRoot,
+                          JSON.stringify({ verify: commands, allowNoVerification: control.resumeAllowNoVerification === true })])
+    control.resumeClose()
+    return true
+  }
+
+  // set-run-settings: {"ok": true} changes nothing; anything else flashes.
+  // Never touches the request, the control error or the dialog.
+  function resumeSaveReplied(stdout, exitCode) {
+    var reply = Results.parseEnvelope(stdout)
+    if (reply !== null && reply.ok === true) return
+    control.flash("The verify commands could not be saved")
+  }
+
+  // set-run-settings for a confirmed resume; latest wins. No guard: the save
+  // is for the run's project, whatever project is open.
+  HelperRunner {
+    id: resumeSaveRunner
+    script: control.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { control.resumeSaveReplied(stdout, exitCode) }
+  }
+  readonly property alias resumeSaveRunner: resumeSaveRunner
+
   // ---- the notify switch (S2 4.4)
 
   // Each opening (`active` turning true) reads the switch: notifyTouched is
@@ -404,20 +511,11 @@ Scope {
     if (typeof root !== "string" || root === "" || patch === null || typeof patch !== "object") return
     var merged = Runs.copyMap(control.runSettingsOf(root))
     for (var key in patch) {
-      merged[key] = key === "prefixByMilestone" ? control.mergedPrefixes(merged.prefixByMilestone, patch[key]) : patch[key]
+      merged[key] = key === "prefixByMilestone" ? Runs.mergedPrefixes(merged.prefixByMilestone, patch[key]) : patch[key]
     }
     control.applyRunSettings(root, merged)
     var json = JSON.stringify(patch)
     control.launchRunSettings({ root: root, json: json, saving: true }, ["set-run-settings", root, json])
-  }
-
-  // A fresh {milestone id: prefix} map: stored's own entries when stored is
-  // an object that is not an array, then entry's, which override them, as
-  // set-run-settings merges prefixByMilestone.
-  function mergedPrefixes(stored, entry) {
-    var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? Runs.copyMap(stored) : {}
-    for (var id in entry) merged[id] = entry[id]
-    return merged
   }
 
   // A new runSettingsC runner with `props`, added to runSettingsRunners and
@@ -429,16 +527,20 @@ Scope {
     return runner
   }
 
-  // A load's reply is kept for its root; a save's reply other than
-  // {"ok": true} is announced. Either way the runner goes.
+  // A load's reply is kept for its root and announced (runSettingsLoaded,
+  // after the runner went); a save's reply other than {"ok": true} is
+  // announced. Either way the runner goes.
   function runSettingsReplied(runner, stdout) {
     if (runner.saving) {
       var reply = Results.parseEnvelope(stdout)
       if (!(reply !== null && reply.ok === true)) control.runSettingsSaveFailed(runner.root, JSON.parse(runner.json))
-    } else {
-      control.applyRunSettings(runner.root, Results.parseEnvelope(stdout))
+      control.dropRunSettingsRunner(runner)
+      return
     }
+    var root = runner.root
+    control.applyRunSettings(root, Results.parseEnvelope(stdout))
     control.dropRunSettingsRunner(runner)
+    control.runSettingsLoaded(root, control.runSettingsOf(root))
   }
 
   // A run settings runner's request is over: it leaves runSettingsRunners
