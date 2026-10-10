@@ -4473,8 +4473,18 @@ TestCase {
     return store
   }
 
-  // Every dispatch field at its "none" value.
+  // Every dispatch field at its "none" value, no step and no target data.
   function checkDispatchIdle(store, label) {
+    checkDispatchFieldsIdle(store, label)
+    compare(store.dispatchStep, "", label + ": step")
+    compare(store.dispatchTargetRows.length, 0, label + ": target rows")
+    compare(store.dispatchTargetCardMap, null, label + ": target card map")
+    compare(store.dispatchTargetLoading, false, label + ": target loading")
+    compare(store.dispatchTargetKey, "", label + ": target key")
+  }
+
+  // S3's dispatch fields at their "none" values.
+  function checkDispatchFieldsIdle(store, label) {
     compare(store.dispatchState, "idle", label + ": state")
     compare(store.dispatchTarget, null, label + ": target")
     compare(store.dispatchForm, null, label + ": form")
@@ -5357,9 +5367,10 @@ TestCase {
   function test_story_prefix_reads_the_snapshot_then_the_keyed_map() {
     var store = makeWithProject(rootA); if (!store) return
     reply(store.runSettingsRunner.current, keyedSettings({ m9: "m9-map" }), 0)
-    store.runs = [{ id: "r-old", milestone_id: "m1", branch_prefix: "m3-old", started_at: "2026-10-01T00:00:00Z" },
-                  { id: "r-live", milestone_id: "m1", branch_prefix: " m3-live ", started_at: "2026-10-06T00:00:00Z" },
-                  { id: "r-other", milestone_id: "m2", branch_prefix: "m2-x", started_at: "2026-10-07T00:00:00Z" }]
+    var a = { root: tc.rootA, name: "alpha" }
+    store.runs = [{ id: "r-old", milestone_id: "m1", branch_prefix: "m3-old", started_at: "2026-10-01T00:00:00Z", project: a },
+                  { id: "r-live", milestone_id: "m1", branch_prefix: " m3-live ", started_at: "2026-10-06T00:00:00Z", project: a },
+                  { id: "r-other", milestone_id: "m2", branch_prefix: "m2-x", started_at: "2026-10-07T00:00:00Z", project: a }]
     var cards = dispatchCards()
     store.openDispatch(cards.s1, cards)
     compare(store.dispatchForm.prefix, "m3-live", "the milestone's newest snapshot run wins")
@@ -5776,6 +5787,1150 @@ TestCase {
     compare(back.dispatchErrorType, "")
     compare(back.dispatchSuggest, null)
     compare(back.dispatchTargetLabel, 'Milestone "M3 Document runs"')
+  }
+
+  // ---- dispatch: dispatchRoot (2.1 RunStore dispatch)
+
+  // 2.1 RunStore dispatch test 1
+  function test_dispatch_root_starts_empty_and_card_entry_sets_project() {
+    var fresh = make(); if (!fresh) return
+    compare(fresh.dispatchRoot, "", "fresh")
+    var cards = dispatchCards()
+    compare(fresh.openDispatch(cards.m1, cards), false, "no project")
+    compare(fresh.dispatchRoot, "", "a refused card entry sets no root")
+
+    var store = dispatchStore(); if (!store) return
+    compare(store.dispatchRoot, "", "opening a project opens no dispatch")
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchRoot, tc.rootA, "a card entry dispatches for the open project")
+    compare(store.closeDispatch(), true)
+    compare(store.dispatchRoot, "", "closed")
+    checkDispatchIdle(store, "closed")
+    compare(store.openDispatch(cards.m1, cards), true)
+    store.project = tc.rootB
+    compare(store.dispatchRoot, "", "a project switch forgets the root")
+    checkDispatchIdle(store, "switched")
+
+    var starting = readyStore(); if (!starting) return
+    compare(starting.dispatchStart(), true)
+    compare(starting.closeDispatch(), false)
+    compare(starting.dispatchRoot, tc.rootA, "a refused close keeps the root")
+    compare(starting.openDispatch(cards.t1, cards), false)
+    compare(starting.dispatchRoot, tc.rootA, "a refused card entry keeps the root")
+  }
+
+  // 2.1 RunStore dispatch test 2
+  function test_dispatch_open_for_refuses_without_a_root_or_while_starting() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.dispatchOpenFor(cards.m1, cards), false, "no root")
+    checkDispatchIdle(store, "no root")
+    verify(!store.dispatchDefaultsRunner.current, "nothing launched")
+
+    var starting = readyStore(); if (!starting) return
+    starting.dispatchStart()
+    compare(starting.dispatchOpenFor(cards.t1, cards), false, "starting")
+    compare(starting.dispatchState, "starting")
+    compare(starting.dispatchTarget.level, "milestone")
+    compare(starting.dispatchRoot, tc.rootA)
+  }
+
+  // 2.1 RunStore dispatch: the defaults lookup and a refused target for another root
+  function test_dispatch_open_for_launches_for_the_root() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.dispatchRoot = tc.rootB
+    compare(store.dispatchOpenFor(cards.m1, cards), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchRoot, tc.rootB, "the opening keeps the root")
+    compare(store.project, tc.rootA)
+    var lookup = store.dispatchDefaultsRunner.current
+    verify(lookup, "the default branch is looked up")
+    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/b")
+    compare(lookup.launchGuard, "/home/u/b")
+    compare(store.dispatchPreviewRunner.guard, "/home/u/b")
+
+    var refused = dispatchStore(); if (!refused) return
+    refused.dispatchRoot = tc.rootB
+    compare(refused.dispatchOpenFor(cards.d1, cards), false)
+    compare(refused.dispatchState, "refused")
+    compare(refused.dispatchErrorType, "Target")
+    compare(refused.dispatchRoot, tc.rootB)
+    verify(!refused.dispatchDefaultsRunner.current, "a refused target launches nothing")
+  }
+
+  // Projects A and B registered (their snapshot in flight), A open with its
+  // settings read (dispatchSettings), and the dispatch's root set to B.
+  function otherRootStore() {
+    var store = make(); if (!store) return null
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    store.project = tc.rootA
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
+    store.dispatchRoot = tc.rootB
+    return store
+  }
+
+  // B's get-run-settings: differs from A's in every value the form reads.
+  function bSettings() {
+    return JSON.stringify({ verify: ["make test"], parallelism: 2, prefixHistory: ["bpre", "bold"], confirmDispatch: false }) + "\n"
+  }
+
+  property string bPreviewArgs: "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test"
+
+  // Opens milestone m1 for the store's dispatchRoot (B) and lands the
+  // defaults (main), B's settings (bSettings) and the preview: Start is allowed.
+  function readyForB(store) {
+    var cards = dispatchCards()
+    store.dispatchOpenFor(cards.m1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+  }
+
+  // 2.1 RunStore dispatch test 3
+  function test_dispatch_open_for_other_root_argv() {
+    var store = otherRootStore(); if (!store) return
+    var aLoad = store.runSettingsRunner.current
+    var cards = dispatchCards()
+    compare(store.dispatchOpenFor(cards.m1, cards), true)
+    compare(store.dispatchState, "previewing")
+    var lookup = store.dispatchDefaultsRunner.current
+    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/b")
+    var read = store.dispatchSettingsRunner.current
+    verify(read, "B's run settings are read")
+    compare(argv(read), tc.viewerCmd + "get-run-settings|/home/u/b")
+    compare(read.command.length, 4)
+    compare(read.launchGuard, "/home/u/b")
+    verify(store.runSettingsRunner.current === aLoad, "A's run settings are not read again")
+    compare(Object.keys(store.dispatchRunSettings).length, 0, "{} until the reply")
+    compare(store.dispatchForm.verify.length, 0, "the form opens from {} settings")
+    compare(store.dispatchForm.parallelism, 4)
+    compare(store.dispatchForm.prefix, "m3", "the milestone's stem")
+    reply(lookup, defaultsOk("main"), 0)
+    compare(store.dispatchForm.base, "main")
+    compare(store.dispatchState, "previewing")
+    verify(!store.dispatchPreviewRunner.current, "no preview while B's settings are pending")
+    reply(read, bSettings(), 0)
+    compare(store.dispatchRunSettings.prefixHistory[0], "bpre")
+    compare(store.dispatchRunSettings.confirmDispatch, false, "the object is kept as it was read")
+    compare(store.dispatchForm.verify.join(","), "make test")
+    compare(store.dispatchForm.parallelism, 2)
+    compare(store.dispatchForm.prefix, "bpre")
+    compare(store.dispatchForm.base, "main", "base is not touched by the settings reply")
+    compare(store.dispatchForm.allowNoVerification, false)
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc, "the last reply checks the form")
+    compare(argv(proc), tc.previewCmd + tc.bPreviewArgs)
+    compare(proc.launchGuard, "/home/u/b")
+    compare(store.runSettings.prefixHistory[0], "old", "A's settings are untouched")
+    compare(store.runSettings.verify[0], "uv run pytest")
+
+    var settingsFirst = otherRootStore(); if (!settingsFirst) return
+    settingsFirst.dispatchOpenFor(cards.m1, cards)
+    reply(settingsFirst.dispatchSettingsRunner.current, bSettings(), 0)
+    verify(!settingsFirst.dispatchPreviewRunner.current, "no preview while the defaults are pending")
+    reply(settingsFirst.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(settingsFirst.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "whichever replies last checks")
+
+    var refused = otherRootStore(); if (!refused) return
+    compare(refused.dispatchOpenFor(cards.d1, cards), false)
+    verify(!refused.dispatchDefaultsRunner.current, "a refused target: no defaults lookup")
+    verify(!refused.dispatchSettingsRunner.current, "a refused target: no settings read")
+  }
+
+  // 2.1 RunStore dispatch test 4 + Review Focus 1, 2 and 3
+  function test_dispatch_settings_reply_keeps_user_edits_and_unreadable_is_empty() {
+    var cards = dispatchCards()
+    var edited = otherRootStore(); if (!edited) return
+    edited.dispatchOpenFor(cards.m1, cards)
+    compare(edited.setDispatchField("prefix", "mine"), true)
+    compare(edited.setDispatchField("parallelism", 3), true)
+    reply(edited.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    fire(edited.dispatchDebounceTimer)
+    verify(!edited.dispatchPreviewRunner.current, "the debounced check waits for B's settings")
+    reply(edited.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(edited.dispatchForm.prefix, "mine", "the user's prefix is kept")
+    compare(edited.dispatchForm.parallelism, 3, "the user's parallelism is kept")
+    compare(edited.dispatchForm.verify.join(","), "make test", "verify takes B's")
+    compare(argv(edited.dispatchPreviewRunner.current),
+            tc.previewCmd + "/home/u/b|milestone|m1|--base-branch|main|--branch-prefix|mine|--max-concurrent|3|--verify|make test")
+
+    var replies = ["Traceback: boom\n", "[1, 2]\n", ""]
+    for (var i = 0; i < replies.length; i++) {
+      var bad = otherRootStore(); if (!bad) return
+      bad.dispatchOpenFor(cards.m1, cards)
+      reply(bad.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+      reply(bad.dispatchSettingsRunner.current, replies[i], 1)
+      compare(Object.keys(bad.dispatchRunSettings).length, 0, "reply " + i + ": unreadable is {}")
+      compare(bad.dispatchForm.prefix, "m3", "reply " + i + ": the {} defaults stay")
+      compare(bad.dispatchForm.parallelism, 4, "reply " + i)
+      compare(bad.dispatchForm.verify.length, 0, "reply " + i)
+      compare(bad.dispatchState, "refused", "reply " + i + ": the check ran")
+      compare(bad.dispatchErrors[0].field, "verify", "reply " + i)
+    }
+
+    var late = otherRootStore(); if (!late) return
+    late.dispatchOpenFor(cards.m1, cards)
+    var lateRead = late.dispatchSettingsRunner.current
+    compare(late.closeDispatch(), true)
+    reply(lateRead, bSettings(), 0)
+    checkDispatchIdle(late, "a settings reply after the close")
+    compare(Object.keys(late.dispatchRunSettings).length, 0, "nothing kept after the close")
+
+    var reopened = otherRootStore(); if (!reopened) return
+    reopened.dispatchOpenFor(cards.m1, cards)
+    var bRead = reopened.dispatchSettingsRunner.current
+    compare(reopened.openDispatch(cards.m1, cards), true)
+    compare(reopened.dispatchRoot, tc.rootA)
+    reply(bRead, bSettings(), 0)
+    compare(Object.keys(reopened.dispatchRunSettings).length, 0, "B's late reply is dropped")
+    compare(reopened.dispatchForm.prefix, "old", "A's form stays")
+    compare(reopened.dispatchForm.verify.join(","), "uv run pytest")
+    compare(reopened.dispatchForm.parallelism, 4)
+  }
+
+  // 2.1 RunStore dispatch test 5
+  function test_dispatch_prefix_default_reads_only_the_roots_runs() {
+    var store = otherRootStore(); if (!store) return
+    var cards = dispatchCards()
+    var a = { root: tc.rootA, name: "alpha" }
+    var b = { root: tc.rootB, name: "beta" }
+    store.runs = [{ id: "r-a", milestone_id: "m1", branch_prefix: "a-pre", started_at: "2026-10-07T00:00:00Z", project: a },
+                  { id: "r-b", milestone_id: "m1", branch_prefix: "b-pre", started_at: "2026-10-06T00:00:00Z", project: b }]
+    store.dispatchOpenFor(cards.s1, cards)
+    compare(store.dispatchForm.prefix, "b-pre", "A's newer run of m1 does not supply B's prefix")
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(store.dispatchForm.prefix, "b-pre", "B's run still beats B's history")
+
+    compare(store.closeDispatch(), true)
+    store.runs = [{ id: "r-a", milestone_id: "m1", branch_prefix: "a-pre", started_at: "2026-10-06T00:00:00Z", project: a },
+                  { id: "r-b", milestone_id: "m1", branch_prefix: "b-pre", started_at: "2026-10-07T00:00:00Z", project: b }]
+    compare(store.openDispatch(cards.s1, cards), true)
+    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchForm.prefix, "a-pre", "a card entry reads only the open project's runs")
+  }
+
+  // 2.1 RunStore dispatch test 9
+  function test_dispatch_retarget_keeps_the_root() {
+    var store = otherRootStore(); if (!store) return
+    var cards = dispatchCards()
+    store.dispatchOpenFor(cards.s1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(argv(store.dispatchPreviewRunner.current),
+            tc.previewCmd + "/home/u/b|story|s1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
+    reply(store.dispatchPreviewRunner.current, ctlFail("StoryBlockedError", tc.blockedMessage), 0)
+    compare(store.dispatchState, "refused")
+    compare(JSON.stringify(store.dispatchSuggest), '{"id":"m1","title":"M3 Document runs"}')
+    var storyRead = store.dispatchSettingsRunner.current
+    compare(store.retargetToMilestone(), true)
+    compare(store.dispatchRoot, tc.rootB, "the retarget keeps the root")
+    compare(store.dispatchTarget.level, "milestone")
+    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/b")
+    verify(store.dispatchSettingsRunner.current !== storyRead, "B's settings are read afresh")
+    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "B's milestone is previewed")
+  }
+
+  // 2.1 RunStore dispatch test 10 + Review Focus 4
+  function test_dispatch_card_entry_launches_no_settings_read() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true)
+    verify(!store.dispatchSettingsRunner.current, "the open project's runSettings are used")
+    compare(Object.keys(store.dispatchRunSettings).length, 0)
+    compare(store.dispatchForm.prefix, "old")
+    compare(store.dispatchForm.verify.join(","), "uv run pytest")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs, "previewed on the defaults reply")
+
+    var both = otherRootStore(); if (!both) return
+    compare(both.openDispatch(cards.m1, cards), true)
+    compare(both.dispatchRoot, tc.rootA, "the card entry replaces a root set before")
+    verify(!both.dispatchSettingsRunner.current, "no settings read for the open project")
+
+    var same = dispatchStore(); if (!same) return
+    same.dispatchRoot = tc.rootA
+    compare(same.dispatchOpenFor(cards.m1, cards), true)
+    verify(!same.dispatchSettingsRunner.current, "dispatchOpenFor on the open project reads no settings")
+    compare(same.dispatchForm.verify.join(","), "uv run pytest")
+    reply(same.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(same.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs)
+  }
+
+  // otherRootStore() with A's and B's first snapshot landed (none in
+  // flight) and milestone m1 ready for B (readyForB).
+  function otherReadyStore() {
+    var store = otherRootStore(); if (!store) return null
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    readyForB(store)
+    return store
+  }
+
+  property string bSavedJson: '{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["bpre","bold"],"parallelism":2,"prefixByMilestone":{"m1":"bpre"}}'
+
+  // 2.1 RunStore dispatch test 6 + Review Focus 5
+  function test_dispatch_start_for_other_root_argv_save_and_refresh() {
+    var store = otherReadyStore(); if (!store) return
+    compare(store.dispatchState, "ready")
+    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
+    var aBefore = JSON.stringify(store.runSettings)
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    compare(runner.madeFor, "/home/u/b")
+    compare(argv(runner.current), tc.startCmd + tc.bPreviewArgs)
+    compare(runner.savedJson, tc.bSavedJson, "B's history follows the prefix sent")
+    var seq = store.snapshotRunner.seq
+    reply(runner.current, startOk("r-b", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(store.dispatchRunId, "r-b")
+    compare(spy.count, 1)
+    compare(spy.signalArguments[0][0], "r-b")
+    compare(store.snapshotRunner.seq, seq + 1, "one snapshot is asked for")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|" + tc.rootB, "of B only")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" + tc.bSavedJson)
+    compare(store.dispatchRunSettings.prefixHistory.join(","), "bpre,bold")
+    compare(store.dispatchRunSettings.prefixByMilestone.m1, "bpre")
+    compare(store.dispatchRunSettings.confirmDispatch, false, "B's other keys are kept")
+    compare(JSON.stringify(store.runSettings), aBefore, "A's settings are untouched")
+    reply(runner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.dispatchStartRunners.length, 0)
+    compare(store.flashText, "")
+
+    compare(store.closeDispatch(), true)
+    compare(Object.keys(store.dispatchRunSettings).length, 0, "the merge does not outlive the close")
+    store.dispatchRoot = tc.rootB
+    var cards = dispatchCards()
+    compare(store.dispatchOpenFor(cards.m1, cards), true)
+    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b", "B is read afresh")
+
+    var busy = otherReadyStore(); if (!busy) return
+    busy.refresh()
+    verify(busy.snapshotRunner.busy, "a snapshot of every root is in flight")
+    busy.dispatchStart()
+    reply(busy.dispatchStartRunners[0].current, startOk("r-b", ""), 0)
+    compare(busy.dispatchState, "started")
+    compare(busy.pendingSnapshot.join("|"), tc.rootB, "B joins the pending request")
+
+    var lone = dispatchStore(); if (!lone) return
+    reply(lone.snapshotRunner.current, okReply([]), 0)
+    lone.dispatchRoot = tc.rootB
+    readyForB(lone)
+    compare(lone.dispatchState, "ready")
+    lone.dispatchStart()
+    var loneSeq = lone.snapshotRunner.seq
+    reply(lone.dispatchStartRunners[0].current, startOk("r-b", ""), 0)
+    compare(lone.dispatchState, "started")
+    compare(lone.snapshotRunner.seq, loneSeq, "B is not registered: no snapshot")
+  }
+
+  // 2.1 RunStore dispatch test 7
+  function test_dispatch_story_start_for_other_root_saves_prefix_by_milestone_for_it() {
+    var store = otherRootStore(); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    var cards = dispatchCards()
+    store.dispatchOpenFor(cards.s1, cards)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, JSON.stringify({ verify: ["make test"], parallelism: 2, prefixHistory: ["bpre"],
+                                                                 prefixByMilestone: { m9: "b9" } }) + "\n", 0)
+    reply(store.dispatchPreviewRunner.current, previewOk(storyDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    compare(argv(runner.current), tc.startCmd + "/home/u/b|story|s1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
+    reply(runner.current, startOk("r-s", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" +
+            '{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["bpre"],"parallelism":2,"prefixByMilestone":{"m1":"bpre"}}')
+    var map = store.dispatchRunSettings.prefixByMilestone
+    compare(Object.keys(map).sort().join(","), "m1,m9", "merged into B's settings")
+    compare(map.m9, "b9", "B's stored entry is kept")
+    compare(map.m1, "bpre")
+    compare(store.runSettings.prefixByMilestone, undefined, "nothing keyed into A's settings")
+  }
+
+  // 2.1 RunStore dispatch test 8
+  function test_dispatch_start_in_flight_completes_for_its_root_after_a_switch() {
+    var store = otherReadyStore(); if (!store) return
+    var spy = spyC.createObject(tc, { target: store, signalName: "dispatchStarted" })
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    var proc = runner.current
+    store.project = tc.rootB
+    compare(store.dispatchRoot, "", "the switch forgets the root")
+    checkDispatchIdle(store, "after the switch")
+    compare(proc.running, true, "the start is not stopped")
+    var seq = store.snapshotRunner.seq
+    reply(proc, startOk("r-b", ""), 0)
+    checkDispatchIdle(store, "after B's start landed")
+    compare(spy.count, 0, "no signal")
+    compare(store.snapshotRunner.seq, seq, "no snapshot")
+    compare(Object.keys(store.dispatchRunSettings).length, 0, "nothing merged into dispatchRunSettings")
+    compare(Object.keys(store.runSettings).length, 0, "nothing merged into runSettings")
+    compare(argv(runner.current), tc.viewerCmd + "set-run-settings|/home/u/b|" + tc.bSavedJson, "still written for B")
+    reply(runner.current, "garbage\n", 1)
+    compare(store.flashText, "", "a save failure that is not here does not flash")
+    compare(store.dispatchStartRunners.length, 0)
+  }
+
+  // ---- dispatch: project and target steps (2.2)
+
+  property string probeCmd: "python3|/plugin/core/backend/boards/board-tree.py|--probe"
+
+  // board-tree.py --probe's reply line: {"ok": true, "projects": entries}.
+  function probeReply(entries) {
+    return JSON.stringify({ ok: true, projects: entries }) + "\n"
+  }
+
+  // The project step's rows as "root:name:open:on|off:reason", " / "-joined.
+  function rowsText(rows) {
+    return rows.map(function(r) {
+      return r.root + ":" + r.name + ":" + (r.open ? "open" : "") + ":" + (r.enabled ? "on" : "off") + ":" + r.reason
+    }).join(" / ")
+  }
+
+  // Projects A and B registered, A open with its settings read (dispatchSettings).
+  function runsStore() {
+    var store = make(); if (!store) return null
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    store.project = tc.rootA
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
+    return store
+  }
+
+  // 2.2 test 1
+  function test_dispatch_step_empty_for_idle_and_card_entry() {
+    var fresh = make(); if (!fresh) return
+    compare(fresh.dispatchStep, "", "fresh")
+    compare(fresh.dispatchProjectRows.length, 0, "fresh: no rows")
+    compare(fresh.dispatchProjectProbe, null, "fresh: no probe")
+
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchStep, "", "a card entry has no step")
+    compare(store.dispatchProjectRows.length, 0, "a card entry has no rows")
+    verify(!store.dispatchProjectRunner.current, "a card entry probes nothing")
+  }
+  // 2.2 test 2
+  function test_dispatch_open_from_runs_argv_and_rows() {
+    var store = runsStore(); if (!store) return
+    compare(store.dispatchOpenFromRuns(), true)
+    compare(store.dispatchStep, "project")
+    compare(store.dispatchRoot, "", "no root until a pick")
+    compare(store.dispatchState, "idle")
+    compare(store.dispatchTarget, null, "S3's fields keep their none values")
+    compare(store.dispatchForm, null)
+    var probe = store.dispatchProjectRunner.current
+    verify(probe, "the probe is launched")
+    compare(argv(probe), tc.probeCmd + "|/home/u/my proj|/home/u/b")
+    compare(probe.command.length, 5)
+    compare(store.dispatchProjectProbe, null, "null before the reply")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:",
+            "before the reply every row is enabled, the open project first")
+    reply(probe, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    compare(store.dispatchProjectProbe.ok, true)
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:no .brd marker")
+
+    var none = makeWithRoots([tc.rootB, tc.rootA]); if (!none) return
+    compare(none.dispatchOpenFromRuns(), true, "no project needs to be open")
+    compare(argv(none.dispatchProjectRunner.current), tc.probeCmd + "|/home/u/b|/home/u/my proj", "registry order")
+    compare(rowsText(none.dispatchProjectRows), "/home/u/my proj:alpha::on: / /home/u/b:beta::on:", "no row open, ordered by name")
+  }
+  // 2.2 test 3
+  function test_dispatch_open_from_runs_with_no_root_and_while_starting() {
+    var empty = make(); if (!empty) return
+    compare(empty.dispatchOpenFromRuns(), true)
+    compare(empty.dispatchStep, "project")
+    compare(empty.dispatchProjectRows.length, 0, "No projects registered")
+    verify(!empty.dispatchProjectRunner.current, "nothing to probe")
+
+    var unusable = make(); if (!unusable) return
+    unusable.projectRoots = [{ root: "-x", name: "x" }, { root: "", name: "empty" }, null, { name: "no root" }]
+    compare(unusable.dispatchOpenFromRuns(), true)
+    compare(unusable.dispatchProjectRows.length, 0, "an unusable entry gives no row")
+    verify(!unusable.dispatchProjectRunner.current, "an unusable entry is not probed")
+
+    var emptied = runsStore(); if (!emptied) return
+    emptied.dispatchOpenFromRuns()
+    var old = emptied.dispatchProjectRunner.current
+    emptied.projectRoots = []
+    compare(emptied.dispatchOpenFromRuns(), true)
+    compare(emptied.dispatchProjectRows.length, 0)
+    reply(old, probeReply([{ root: tc.rootA, ok: true }]), 0)
+    compare(emptied.dispatchProjectProbe, null, "a reopening with no root drops the older probe")
+
+    var starting = readyStore(); if (!starting) return
+    compare(starting.dispatchStart(), true)
+    compare(starting.dispatchOpenFromRuns(), false)
+    compare(starting.dispatchState, "starting")
+    compare(starting.dispatchStep, "")
+    compare(starting.dispatchRoot, tc.rootA)
+    verify(!starting.dispatchProjectRunner.current, "nothing launched")
+  }
+  // 2.2 test 4
+  function test_dispatch_project_probe_unreadable_and_latest_wins() {
+    var store = runsStore(); if (!store) return
+    var bad = probeReply([{ root: tc.rootB, ok: false, reason: "not a directory" }])
+    var unreadable = ["Traceback: boom\n", "", "[1, 2]\n",
+                      JSON.stringify({ ok: false, error: { type: "Usage", message: "no roots" } }) + "\n",
+                      JSON.stringify({ ok: true, projects: "nope" }) + "\n"]
+    for (var i = 0; i < unreadable.length; i++) {
+      store.dispatchOpenFromRuns()
+      reply(store.dispatchProjectRunner.current, bad, 0)
+      verify(store.dispatchProjectProbe !== null, "case " + i + ": a good reply first")
+      store.dispatchProjectReplied(unreadable[i])
+      compare(store.dispatchProjectProbe, null, "case " + i + ": unreadable is null")
+      compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:",
+              "case " + i + ": every row enabled")
+    }
+
+    store.dispatchOpenFromRuns()
+    var first = store.dispatchProjectRunner.current
+    compare(store.dispatchOpenFromRuns(), true, "a second call starts the step over")
+    var second = store.dispatchProjectRunner.current
+    verify(first !== second, "a new probe")
+    reply(first, bad, 0)
+    compare(store.dispatchProjectProbe, null, "the older reply is dropped")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:")
+    reply(second, bad, 0)
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:not a directory",
+            "the newer reply applies")
+  }
+
+  // 2.2 test 5
+  function test_dispatch_project_pick() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current,
+          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    compare(store.dispatchProjectPick(tc.rootB), false, "a disabled row")
+    compare(store.dispatchProjectPick("/nope"), false, "an unknown root")
+    compare(store.dispatchProjectPick(""), false, "no root")
+    compare(store.dispatchStep, "project", "a refused pick keeps the step")
+    compare(store.dispatchRoot, "", "a refused pick sets no root")
+    compare(store.dispatchProjectPick(tc.rootA), true)
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchState, "idle")
+    verify(!store.dispatchDefaultsRunner.current, "a pick looks up no defaults")
+    verify(!store.dispatchSettingsRunner.current, "a pick reads no settings")
+    verify(!store.dispatchPreviewRunner.current, "a pick previews nothing")
+    compare(store.dispatchProjectPick(tc.rootA), false, "no pick at the target step")
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchRoot, tc.rootA)
+
+    var idle = runsStore(); if (!idle) return
+    compare(idle.dispatchProjectPick(tc.rootA), false, "no pick without a step")
+    compare(idle.dispatchStep, "")
+    compare(idle.dispatchRoot, "")
+
+    var early = runsStore(); if (!early) return
+    early.dispatchOpenFromRuns()
+    compare(early.dispatchProjectPick(tc.rootB), true, "a row with no probe entry is enabled")
+    compare(early.dispatchRoot, tc.rootB)
+  }
+  // 2.2 test 6
+  function test_dispatch_back_from_target() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
+    var probe = store.dispatchProjectProbe
+    var seq = store.dispatchProjectRunner.seq
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    compare(store.dispatchBack(), true)
+    compare(store.dispatchStep, "project")
+    compare(store.dispatchRoot, "")
+    verify(store.dispatchProjectProbe === probe, "the probe is kept")
+    compare(store.dispatchProjectRunner.seq, seq, "nothing relaunched")
+    compare(store.dispatchProjectRows.length, 2)
+    compare(store.dispatchBack(), false, "step 1 has no Back")
+    compare(store.dispatchStep, "project")
+
+    var idle = runsStore(); if (!idle) return
+    compare(idle.dispatchBack(), false, "no Back without a step")
+    compare(idle.dispatchStep, "")
+
+    var form = runsStore(); if (!form) return
+    form.dispatchOpenFromRuns()
+    form.dispatchProjectPick(tc.rootB)
+    form.dispatchStep = "form"
+    compare(form.dispatchBack(), true, "Back from the form returns to the target step")
+    compare(form.dispatchStep, "target")
+    compare(form.dispatchRoot, tc.rootB)
+  }
+  // 2.2 test 10
+  function test_dispatch_rows_follow_project_roots() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    var seq = store.dispatchProjectRunner.seq
+    reply(store.dispatchProjectRunner.current,
+          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: false, reason: "not a directory" }]), 0)
+    store.projectRoots = [tc.rootEntry(tc.rootA), { root: tc.rootB, name: "zeta" }]
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:zeta::off:not a directory", "renamed")
+    store.projectRoots = [tc.rootEntry(tc.rootA), { root: tc.rootB, name: "zeta" }, tc.rootEntry(tc.rootC)]
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha:open:on: / /home/u/c:proj::on: / /home/u/b:zeta::off:not a directory",
+            "C added, enabled with no probe entry")
+    store.projectRoots = [tc.rootEntry(tc.rootC), { root: tc.rootB, name: "zeta" }, tc.rootEntry(tc.rootA)]
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha:open:on: / /home/u/c:proj::on: / /home/u/b:zeta::off:not a directory",
+            "reordered: still the open row first, then by name")
+    compare(store.dispatchProjectRunner.seq, seq, "no new probe")
+
+    store.projectRoots = [{ root: "-x", name: "x" }, tc.rootEntry(tc.rootA), { root: "/home/u/b/", name: "beta" }]
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:not a directory",
+            "no row for -x; the trailing / is trimmed")
+    store.dispatchOpenFromRuns()
+    compare(argv(store.dispatchProjectRunner.current), tc.probeCmd + "|/home/u/my proj|/home/u/b/",
+            "-x is not probed; the root is probed as registered")
+    compare(store.dispatchProjectPick("/home/u/b/"), false, "a pick names the row's root")
+    compare(store.dispatchProjectPick("/home/u/b"), true)
+    compare(store.dispatchRoot, "/home/u/b")
+  }
+
+  // 2.2 test 7
+  function test_dispatch_close_and_card_entry_clear_the_steps() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    var late = store.dispatchProjectRunner.current
+    compare(store.closeDispatch(), true)
+    compare(store.dispatchStep, "")
+    compare(store.dispatchProjectProbe, null)
+    compare(store.dispatchProjectRows.length, 0)
+    checkDispatchIdle(store, "closed")
+    reply(late, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    compare(store.dispatchProjectProbe, null, "a reply after the close is dropped")
+    compare(store.dispatchStep, "")
+    store.dispatchProjectReplied(probeReply([{ root: tc.rootB, ok: true }]))
+    compare(store.dispatchProjectProbe, null, "a reply is applied only while a step is open")
+
+    var cards = dispatchCards()
+    store.dispatchOpenFromRuns()
+    var lateCard = store.dispatchProjectRunner.current
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchStep, "", "a card entry clears the steps")
+    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchProjectRows.length, 0)
+    reply(lateCard, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    compare(store.dispatchProjectProbe, null, "a reply after a card entry is dropped")
+
+    var panel = make(); if (!panel) return
+    panel.active = true
+    panel.projectRoots = registry([tc.rootA, tc.rootB])
+    panel.dispatchOpenFromRuns()
+    compare(panel.dispatchProjectPick(tc.rootB), true)
+    panel.active = false
+    compare(panel.dispatchStep, "", "closing the panel clears the steps")
+    compare(panel.dispatchRoot, "")
+
+    var starting = readyStore(); if (!starting) return
+    compare(starting.dispatchStart(), true)
+    starting.dispatchStep = "form"
+    compare(starting.closeDispatch(), false)
+    compare(starting.dispatchStep, "form", "a refused close keeps the step")
+    compare(starting.openDispatch(cards.m1, cards), false)
+    compare(starting.dispatchStep, "form", "a refused card entry keeps the step")
+  }
+
+  // 2.2 test 8
+  function test_dispatch_registry_change_while_open_drops_the_row() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    var seq = store.dispatchProjectRunner.seq
+    store.projectRoots = registry([tc.rootA])
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:", "B's row is gone")
+    compare(store.dispatchProjectRunner.seq, seq, "no new probe")
+    compare(store.dispatchStep, "project")
+
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    store.dispatchOpenFromRuns()
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    store.projectRoots = registry([tc.rootA])
+    compare(store.dispatchStep, "project", "the picked root left: back to step 1")
+    compare(store.dispatchRoot, "")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:")
+
+    compare(store.dispatchProjectPick(tc.rootA), true)
+    store.projectRoots = registry([tc.rootB, tc.rootA])
+    compare(store.dispatchStep, "target", "a reorder keeps the step")
+    compare(store.dispatchRoot, tc.rootA)
+    store.projectRoots = [{ root: tc.rootA + "/", name: "alpha" }, tc.rootEntry(tc.rootB)]
+    compare(store.dispatchStep, "target", "a trailing / is the same root")
+    compare(store.dispatchRoot, tc.rootA)
+
+    store.dispatchStep = "form"
+    store.projectRoots = registry([tc.rootB])
+    compare(store.dispatchStep, "project", "the picked root left the form: back to step 1")
+    compare(store.dispatchRoot, "")
+  }
+
+  // 2.2 test 9
+  function test_dispatch_open_project_switch_leaves_a_runs_dialog_alone() {
+    var store = make(); if (!store) return
+    store.projectRoots = registry([tc.rootA, tc.rootB, tc.rootC])
+    store.project = tc.rootA
+    reply(store.runSettingsRunner.current, dispatchSettings(), 0)
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current,
+          probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }, { root: tc.rootC, ok: true }]), 0)
+    var probe = store.dispatchProjectProbe
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    store.project = tc.rootC
+    compare(store.dispatchStep, "target", "the step is kept")
+    compare(store.dispatchRoot, tc.rootB, "the root is kept")
+    verify(store.dispatchProjectProbe === probe, "the probe is kept")
+    compare(store.dispatchState, "idle")
+    compare(Object.keys(store.runSettings).length, 0, "the run settings are the new project's")
+    compare(argv(store.runSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/c")
+    compare(store.dispatchBack(), true)
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/c:proj:open:on: / /home/u/my proj:alpha::on: / /home/u/b:beta::on:", "the open mark follows")
+    store.project = ""
+    compare(store.dispatchStep, "project", "closing the project keeps the step")
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha::on: / /home/u/b:beta::on: / /home/u/c:proj::on:", "no row open")
+
+    var inFlight = runsStore(); if (!inFlight) return
+    inFlight.dispatchOpenFromRuns()
+    var proc = inFlight.dispatchProjectRunner.current
+    inFlight.project = tc.rootB
+    reply(proc, probeReply([{ root: tc.rootA, ok: false, reason: "no .brd marker" }]), 0)
+    compare(rowsText(inFlight.dispatchProjectRows),
+            "/home/u/b:beta:open:on: / /home/u/my proj:alpha::off:no .brd marker", "a probe across a switch still applies")
+  }
+
+  // ---- dispatch: the target step (2.3)
+
+  // board-tree.py ROOT's argv up to the root.
+  property string treeCmd: "python3|/plugin/core/backend/boards/board-tree.py"
+
+  // board-tree.py ROOT's reply line: {"ok": true, "data": data}.
+  function treeReply(data) {
+    return JSON.stringify({ ok: true, data: data }) + "\n"
+  }
+
+  // board-tree.py ROOT's failure line: {"ok": false, "error": {type, message}}.
+  function treeFail(message) {
+    return JSON.stringify({ ok: false, error: { type: "BrdFailed", message: message } }) + "\n"
+  }
+
+  // A fresh brd tree as brd prints it (children, no depth or parentId):
+  // milestone m1 holding story s1, which holds subtask t1 (todo) and
+  // subtask t2 (done); then the done milestone d1.
+  function treeData() {
+    return [
+      { id: "m1", title: "M3 Document runs", status: "todo", children: [
+        { id: "s1", title: "Dispatch store", status: "todo", children: [
+          { id: "t1", title: "RunStore dispatch", status: "todo", children: [] },
+          { id: "t2", title: "Docs", status: "done", children: [] }] }] },
+      { id: "d1", title: "M2 Monitor runs", status: "done", children: [] }
+    ]
+  }
+
+  // The target rows' keys, ","-joined.
+  function targetKeys(rows) {
+    return rows.map(function(r) { return r.key }).join(",")
+  }
+
+  // runsStore() opened from Runs, A and B probed ok, and `root` picked: its
+  // tree read is in flight.
+  function pickedStore(root) {
+    var store = runsStore(); if (!store) return null
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
+    store.dispatchProjectPick(root)
+    return store
+  }
+
+  // pickedStore(root) with treeData() read: the target rows are up.
+  function targetStore(root) {
+    var store = pickedStore(root); if (!store) return null
+    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
+    return store
+  }
+
+  // The target data at its cleared values.
+  function checkTargetCleared(store, label) {
+    compare(store.dispatchTargetRows.length, 0, label + ": target rows")
+    compare(store.dispatchTargetCardMap, null, label + ": target card map")
+    compare(store.dispatchTargetLoading, false, label + ": target loading")
+    compare(store.dispatchTargetKey, "", label + ": target key")
+  }
+
+  // 2.3 test 1
+  function test_dispatch_target_pick_launches_the_tree_read() {
+    var store = runsStore(); if (!store) return
+    store.dispatchOpenFromRuns()
+    reply(store.dispatchProjectRunner.current, probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]), 0)
+    verify(!store.dispatchTargetRunner.current, "no tree read before a pick")
+    compare(store.dispatchTargetLoading, false)
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    var proc = store.dispatchTargetRunner.current
+    verify(proc, "the pick reads B's tree")
+    compare(argv(proc), tc.treeCmd + "|/home/u/b")
+    compare(proc.command.length, 3, "no --probe")
+    compare(proc.launchGuard, tc.rootB, "guarded by the picked root")
+    compare(store.dispatchTargetLoading, true)
+    compare(store.dispatchTargetRows.length, 0, "no rows until the reply")
+    compare(store.dispatchTargetCardMap, null)
+    compare(store.dispatchTargetKey, "")
+    compare(store.dispatchState, "idle")
+    verify(!store.dispatchDefaultsRunner.current, "no defaults lookup")
+    verify(!store.dispatchSettingsRunner.current, "no settings read")
+    verify(!store.dispatchPreviewRunner.current, "no preview")
+    var seq = store.dispatchTargetRunner.seq
+    compare(store.dispatchProjectPick(tc.rootA), false, "no pick at the target step")
+    compare(store.dispatchTargetRunner.seq, seq, "a refused pick launches nothing")
+    verify(store.dispatchTargetRunner.current === proc)
+    compare(store.dispatchRoot, tc.rootB)
+
+    var off = runsStore(); if (!off) return
+    off.dispatchOpenFromRuns()
+    reply(off.dispatchProjectRunner.current, probeReply([{ root: tc.rootB, ok: false, reason: "no .brd marker" }]), 0)
+    var offSeq = off.dispatchTargetRunner.seq
+    compare(off.dispatchProjectPick(tc.rootB), false, "a disabled row")
+    compare(off.dispatchTargetRunner.seq, offSeq, "a disabled row launches nothing")
+    verify(!off.dispatchTargetRunner.current)
+    compare(off.dispatchTargetLoading, false)
+  }
+
+  // 2.3 test 2
+  function test_dispatch_target_rows_from_the_tree() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
+    compare(store.dispatchTargetLoading, false)
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchRoot, tc.rootB)
+    compare(store.dispatchState, "idle")
+    var rows = store.dispatchTargetRows
+    compare(targetKeys(rows), "board,card:m1,card:s1,card:t1", "the board row, then the offered cards in tree order")
+    compare(rows[0].card, "board")
+    compare(rows[0].level, "board")
+    compare(rows[0].label, "Whole board")
+    compare(rows[1].level, "milestone")
+    compare(rows[1].label, "Milestone \"M3 Document runs\"")
+    compare(rows[3].level, "subtask")
+    compare(rows[3].depth, 2)
+    var map = store.dispatchTargetCardMap
+    compare(map.t1.parentId, "s1", "indexed with Board.indexTree")
+    compare(map.t1.depth, 2)
+    compare(Object.keys(map).sort().join(","), "d1,m1,s1,t1,t2", "the map holds every card")
+    verify(rows[3].card === map.t1, "the row's card is the map's card")
+
+    var empty = pickedStore(tc.rootB); if (!empty) return
+    reply(empty.dispatchTargetRunner.current, treeReply([]), 0)
+    compare(targetKeys(empty.dispatchTargetRows), "board", "a tree with no offered card gives the board row only")
+    compare(Object.keys(empty.dispatchTargetCardMap).length, 0)
+    compare(empty.dispatchStep, "target")
+  }
+
+  // 2.3 test 8
+  function test_dispatch_target_read_survives_a_project_switch() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    var proc = store.dispatchTargetRunner.current
+    store.project = tc.rootC
+    compare(store.dispatchStep, "target", "the step is kept")
+    compare(store.dispatchRoot, tc.rootB, "the root is kept")
+    compare(store.dispatchTargetLoading, true, "the read is still in flight")
+    verify(store.dispatchTargetRunner.current === proc, "and not relaunched")
+    reply(proc, treeReply(treeData()), 0)
+    compare(store.dispatchTargetLoading, false)
+    compare(targetKeys(store.dispatchTargetRows), "board,card:m1,card:s1,card:t1", "the reply applies")
+  }
+
+  // 2.3 test 5
+  function test_dispatch_target_failure_disables_the_row() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    var probeSeq = store.dispatchProjectRunner.seq
+    reply(store.dispatchTargetRunner.current, treeFail(" ProjectNotFoundError: no project "), 0)
+    compare(store.dispatchStep, "project")
+    compare(store.dispatchRoot, "")
+    compare(store.dispatchState, "idle")
+    checkTargetCleared(store, "failed")
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:ProjectNotFoundError: no project",
+            "B is off with the helper's message, A unchanged")
+    compare(store.dispatchProjectFailures[tc.rootB], "ProjectNotFoundError: no project")
+    compare(store.dispatchProjectRunner.seq, probeSeq, "the probe is not relaunched")
+    var seq = store.dispatchTargetRunner.seq
+    compare(store.dispatchProjectPick(tc.rootB), false, "a failed row ignores a pick")
+    compare(store.dispatchTargetRunner.seq, seq, "nothing launched")
+    compare(store.dispatchStep, "project")
+    store.dispatchProjectReplied(probeReply([{ root: tc.rootA, ok: true }, { root: tc.rootB, ok: true }]))
+    compare(rowsText(store.dispatchProjectRows),
+            "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:ProjectNotFoundError: no project",
+            "a later probe saying B is ok does not lift the failure")
+
+    var unreadable = ["Traceback: boom\n", JSON.stringify({ ok: true }) + "\n", treeReply([null]), treeFail("   ")]
+    for (var i = 0; i < unreadable.length; i++) {
+      var bad = pickedStore(tc.rootB); if (!bad) return
+      reply(bad.dispatchTargetRunner.current, unreadable[i], i === 0 ? 1 : 0)
+      compare(bad.dispatchStep, "project", "case " + i + ": back to step 1")
+      compare(bad.dispatchRoot, "", "case " + i + ": no root")
+      checkTargetCleared(bad, "case " + i)
+      compare(rowsText(bad.dispatchProjectRows),
+              "/home/u/my proj:alpha:open:on: / /home/u/b:beta::off:The board could not be read", "case " + i)
+    }
+
+    compare(store.dispatchOpenFromRuns(), true)
+    compare(Object.keys(store.dispatchProjectFailures).length, 0, "a reopening forgets the failures")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on: / /home/u/b:beta::on:", "B is judged afresh")
+    compare(store.dispatchProjectPick(tc.rootB), true)
+
+    var closed = pickedStore(tc.rootB); if (!closed) return
+    reply(closed.dispatchTargetRunner.current, treeFail("gone"), 0)
+    compare(closed.closeDispatch(), true)
+    compare(Object.keys(closed.dispatchProjectFailures).length, 0, "a close forgets the failures")
+  }
+
+  // 2.3 test 6
+  function test_dispatch_back_from_target_cancels_the_read() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    var probe = store.dispatchProjectProbe
+    var probeSeq = store.dispatchProjectRunner.seq
+    var late = store.dispatchTargetRunner.current
+    compare(store.dispatchBack(), true)
+    compare(store.dispatchStep, "project")
+    compare(store.dispatchRoot, "")
+    compare(store.dispatchTargetLoading, false, "Back cancels the read")
+    verify(store.dispatchProjectProbe === probe, "the probe is kept")
+    compare(store.dispatchProjectRunner.seq, probeSeq, "the probe is not relaunched")
+    compare(store.dispatchProjectRows.length, 2)
+    reply(late, treeReply(treeData()), 0)
+    compare(store.dispatchStep, "project", "the late reply changes nothing")
+    checkTargetCleared(store, "late reply")
+    compare(Object.keys(store.dispatchProjectFailures).length, 0, "and marks nothing")
+    var seq = store.dispatchTargetRunner.seq
+    compare(store.dispatchProjectPick(tc.rootB), true)
+    verify(store.dispatchTargetRunner.seq > seq, "a new read")
+    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
+    compare(targetKeys(store.dispatchTargetRows), "board,card:m1,card:s1,card:t1", "its reply applies")
+    compare(store.dispatchBack(), true)
+    checkTargetCleared(store, "Back after the reply")
+  }
+
+  // 2.3 test 7
+  function test_dispatch_target_stale_replies_are_dropped() {
+    var store = pickedStore(tc.rootB); if (!store) return
+    var lateB = store.dispatchTargetRunner.current
+    store.dispatchBack()
+    compare(store.dispatchProjectPick(tc.rootA), true)
+    var procA = store.dispatchTargetRunner.current
+    reply(lateB, treeReply(treeData()), 0)
+    compare(store.dispatchRoot, tc.rootA)
+    compare(store.dispatchTargetLoading, true, "B's reply leaves A's read in flight")
+    compare(store.dispatchTargetRows.length, 0, "B's tree is not shown for A")
+    reply(procA, treeReply([]), 0)
+    compare(targetKeys(store.dispatchTargetRows), "board", "A's reply applies")
+
+    var failed = pickedStore(tc.rootB); if (!failed) return
+    var lateFail = failed.dispatchTargetRunner.current
+    failed.dispatchBack()
+    failed.dispatchProjectPick(tc.rootA)
+    reply(lateFail, treeFail("gone"), 0)
+    compare(failed.dispatchStep, "target", "B's failure does not send A back")
+    compare(failed.dispatchRoot, tc.rootA)
+    compare(Object.keys(failed.dispatchProjectFailures).length, 0, "and marks nothing")
+
+    var closed = pickedStore(tc.rootB); if (!closed) return
+    var lateClosed = closed.dispatchTargetRunner.current
+    compare(closed.closeDispatch(), true)
+    checkDispatchIdle(closed, "closed")
+    reply(lateClosed, treeReply(treeData()), 0)
+    checkDispatchIdle(closed, "a reply after the close")
+    compare(closed.dispatchRoot, "")
+
+    var card = pickedStore(tc.rootB); if (!card) return
+    var lateCard = card.dispatchTargetRunner.current
+    var cards = dispatchCards()
+    compare(card.openDispatch(cards.m1, cards), true)
+    compare(card.dispatchStep, "")
+    compare(card.dispatchRoot, tc.rootA)
+    checkTargetCleared(card, "card entry")
+    reply(lateCard, treeReply(treeData()), 0)
+    checkTargetCleared(card, "a reply after a card entry")
+    compare(card.dispatchStep, "")
+    compare(card.dispatchState, "previewing", "the card's dispatch is untouched")
+
+    var reopened = pickedStore(tc.rootB); if (!reopened) return
+    var lateReopen = reopened.dispatchTargetRunner.current
+    compare(reopened.dispatchOpenFromRuns(), true)
+    checkTargetCleared(reopened, "reopened")
+    reply(lateReopen, treeReply(treeData()), 0)
+    compare(reopened.dispatchStep, "project", "a reply after a reopening is dropped")
+    checkTargetCleared(reopened, "a reply after a reopening")
+
+    var dropped = pickedStore(tc.rootB); if (!dropped) return
+    var lateDropped = dropped.dispatchTargetRunner.current
+    dropped.projectRoots = registry([tc.rootA])
+    compare(dropped.dispatchStep, "project")
+    compare(dropped.dispatchRoot, "")
+    checkTargetCleared(dropped, "registry fallback")
+    reply(lateDropped, treeReply(treeData()), 0)
+    compare(dropped.dispatchStep, "project", "a reply after the registry fallback is dropped")
+    checkTargetCleared(dropped, "a reply after the registry fallback")
+  }
+
+  // 2.3 test 3
+  function test_dispatch_target_pick_enters_the_form_for_another_project() {
+    var store = targetStore(tc.rootB); if (!store) return
+    var rows = store.dispatchTargetRows
+    var map = store.dispatchTargetCardMap
+    compare(store.dispatchTargetPick("card:m1"), true)
+    compare(store.dispatchStep, "form")
+    compare(store.dispatchTargetKey, "card:m1")
+    compare(store.dispatchRoot, tc.rootB)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchTarget.level, "milestone")
+    compare(store.dispatchTargetLabel, Runs.dispatchLabel(map.m1, map))
+    compare(store.dispatchTargetLabel, "Milestone \"M3 Document runs\"")
+    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/b")
+    compare(argv(store.dispatchSettingsRunner.current), tc.viewerCmd + "get-run-settings|/home/u/b")
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchForm.parallelism, 2, "B's settings, not A's")
+    compare(store.dispatchForm.verify.join(","), "make test")
+    compare(store.dispatchForm.prefix, "bpre")
+    compare(store.dispatchForm.base, "main")
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.bPreviewArgs, "B's milestone is previewed")
+    verify(store.dispatchTargetRows === rows, "the rows stay")
+    verify(store.dispatchTargetCardMap === map, "the card map stays")
+
+    var board = targetStore(tc.rootB); if (!board) return
+    compare(board.dispatchTargetPick("board"), true)
+    compare(board.dispatchStep, "form")
+    compare(board.dispatchTargetKey, "board")
+    compare(board.dispatchTarget.level, "board")
+    compare(board.dispatchTargetLabel, "Whole board")
+  }
+
+  // 2.3 test 4
+  function test_dispatch_target_pick_for_the_open_project_and_refusals() {
+    var store = pickedStore(tc.rootA); if (!store) return
+    compare(store.dispatchTargetPick("board"), false, "no pick while loading")
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchTargetLoading, true)
+    reply(store.dispatchTargetRunner.current, treeReply(treeData()), 0)
+    var refused = ["card:t2", "card:zz", "", "t1", null, 7]
+    for (var i = 0; i < refused.length; i++) {
+      compare(store.dispatchTargetPick(refused[i]), false, "key " + refused[i])
+      compare(store.dispatchStep, "target", "key " + refused[i] + ": step")
+      compare(store.dispatchTargetKey, "", "key " + refused[i] + ": key")
+      compare(store.dispatchState, "idle", "key " + refused[i] + ": state")
+    }
+    verify(!store.dispatchDefaultsRunner.current, "a refused pick launches nothing")
+    compare(store.dispatchTargetPick("card:t1"), true)
+    compare(store.dispatchStep, "form")
+    compare(store.dispatchTargetKey, "card:t1")
+    compare(store.dispatchTarget.level, "subtask")
+    compare(store.dispatchTargetLabel, "Subtask \"RunStore dispatch\"")
+    verify(!store.dispatchSettingsRunner.current, "the open project's runSettings are used")
+    compare(argv(store.dispatchDefaultsRunner.current), tc.previewCmd + "--defaults|/home/u/my proj")
+    compare(store.dispatchForm.prefix, "old", "A's prefix history")
+    compare(store.dispatchForm.parallelism, 4)
+    var defaults = store.dispatchDefaultsRunner.current
+    compare(store.dispatchTargetPick("card:m1"), false, "no pick at the form")
+    compare(store.dispatchTargetKey, "card:t1")
+    compare(store.dispatchTarget.level, "subtask")
+    verify(store.dispatchDefaultsRunner.current === defaults, "nothing relaunched")
+
+    var idle = runsStore(); if (!idle) return
+    compare(idle.dispatchTargetPick("board"), false, "no pick without a step")
+    checkDispatchIdle(idle, "no step")
+  }
+
+  // 2.3 test 11
+  function test_dispatch_start_from_runs_refreshes_only_its_root() {
+    var store = targetStore(tc.rootB); if (!store) return
+    reply(store.snapshotRunner.current, allReply([okEntry(tc.rootA, []), okEntry(tc.rootB, [])]), 0)
+    compare(store.dispatchTargetPick("card:t1"), true)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(store.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchStart(), true)
+    var runner = store.dispatchStartRunners[0]
+    compare(argv(runner.current), tc.startCmd + "/home/u/b|card|t1|--base-branch|main|--branch-prefix|bpre|--max-concurrent|2|--verify|make test")
+    var seq = store.snapshotRunner.seq
+    reply(runner.current, startOk("r9", ""), 0)
+    compare(store.dispatchState, "started")
+    compare(store.dispatchRunId, "r9")
+    compare(store.snapshotRunner.seq, seq + 1, "one snapshot is asked for")
+    compare(argv(store.snapshotRunner.current), tc.snapCmd + "|/home/u/b", "of B only")
+    compare(store.dispatchStep, "form")
+  }
+
+  // 2.3 test 9
+  function test_dispatch_back_from_form_keeps_the_picked_row() {
+    var store = targetStore(tc.rootB); if (!store) return
+    var rows = store.dispatchTargetRows
+    var map = store.dispatchTargetCardMap
+    var treeSeq = store.dispatchTargetRunner.seq
+    compare(store.dispatchTargetPick("card:m1"), true)
+    var defaults = store.dispatchDefaultsRunner.current
+    var settings = store.dispatchSettingsRunner.current
+    compare(store.dispatchBack(), true)
+    compare(store.dispatchStep, "target")
+    compare(store.dispatchRoot, tc.rootB)
+    compare(store.dispatchTargetKey, "card:m1", "the picked row is kept")
+    verify(store.dispatchTargetRows === rows, "the rows are kept")
+    verify(store.dispatchTargetCardMap === map, "the card map is kept")
+    compare(store.dispatchTargetLoading, false)
+    compare(store.dispatchTargetRunner.seq, treeSeq, "the tree is not read again")
+    checkDispatchFieldsIdle(store, "Back from the form")
+    reply(defaults, defaultsOk("main"), 0)
+    reply(settings, bSettings(), 0)
+    compare(store.dispatchState, "idle", "the form's lookups are dropped")
+    compare(store.dispatchForm, null)
+    compare(store.dispatchTargetPick("card:s1"), true)
+    compare(store.dispatchTarget.level, "story")
+    compare(store.dispatchTargetKey, "card:s1")
+
+    var starting = targetStore(tc.rootB); if (!starting) return
+    compare(starting.dispatchTargetPick("card:t1"), true)
+    reply(starting.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(starting.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(starting.dispatchStart(), true)
+    compare(starting.dispatchBack(), false, "no Back while starting")
+    compare(starting.dispatchStep, "form")
+    compare(starting.dispatchState, "starting")
+    compare(starting.dispatchTargetKey, "card:t1")
+  }
+
+  // 2.3 test 10
+  function test_dispatch_registry_change_at_form() {
+    var store = targetStore(tc.rootB); if (!store) return
+    compare(store.dispatchTargetPick("card:m1"), true)
+    var defaults = store.dispatchDefaultsRunner.current
+    store.projectRoots = registry([tc.rootB, tc.rootA])
+    compare(store.dispatchStep, "form", "a reorder keeps the form")
+    compare(store.dispatchRoot, tc.rootB)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchTargetKey, "card:m1")
+    store.projectRoots = registry([tc.rootA])
+    compare(store.dispatchStep, "project", "the picked root left: back to step 1")
+    compare(store.dispatchRoot, "")
+    checkDispatchFieldsIdle(store, "dropped at the form")
+    checkTargetCleared(store, "dropped at the form")
+    compare(rowsText(store.dispatchProjectRows), "/home/u/my proj:alpha:open:on:", "B's row is gone")
+    reply(defaults, defaultsOk("main"), 0)
+    compare(store.dispatchState, "idle", "the form's lookup is dropped")
+
+    var starting = targetStore(tc.rootB); if (!starting) return
+    compare(starting.dispatchTargetPick("card:t1"), true)
+    reply(starting.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    reply(starting.dispatchSettingsRunner.current, bSettings(), 0)
+    compare(starting.dispatchStart(), true)
+    var runner = starting.dispatchStartRunners[0]
+    starting.projectRoots = registry([tc.rootA])
+    compare(starting.dispatchStep, "form", "a start in flight keeps the form")
+    compare(starting.dispatchState, "starting")
+    compare(starting.dispatchRoot, tc.rootB)
+    compare(starting.dispatchTargetKey, "card:t1")
+    reply(runner.current, startOk("r9", ""), 0)
+    compare(starting.dispatchState, "started", "the start completes for its root")
   }
 
   // ---- list snapshots

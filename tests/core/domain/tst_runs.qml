@@ -2,6 +2,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../../core/domain/board.js" as Board
 import "../../helpers/amFixtures.js" as F
 
 // normalizeRun's input is built from tests/fixtures/am/ via amRun.
@@ -4552,6 +4553,475 @@ TestCase {
     var single = Runs.displayOrder([g1])
     verify(single !== g1.runs, "a new array for a single group")
     compare(single.length, 2, "its runs")
+  }
+
+  function dispatchRoots(rows) {
+    var out = []
+    for (var i = 0; i < rows.length; i++) out.push(rows[i].root)
+    return out.join(",")
+  }
+
+  function test_dispatch_projects_order() {
+    // synthetic: three registered projects, no open project, an empty probe
+    var roots = [{ root: "/p/b", name: "b" }, { root: "/p/a", name: "A" }, { root: "/p/c", name: "c" }]
+    var rows = Runs.dispatchProjects(roots, { ok: true, projects: [] }, "")
+    compare(dispatchRoots(rows), "/p/a,/p/b,/p/c", "by name, case-blind")
+    compare(rows[0].name, "A", "name as given")
+    for (var i = 0; i < rows.length; i++) {
+      compare(Object.keys(rows[i]).sort().join(","), "enabled,name,open,reason,root", "row " + i + " keys")
+      compare(rows[i].open, false, "row " + i + " not open")
+      compare(rows[i].enabled, true, "row " + i + " enabled")
+      compare(rows[i].reason, "", "row " + i + " no reason")
+    }
+    verify(rows[0] !== roots[1], "a new row object")
+    verify(rows !== roots, "a new array")
+  }
+
+  function test_dispatch_projects_open_first() {
+    // synthetic: the open project's name sorts last
+    var roots = [{ root: "/p/a", name: "alpha" }, { root: "/p/z", name: "zulu" }, { root: "/p/m", name: "mike" }]
+    var rows = Runs.dispatchProjects(roots, [], "/p/z")
+    compare(dispatchRoots(rows), "/p/z,/p/a,/p/m", "open first, then by name")
+    compare(rows[0].open, true, "the open row")
+    compare(rows[1].open, false, "alpha not open")
+    compare(rows[2].open, false, "mike not open")
+    var slashed = Runs.dispatchProjects(roots, [], "/p/z/")
+    compare(dispatchRoots(slashed), "/p/z,/p/a,/p/m", "openRoot with a trailing /")
+    compare(slashed[0].open, true, "openRoot with a trailing / is open")
+    compare(Runs.dispatchProjects(roots, [], "/p/z//")[0].open, true, "openRoot with trailing slashes")
+    var none = Runs.dispatchProjects(roots, [], "/p/q")
+    compare(dispatchRoots(none), "/p/a,/p/m,/p/z", "an unregistered openRoot")
+    for (var i = 0; i < none.length; i++) compare(none[i].open, false, "nothing open " + i)
+  }
+
+  function test_dispatch_projects_ties() {
+    // synthetic: names that differ only by case
+    var roots = [{ root: "/p/y", name: "foo" }, { root: "/p/x", name: "Foo" }, { root: "/p/a", name: "zed" }]
+    var rows = Runs.dispatchProjects(roots, [], null)
+    compare(dispatchRoots(rows), "/p/x,/p/y,/p/a", "a case-only name tie by root")
+    compare(rows[0].name, "Foo", "case kept")
+    compare(rows[1].name, "foo", "case kept")
+    // synthetic: the upper-case name on the later root
+    var flipped = Runs.dispatchProjects([{ root: "/p/y", name: "Foo" }, { root: "/p/x", name: "foo" }], [], null)
+    compare(dispatchRoots(flipped), "/p/x,/p/y", "root decides, not case or input order")
+    compare(flipped[1].name, "Foo", "case kept on the later row")
+  }
+
+  function test_dispatch_projects_unreachable() {
+    // synthetic: board-tree.py --probe output for three of four registered roots
+    var roots = [{ root: "/p/a", name: "a" }, { root: "/p/b", name: "b" }, { root: "/p/c", name: "c" },
+                 { root: "/p/d", name: "d" }]
+    var probe = { ok: true, projects: [{ root: "/p/a", ok: false, reason: "no .brd marker" },
+                                       { root: "/p/b", ok: false },
+                                       { root: "/p/c", ok: true }] }
+    var shapes = [["payload", probe], ["projects array", probe.projects]]
+    for (var s = 0; s < shapes.length; s++) {
+      var label = shapes[s][0]
+      var rows = Runs.dispatchProjects(roots, shapes[s][1], "")
+      compare(dispatchRoots(rows), "/p/a,/p/b,/p/c,/p/d", label + ": order unchanged by reachability")
+      compare(rows[0].enabled, false, label + ": no marker disabled")
+      compare(rows[0].reason, "no .brd marker", label + ": the probe's reason")
+      compare(rows[1].enabled, false, label + ": ok false disabled")
+      compare(rows[1].reason, "unreachable", label + ": no reason given")
+      compare(rows[2].enabled, true, label + ": ok true enabled")
+      compare(rows[2].reason, "", label + ": ok true no reason")
+      compare(rows[3].enabled, true, label + ": absent from the probe enabled")
+      compare(rows[3].reason, "", label + ": absent no reason")
+    }
+    var openDisabled = Runs.dispatchProjects(roots, probe, "/p/b")
+    compare(dispatchRoots(openDisabled), "/p/b,/p/a,/p/c,/p/d", "a disabled open project still first")
+    compare(openDisabled[0].open, true, "open")
+    compare(openDisabled[0].enabled, false, "and disabled")
+    compare(openDisabled[0].reason, "unreachable", "with its reason")
+    // synthetic: a probe root with a trailing /, padded, blank and numeric reasons, two entries for one root
+    var odd = [{ root: "/p/a/", ok: false, reason: "not a directory" },
+               { root: "/p/b", ok: false, reason: "  no .brd marker  " },
+               { root: "/p/c", ok: false, reason: "   " },
+               { root: "/p/d", ok: true }, { root: "/p/d", ok: false, reason: "late" },
+               { root: "/p/a", ok: true }]
+    var r = Runs.dispatchProjects(roots, odd, "")
+    compare(r[0].enabled, false, "a probe root with a trailing / matches")
+    compare(r[0].reason, "not a directory", "its reason")
+    compare(r[1].reason, "no .brd marker", "the reason trimmed")
+    compare(r[2].enabled, false, "a blank reason is still disabled")
+    compare(r[2].reason, "unreachable", "a blank reason")
+    compare(r[3].enabled, true, "the first entry for a root wins over a later ok false")
+    compare(r[3].reason, "", "the later reason is not used")
+    var numeric = Runs.dispatchProjects([{ root: "/p/a" }], [{ root: "/p/a", ok: false, reason: 5 }], "")
+    compare(numeric[0].reason, "unreachable", "a non-string reason")
+  }
+
+  function test_dispatch_projects_names() {
+    // synthetic: names that are missing, blank, padded or not a string, and roots with trailing slashes
+    var roots = [{ root: "/p/one/", name: "" }, { root: "/p/two", name: "   " }, { root: "/p/three" },
+                 { root: "/p/four", name: 4 }, { root: "/p/five", name: null }, { root: "/", name: "" },
+                 { root: "/p/six", name: "  Six  " }, { root: "/p/seven", name: "team/app" }]
+    var rows = Runs.dispatchProjects(roots, [], "")
+    var pairs = []
+    for (var i = 0; i < rows.length; i++) pairs.push(rows[i].root + "=" + rows[i].name)
+    compare(pairs.join(","),
+            "/=/,/p/five=five,/p/four=four,/p/one=one,/p/six=Six,/p/seven=team/app,/p/three=three,/p/two=two",
+            "names fall back to the root's last segment, trimmed otherwise")
+    var slashes = Runs.dispatchProjects([{ root: "//", name: "" }], [], "")
+    compare(slashes[0].root, "/", "a root of only slashes is /")
+    compare(slashes[0].name, "/", "and is named /")
+    compare(Runs.dispatchProjects([{ root: "/p/one///", name: "One" }], [], "")[0].root, "/p/one",
+            "every trailing / removed")
+  }
+
+  function test_dispatch_projects_empty() {
+    // synthetic: an empty registry with every probe shape and openRoot
+    var probes = [undefined, null, [], { ok: true, projects: [] },
+                  { ok: true, projects: [{ root: "/p/a", ok: false, reason: "no .brd marker" }] }]
+    var opens = [undefined, null, "", "/p/a"]
+    for (var p = 0; p < probes.length; p++) {
+      for (var o = 0; o < opens.length; o++) {
+        var out = Runs.dispatchProjects([], probes[p], opens[o])
+        verify(Array.isArray(out), "probe " + p + " open " + o + " is an array")
+        compare(out.length, 0, "probe " + p + " open " + o + " is empty")
+      }
+    }
+    var empty = []
+    verify(Runs.dispatchProjects(empty, [], "") !== empty, "a new array for []")
+  }
+
+  function test_dispatch_projects_garbage() {
+    // synthetic: a registry that is not an array
+    var notLists = [undefined, null, "x", 5, {}]
+    for (var i = 0; i < notLists.length; i++) {
+      var out = Runs.dispatchProjects(notLists[i], [], "/p/a")
+      verify(Array.isArray(out), "registry " + i + " is an array")
+      compare(out.length, 0, "registry " + i + " is empty")
+    }
+    // synthetic: junk entries among good ones, and a duplicate root
+    var roots = [null, { root: "/p/b", name: "b" }, "x", [], {}, { root: 5, name: "five" },
+                 { root: "", name: "blank" }, { root: "/p/a", name: "a" }, { root: "/p/b/", name: "dup" },
+                 undefined, ["/p/c"]]
+    var rows = Runs.dispatchProjects(roots, [], "")
+    compare(dispatchRoots(rows), "/p/a,/p/b", "only valid, first-seen rows")
+    compare(rows[1].name, "b", "the first entry for a root wins")
+    // synthetic: probes that are not the helper's output, and junk probe entries
+    var probes = [undefined, null, "x", 5, {}, { projects: "x" },
+                  { ok: false, error: { type: "BrdMissing", message: "brd not found" } },
+                  [null, { root: 5, ok: false }, { root: "/p/a", ok: "no" }, "x", 5, []]]
+    for (var p = 0; p < probes.length; p++) {
+      var probed = Runs.dispatchProjects(roots, probes[p], "")
+      compare(dispatchRoots(probed), "/p/a,/p/b", "probe " + p + " rows")
+      for (var j = 0; j < probed.length; j++) {
+        compare(probed[j].enabled, true, "probe " + p + " row " + j + " enabled")
+        compare(probed[j].reason, "", "probe " + p + " row " + j + " no reason")
+      }
+    }
+    // synthetic: openRoots that are not a registered root string
+    var opens = [5, {}, null, "", undefined, ["/p/a"]]
+    for (var o = 0; o < opens.length; o++) {
+      var opened = Runs.dispatchProjects(roots, [], opens[o])
+      compare(dispatchRoots(opened), "/p/a,/p/b", "openRoot " + o + " rows")
+      for (var k = 0; k < opened.length; k++) compare(opened[k].open, false, "openRoot " + o + " row " + k)
+    }
+    // the inputs are left as they were
+    var probe = { ok: true, projects: [{ root: "/p/a/", ok: false, reason: " x " }] }
+    var beforeRoots = JSON.stringify(roots), beforeProbe = JSON.stringify(probe)
+    var result = Runs.dispatchProjects(roots, probe, "/p/b/")
+    compare(dispatchRoots(result), "/p/b,/p/a", "open first")
+    compare(result[1].reason, "x", "the reason trimmed in the row")
+    compare(JSON.stringify(roots), beforeRoots, "projectRoots unchanged")
+    compare(JSON.stringify(probe), beforeProbe, "probe unchanged")
+    compare(roots[8].root, "/p/b/", "an entry's root not trimmed in place")
+    compare(probe.projects[0].reason, " x ", "a probe reason not trimmed in place")
+  }
+
+  function test_dispatch_projects_edges() {
+    // synthetic: a padded root, roots spelled like Object.prototype keys, a non-ASCII name,
+    // a duplicate whose first entry has no name, and a prototype-less entry
+    var bare = Object.create(null)
+    bare.root = "/p/bare"
+    bare.name = "bare"
+    var roots = [{ root: " /p/pad", name: "pad" }, { root: "__proto__", name: "proto" },
+                 { root: "constructor", name: "ctor" }, { root: "/p/e", name: "éclair" },
+                 { root: "/p/z", name: "zed" }, { root: "/p/dup" }, { root: "/p/dup", name: "Named" }, bare]
+    var probe = [{ root: " /p/pad", ok: false, reason: "not a directory" }, { root: "/p/pad", ok: true },
+                 { root: "__proto__", ok: false, reason: "no .brd marker" }]
+    var rows = Runs.dispatchProjects(roots, probe, " /p/pad")
+    compare(dispatchRoots(rows), " /p/pad,/p/bare,constructor,/p/dup,__proto__,/p/z,/p/e",
+            "padded open root first, then plain comparison of lower-cased names")
+    compare(rows[0].open, true, "a padded openRoot matches the padded root exactly")
+    compare(rows[0].enabled, false, "the padded root's own probe entry")
+    compare(rows[0].reason, "not a directory", "not the unpadded entry")
+    var unpadded = Runs.dispatchProjects(roots, probe, "/p/pad")
+    compare(dispatchRoots(unpadded), "/p/bare,constructor,/p/dup, /p/pad,__proto__,/p/z,/p/e",
+            "an unpadded openRoot puts nothing first")
+    for (var i = 0; i < unpadded.length; i++) compare(unpadded[i].open, false, "nothing open " + i)
+    compare(rows[1].name, "bare", "a prototype-less entry gives a row")
+    compare(rows[2].name, "ctor", "a constructor root keeps its row")
+    compare(rows[2].enabled, true, "and is enabled")
+    compare(rows[3].name, "dup", "the first duplicate wins, its name from the root")
+    compare(rows[4].name, "proto", "a __proto__ root keeps its row")
+    compare(rows[4].enabled, false, "and its probe entry")
+    compare(rows[4].reason, "no .brd marker", "with its reason")
+    compare(rows[6].name, "éclair", "a non-ASCII name sorts after z")
+  }
+
+  // ---- dfr 1.3: dispatch targets ----------------------------------------------------------
+
+  // A card as brd tree returns it, before Board.indexTree.
+  function tnode(id, status, children) {
+    return { id: id, title: "T " + id, status: status, children: children }
+  }
+
+  function targetKeys(rows) {
+    var out = []
+    for (var i = 0; i < rows.length; i++) out.push(rows[i].key)
+    return out.join(",")
+  }
+
+  function checkWholeBoard(row, label) {
+    compare(Object.keys(row).sort().join(","), "card,depth,key,label,level", label + " keys")
+    compare(row.key, "board", label + " key")
+    compare(row.level, "board", label + " level")
+    compare(row.card, "board", label + " card")
+    compare(row.label, "Whole board", label + " label")
+    compare(row.depth, 0, label + " depth")
+  }
+
+  function test_dispatch_targets_board_first() {
+    // synthetic: one milestone with one story holding one todo subtask
+    var roots = [tnode("m1", "todo", [tnode("s1", "todo", [tnode("t1", "todo")])])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    compare(rows.length, 4, "the Whole board and three cards")
+    checkWholeBoard(rows[0], "row 0")
+    for (var i = 1; i < rows.length; i++)
+      compare(Object.keys(rows[i]).sort().join(","), "card,depth,key,label,level", "row " + i + " keys")
+  }
+
+  function test_dispatch_targets_tree_order_and_depth() {
+    // synthetic: two milestones, each with two stories, each story with two todo subtasks;
+    // t1 holds one todo card at depth 3
+    var roots = [tnode("m1", "todo", [tnode("s1", "todo", [tnode("t1", "todo", [tnode("u1", "todo")]), tnode("t2", "todo")]),
+                                      tnode("s2", "todo", [tnode("t3", "todo"), tnode("t4", "todo")])]),
+                 tnode("m2", "todo", [tnode("s3", "todo", [tnode("t5", "todo"), tnode("t6", "todo")]),
+                                      tnode("s4", "todo", [tnode("t7", "todo"), tnode("t8", "todo")])])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    compare(targetKeys(rows), "board,card:m1,card:s1,card:t1,card:u1,card:t2,card:s2,card:t3,card:t4,"
+            + "card:m2,card:s3,card:t5,card:t6,card:s4,card:t7,card:t8", "pre-order")
+    var levels = ["milestone", "story", "subtask", "subtask"]
+    for (var i = 1; i < rows.length; i++) {
+      var card = cardMap[rows[i].key.substring("card:".length)]
+      verify(rows[i].card === card, rows[i].key + " carries the node itself")
+      compare(rows[i].depth, card.depth, rows[i].key + " depth")
+      compare(rows[i].level, levels[card.depth], rows[i].key + " level")
+    }
+    compare(rows[4].level, "subtask", "a depth-3 card is a subtask")
+    compare(rows[4].depth, 3, "at depth 3")
+  }
+
+  function test_dispatch_targets_finished_omitted() {
+    var finished = ["done", "merged", "canceled", "archived"]
+    for (var f = 0; f < finished.length; f++) {
+      var st = finished[f]
+      // synthetic: a finished milestone over a todo story and subtask; a todo milestone over a
+      // finished story with a todo subtask, and over a todo story whose only subtask is finished
+      var roots = [tnode("m1", st, [tnode("s1", "todo", [tnode("t1", "todo")])]),
+                   tnode("m2", "todo", [tnode("s2", st, [tnode("t2", "todo")]),
+                                        tnode("s3", "todo", [tnode("t3", st)])])]
+      var cardMap = Board.indexTree(roots).cardMap
+      compare(targetKeys(Runs.dispatchTargets(roots, cardMap)), "board,card:s1,card:t1,card:m2,card:t2,card:s3", st)
+    }
+  }
+
+  function test_dispatch_targets_only_todo_subtasks() {
+    // synthetic: an in_progress milestone over a blocked story holding one subtask per status,
+    // and an in_progress story; a blocked milestone
+    var subtasks = [tnode("a", "in_progress"), tnode("b", "review"), tnode("c", "blocked"), tnode("d", ""),
+                    { id: "e", title: "T e" }, tnode("f", "TODO"), tnode("g", "todo")]
+    var roots = [tnode("m1", "in_progress", [tnode("s1", "blocked", subtasks), tnode("s2", "in_progress")]),
+                 tnode("m2", "blocked")]
+    var cardMap = Board.indexTree(roots).cardMap
+    compare(targetKeys(Runs.dispatchTargets(roots, cardMap)), "board,card:m1,card:s1,card:g,card:s2,card:m2",
+            "only the todo subtask; milestones and stories of any unfinished status")
+  }
+
+  function test_dispatch_targets_stories_included() {
+    // synthetic: one milestone with one in_progress story
+    var roots = [tnode("m1", "todo", [tnode("s1", "in_progress")])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    compare(targetKeys(rows), "board,card:m1,card:s1", "the story is listed")
+    compare(rows[2].level, "story", "level")
+    compare(rows[2].depth, 1, "depth")
+    compare(rows[2].label, "Story \"T s1\" (milestone \"T m1\")", "label names its milestone")
+    var bare = Runs.dispatchTargets(roots, undefined)
+    compare(targetKeys(bare), "board,card:m1,card:s1", "still listed without a cardMap")
+    compare(bare[2].label, "Story \"T s1\"", "label without its milestone")
+  }
+
+  function test_dispatch_targets_agree_with_dispatchPlan() {
+    // synthetic: a milestone per status, a story per status under each, a subtask per status
+    // under each story; under m0s0, cards with ids "-x", "" and 5, then one appended after
+    // indexing, so it has no depth
+    var statuses = ["todo", "in_progress", "review", "blocked", "", "TODO", undefined,
+                    "done", "merged", "canceled", "archived"]
+    var roots = []
+    for (var i = 0; i < statuses.length; i++) {
+      var stories = []
+      for (var j = 0; j < statuses.length; j++) {
+        var subtasks = []
+        for (var k = 0; k < statuses.length; k++) subtasks.push(tnode("m" + i + "s" + j + "t" + k, statuses[k]))
+        stories.push(tnode("m" + i + "s" + j, statuses[j], subtasks))
+      }
+      roots.push(tnode("m" + i, statuses[i], stories))
+    }
+    var odd = roots[0].children[0].children
+    odd.push(tnode("-x", "todo"), tnode("", "todo"), tnode(5, "todo"))
+    var cardMap = Board.indexTree(roots).cardMap
+    odd.push(tnode("nodepth", "todo"))
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    // 7 unfinished milestones, 11 * 7 unfinished stories, 121 todo subtasks
+    compare(rows.length, 1 + 7 + 77 + 121, "row count")
+    var rowed = {}
+    for (var r = 1; r < rows.length; r++) {
+      var plan = Runs.dispatchPlan(rows[r].card, cardMap)
+      compare(plan.offered, true, rows[r].key + " offered")
+      compare(plan.level, rows[r].level, rows[r].key + " level")
+      compare(rows[r].label, Runs.dispatchLabel(rows[r].card, cardMap), rows[r].key + " label")
+      rowed[rows[r].key] = true
+    }
+    var ids = Object.keys(cardMap)
+    for (var c = 0; c < ids.length; c++) {
+      var card = cardMap[ids[c]]
+      if (rowed["card:" + card.id] === true) continue
+      var p = Runs.dispatchPlan(card, cardMap)
+      verify(!p.offered || (p.level === "subtask" && card.status !== "todo"),
+             ids[c] + " has no row only when refused or a subtask that is not todo")
+    }
+    compare(rowed["card:-x"], undefined, "a flag-like id gives no row")
+    compare(rowed["card:"], undefined, "an empty id gives no row")
+    compare(rowed["card:5"], undefined, "a number id gives no row")
+    compare(rowed["card:nodepth"], undefined, "a card without depth gives no row")
+  }
+
+  function test_dispatch_targets_empty_tree() {
+    // synthetic: roots that hold no tree
+    var empties = [[], undefined, null, "x", 5, {}]
+    for (var e = 0; e < empties.length; e++) {
+      var rows = Runs.dispatchTargets(empties[e], {})
+      compare(rows.length, 1, "roots " + e + " gives one row")
+      checkWholeBoard(rows[0], "roots " + e)
+    }
+    // synthetic: every card finished or a subtask that is not todo
+    var roots = [tnode("m1", "done", [tnode("s1", "merged", [tnode("t1", "in_progress"), tnode("t2", "review")])]),
+                 tnode("m2", "archived", [tnode("s2", "canceled")])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var only = Runs.dispatchTargets(roots, cardMap)
+    compare(only.length, 1, "no offered target gives one row")
+    checkWholeBoard(only[0], "no offered target")
+  }
+
+  function test_dispatch_targets_garbage() {
+    // synthetic: non-object roots around one milestone, depth set by hand
+    var m = tnode("m1", "todo")
+    m.depth = 0
+    m.parentId = null
+    var mixed = [null, "x", [], 5, m]
+    var mixedBefore = JSON.stringify(mixed)
+    compare(targetKeys(Runs.dispatchTargets(mixed, {})), "board,card:m1", "only the milestone")
+    compare(JSON.stringify(mixed), mixedBefore, "mixed roots unchanged")
+
+    // synthetic: children that are not an array
+    var odd = [tnode("a", "todo", "x"), tnode("b", "todo", {}), tnode("c", "todo", null)]
+    for (var o = 0; o < odd.length; o++) {
+      odd[o].depth = 0
+      odd[o].parentId = null
+    }
+    var oddBefore = JSON.stringify(odd)
+    compare(targetKeys(Runs.dispatchTargets(odd, {})), "board,card:a,card:b,card:c", "each node listed, no children")
+    compare(JSON.stringify(odd), oddBefore, "odd children unchanged")
+
+    // synthetic: a story whose children hold its own milestone
+    var cm = tnode("m1", "todo", [])
+    var cs = tnode("s1", "todo", [cm])
+    cm.depth = 0
+    cm.parentId = null
+    cs.depth = 1
+    cs.parentId = "m1"
+    cm.children.push(cs)
+    compare(targetKeys(Runs.dispatchTargets([cm], { m1: cm, s1: cs })), "board,card:m1,card:s1", "a cycle lists each node once")
+
+    // synthetic: one subtask object in two stories' children
+    var shared = tnode("t1", "todo")
+    var sharedRoots = [tnode("m1", "todo", [tnode("s1", "todo", [shared]), tnode("s2", "todo", [shared])])]
+    var sharedMap = Board.indexTree(sharedRoots).cardMap
+    var sharedBefore = JSON.stringify(sharedRoots)
+    compare(targetKeys(Runs.dispatchTargets(sharedRoots, sharedMap)), "board,card:m1,card:s1,card:t1,card:s2",
+            "a shared child is listed once, under its first parent")
+    compare(JSON.stringify(sharedRoots), sharedBefore, "shared tree unchanged")
+
+    // synthetic: two distinct stories with the same id
+    var first = tnode("s1", "todo", [tnode("t1", "todo")])
+    var twin = tnode("s1", "todo", [tnode("t2", "todo")])
+    var twinRoots = [tnode("m1", "todo", [first, twin])]
+    var twinMap = Board.indexTree(twinRoots).cardMap
+    var twinRows = Runs.dispatchTargets(twinRoots, twinMap)
+    compare(targetKeys(twinRows), "board,card:m1,card:s1,card:t1,card:t2", "the first twin only, the later twin's children walked")
+    verify(twinRows[2].card === first, "the first twin's node")
+
+    // synthetic: a milestone whose id is "board"
+    var boardRoots = [tnode("board", "todo")]
+    var boardRows = Runs.dispatchTargets(boardRoots, Board.indexTree(boardRoots).cardMap)
+    compare(targetKeys(boardRows), "board,card:board", "a card id board is not the Whole board")
+    compare(boardRows[1].level, "milestone", "it is a milestone")
+    compare(boardRows[1].label, "Milestone \"T board\"", "with its own label")
+
+    // synthetic: cardMaps that are not a plain map, and one owning a __proto__ entry
+    var tree = [tnode("m1", "todo", [tnode("s1", "todo", [tnode("t1", "todo")])])]
+    Board.indexTree(tree)
+    var protoMap = {}
+    Object.defineProperty(protoMap, "__proto__", { value: tnode("__proto__", "todo"), enumerable: true })
+    var maps = [null, "x", [], protoMap]
+    for (var p = 0; p < maps.length; p++)
+      compare(targetKeys(Runs.dispatchTargets(tree, maps[p])), "board,card:m1,card:s1,card:t1", "cardMap " + p)
+  }
+
+  function test_dispatch_targets_deep_chain() {
+    // synthetic: a chain of 5000 todo cards, each the only child of the previous; depth and
+    // parentId set by hand, as Board.indexTree recurses past the call stack at this depth
+    var chain = []
+    var cardMap = {}
+    for (var i = 0; i < 5000; i++) {
+      var c = tnode("c" + i, "todo", [])
+      c.depth = i
+      c.parentId = i === 0 ? null : "c" + (i - 1)
+      if (i > 0) chain[i - 1].children.push(c)
+      chain.push(c)
+      cardMap[c.id] = c
+    }
+    var roots = [chain[0]]
+    var rows = Runs.dispatchTargets(roots, cardMap)
+    compare(rows.length, 5001, "the Whole board and every card")
+    checkWholeBoard(rows[0], "row 0")
+    compare(rows[1].level, "milestone", "c0")
+    compare(rows[2].level, "story", "c1")
+    for (var r = 1; r < rows.length; r++) {
+      compare(rows[r].key, "card:c" + (r - 1), "row " + r + " key")
+      if (r >= 3) compare(rows[r].level, "subtask", "row " + r + " level")
+    }
+  }
+
+  function test_dispatch_targets_fresh() {
+    // synthetic: one milestone with one story
+    var roots = [tnode("m1", "todo", [tnode("s1", "todo")])]
+    var cardMap = Board.indexTree(roots).cardMap
+    var a = Runs.dispatchTargets(roots, cardMap)
+    var b = Runs.dispatchTargets(roots, cardMap)
+    verify(a !== b, "a new array each call")
+    compare(a.length, b.length, "same rows")
+    for (var i = 0; i < a.length; i++) verify(a[i] !== b[i], "row " + i + " is a new object")
+    verify(a[1].card === roots[0], "row 1 carries the milestone node")
+    verify(b[2].card === roots[0].children[0], "row 2 carries the story node")
+    a[0].label = "changed"
+    checkWholeBoard(Runs.dispatchTargets(roots, cardMap)[0], "after a caller edits a row")
   }
 
   // ---- RR 1.2: why it stopped -------------------------------------------------------------

@@ -19,6 +19,9 @@ TestCase {
   SignalSpy { id: cancels; signalName: "cancelRequested" }
   SignalSpy { id: chosen; signalName: "targetChosen" }
   SignalSpy { id: offers; signalName: "suggestionRequested" }
+  SignalSpy { id: picks; signalName: "projectChosen" }
+  SignalSpy { id: backs; signalName: "backRequested" }
+  SignalSpy { id: targetPicks; signalName: "targetPicked" }
 
   function milestoneForm(over) {
     return Object.assign({ base: "main", prefix: "m3", verify: ["uv run pytest"], parallelism: 4,
@@ -38,7 +41,9 @@ TestCase {
   function make(over) {
     var d = createTemporaryObject(dialogC, tc, milestone(over))
     edits.target = d; starts.target = d; cancels.target = d; chosen.target = d; offers.target = d
-    edits.clear(); starts.clear(); cancels.clear(); chosen.clear(); offers.clear()
+    picks.target = d; backs.target = d; targetPicks.target = d
+    edits.clear(); starts.clear(); cancels.clear(); chosen.clear(); offers.clear(); picks.clear()
+    backs.clear(); targetPicks.clear()
     d.shown = true
     wait(30)
     return d
@@ -950,5 +955,1137 @@ TestCase {
     click(H.find(d, "dispatchStart"))
     compare(starts.count, 1)
     compare(d.armed, false)
+  }
+
+  // ---- the project step -------------------------------------------------
+
+  // A colour stored in a `color` property is rounded to 8 bits per channel, so
+  // it differs from the theme's float colour by up to 1/255.
+  function sameColour(a, b) {
+    return Math.abs(a.r - b.r) < 1 / 255 && Math.abs(a.g - b.g) < 1 / 255
+      && Math.abs(a.b - b.b) < 1 / 255 && Math.abs(a.a - b.a) < 1 / 255
+  }
+
+  // RunStore's dispatchProjectRows: the open project first, then by name; one
+  // board unreadable.
+  function fixtureRows() {
+    return [
+      { root: "/home/u/Code/omarchy-project-manager", name: "omarchy-project-manager", open: true,
+        enabled: true, reason: "" },
+      { root: "/home/u/Code/agent-manager", name: "agent-manager", open: false, enabled: true, reason: "" },
+      { root: "/home/u/Code/ori", name: "ori", open: false, enabled: true, reason: "" },
+      { root: "/home/u/Code/py-ai-toolkit", name: "py-ai-toolkit", open: false, enabled: false,
+        reason: "board unreachable: no .brd" }
+    ]
+  }
+
+  // A disabled row first, and one between two enabled rows.
+  function disabledFirstRows() {
+    return [
+      { root: "/r/a", name: "a", open: false, enabled: false, reason: "board unreachable: no .brd" },
+      { root: "/r/b", name: "b", open: false, enabled: true, reason: "" },
+      { root: "/r/c", name: "c", open: false, enabled: false, reason: "board unreachable: tree read failed" },
+      { root: "/r/d", name: "d", open: false, enabled: true, reason: "" }
+    ]
+  }
+
+  // The dialog at the project step over fixtureRows(); `over` replaces any prop.
+  function projectStep(over) {
+    return make(Object.assign({ step: "project", projectRows: tc.fixtureRows() }, over || {}))
+  }
+
+  // 3: each part shows at the form step, hides at the project step, and comes
+  // back when the step leaves.
+  function test_the_project_step_hides_the_form_steps_parts_data() {
+    var refused = storyRefusal()
+    var failed = { dispatchState: "failed", error: "am exited before the run appeared", exitCode: 2,
+                   logPath: "/tmp/x.log", logTail: "Traceback" }
+    var sub = { target: { level: "subtask", offered: true }, targetTitle: "Do it", preview: null,
+                storyTitle: "Control store", blockedText: "Blocked by 3.1 RunStore dispatch (done)" }
+    return [
+      { tag: "target", name: "dispatchTarget", over: {} },
+      { tag: "target-choices", name: "dispatchTargetChoices",
+        over: { targetChoices: tc.boardChoices, targetChoice: "board" } },
+      { tag: "form", name: "dispatchForm", over: {} },
+      { tag: "preview-heading", name: "dispatchPreviewHeading", over: {} },
+      { tag: "refusal", name: "dispatchRefusal", over: refused },
+      { tag: "suggest", name: "dispatchSuggest", over: refused },
+      { tag: "exit-code", name: "dispatchExitCode", over: failed },
+      { tag: "log-path", name: "dispatchLogPath", over: failed },
+      { tag: "log-tail", name: "dispatchLogTail", over: failed },
+      { tag: "subtask-note", name: "dispatchSubtaskNote", over: sub },
+      { tag: "story", name: "dispatchStory", over: sub },
+      { tag: "blocked", name: "dispatchBlocked", over: sub },
+      { tag: "checking", name: "dispatchChecking", over: { dispatchState: "previewing", preview: null } },
+      { tag: "summary", name: "dispatchSummary", over: {} },
+      { tag: "integrate", name: "dispatchIntegrate", over: {} },
+      { tag: "warning", name: "dispatchWarning", over: {} },
+      { tag: "confirm-note", name: "dispatchConfirmNote", over: subtask(), arm: true },
+      { tag: "start", name: "dispatchStart", over: {} }
+    ]
+  }
+
+  function test_the_project_step_hides_the_form_steps_parts(data) {
+    var d = make(data.over)
+    if (data.arm) click(H.find(d, "dispatchStart"))
+    verify(H.find(d, data.name).visible, "shown at the form step")
+    d.step = "project"
+    verify(!H.find(d, data.name).visible, "hidden at the project step")
+    d.step = ""
+    verify(H.find(d, data.name).visible, "shown again once the step leaves")
+  }
+
+  // 3
+  function test_the_project_step_heads_the_card_and_keeps_only_cancel() {
+    var d = projectStep()
+    var heading = H.find(d, "dispatchHeading")
+    compare(heading.text, "Dispatch · 1 Project")
+    verify(H.find(d, "dispatchCancel").visible, "Cancel")
+    verify(!H.find(d, "dispatchStart").visible, "no Start")
+    d.step = ""
+    compare(heading.text, "Dispatch")
+    d.step = "target"
+    compare(heading.text, "Dispatch · 2 Target")
+    compare(picks.count, 0)
+  }
+
+  // 1
+  function test_the_project_step_lists_each_project_with_its_marks() {
+    var d = projectStep()
+    var rows = tc.fixtureRows()
+    verify(H.find(d, "dispatchProjectList").visible, "the list")
+    for (var i = 0; i < rows.length; i++) {
+      verify(H.find(d, "dispatchProjectRow" + i), "row " + i)
+      compare(H.find(d, "dispatchProjectName" + i).text, rows[i].name)
+      compare(H.find(d, "dispatchProjectOpen" + i).visible, i === 0, "open mark on row " + i)
+      compare(H.find(d, "dispatchProjectReason" + i).visible, i === 3, "reason on row " + i)
+    }
+    compare(H.find(d, "dispatchProjectRow4"), null)
+    compare(H.find(d, "dispatchProjectOpen0").text, "open")
+    compare(H.find(d, "dispatchProjectReason3").text, "board unreachable: no .brd")
+    verify(tc.sameColour(H.find(d, "dispatchProjectReason3").color, d.theme.dim), "reason colour")
+    verify(!H.find(d, "dispatchProjectEmpty").visible, "no empty line")
+  }
+
+  // 2
+  function test_a_disabled_rows_name_is_dimmed() {
+    var d = projectStep()
+    verify(tc.sameColour(H.find(d, "dispatchProjectName3").color, d.theme.dim), "name colour")
+    verify(tc.sameColour(H.find(d, "dispatchProjectName0").color, d.theme.foreground), "name colour")
+    verify(tc.sameColour(H.find(d, "dispatchProjectName2").color, d.theme.foreground), "name colour")
+  }
+
+  // 3
+  function test_the_list_and_the_empty_line_show_only_at_the_project_step_data() {
+    return [{ tag: "none", step: "" }, { tag: "target", step: "target" }, { tag: "other", step: "whatever" }]
+  }
+
+  function test_the_list_and_the_empty_line_show_only_at_the_project_step(data) {
+    var full = make({ step: data.step, projectRows: tc.fixtureRows() })
+    verify(!H.find(full, "dispatchProjectList").visible, "no list")
+    compare(H.find(full, "dispatchProjectRow0"), null)
+    var empty = make({ step: data.step, projectRows: [] })
+    verify(!H.find(empty, "dispatchProjectEmpty").visible, "no empty line")
+  }
+
+  // 10
+  function test_an_empty_or_malformed_registry_says_no_projects_data() {
+    return [
+      { tag: "empty", rows: [] },
+      { tag: "null", rows: null },
+      { tag: "undefined", rows: undefined },
+      { tag: "object", rows: {} },
+      { tag: "string", rows: "x" }
+    ]
+  }
+
+  function test_an_empty_or_malformed_registry_says_no_projects(data) {
+    var d = projectStep({ projectRows: data.rows })
+    var empty = H.find(d, "dispatchProjectEmpty")
+    verify(empty.visible, "the empty line")
+    compare(empty.text, "No projects registered")
+    compare(H.find(d, "dispatchProjectRow0"), null)
+    verify(H.find(d, "dispatchCancel").visible, "Cancel")
+    verify(!H.find(d, "dispatchStart").visible, "no Start")
+  }
+
+  // 11
+  function test_every_board_unreachable_lists_the_rows_with_their_reasons() {
+    var rows = tc.fixtureRows()
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].enabled = false
+      rows[i].reason = "board unreachable: " + rows[i].name
+    }
+    var d = projectStep({ projectRows: rows })
+    var empty = H.find(d, "dispatchProjectEmpty")
+    verify(empty.visible, "the empty line")
+    compare(empty.text, "No project's board can be read")
+    for (var j = 0; j < rows.length; j++) {
+      verify(H.find(d, "dispatchProjectRow" + j), "row " + j)
+      var reason = H.find(d, "dispatchProjectReason" + j)
+      verify(reason.visible, "reason " + j)
+      compare(reason.text, "board unreachable: " + rows[j].name)
+      verify(tc.sameColour(H.find(d, "dispatchProjectName" + j).color, d.theme.dim), "name colour")
+    }
+    verify(H.find(d, "dispatchCancel").visible, "Cancel")
+    verify(!H.find(d, "dispatchStart").visible, "no Start")
+  }
+
+  // Review Focus 3
+  function test_a_malformed_row_reads_as_empty_and_disabled() {
+    var d = projectStep({ projectRows: [
+      { root: "/r/a", name: null, open: "yes", enabled: true },
+      { root: "/r/b", name: "b", enabled: "yes", reason: 7 },
+      null
+    ] })
+    compare(H.find(d, "dispatchProjectName0").text, "")
+    verify(!H.find(d, "dispatchProjectOpen0").visible, "open only when exactly true")
+    verify(!H.find(d, "dispatchProjectReason0").visible, "row 0 is enabled")
+    compare(H.find(d, "dispatchProjectName1").text, "b")
+    verify(H.find(d, "dispatchProjectReason1").visible, "enabled that is not true is disabled")
+    compare(H.find(d, "dispatchProjectReason1").text, "")
+    verify(tc.sameColour(H.find(d, "dispatchProjectName1").color, d.theme.dim), "name colour")
+    verify(H.find(d, "dispatchProjectRow2"), "a null row is still a row")
+    compare(H.find(d, "dispatchProjectName2").text, "")
+    verify(!H.find(d, "dispatchProjectEmpty").visible, "row 0 is enabled")
+  }
+
+  // Review Focus 4
+  function test_a_long_project_name_elides_on_one_line() {
+    var long = new Array(30).join("a-very-long-project-name-")
+    var d = projectStep({ projectRows: [{ root: "/r/l", name: long, open: true, enabled: true, reason: "" }] })
+    var name = H.find(d, "dispatchProjectName0")
+    compare(name.text, long)
+    compare(name.elide, Text.ElideRight)
+    verify(name.truncated, "the name is cut, not wrapped")
+    compare(name.lineCount, 1)
+    verify(H.find(d, "dispatchProjectOpen0").visible, "the open mark stays")
+  }
+
+  // 17
+  function test_nulling_every_object_prop_at_the_project_step_and_destroying_is_quiet() {
+    var d = projectStep()
+    d.theme = null
+    d.target = null
+    d.form = null
+    d.preview = null
+    d.projectRows = null
+    wait(0)
+    compare(H.find(d, "dispatchProjectEmpty").text, "No projects registered")
+    compare(picks.count, 0)
+    d.destroy()
+    wait(0)
+  }
+
+  // A dialog inside an owner that counts the keys the dialog leaves to it.
+  Component {
+    id: hostC
+    Item {
+      id: host
+      property alias dialog: hosted
+      property int passed: 0
+      width: 640; height: 700
+      Keys.onPressed: function(event) { host.passed++ }
+      UI.DispatchDialog { id: hosted; width: 640; height: 700 }
+    }
+  }
+
+  // 4
+  function test_the_cursor_starts_on_the_first_enabled_row() {
+    var d = projectStep({ projectRows: tc.disabledFirstRows() })
+    compare(d.projectCursor, 1)
+    verify(H.find(d, "dispatchProjectRow1").hasCursor, "row 1 is highlighted")
+    verify(!H.find(d, "dispatchProjectRow0").hasCursor, "the disabled row never is")
+    compare(projectStep().projectCursor, 0)
+    compare(make().projectCursor, -1, "no cursor outside the project step")
+  }
+
+  // 5
+  function test_down_and_up_skip_disabled_rows_and_stop_at_the_ends() {
+    var d = projectStep({ projectRows: tc.disabledFirstRows() })
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Up)
+    compare(d.projectCursor, 1, "Up on the first enabled row stays")
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 3, "Down jumps over the disabled row")
+    verify(H.find(d, "dispatchProjectRow3").hasCursor)
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 3, "Down on the last enabled row stays")
+    keyClick(Qt.Key_Up)
+    compare(d.projectCursor, 1)
+    compare(picks.count, 0)
+  }
+
+  // 6
+  function test_enter_picks_the_cursor_row_data() {
+    return [{ tag: "return", key: Qt.Key_Return }, { tag: "enter", key: Qt.Key_Enter }]
+  }
+
+  function test_enter_picks_the_cursor_row(data) {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(data.key)
+    compare(picks.count, 1)
+    compare(picks.signalArguments[0][0], "/home/u/Code/agent-manager")
+    compare(cancels.count, 0)
+    compare(starts.count, 0)
+  }
+
+  // 10, 11
+  function test_without_an_enabled_row_there_is_no_cursor_and_enter_picks_nothing_data() {
+    var off = tc.fixtureRows()
+    for (var i = 0; i < off.length; i++) off[i].enabled = false
+    return [
+      { tag: "empty", rows: [] },
+      { tag: "null", rows: null },
+      { tag: "undefined", rows: undefined },
+      { tag: "object", rows: {} },
+      { tag: "string", rows: "x" },
+      { tag: "all-disabled", rows: off }
+    ]
+  }
+
+  function test_without_an_enabled_row_there_is_no_cursor_and_enter_picks_nothing(data) {
+    var d = projectStep({ projectRows: data.rows })
+    compare(d.projectCursor, -1)
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(d.projectCursor, -1)
+    compare(picks.count, 0)
+  }
+
+  // 12
+  function test_escape_cancel_and_the_backdrop_cancel_the_project_step() {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 1)
+    click(H.find(d, "dispatchCancel"))
+    compare(cancels.count, 2)
+    mouseClick(H.find(d, "dispatchBackdrop"), 2, 2)
+    compare(cancels.count, 3)
+    mouseClick(H.find(d, "dispatchCard"), 3, 3)
+    compare(cancels.count, 3, "the card itself does nothing")
+    compare(picks.count, 0)
+  }
+
+  // Review Focus 5
+  function test_escape_at_the_project_step_does_nothing_while_starting() {
+    var d = projectStep({ dispatchState: "starting" })
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 0)
+    compare(picks.count, 0)
+  }
+
+  // 13
+  function test_the_project_step_focuses_its_key_item() {
+    var d = projectStep()
+    compare(d.focusItem, H.find(d, "dispatchProjectKeys"))
+    d.step = ""
+    compare(d.focusItem, H.find(d, "dispatchBase"))
+    d.form = null
+    compare(d.focusItem, H.find(d, "dispatchCancel"))
+  }
+
+  // 14
+  function test_the_cursor_follows_its_root_when_the_rows_change() {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 2, "on ori")
+    var rows = tc.fixtureRows()
+    d.projectRows = [rows[3], rows[2], rows[0], rows[1]]
+    compare(d.projectCursor, 1, "still on ori")
+    verify(H.find(d, "dispatchProjectRow1").hasCursor)
+    var off = tc.fixtureRows()
+    off[2].enabled = false
+    off[2].reason = "board unreachable: tree read failed"
+    d.projectRows = off
+    compare(d.projectCursor, 0, "ori disabled: the first enabled row")
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 1)
+    d.step = ""
+    compare(d.projectCursor, -1)
+    d.step = "project"
+    compare(d.projectCursor, 0, "a new project step starts over")
+    compare(picks.count, 0)
+  }
+
+  // Review Focus 2
+  function test_rows_shrinking_past_the_cursor_put_it_on_the_first_enabled_row() {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 2)
+    d.projectRows = [tc.fixtureRows()[1]]
+    compare(d.projectCursor, 0)
+    d.projectRows = [tc.fixtureRows()[3]]
+    compare(d.projectCursor, -1, "the only row left is disabled")
+    compare(H.find(d, "dispatchProjectEmpty").text, "No project's board can be read")
+  }
+
+  // 15
+  function test_a_long_list_keeps_the_cursor_in_view() {
+    var rows = []
+    for (var i = 0; i < 30; i++)
+      rows.push({ root: "/r/p" + i, name: "project " + i, open: false, enabled: true, reason: "" })
+    var d = projectStep({ projectRows: rows })
+    var list = H.find(d, "dispatchProjectList")
+    verify(list.contentHeight > list.height, "the list scrolls")
+    compare(list.contentY, 0)
+    d.focusItem.forceActiveFocus()
+    for (var k = 0; k < 29; k++) keyClick(Qt.Key_Down)
+    compare(d.projectCursor, 29)
+    var last = H.find(d, "dispatchProjectRow29")
+    verify(list.contentY > 0, "the list scrolled")
+    verify(last.y >= list.contentY, "the last row's top is in view")
+    verify(last.y + last.height <= list.contentY + list.height + 0.5, "the last row's bottom is in view")
+  }
+
+  // 16
+  function test_other_keys_pass_through_to_the_owner() {
+    var host = createTemporaryObject(hostC, tc)
+    var d = host.dialog
+    picks.target = d; cancels.target = d
+    picks.clear(); cancels.clear()
+    d.step = "project"
+    d.projectRows = tc.fixtureRows()
+    d.shown = true
+    wait(30)
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_A)
+    compare(host.passed, 1, "a letter is not accepted")
+    keyClick(Qt.Key_Down)
+    compare(host.passed, 1, "Down is accepted")
+    compare(d.projectCursor, 1)
+    compare(picks.count, 0)
+    compare(cancels.count, 0)
+  }
+
+  // Review Focus 1
+  function test_enter_after_leaving_the_project_step_picks_nothing() {
+    var d = projectStep()
+    H.find(d, "dispatchProjectKeys").forceActiveFocus()
+    d.step = "target"
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(picks.count, 0)
+  }
+
+  // 7
+  function test_a_click_on_an_enabled_row_picks_it() {
+    var d = projectStep()
+    click(H.find(d, "dispatchProjectRow2"))
+    compare(d.projectCursor, 2)
+    compare(picks.count, 1)
+    compare(picks.signalArguments[0][0], "/home/u/Code/ori")
+    compare(cancels.count, 0)
+  }
+
+  // 8
+  function test_a_disabled_row_ignores_hover_and_click() {
+    var d = projectStep()
+    var row = H.find(d, "dispatchProjectRow3")
+    wait(30)
+    mouseMove(row, row.width / 2, row.height / 2)
+    wait(30)
+    compare(d.projectCursor, 0)
+    click(row)
+    compare(d.projectCursor, 0)
+    compare(picks.count, 0)
+    compare(cancels.count, 0)
+    compare(row.hoverCursorShape, Qt.ArrowCursor)
+  }
+
+  // 9
+  function test_hovering_an_enabled_row_moves_the_cursor() {
+    var d = projectStep()
+    var row = H.find(d, "dispatchProjectRow2")
+    wait(30)
+    mouseMove(row, row.width / 2, row.height / 2)
+    tryCompare(d, "projectCursor", 2)
+    verify(row.hasCursor)
+    compare(picks.count, 0)
+    compare(row.hoverCursorShape, Qt.PointingHandCursor)
+  }
+
+  // ---- the target step --------------------------------------------------
+
+  // 3
+  function test_the_target_step_heads_the_card_with_back_and_cancel() {
+    var d = make({ step: "target", projectName: "agent-manager" })
+    var heading = H.find(d, "dispatchHeading")
+    compare(heading.text, "Dispatch · 2 Target in agent-manager")
+    verify(H.find(d, "dispatchBack").visible, "Back")
+    verify(H.find(d, "dispatchBack").enabled, "Back is enabled")
+    verify(H.find(d, "dispatchCancel").visible, "Cancel")
+    verify(!H.find(d, "dispatchStart").visible, "no Start")
+    verify(!H.find(d, "dispatchProjectList").visible, "no project list")
+    verify(!H.find(d, "dispatchProjectEmpty").visible, "no project empty line")
+    d.projectName = ""
+    compare(heading.text, "Dispatch · 2 Target")
+    d.step = "form"
+    compare(heading.text, "Dispatch")
+    d.step = "project"
+    compare(heading.text, "Dispatch · 1 Project")
+  }
+
+  // 3: every part the project step hides is hidden at the target step too.
+  function test_the_target_step_hides_the_form_steps_parts_data() {
+    return tc.test_the_project_step_hides_the_form_steps_parts_data()
+  }
+
+  function test_the_target_step_hides_the_form_steps_parts(data) {
+    var d = make(data.over)
+    if (data.arm) click(H.find(d, "dispatchStart"))
+    verify(H.find(d, data.name).visible, "shown at the form step")
+    d.step = "target"
+    verify(!H.find(d, data.name).visible, "hidden at the target step")
+    d.step = "form"
+    verify(H.find(d, data.name).visible, "shown again at the form step")
+  }
+
+  // 15, 21
+  function test_back_shows_at_the_target_and_form_steps_only() {
+    var d = make()
+    var back = H.find(d, "dispatchBack")
+    verify(!back.visible, "no Back on a card-opened dialog")
+    d.step = "project"
+    verify(!back.visible, "no Back at the project step")
+    d.step = "target"
+    verify(back.visible, "Back at the target step")
+    verify(back.enabled)
+    click(back)
+    compare(backs.count, 1)
+    d.step = "form"
+    verify(back.visible, "Back at the form step")
+    verify(back.enabled)
+    verify(H.find(d, "dispatchStart").visible, "the form step keeps Start")
+    verify(H.find(d, "dispatchForm").visible, "and its form")
+    click(back)
+    compare(backs.count, 2)
+    compare(cancels.count, 0)
+    compare(starts.count, 0)
+  }
+
+  // 21
+  function test_back_at_the_form_step_is_disabled_while_starting() {
+    var d = make({ step: "form", dispatchState: "starting" })
+    var back = H.find(d, "dispatchBack")
+    verify(back.visible)
+    verify(!back.enabled)
+    click(back)
+    compare(backs.count, 0)
+    d.back()
+    compare(backs.count, 0, "back() refuses while starting")
+  }
+
+  // 22
+  function test_the_card_opened_dialog_has_no_back_data() {
+    return tc.dispatchStates.map(function(s) { return { tag: s, state: s } })
+  }
+
+  function test_the_card_opened_dialog_has_no_back(data) {
+    var d = make({ dispatchState: data.state })
+    verify(!H.find(d, "dispatchBack").visible)
+    var base = H.find(d, "dispatchBase")
+    base.forceActiveFocus()
+    base.cursorPosition = base.text.length
+    keyClick(Qt.Key_Backspace)
+    compare(backs.count, 0)
+    if (d.editable) compare(base.text, "mai", "Backspace edits the field")
+    d.back()
+    compare(backs.count, 0, "back() refuses at step \"\"")
+  }
+
+  // RunStore's dispatchTargetRows for one milestone, as Runs.dispatchTargets
+  // builds them: the board row, then the tree in order.
+  function targetFixture() {
+    return [
+      { key: "board", level: "board", card: "board", label: "Whole board", depth: 0 },
+      { key: "card:aaaa1111-0000-4000-8000-000000000001", level: "milestone",
+        card: { id: "aaaa1111-0000-4000-8000-000000000001", title: "M4 Run story", status: "todo", depth: 0 },
+        label: "Milestone \"M4 Run story\"", depth: 0 },
+      { key: "card:bbbb2222-0000-4000-8000-000000000002", level: "story",
+        card: { id: "bbbb2222-0000-4000-8000-000000000002", title: "Story dispatch backend", status: "todo",
+                depth: 1 },
+        label: "Story \"Story dispatch backend\"", depth: 1 },
+      { key: "card:cccc3333-0000-4000-8000-000000000003", level: "subtask",
+        card: { id: "cccc3333-0000-4000-8000-000000000003", title: "1.2 runs.js: targets", status: "todo",
+                depth: 2 },
+        label: "Subtask \"1.2 runs.js: targets\"", depth: 2 },
+      { key: "card:dddd4444-0000-4000-8000-000000000004", level: "subtask",
+        card: { id: "dddd4444-0000-4000-8000-000000000004", title: "1.3 dialog rows", status: "todo", depth: 2 },
+        label: "Subtask \"1.3 dialog rows\"", depth: 2 }
+    ]
+  }
+
+  // The dialog at the target step over targetFixture(); `over` replaces any
+  // prop. The mouse is parked on the backdrop so no row is hovered.
+  function targetStep(over) {
+    var d = make(Object.assign({ step: "target", targetRows: tc.targetFixture(), projectName: "agent-manager" },
+                               over || {}))
+    mouseMove(d, 1, 1)
+    return d
+  }
+
+  // How many target rows are on screen: dispatchTargetRow0, 1, … up to the
+  // first one missing. The wait lets a replaced row finish being deleted.
+  function shownRowCount(d) {
+    wait(0)
+    var n = 0
+    while (H.find(d, "dispatchTargetRow" + n)) n++
+    return n
+  }
+
+  // 1
+  function test_the_target_step_lists_each_row_with_its_level_and_id() {
+    var d = targetStep()
+    compare(shownRowCount(d), 5)
+    var titles = ["Whole board", "M4 Run story", "Story dispatch backend", "1.2 runs.js: targets", "1.3 dialog rows"]
+    var levels = ["", "Milestone", "Story", "Subtask", "Subtask"]
+    var ids = ["", "aaaa1111", "bbbb2222", "cccc3333", "dddd4444"]
+    for (var i = 0; i < 5; i++) {
+      compare(H.find(d, "dispatchTargetTitle" + i).text, titles[i], "title " + i)
+      var level = H.find(d, "dispatchTargetLevel" + i)
+      compare(level.text, levels[i], "level " + i)
+      compare(level.visible, levels[i] !== "", "level " + i + " visible")
+      var id = H.find(d, "dispatchTargetId" + i)
+      compare(id.text, ids[i], "id " + i)
+      compare(id.visible, ids[i] !== "", "id " + i + " visible")
+    }
+    verify(!H.find(d, "dispatchTargetStatus").visible, "no status line over rows")
+    verify(sameColour(H.find(d, "dispatchTargetLevel1").color, d.theme.dim), "the level word is dim")
+    verify(sameColour(H.find(d, "dispatchTargetId1").color, d.theme.dim), "the id is dim")
+    verify(sameColour(H.find(d, "dispatchTargetTitle1").color, d.theme.foreground), "the title is foreground")
+  }
+
+  // 2 (the line, not the title, is indented: see the plan's deviation note)
+  function test_target_rows_are_indented_by_depth() {
+    var d = targetStep()
+    var want = [0, 0, 16, 32, 32]
+    for (var i = 0; i < 5; i++)
+      compare(H.find(d, "dispatchTargetLine" + i).x, want[i], "row " + i)
+  }
+
+  // 3
+  function test_the_filter_and_the_list_show_only_at_the_target_step_data() {
+    return [
+      { tag: "card", step: "", shown: false },
+      { tag: "project", step: "project", shown: false },
+      { tag: "form", step: "form", shown: false },
+      { tag: "target", step: "target", shown: true }
+    ]
+  }
+
+  function test_the_filter_and_the_list_show_only_at_the_target_step(data) {
+    var d = targetStep({ step: data.step })
+    var filter = H.find(d, "dispatchTargetFilter")
+    compare(filter.visible, data.shown)
+    compare(H.find(d, "dispatchTargetList").visible, data.shown)
+    compare(filter.placeholderText, "Filter by title or id…")
+    compare(filter.width, H.find(d, "dispatchHeading").parent.width, "full card width")
+    if (!data.shown) compare(shownRowCount(d), 0, "no rows off the target step")
+  }
+
+  // 4, 15
+  function test_loading_reads_the_board_and_shows_no_row_data() {
+    return [{ tag: "no-rows", rows: [] }, { tag: "rows", rows: tc.targetFixture() }]
+  }
+
+  function test_loading_reads_the_board_and_shows_no_row(data) {
+    var d = targetStep({ targetRows: data.rows, targetLoading: true })
+    var status = H.find(d, "dispatchTargetStatus")
+    verify(status.visible)
+    compare(status.text, "Reading the board…")
+    compare(shownRowCount(d), 0)
+    verify(H.find(d, "dispatchTargetFilter").visible, "the filter shows while loading")
+    click(H.find(d, "dispatchBack"))
+    compare(backs.count, 1, "Back cancels the read")
+    d.targetRows = tc.targetFixture()
+    d.targetLoading = false
+    compare(shownRowCount(d), 5)
+    verify(!status.visible)
+  }
+
+  // 5
+  function test_an_empty_or_malformed_target_list_says_no_target_matches_data() {
+    return [
+      { tag: "empty", rows: [] },
+      { tag: "null", rows: null },
+      { tag: "undefined", rows: undefined },
+      { tag: "object", rows: {} },
+      { tag: "string", rows: "x" }
+    ]
+  }
+
+  function test_an_empty_or_malformed_target_list_says_no_target_matches(data) {
+    var d = targetStep({ targetRows: data.rows })
+    var status = H.find(d, "dispatchTargetStatus")
+    verify(status.visible)
+    compare(status.text, "No target matches")
+    compare(shownRowCount(d), 0)
+    click(H.find(d, "dispatchBack"))
+    compare(backs.count, 1)
+  }
+
+  // 6, Review Focus 4
+  function test_the_filter_matches_titles_case_blind_data() {
+    return [
+      { tag: "lower", query: "dialog", titles: ["1.3 dialog rows"] },
+      { tag: "upper", query: "DIALOG", titles: ["1.3 dialog rows"] },
+      { tag: "padded", query: "  dialog ", titles: ["1.3 dialog rows"] },
+      { tag: "blank", query: "   ",
+        titles: ["Whole board", "M4 Run story", "Story dispatch backend", "1.2 runs.js: targets", "1.3 dialog rows"] }
+    ]
+  }
+
+  function test_the_filter_matches_titles_case_blind(data) {
+    var d = targetStep()
+    H.find(d, "dispatchTargetFilter").text = data.query
+    compare(shownRowCount(d), data.titles.length)
+    for (var i = 0; i < data.titles.length; i++)
+      compare(H.find(d, "dispatchTargetTitle" + i).text, data.titles[i])
+    verify(!H.find(d, "dispatchTargetStatus").visible)
+  }
+
+  // 7
+  function test_the_filter_matches_the_short_id_not_the_level_word() {
+    var d = targetStep()
+    var filter = H.find(d, "dispatchTargetFilter")
+    filter.text = "cccc33"
+    compare(shownRowCount(d), 1)
+    compare(H.find(d, "dispatchTargetTitle0").text, "1.2 runs.js: targets")
+    filter.text = "story"
+    compare(shownRowCount(d), 2)
+    compare(H.find(d, "dispatchTargetTitle0").text, "M4 Run story")
+    compare(H.find(d, "dispatchTargetTitle1").text, "Story dispatch backend")
+    filter.text = "subtask"
+    compare(shownRowCount(d), 0, "the level word is not matched")
+    filter.text = "0000-4000"
+    compare(shownRowCount(d), 0, "only the short id is matched, not the whole id")
+  }
+
+  // 8
+  function test_a_filter_matching_nothing_says_no_target_matches() {
+    var d = targetStep()
+    var filter = H.find(d, "dispatchTargetFilter")
+    filter.text = "zzz"
+    compare(shownRowCount(d), 0)
+    compare(H.find(d, "dispatchTargetStatus").text, "No target matches")
+    filter.text = ""
+    compare(shownRowCount(d), 5)
+    verify(!H.find(d, "dispatchTargetStatus").visible)
+  }
+
+  // 25, Review Focus 1
+  function test_malformed_target_rows() {
+    var rows = [
+      { level: "subtask", card: { id: "ffff0000-x", title: "No key" }, depth: 2 },
+      42,
+      null,
+      { key: "", level: "story", card: { id: "ffff1111-x", title: "Empty key" }, depth: 1 },
+      { key: "card:nocard", level: "subtask", card: null, depth: 1 },
+      { key: "card:neg", level: "story", card: { id: "eeee5555-0000", title: "Negative" }, depth: -1 },
+      { key: "card:frac", level: "story", card: { id: "eeee6666-0000", title: "Fraction" }, depth: 1.5 },
+      { key: "card:inf", level: "story", card: { id: "eeee7777-0000", title: "Infinite" }, depth: Infinity },
+      { key: "card:text", level: "story", card: { id: "eeee8888-0000", title: "Text depth" }, depth: "2" },
+      { key: "card:odd", level: "epic", card: { id: 7, title: 9 } }
+    ]
+    var d = targetStep({ targetRows: rows })
+    compare(shownRowCount(d), 6, "no key, a number, null and an empty key give no row")
+    compare(H.find(d, "dispatchTargetTitle0").text, "", "no card: no title")
+    verify(!H.find(d, "dispatchTargetId0").visible, "no card: no id")
+    compare(H.find(d, "dispatchTargetLevel0").text, "Subtask")
+    compare(H.find(d, "dispatchTargetLine0").x, 16, "a valid depth still indents")
+    for (var i = 1; i <= 4; i++)
+      compare(H.find(d, "dispatchTargetLine" + i).x, 0, "row " + i + " reads as depth 0")
+    compare(H.find(d, "dispatchTargetLevel5").text, "", "an unknown level has no word")
+    verify(!H.find(d, "dispatchTargetLevel5").visible)
+    compare(H.find(d, "dispatchTargetTitle5").text, "", "a non-string title reads as empty")
+    compare(H.find(d, "dispatchTargetId5").text, "", "a non-string id reads as empty")
+    compare(H.find(d, "dispatchTargetLine5").x, 0, "a missing depth reads as 0")
+  }
+
+  // Review Focus 5
+  function test_a_long_target_title_elides_and_keeps_its_id() {
+    var long = new Array(30).join("A very long subtask title ")
+    var rows = [{ key: "card:long", level: "subtask", card: { id: "abcd1234-0000", title: long }, depth: 2 }]
+    var d = targetStep({ targetRows: rows })
+    var title = H.find(d, "dispatchTargetTitle0")
+    var row = H.find(d, "dispatchTargetRow0")
+    var id = H.find(d, "dispatchTargetId0")
+    compare(title.elide, Text.ElideRight)
+    verify(title.truncated, "the title is cut, not wrapped")
+    compare(title.lineCount, 1)
+    verify(id.visible)
+    var idRight = id.mapToItem(row, id.width, 0).x
+    verify(idRight <= row.width + 0.5, "the id stays inside the row")
+    verify(H.find(d, "dispatchTargetLevel0").visible, "the level word stays")
+  }
+
+  // 26
+  function test_nulling_every_object_prop_at_the_target_step_and_destroying_is_quiet() {
+    var d = targetStep()
+    d.theme = null
+    d.target = null
+    d.form = null
+    d.preview = null
+    d.targetRows = null
+    wait(0)
+    compare(H.find(d, "dispatchTargetStatus").text, "No target matches")
+    compare(edits.count, 0)
+    d.destroy()
+    wait(0)
+  }
+
+  // Types `text` into the item with the active focus, one key per character.
+  function typeText(text) {
+    for (var i = 0; i < text.length; i++) keyClick(text[i])
+  }
+
+  // 9
+  function test_the_cursor_starts_on_row_0_or_on_target_key() {
+    var d = targetStep()
+    compare(d.targetCursor, 0)
+    verify(H.find(d, "dispatchTargetRow0").hasCursor, "row 0 is highlighted")
+    var e = targetStep({ targetKey: "card:cccc3333-0000-4000-8000-000000000003" })
+    compare(e.targetCursor, 3)
+    verify(H.find(e, "dispatchTargetRow3").hasCursor)
+    var f = targetStep({ targetKey: "card:gone" })
+    compare(f.targetCursor, 0, "a key naming no row lands on row 0")
+    f.targetKey = "card:bbbb2222-0000-4000-8000-000000000002"
+    compare(f.targetCursor, 2, "a new targetKey moves the cursor onto its row")
+    f.targetKey = "card:gone"
+    compare(f.targetCursor, 2, "a key naming no row leaves it")
+    compare(make().targetCursor, -1, "no cursor at step \"\"")
+    compare(targetStep({ step: "project" }).targetCursor, -1, "none at the project step")
+    compare(targetStep({ step: "form" }).targetCursor, -1, "none at the form step")
+  }
+
+  // 10
+  function test_down_and_up_move_the_cursor_from_the_filter_and_stop_at_the_ends() {
+    var host = createTemporaryObject(hostC, tc)
+    var d = host.dialog
+    d.step = "target"
+    d.targetRows = tc.targetFixture()
+    d.shown = true
+    wait(30)
+    mouseMove(d, 1, 1)
+    d.focusItem.forceActiveFocus()
+    for (var i = 1; i <= 4; i++) {
+      keyClick(Qt.Key_Down)
+      compare(d.targetCursor, i)
+    }
+    keyClick(Qt.Key_Down)
+    compare(d.targetCursor, 4, "Down on the last row stays")
+    for (var k = 0; k < 5; k++) keyClick(Qt.Key_Up)
+    compare(d.targetCursor, 0, "Up on the first row stays")
+    compare(host.passed, 0, "Down and Up are accepted")
+    compare(H.find(d, "dispatchTargetFilter").text, "", "the filter text is unchanged")
+  }
+
+  // 11
+  function test_enter_picks_the_cursor_target_row_data() {
+    return [{ tag: "return", key: Qt.Key_Return }, { tag: "enter", key: Qt.Key_Enter }]
+  }
+
+  function test_enter_picks_the_cursor_target_row(data) {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(data.key)
+    compare(targetPicks.count, 1)
+    compare(targetPicks.signalArguments[0][0], "card:aaaa1111-0000-4000-8000-000000000001")
+    H.find(d, "dispatchTargetFilter").text = "dialog"
+    compare(d.targetCursor, 0)
+    keyClick(data.key)
+    compare(targetPicks.count, 2)
+    compare(targetPicks.signalArguments[1][0], "card:dddd4444-0000-4000-8000-000000000004",
+            "the shown row's key, not the unfiltered row 0")
+    compare(picks.count, 0, "no projectChosen at the target step")
+    compare(starts.count, 0)
+    compare(cancels.count, 0)
+  }
+
+  // 4, 5, 8: no cursor and no pick while loading, with no rows or no match.
+  function test_with_no_shown_row_there_is_no_cursor_and_enter_picks_nothing_data() {
+    return [
+      { tag: "loading", over: { targetLoading: true }, filter: "" },
+      { tag: "empty", over: { targetRows: [] }, filter: "" },
+      { tag: "null", over: { targetRows: null }, filter: "" },
+      { tag: "string", over: { targetRows: "x" }, filter: "" },
+      { tag: "no-match", over: {}, filter: "zzz" }
+    ]
+  }
+
+  function test_with_no_shown_row_there_is_no_cursor_and_enter_picks_nothing(data) {
+    var d = targetStep(data.over)
+    H.find(d, "dispatchTargetFilter").text = data.filter
+    compare(d.targetCursor, -1)
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(d.targetCursor, -1)
+    compare(targetPicks.count, 0)
+  }
+
+  // 4
+  function test_loading_ending_puts_the_cursor_on_row_0() {
+    var d = targetStep({ targetLoading: true })
+    compare(d.targetCursor, -1)
+    d.targetLoading = false
+    compare(d.targetCursor, 0)
+  }
+
+  // 8
+  function test_clearing_a_filter_that_matched_nothing_brings_the_cursor_back() {
+    var d = targetStep()
+    var filter = H.find(d, "dispatchTargetFilter")
+    filter.text = "zzz"
+    compare(d.targetCursor, -1)
+    filter.text = ""
+    compare(d.targetCursor, 0)
+  }
+
+  // 12
+  function test_the_filter_keeps_the_cursor_on_its_key() {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    for (var i = 0; i < 4; i++) keyClick(Qt.Key_Down)
+    compare(d.targetCursor, 4, "on 1.3 dialog rows")
+    typeText("rows")
+    compare(H.find(d, "dispatchTargetFilter").text, "rows")
+    compare(shownRowCount(d), 1)
+    compare(d.targetCursor, 0, "still on 1.3 dialog rows, now row 0")
+    H.find(d, "dispatchTargetFilter").text = "story"
+    compare(H.find(d, "dispatchTargetTitle0").text, "M4 Run story")
+    compare(d.targetCursor, 0, "its row is hidden: shown row 0")
+  }
+
+  // 14
+  function test_backspace_in_an_empty_filter_goes_back() {
+    var d = targetStep()
+    var filter = H.find(d, "dispatchTargetFilter")
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Backspace)
+    compare(backs.count, 1)
+    typeText("ab")
+    keyClick(Qt.Key_Backspace)
+    compare(filter.text, "a", "Backspace deletes one character")
+    compare(backs.count, 1, "and emits nothing")
+    keyClick(Qt.Key_Backspace)
+    compare(filter.text, "")
+    compare(backs.count, 1, "the last character is deleted, not a Back")
+    keyClick(Qt.Key_Backspace)
+    compare(backs.count, 2, "Backspace in the now-empty field goes back")
+    compare(cancels.count, 0)
+  }
+
+  // 4: Backspace in an empty filter still goes back while loading.
+  function test_backspace_goes_back_while_loading() {
+    var d = targetStep({ targetLoading: true })
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Backspace)
+    compare(backs.count, 1)
+  }
+
+  // 16
+  function test_escape_on_the_filter_cancels() {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Escape)
+    compare(cancels.count, 1)
+    compare(backs.count, 0)
+    compare(targetPicks.count, 0)
+  }
+
+  // 17
+  function test_the_target_step_focuses_its_filter() {
+    var d = targetStep()
+    compare(d.focusItem, H.find(d, "dispatchTargetFilter"))
+    d.step = "project"
+    compare(d.focusItem, H.find(d, "dispatchProjectKeys"))
+    d.step = ""
+    compare(d.focusItem, H.find(d, "dispatchBase"))
+    d.form = null
+    compare(d.focusItem, H.find(d, "dispatchCancel"))
+  }
+
+  // 18
+  function test_the_filter_is_cleared_on_re_entry() {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    typeText("zz")
+    compare(shownRowCount(d), 0)
+    d.step = "form"
+    d.step = "target"
+    compare(H.find(d, "dispatchTargetFilter").text, "")
+    compare(shownRowCount(d), 5)
+    compare(d.targetCursor, 0)
+    d.shown = false
+    H.find(d, "dispatchTargetFilter").text = "zz"
+    d.shown = true
+    compare(H.find(d, "dispatchTargetFilter").text, "", "showing the dialog at the step clears it too")
+  }
+
+  // 19
+  function test_back_from_the_form_keeps_the_picked_row() {
+    var d = targetStep({ step: "form", targetKey: "card:dddd4444-0000-4000-8000-000000000004" })
+    compare(d.targetCursor, -1)
+    d.step = "target"
+    compare(d.targetCursor, 4)
+    verify(H.find(d, "dispatchTargetRow4").hasCursor)
+  }
+
+  // 23
+  function test_signals_stay_in_their_step() {
+    var d = projectStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    compare(targetPicks.count, 0, "no targetPicked at the project step")
+    compare(backs.count, 0)
+    var e = make()
+    e.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Enter)
+    compare(targetPicks.count, 0, "no targetPicked at step \"\"")
+    var f = targetStep()
+    f.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    compare(targetPicks.count, 1)
+    compare(picks.count, 0, "no projectChosen at the target step")
+  }
+
+  // 24
+  function test_rows_arriving_keep_target_keys_row() {
+    var d = targetStep({ targetRows: [], targetLoading: true,
+                         targetKey: "card:cccc3333-0000-4000-8000-000000000003" })
+    compare(d.targetCursor, -1)
+    d.targetRows = tc.targetFixture()
+    compare(d.targetCursor, -1, "still loading")
+    d.targetLoading = false
+    compare(d.targetCursor, 3)
+  }
+
+  // Review Focus 3
+  function test_a_re_read_drops_the_cursor_until_the_rows_return() {
+    var d = targetStep()
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Down)
+    compare(d.targetCursor, 2)
+    d.targetLoading = true
+    compare(d.targetCursor, -1)
+    keyClick(Qt.Key_Return)
+    compare(targetPicks.count, 0)
+    d.targetLoading = false
+    compare(d.targetCursor, 0, "no targetKey: row 0")
+    d.targetLoading = true
+    d.targetKey = "card:dddd4444-0000-4000-8000-000000000004"
+    compare(d.targetCursor, -1, "a key arriving while loading does not move it")
+    d.targetLoading = false
+    compare(d.targetCursor, 4)
+  }
+
+  // Review Focus 2
+  function test_keys_on_the_filter_after_leaving_the_target_step_do_nothing() {
+    var d = targetStep()
+    H.find(d, "dispatchTargetFilter").forceActiveFocus()
+    d.step = "form"
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Return)
+    keyClick(Qt.Key_Backspace)
+    compare(targetPicks.count, 0)
+    compare(backs.count, 0)
+    compare(d.targetCursor, -1)
+  }
+
+  // 25: a row without a card is still picked by its key.
+  function test_a_row_without_a_card_is_picked_by_its_key() {
+    var d = targetStep({ targetRows: [{ key: "card:nocard", level: "subtask", card: null, depth: 1 }] })
+    compare(d.targetCursor, 0)
+    d.focusItem.forceActiveFocus()
+    keyClick(Qt.Key_Return)
+    compare(targetPicks.count, 1)
+    compare(targetPicks.signalArguments[0][0], "card:nocard")
+  }
+
+  // n rows: the board, then n - 1 subtasks at depth 1.
+  function longTargets(n) {
+    var rows = [{ key: "board", level: "board", card: "board", label: "Whole board", depth: 0 }]
+    for (var i = 1; i < n; i++) {
+      var id = "e" + ("000000" + i).slice(-7) + "-0000"
+      rows.push({ key: "card:" + id, level: "subtask", card: { id: id, title: "subtask " + i, status: "todo" },
+                  label: "Subtask \"subtask " + i + "\"", depth: 1 })
+    }
+    return rows
+  }
+
+  // 13
+  function test_a_click_on_a_row_picks_it() {
+    var d = targetStep()
+    click(H.find(d, "dispatchTargetRow3"))
+    compare(d.targetCursor, 3)
+    compare(targetPicks.count, 1)
+    compare(targetPicks.signalArguments[0][0], "card:cccc3333-0000-4000-8000-000000000003")
+    compare(cancels.count, 0)
+    compare(backs.count, 0)
+  }
+
+  // 13
+  function test_hovering_a_row_moves_the_cursor() {
+    var d = targetStep()
+    var row = H.find(d, "dispatchTargetRow2")
+    wait(30)
+    mouseMove(row, row.width / 2, row.height / 2)
+    tryCompare(d, "targetCursor", 2)
+    verify(row.hasCursor)
+    compare(targetPicks.count, 0)
+    compare(row.hoverCursorShape, Qt.PointingHandCursor)
+  }
+
+  // 20
+  function test_a_long_target_list_keeps_the_cursor_in_view() {
+    var d = targetStep({ targetRows: tc.longTargets(30) })
+    var list = H.find(d, "dispatchTargetList")
+    verify(list.contentHeight > list.height, "the list scrolls")
+    compare(list.contentY, 0)
+    d.focusItem.forceActiveFocus()
+    for (var k = 0; k < 29; k++) keyClick(Qt.Key_Down)
+    compare(d.targetCursor, 29)
+    var last = H.find(d, "dispatchTargetRow29")
+    verify(list.contentY > 0, "the list scrolled")
+    verify(last.y >= list.contentY, "the last row's top is in view")
+    verify(last.y + last.height <= list.contentY + list.height + 0.5, "the last row's bottom is in view")
+    for (var u = 0; u < 29; u++) keyClick(Qt.Key_Up)
+    compare(d.targetCursor, 0)
+    compare(list.contentY, 0, "back at the top")
+  }
+
+  // 19
+  function test_back_from_the_form_scrolls_the_picked_row_into_view() {
+    var rows = tc.longTargets(30)
+    var d = targetStep({ step: "form", targetRows: rows, targetKey: rows[27].key })
+    d.step = "target"
+    compare(d.targetCursor, 27)
+    var list = H.find(d, "dispatchTargetList")
+    // The rows are laid out after the step change: the row comes wholly into
+    // view and stays there once the layout settles.
+    function inView() {
+      var row = H.find(d, "dispatchTargetRow27")
+      return !!row && row.y >= list.contentY && row.y + row.height <= list.contentY + list.height + 0.5
+    }
+    tryVerify(inView, 1000, "the picked row comes wholly into view")
+    wait(50)
+    verify(inView(), "and stays in view once laid out")
+    verify(list.contentY > 0, "the list scrolled to the picked row")
   }
 }

@@ -357,6 +357,15 @@ function _trimSlashes(path) {
   return path.substring(0, end)
 }
 
+// A project's name: `name` trimmed when that is a non-empty string, else
+// root's last "/"-separated segment ("/" for "/", "" for ""). `root` is a
+// _trimSlashes result.
+function _projectName(root, name) {
+  var n = typeof name === "string" ? name.trim() : ""
+  if (n !== "") return n
+  return root === "/" ? "/" : root.substring(root.lastIndexOf("/") + 1)
+}
+
 // A copy of `run` whose `project` is { root, name }, the registered project it
 // belongs to; whatever `project` it held before is dropped. root: `root` with
 // every trailing "/" removed ("/" for a root of only slashes), else "" when not
@@ -368,9 +377,7 @@ function withProject(run, root, name) {
   if (!_isObject(run)) return run
   var out = _copyOf(run)
   var r = _trimSlashes(root)
-  var n = typeof name === "string" ? name.trim() : ""
-  if (n === "") n = r === "/" ? "/" : r.substring(r.lastIndexOf("/") + 1)
-  out.project = { root: r, name: n }
+  out.project = { root: r, name: _projectName(r, name) }
   return out
 }
 
@@ -463,6 +470,78 @@ function displayOrder(groups) {
     for (var j = 0; j < group.runs.length; j++) out.push(group.runs[j])
   }
   return out
+}
+
+// The entries of a board-tree.py --probe result: `probe` itself when an array,
+// else its `projects` when `probe` is a plain object whose `projects` is an
+// array, else [].
+function _probeEntries(probe) {
+  if (Array.isArray(probe)) return probe
+  return _isObject(probe) ? _arrayOr(probe.projects) : []
+}
+
+// The first probe entry for `root`: a plain object whose `root` is a string
+// equal to `root` with trailing "/" removed. null when there is none.
+function _probeEntryFor(entries, root) {
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    if (_isObject(e) && typeof e.root === "string" && _trimSlashes(e.root) === root) return e
+  }
+  return null
+}
+
+// Order of two dispatch rows: the open row first, then name lower-cased, then
+// root, both by plain string comparison. Roots are distinct, so no two rows tie.
+function _compareDispatchRows(a, b) {
+  if (a.open !== b.open) return a.open ? -1 : 1
+  var na = a.name.toLowerCase(), nb = b.name.toLowerCase()
+  if (na !== nb) return na < nb ? -1 : 1
+  if (a.root !== b.root) return a.root < b.root ? -1 : 1
+  return 0
+}
+
+// The projects step 1 of the dispatch dialog offers, one row per registered
+// project: { root, name, open, enabled, reason }.
+// projectRoots: [{ root, name }]. An entry that is not a plain object with a
+// string root is skipped. root: with every trailing "/" removed ("/" for a root
+// of only slashes); an entry whose root is then "" is skipped, and only the
+// first entry for a root gives a row. name: `name` trimmed when that is
+// non-empty, else root's last "/"-separated segment ("/" for "/").
+// open: root equals `openRoot` with trailing "/" removed. A non-string or ""
+// openRoot marks no row open.
+// probe: board-tree.py --probe output { ok, projects: [{ root, ok, reason }] }
+// or its projects array; anything else has no entries. An entry counts when it
+// is a plain object with a string root; it matches the row whose root equals
+// its root with trailing "/" removed, the first match winning. A row whose
+// entry has ok === false is enabled false, reason the entry's reason trimmed
+// when that is a non-empty string, else "unreachable". Every other row is
+// enabled true, reason "".
+// Order: the open row first, then name lower-cased, then root, by plain string
+// comparison. Returns new rows in a new array. Never mutates, never throws.
+function dispatchProjects(projectRoots, probe, openRoot) {
+  var list = _arrayOr(projectRoots)
+  var entries = _probeEntries(probe)
+  var open = typeof openRoot === "string" && openRoot !== "" ? _trimSlashes(openRoot) : null
+  var rows = []
+  for (var i = 0; i < list.length; i++) {
+    var p = list[i]
+    if (!_isObject(p) || typeof p.root !== "string") continue
+    var root = _trimSlashes(p.root)
+    if (root === "") continue
+    var seen = false
+    for (var j = 0; j < rows.length && !seen; j++) seen = rows[j].root === root
+    if (seen) continue
+    var row = { root: root, name: _projectName(root, p.name), open: root === open, enabled: true, reason: "" }
+    var entry = _probeEntryFor(entries, root)
+    if (entry !== null && entry.ok === false) {
+      var reason = typeof entry.reason === "string" ? entry.reason.trim() : ""
+      row.enabled = false
+      row.reason = reason !== "" ? reason : "unreachable"
+    }
+    rows.push(row)
+  }
+  rows.sort(_compareDispatchRows)
+  return rows
 }
 
 // String(v), trimmed. null/undefined, and values String() cannot convert (e.g. a
@@ -1405,6 +1484,41 @@ function dispatchLabel(card, cardMap) {
   }
   if (_isWholeNumber(card.depth) && card.depth >= 2) return "Subtask \"" + title + "\""
   return "\"" + title + "\""
+}
+
+// The dispatch dialog's step-2 rows for one project's brd tree:
+// { key, level, card, label, depth }. roots: brd tree's top-level cards after
+// Board.indexTree; cardMap: its {id: card} map, passed to dispatchPlan and
+// dispatchLabel and not read otherwise.
+// Row 0 is always { key: "board", level: "board", card: "board", label:
+// "Whole board", depth: 0 }. Then the forest depth-first, pre-order, roots and
+// children in array order (non-array roots or children count as none). A node
+// that is not a plain object gives no row and no children; a node object
+// reached again is skipped with its subtree. A node gives a row when
+// dispatchPlan offers it at level milestone or story, or at level subtask with
+// status exactly "todo", and no earlier row has its id. Children are walked
+// whether or not their parent gives a row.
+// key "card:" + id; level the plan's level; card the node itself; label
+// dispatchLabel(card, cardMap); depth the card's depth.
+// Returns new rows in a new array. Never mutates, never throws.
+function dispatchTargets(roots, cardMap) {
+  var rows = [{ key: "board", level: dispatchPlan("board").level, card: "board", label: dispatchLabel("board"), depth: 0 }]
+  var visited = []
+  var ids = []
+  var stack = _arrayOr(roots).slice().reverse()
+  while (stack.length > 0) {
+    var card = stack.pop()
+    if (!_isObject(card) || visited.indexOf(card) >= 0) continue
+    visited.push(card)
+    var children = _arrayOr(card.children)
+    for (var i = children.length - 1; i >= 0; i--) stack.push(children[i])
+    var plan = dispatchPlan(card, cardMap)
+    if (!plan.offered || (plan.level === "subtask" && card.status !== "todo")) continue
+    if (ids.indexOf(card.id) >= 0) continue
+    ids.push(card.id)
+    rows.push({ key: "card:" + card.id, level: plan.level, card: card, label: dispatchLabel(card, cardMap), depth: card.depth })
+  }
+  return rows
 }
 
 // The branch-prefix stem of a milestone title: lower-case [a-z0-9] tokens; a
