@@ -122,7 +122,6 @@ Scope {
     runner.run(args)
   }
 
-
   // The `am runs` summary without its `status` key: the helper replaced the
   // summary's status string with the `am status` object, which normalizeRun
   // must never read as the row's status ("[object Object]").
@@ -178,7 +177,6 @@ Scope {
     }
     history.setEntry(root, { runs: runs, more: env.more === true, loading: false, error: "" })
   }
-
 
   // Whether `run` is terminal: parked, done, escalated or cancelled.
   function isTerminal(run) {
@@ -240,7 +238,6 @@ Scope {
     }
     if (changed) history.historyByProject = map
   }
-
 
   // The query the loaded pages were fetched under: the status list and finishedAge.
   function queryKey() {
