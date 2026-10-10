@@ -8,10 +8,11 @@
 //   raw = {
 //     row:    one `am runs` entry without its `status`:
 //             { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
-//               milestone_id, card_id, lease, progress, project: { id, repo_dir } }
+//               milestone_id, story_id, card_id, lease, progress, project: { id, repo_dir } }
 //     status: `am status` data, may be absent:
 //             { as_of_seq, store_id,
-//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at },
+//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
+//                      milestone_id, story_id, card_id },
 //               stories: [{ card_id, title, level, status, tip_branch,
 //                           subtasks: [{ card_id, branch, base_branch, status, worktree_path,
 //                                        phases: [{ name, kind, status, started_at, ended_at, detail,
@@ -23,7 +24,9 @@
 //   }
 // Output scalars: id, repo_dir, started_at, base_branch, branch_prefix and
 // workflow are the row's, else the am status run's; status and milestone_id are
-// the am status run's, else the row's. `lease` keeps pid, host, heartbeat_at,
+// the am status run's, else the row's. story_id and card_id are the am status
+// run's when a non-empty string, else the row's when a string, else "".
+// `lease` keeps pid, host, heartbeat_at,
 // accepting and live. `requests` are am's control requests in the order made;
 // handled_at "" means the run has not acted on it yet.
 // `project` is the row's { id, repo_dir }: id a finite number else null,
@@ -50,6 +53,7 @@ function normalizeRun(raw) {
   function firstText(a, b) { var s = text(a); return s !== "" ? s : text(b) }
   function asGiven(v) { return v === undefined || v === null ? "" : v }
   function stringOr(v) { return typeof v === "string" ? v : "" }
+  function firstId(a, b) { return typeof a === "string" && a !== "" ? a : stringOr(b) }
   function isSyntheticStory(id) { return id === "integrate" || id === "bases" }
 
   var r = objectOr(raw)
@@ -128,6 +132,8 @@ function normalizeRun(raw) {
     id: firstText(row.id, run.id),
     repo_dir: firstText(row.repo_dir, run.repo_dir),
     milestone_id: firstText(run.milestone_id, row.milestone_id),
+    story_id: firstId(run.story_id, row.story_id),
+    card_id: firstId(run.card_id, row.card_id),
     status: firstText(run.status, row.status),
     started_at: firstText(row.started_at, run.started_at),
     base_branch: firstText(row.base_branch, run.base_branch),

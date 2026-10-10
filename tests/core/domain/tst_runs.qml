@@ -31,7 +31,9 @@ TestCase {
   }
 
   function checkDefaults(r, label) {
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,tree,workflow", label)
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,card_id,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,story_id,tree,workflow", label)
+    compare(r.story_id, "", label)
+    compare(r.card_id, "", label)
     compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
@@ -229,7 +231,7 @@ TestCase {
 
   function test_normalize_scalars_from_fixture() {
     var r = Runs.normalizeRun(amRun("status-started.json"))
-    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,tree,workflow")
+    compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,card_id,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,story_id,tree,workflow")
     compare(r.id, "20261008T143823Z-e795ad19")
     compare(r.repo_dir, "/home/user/Code/omarchy-project-manager")
     compare(r.milestone_id, "e795ad19-c81f-43ec-bdda-ef61ab5f860b", "only the am runs row carries it")
@@ -567,7 +569,7 @@ TestCase {
 
     var fixture = amRun("status-started.json")
     var keys = Object.keys(plain)
-    var rowKeys = ["story_id", "card_id", "progress"]
+    var rowKeys = ["progress"]
     for (var i = 0; i < rowKeys.length; i++) {
       verify(hasOwn(fixture.row, rowKeys[i]), "the capture's row carries " + rowKeys[i])
       compare(keys.indexOf(rowKeys[i]), -1, "row " + rowKeys[i] + " is not kept")
@@ -4470,5 +4472,50 @@ TestCase {
   function test_run_root_of_anything_else_is_empty() {
     var others = [null, undefined, 5, "x", {}, { project: null }, { project: "x" }, { project: {} }, { project: { root: 7 } }]
     for (var i = 0; i < others.length; i++) compare(Runs.runRoot(others[i]), "", JSON.stringify(others[i]))
+  }
+
+  // ---- history-and-titles 2.1: run titles ---------------------------------------------------
+
+  function test_normalize_story_and_card_ids() {
+    // synthetic: bare am runs rows and am status runs naming a story and a card
+    var fromRow = Runs.normalizeRun({ row: { id: "r1", story_id: "s1", card_id: "c1" } })
+    compare(fromRow.story_id, "s1", "story from the row")
+    compare(fromRow.card_id, "c1", "card from the row")
+
+    var fromStatus = Runs.normalizeRun({ status: { run: { id: "r2", story_id: "s2", card_id: "c2" } } })
+    compare(fromStatus.story_id, "s2", "story from the am status run")
+    compare(fromStatus.card_id, "c2", "card from the am status run")
+
+    var both = Runs.normalizeRun({ row: { story_id: "s-row", card_id: "c-row" },
+                                   status: { run: { story_id: "s-st", card_id: "c-st" } } })
+    compare(both.story_id, "s-st", "the am status run wins over the row")
+    compare(both.card_id, "c-st", "the am status run wins over the row (card)")
+
+    var missing = [null, 5, "", true, {}, []]
+    for (var i = 0; i < missing.length; i++) {
+      var r = Runs.normalizeRun({ row: { story_id: "s-row", card_id: "c-row" },
+                                  status: { run: { story_id: missing[i], card_id: missing[i] } } })
+      compare(r.story_id, "s-row", "status story " + JSON.stringify(missing[i]) + " counts as missing")
+      compare(r.card_id, "c-row", "status card " + JSON.stringify(missing[i]) + " counts as missing")
+      var bare = Runs.normalizeRun({ row: { story_id: missing[i], card_id: missing[i] } })
+      compare(bare.story_id, "", "row story " + JSON.stringify(missing[i]) + " gives empty")
+      compare(bare.card_id, "", "row card " + JSON.stringify(missing[i]) + " gives empty")
+    }
+
+    // the captures: am status runs have story_id null, runs.json rows have null story and card ids
+    var runs = fixtureRuns()
+    for (var j = 0; j < runs.length; j++) {
+      compare(runs[j].story_id, "", "fixture " + j + " story_id")
+      compare(runs[j].card_id, "", "fixture " + j + " card_id")
+    }
+
+    // synthetic: the started capture's am status run story_id set; the row's stays null
+    var raw = amRun("status-started.json")
+    raw.status.run.story_id = "9f0f68fc-f231-4ef2-b646-00a7af925ea2"
+    compare(Runs.normalizeRun(raw).story_id, "9f0f68fc-f231-4ef2-b646-00a7af925ea2", "capture with a story id")
+    // synthetic: the row names the story, the am status run keeps its null
+    var rowOnly = amRun("status-started.json")
+    rowOnly.row.story_id = "row-story"
+    compare(Runs.normalizeRun(rowOnly).story_id, "row-story", "a null am status story_id falls back to the row")
   }
 }
