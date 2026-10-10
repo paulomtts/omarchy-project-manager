@@ -2,6 +2,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../../core/domain/board.js" as Board
 import "../../helpers/amFixtures.js" as F
 
 // normalizeRun's input is built from tests/fixtures/am/ via amRun.
@@ -4517,5 +4518,50 @@ TestCase {
     var rowOnly = amRun("status-started.json")
     rowOnly.row.story_id = "row-story"
     compare(Runs.normalizeRun(rowOnly).story_id, "row-story", "a null am status story_id falls back to the row")
+  }
+
+  function test_titles_from_cards() {
+    // synthetic: a brd tree as `brd tree` returns it, indexed by Board.indexTree
+    var roots = [{ id: "m1", title: " Milestone one ", children: [
+      { id: "s1", title: "Story one", children: [
+        { id: "t1", title: "Subtask one", children: [] },
+        { id: "t2", children: [] },
+        { id: "t3", title: 7, children: [] },
+        { id: "t4", title: "", children: [] },
+        { id: "t5", title: "   ", children: [] }] }] }]
+    var cardMap = Board.indexTree(roots).cardMap
+    var before = JSON.stringify(cardMap)
+    var titles = Runs.titlesFromCards(cardMap)
+    compare(Object.keys(titles).sort().join(","), "m1,s1,t1", "nested cards included, untitled ones skipped")
+    compare(titles.m1, "Milestone one", "trimmed")
+    compare(titles.s1, "Story one")
+    compare(titles.t1, "Subtask one")
+    compare(JSON.stringify(cardMap), before, "the card map is not mutated")
+    verify(Runs.titlesFromCards(cardMap) !== titles, "a new object on each call")
+
+    // synthetic: non-object cards are skipped
+    compare(JSON.stringify(Runs.titlesFromCards({ a: "x", b: null, c: [], d: 5, e: { title: "E" } })), '{"e":"E"}')
+
+    var bad = [undefined, null, "x", 5, []]
+    for (var i = 0; i < bad.length; i++)
+      compare(JSON.stringify(Runs.titlesFromCards(bad[i])), "{}", "garbage " + i)
+  }
+
+  function test_titles_from_cards_prototype_keys() {
+    // synthetic: JSON.parse makes __proto__ and constructor own keys of the card map
+    var cardMap = JSON.parse('{"__proto__": {"title": "Proto card"}, "constructor": {"title": "Ctor card"}, "toString": {"id": "x"}}')
+    var titles = Runs.titlesFromCards(cardMap)
+    verify(Object.getPrototypeOf(titles) === Object.prototype, "the result's prototype is unchanged")
+    compare(Object.keys(titles).sort().join(","), "__proto__,constructor", "own keys, toString skipped")
+    compare(Object.prototype.hasOwnProperty.call(titles, "__proto__"), true, "__proto__ is an own key")
+    compare(titles["__proto__"], "Proto card")
+    compare(titles.constructor, "Ctor card")
+    compare(({}).polluted, undefined, "nothing leaks into Object.prototype")
+    compare(Object.prototype.title, undefined, "no title on Object.prototype")
+    compare(typeof ({}).constructor, "function", "plain objects keep their constructor")
+
+    var bare = Object.create(null)
+    bare.c1 = { title: "Bare" }
+    compare(JSON.stringify(Runs.titlesFromCards(bare)), '{"c1":"Bare"}', "a prototype-less card map")
   }
 }

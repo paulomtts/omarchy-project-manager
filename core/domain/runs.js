@@ -529,6 +529,26 @@ function errorText(error) {
 
 function _subtasksOf(run) { return _arrayOr(_treeOf(run).subtasks) }
 
+// v trimmed when it is a string that is not blank, else "".
+function _usableTitle(v) { return _trimmedOr(v) }
+
+// A new plain object mapping each own enumerable key of cardMap whose card is
+// an object with a usable title to that title, trimmed (a Board.indexTree card
+// map gives every card of the forest). Keys such as __proto__ become ordinary
+// own keys; the result's prototype is Object.prototype. {} when cardMap is not
+// a plain object. Never mutates, never throws.
+function titlesFromCards(cardMap) {
+  var out = {}
+  if (!_isObject(cardMap)) return out
+  var keys = Object.keys(cardMap)
+  for (var i = 0; i < keys.length; i++) {
+    var card = cardMap[keys[i]]
+    var title = _isObject(card) ? _usableTitle(card.title) : ""
+    if (title !== "") Object.defineProperty(out, keys[i], { value: title, enumerable: true, writable: true, configurable: true })
+  }
+  return out
+}
+
 // "…" and the last 8 characters of the id (all of a shorter one); "…" alone
 // when the id is not a string.
 function shortId(run) {
