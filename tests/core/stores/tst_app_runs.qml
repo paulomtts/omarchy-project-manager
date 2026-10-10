@@ -9,10 +9,16 @@
 // store, and `app.runDispatch`, which App feeds with the run store's project
 // and run list and run control's run settings, and whose refreshRequested,
 // noticeRequested, runSettingsWanted and runSettingsSaveRequested App routes,
-// as it routes run control's runSettingsSaveFailed back to the dispatch. The
-// stores' own behaviour is tested in
-// tst_run_store.qml, tst_run_alerts_store.qml, tst_run_control_store.qml and
-// tst_run_dispatch_store.qml.
+// as it routes run control's runSettingsSaveFailed back to the dispatch, and
+// `app.runTitles`, which App feeds with the registry, the open project's root
+// and card map, the run list and the panel-open flag, and whose titles map
+// App hands the run store and the run alerts, and `app.runHistory`, which App
+// feeds with the backend dir, the panel-open flag, the run store's
+// per-project snapshot, its chip and its finished rows, and whose pages App
+// hands the run store flattened. The stores' own behaviour is tested in
+// tst_run_store.qml, tst_run_alerts_store.qml, tst_run_control_store.qml,
+// tst_run_dispatch_store.qml, tst_run_titles_store.qml and
+// tst_run_history_store.qml.
 import QtQuick
 import QtTest
 
@@ -859,5 +865,124 @@ TestCase {
     app.projects.chooseProject(pB)
     reply(save.current, ctlFail("Invalid", "x"), 1)
     compare(app.runControl.flashText, "")
+  }
+
+  // ---- the run titles
+
+  function test_app_composes_run_titles_wired_to_the_run_store_and_board() {
+    var app = make(); if (!app) return
+    verify(app.runTitles, "App composes the titles store as app.runTitles")
+    compare(app.runTitles.backendDir, "/plugin/core/backend/")
+    compare(JSON.stringify(app.runTitles.projectRoots), JSON.stringify(app.runs.projectRoots))
+    compare(app.runTitles.openRoot, tc.pA.root_path)
+    compare(app.runTitles.active, false)
+    app.panelOpen = true
+    compare(app.runTitles.active, true, "active follows app.panelOpen")
+    app.board.applyTreeData([{ id: "c1", title: "One", status: "todo", children: [] }])
+    compare(JSON.stringify(app.runTitles.openCardMap), JSON.stringify(app.board.cardMap))
+    compare(app.runTitles.titlesByRoot[tc.pA.root_path].c1, "One")
+    compare(app.runTitles.titleStatus[tc.pA.root_path], "ok")
+  }
+
+  function test_app_runs_no_board_titles_for_the_open_project() {
+    var app = openApp([runningIn("r1")], []); if (!app) return
+    compare(app.runs.runs.length, 1)
+    compare(JSON.stringify(app.runTitles.runs), JSON.stringify(app.runs.runs))
+    compare(app.runTitles.titlesRunner.current, null, "pA is open and pB has no runs: no board-titles.py")
+    compare(app.runTitles.titleStatus[tc.pA.root_path], "ok")
+  }
+
+  function test_app_fetches_titles_for_another_project_with_runs() {
+    var app = openApp([runningIn("r1")], [runningIn("r2", tc.pB.root_path)]); if (!app) return
+    compare(argv(app.runTitles.titlesRunner.current),
+            "python3|/plugin/core/backend/boards/board-titles.py|" + tc.pB.root_path)
+    compare(app.runTitles.fetchingRoot, tc.pB.root_path)
+    compare(app.runTitles.titleStatus[tc.pB.root_path], "loading")
+  }
+
+  function test_app_composes_run_history_wired_to_the_run_store() {
+    var app = make(); if (!app) return
+    verify(app.runHistory, "App composes the history store as app.runHistory")
+    compare(app.runHistory.backendDir, "/plugin/core/backend/")
+    compare(JSON.stringify(app.runHistory.snapshotByProject), JSON.stringify(app.runs.runsByProject))
+    compare(app.runHistory.finishedState, "")
+    compare(app.runHistory.finishedAge, "all")
+    compare(app.runHistory.active, false)
+    compare(app.runs.historyRuns.length, 0, "no page yet")
+    app.panelOpen = true
+    compare(app.runHistory.active, true, "active follows app.panelOpen")
+    var text = listReply([runningIn("r1")], [])
+    reply(app.runs.snapshotRunner.current, text, 0)
+    reply(app.runs.snapshotRunner.current, text, 0)
+    compare(app.runs.runsByProject[tc.pA.root_path].length, 1)
+    compare(JSON.stringify(app.runHistory.snapshotByProject), JSON.stringify(app.runs.runsByProject),
+            "snapshotByProject follows app.runs.runsByProject after an ok snapshot reply")
+    app.runs.toggleRunFilter("parked")
+    compare(app.runHistory.runFilter, "parked", "runFilter follows app.runs.runFilter")
+    app.runs.toggleRunFilter("all")
+    compare(app.runHistory.runFilter, "")
+    app.runs.toggleFinishedState("done")
+    compare(app.runHistory.finishedState, "done", "finishedState follows app.runs.finishedState")
+    app.runs.toggleFinishedAge("week")
+    compare(app.runHistory.finishedAge, "week", "finishedAge follows app.runs.finishedAge")
+    app.panelOpen = false
+    compare(app.runHistory.active, false)
+    compare(app.runHistory.finishedState, "", "the run store's reset on closing reaches the history store")
+    compare(app.runHistory.finishedAge, "all")
+  }
+
+  // One runs-history.py entry: done run `id` of `root`, started 2026-09-01.
+  function historyEntry(id, root) {
+    return { id: id, repo_dir: root, started_at: "2026-09-01T00:00:00Z",
+             status: { run: { id: id, milestone_id: "m-" + id, status: "done" }, rows: [], stories: [], subtasks: [] } }
+  }
+
+  // app.runHistory.showOlder(root), answered with an ok page of `entries`.
+  function historyPage(app, root, entries) {
+    app.runHistory.showOlder(root)
+    reply(app.runHistory.runnerFor(root).current, JSON.stringify({ ok: true, runs: entries, more: false }) + "\n", 0)
+  }
+
+  function test_app_hands_the_run_store_every_history_page_flattened() {
+    var app = openApp([escalatedIn("r1")], [escalatedIn("r2", tc.pB.root_path)]); if (!app) return
+    historyPage(app, tc.pB.root_path, [historyEntry("h2", tc.pB.root_path)])
+    historyPage(app, tc.pA.root_path, [historyEntry("h1", tc.pA.root_path), historyEntry("h3", tc.pA.root_path)])
+    compare(Object.keys(app.runHistory.historyByProject).join(","), tc.pB.root_path + "," + tc.pA.root_path)
+    compare(app.runs.historyRuns.map(function(r) { return r.id }).join(","), "h2,h1,h3",
+            "root by root, in Object.keys order")
+    verify(app.runs.historyRuns[0] === app.runHistory.historyByProject[tc.pB.root_path].runs[0],
+           "the history store's own objects")
+    compare(app.runs.filteredRuns.map(function(r) { return r.id }).join(","), "r1,h1,h3,r2,h2",
+            "each project's history after its snapshot runs")
+    compare(app.runs.runs.length, 2, "the snapshot stays snapshot-only")
+    compare(app.runs.runById("h1").id, "h1")
+  }
+
+  function test_app_hands_the_run_store_the_run_titles() {
+    var app = make(); if (!app) return
+    compare(JSON.stringify(app.runs.titlesByRoot), JSON.stringify(app.runTitles.titlesByRoot))
+    app.board.applyTreeData([{ id: "c1", title: "One", status: "todo", children: [] }])
+    compare(app.runs.titlesByRoot[tc.pA.root_path].c1, "One", "titlesByRoot follows app.runTitles.titlesByRoot")
+  }
+
+  function test_app_hands_the_run_alerts_the_run_titles() {
+    var app = make(); if (!app) return
+    compare(JSON.stringify(app.runAlerts.titlesByRoot), JSON.stringify(app.runTitles.titlesByRoot))
+    app.board.applyTreeData([{ id: "c1", title: "One", status: "todo", children: [] }])
+    compare(app.runAlerts.titlesByRoot[tc.pA.root_path].c1, "One", "titlesByRoot follows app.runTitles.titlesByRoot")
+  }
+
+  function test_a_finished_row_toggle_puts_the_cursor_home() {
+    var app = make(); if (!app) return
+    app.nav.cursorIndex = 3
+    app.nav.scrollOnCursor = true
+    app.runs.toggleFinishedState("escalated")
+    compare(app.nav.cursorIndex, 0)
+    compare(app.nav.scrollOnCursor, false)
+    app.nav.cursorIndex = 2
+    app.nav.scrollOnCursor = true
+    app.runs.toggleFinishedAge("today")
+    compare(app.nav.cursorIndex, 0)
+    compare(app.nav.scrollOnCursor, false)
   }
 }

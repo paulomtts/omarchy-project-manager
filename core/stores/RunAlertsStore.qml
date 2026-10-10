@@ -12,11 +12,13 @@ import "../domain/runs.js" as Runs
 // ok reply after an opening, a `missing` reply or its return to the registry
 // only arms it, so history is never replayed. `alertsArmed`: some root is
 // armed. `toasts` is {key, id, title, state, reason, project, expiresMs},
-// oldest first, at most 3, and is replaced, never changed in place; `project`
-// is the name of the run's project. The backend directory, the panel-open
-// flag, the notify switch and the registry are handed to it from outside --
-// it never reaches for another store. App composes it as `app.runAlerts` and
-// routes the run store's snapshotReplied here.
+// oldest first, at most 3, and is replaced, never changed in place; `title`
+// is the run's title from its project's map in titlesByRoot (the fallback
+// title without one) and `project` is the name of the run's project. The
+// backend directory, the panel-open flag, the notify switch, the registry and
+// the run titles' map are handed to it from outside -- it never reaches for
+// another store. App composes it as `app.runAlerts` and routes the run
+// store's snapshotReplied here.
 Scope {
   id: alerts
 
@@ -24,6 +26,7 @@ Scope {
   property bool active: false               // App binds this to "panel open" (app.panelOpen)
   property bool notifyOnEscalation: false   // "Notify on escalation"; App binds it to the switch
   property var projectRoots: []             // [{root, name}], the registry in its order; App binds it
+  property var titlesByRoot: ({})           // {root: {id: title}}; App binds it
 
   property var armedRoots: ({})
   readonly property bool alertsArmed: Object.keys(alerts.armedRoots).length > 0
@@ -42,11 +45,11 @@ Scope {
   onProjectRootsChanged: alerts.pruneArmed()
 
   // One project's snapshot reply. "ok" while active: when `root` is armed,
-  // Runs.newAlerts(previousRuns, runs) is raised (a non-array previousRuns
-  // counts as []), each alert with `project` the project.name of its run in
-  // `runs` ("" when it has none); then `root` is armed. "missing" disarms
-  // every root and keeps the toasts. "ok" while closed, "failed" and any other
-  // outcome change nothing.
+  // Runs.newAlerts(previousRuns, runs, titlesByRoot) is raised (a non-array
+  // previousRuns counts as []), each alert with `project` the project.name of
+  // its run in `runs` ("" when it has none); then `root` is armed. "missing"
+  // disarms every root and keeps the toasts. "ok" while closed, "failed" and
+  // any other outcome change nothing.
   function snapshotReplied(root, outcome, previousRuns, runs) {
     if (outcome === "missing") {
       alerts.armedRoots = {}
@@ -54,7 +57,7 @@ Scope {
     }
     if (outcome !== "ok" || !alerts.active) return
     if (Runs.hasKey(alerts.armedRoots, root)) {
-      var found = Runs.newAlerts(Array.isArray(previousRuns) ? previousRuns : [], runs)
+      var found = Runs.newAlerts(Array.isArray(previousRuns) ? previousRuns : [], runs, alerts.titlesByRoot)
       for (var i = 0; i < found.length; i++) {
         var run = Runs.runById(runs, found[i].id)
         var project = run !== null && run.project !== null && typeof run.project === "object" ? run.project.name : ""
