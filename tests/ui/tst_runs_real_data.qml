@@ -133,7 +133,8 @@ TestCase {
     }
     verify(!H.find(p, "runStory4"), "four stories")
     var label = String(H.find(p, "runSubtaskLabel0_0").text)
-    verify(label.indexOf("7442d674-e0d4-4048-96ee-cd27b5ba34f8") >= 0, label)
+    compare(label.indexOf("7442d674-e0d4-4048-96ee-cd27b5ba34f8"), -1, "never the full id: " + label)
+    verify(label.indexOf("…b5ba34f8") >= 0, "no board titles it: its short id: " + label)
     verify(label.endsWith("· review.1"), label)
   }
 

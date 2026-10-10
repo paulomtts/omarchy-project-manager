@@ -790,15 +790,15 @@ function historyCursor(runs, root) {
 
 // The titles map of run's project: titlesByRoot's own entry for runRoot(run)
 // when titlesByRoot is a plain object and that entry a plain object; {} for
-// anything else, and always for a run whose root is "".
-function _titlesFor(run, titlesByRoot) {
+// anything else, and always for a run whose root is "". Never throws.
+function titlesOfRun(run, titlesByRoot) {
   var root = runRoot(run)
   if (root === "" || !_isObject(titlesByRoot) || !hasKey(titlesByRoot, root)) return {}
   return _titlesOr(titlesByRoot[root])
 }
 
 // Case-insensitive substring match on the id, title (runTitle with the run's
-// map in titlesByRoot, see _titlesFor), current phase and state name. An empty
+// map in titlesByRoot, see titlesOfRun), current phase and state name. An empty
 // (or all-space) query returns the input itself.
 function searchRuns(runs, q, titlesByRoot) {
   var list = _arrayOr(runs)
@@ -808,7 +808,7 @@ function searchRuns(runs, q, titlesByRoot) {
   for (var i = 0; i < list.length; i++) {
     var run = list[i]
     if (!_isObject(run)) continue
-    var hay = [_stringOr(run.id), runTitle(run, _titlesFor(run, titlesByRoot)), currentPhase(run), runState(run)].join("\n").toLowerCase()
+    var hay = [_stringOr(run.id), runTitle(run, titlesOfRun(run, titlesByRoot)), currentPhase(run), runState(run)].join("\n").toLowerCase()
     if (hay.indexOf(needle) >= 0) out.push(run)
   }
   return out
@@ -1159,7 +1159,7 @@ function _hasAlert(alerts, id) {
 // store's "no previous snapshot" -- or nextRuns gives []. At most one alert per
 // id; the first prevRuns occurrence of an id is its previous state. A dead
 // run's reason is always "process died". title is runTitle with the run's map
-// in titlesByRoot (see _titlesFor); without one it is the fallback title.
+// in titlesByRoot (see titlesOfRun); without one it is the fallback title.
 function newAlerts(prevRuns, nextRuns, titlesByRoot) {
   if (!Array.isArray(prevRuns) || !Array.isArray(nextRuns)) return []
   var out = []
@@ -1172,7 +1172,7 @@ function newAlerts(prevRuns, nextRuns, titlesByRoot) {
     if (_hasAlert(out, run.id)) continue
     out.push({
       id: run.id,
-      title: runTitle(run, _titlesFor(run, titlesByRoot)),
+      title: runTitle(run, titlesOfRun(run, titlesByRoot)),
       state: state,
       reason: state === "dead" ? _REASON_DEAD : escalationReason(run)
     })

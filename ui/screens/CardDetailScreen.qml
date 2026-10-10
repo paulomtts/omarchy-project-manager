@@ -218,8 +218,9 @@ Column {
     }
   }
 
-  // One run that touches the card: its state glyph, short id, title, current
-  // phase and age, and its RunControls under them. Mouse-activated only
+  // One run that touches the card: its state glyph; its title, from the run's
+  // own project's map in app.runTitles; its short id in dim; current phase and
+  // age; and its RunControls under them. Mouse-activated only
   // (`index` stays -1): the keyboard's link list is the card's brd links. A
   // click opens Run detail, whose Back comes back here; a run that vanished
   // meanwhile opens nothing. A click on a control button never opens the run.
@@ -242,26 +243,35 @@ Column {
       spacing: Style.space(8)
 
       UI.RunBadge {
+        id: runBadge
         theme: detailCard.theme
         state: Runs.runState(runRow.run)
         active: !detailCard.app.runs.stale
       }
 
-      UI.ThemedText {
-        objectName: "cardRunId" + runRow.modelData
-        variant: "caption"
-        theme: detailCard.theme
-        text: Runs.shortId(runRow.run)
-      }
-
+      // Takes the width the others leave and elides, so they stay on the row.
       UI.ThemedText {
         objectName: "cardRunTitle" + runRow.modelData
         variant: "small"
         theme: detailCard.theme
-        text: Runs.runTitle(runRow.run)
+        width: Math.max(0, Math.min(implicitWidth, parent.width - runBadge.width - runId.width - parent.spacing * 2
+          - (runPhase.visible ? runPhase.width + parent.spacing : 0)
+          - (runAge.visible ? runAge.width + parent.spacing : 0)))
+        text: Runs.runTitle(runRow.run, Runs.titlesOfRun(runRow.run, detailCard.app.runTitles.titlesByRoot))
+        elide: Text.ElideRight
       }
 
       UI.ThemedText {
+        id: runId
+        objectName: "cardRunId" + runRow.modelData
+        variant: "caption"
+        theme: detailCard.theme
+        text: Runs.runSubtitle(runRow.run)
+        color: detailCard.theme.dim
+      }
+
+      UI.ThemedText {
+        id: runPhase
         objectName: "cardRunPhase" + runRow.modelData
         variant: "caption"
         theme: detailCard.theme
@@ -270,6 +280,7 @@ Column {
       }
 
       UI.ThemedText {
+        id: runAge
         objectName: "cardRunAge" + runRow.modelData
         variant: "caption"
         theme: detailCard.theme

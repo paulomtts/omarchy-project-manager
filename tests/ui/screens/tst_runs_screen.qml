@@ -2,7 +2,7 @@
 // ui/screens/RunsScreen.qml on its own: the rows it renders, the chips, the
 // footer and banners, and the empty and missing states. A stub app: a REAL
 // NavigationStore, plus plain objects carrying the RunStore properties and,
-// apart, the RunControlStore properties the screen reads (the real store's
+// apart, the RunControlStore and RunTitlesStore properties the screen reads (the real store's
 // `watching` is a read-only alias that cannot be set from a test); the run
 // list is filtered through the same domain functions the store uses. The
 // navigator is a recorder.
@@ -47,9 +47,37 @@ TestCase {
       property var projectRoots: [{ root: "/home/u/a", name: "alpha" }]
       property var projectErrors: ({})
       property string projectFilter: ""
-      readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(rs.runs, rs.runFilter), rs.searchQuery), rs.projectFilter))
+      // The Finished chip's state and age rows, as the real store holds them.
+      property string finishedState: ""
+      property string finishedAge: "all"
+      // Each runsByProject key is a registry root as the registry spells it.
+      property var runsByProject: ({})
+      // When not null, the chip counts a test forces; else the real store's.
+      property var countsOverride: null
+      readonly property var runFilterCounts: rs.countsOverride !== null ? rs.countsOverride
+        : Runs.runFilterCounts(Runs.filterByProject(rs.runs, rs.projectFilter))
+      readonly property var groups: {
+        var now = Date.now()
+        var state = rs.runFilter === "finished" ? rs.finishedState : ""
+        var age = rs.runFilter === "finished" || rs.runFilter === "" ? rs.finishedAge : "all"
+        var kept = Runs.filterFinished(Runs.filterRuns(rs.runs, rs.runFilter), state, age, now, -new Date(now).getTimezoneOffset())
+        return Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(kept, rs.searchQuery), rs.projectFilter))
+      }
       readonly property var filteredRuns: Runs.displayOrder(rs.groups)
       function toggleRunFilter(id) { rs.runFilter = id === "all" || id === rs.runFilter ? "" : id }
+      // The real store's toggles; every call is recorded as "state|<id>" or
+      // "age|<id>".
+      property var finishedCalls: []
+      function toggleFinishedState(id) {
+        rs.finishedCalls = rs.finishedCalls.concat(["state|" + id])
+        var known = id === "done" || id === "escalated" || id === "cancelled"
+        rs.finishedState = known && id !== rs.finishedState ? id : ""
+      }
+      function toggleFinishedAge(id) {
+        rs.finishedCalls = rs.finishedCalls.concat(["age|" + id])
+        var known = id === "today" || id === "week"
+        rs.finishedAge = known && id !== rs.finishedAge ? id : "all"
+      }
       // The open project's root ("" = none) and the project filter's toggle,
       // as the real store has them: toggleProjectFilter records its argument;
       // "", or the active root again, means All; a root no run has means All.
@@ -103,12 +131,39 @@ TestCase {
     }
   }
 
+  // The run titles store's surface: the {root: {id: title}} maps, the
+  // {root: status} statuses and refreshTitles(), which only counts.
+  Component {
+    id: titlesC
+    QtObject {
+      id: ts
+      property var titlesByRoot: ({})
+      property var titleStatus: ({})
+      property int refreshCalls: 0
+      function refreshTitles() { ts.refreshCalls += 1 }
+    }
+  }
+
+  // The run history store's surface: {root: {runs, more, loading, error}}
+  // and showOlder(root), which only records its argument.
+  Component {
+    id: historyC
+    QtObject {
+      id: hs
+      property var historyByProject: ({})
+      property var showOlderCalls: []
+      function showOlder(root) { hs.showOlderCalls = hs.showOlderCalls.concat([root]) }
+    }
+  }
+
   Component {
     id: appC
     QtObject {
       property var nav: null
       property var runs: null
       property var runControl: null
+      property var runTitles: null
+      property var runHistory: null
       // The project registry, as ProjectStore holds it: alpha and beta. A test
       // that changes it assigns a whole new object, so bindings follow.
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" },
@@ -138,7 +193,9 @@ TestCase {
     var runs = runsC.createObject(host)
     runs.searchQuery = Qt.binding(function() { return nav.searchQuery })
     var control = controlC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control })
+    var titles = titlesC.createObject(host)
+    var history = historyC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles, runHistory: history })
     var navi = naviC.createObject(host)
     var sC = Qt.createComponent("../../../ui/screens/RunsScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
@@ -146,7 +203,7 @@ TestCase {
     nav.viewMode = "runs"
     runs.runs = list || []
     wait(20)
-    return { app: app, runs: runs, control: control, nav: nav, navi: navi, screen: screen }
+    return { app: app, runs: runs, control: control, titles: titles, history: history, nav: nav, navi: navi, screen: screen }
   }
 
   function ago(ms) { return new Date(Date.now() - ms).toISOString() }
@@ -180,6 +237,37 @@ TestCase {
 
   // An item's top edge in the screen's coordinates.
   function topOf(s, name) { return H.find(s.screen, name).mapToItem(s.screen, 0, 0).y }
+
+  // `n` done runs of the project at `root` named `name`, ids
+  // run-<tag>-done1000, run-<tag>-done1001, …
+  function doneRuns(n, root, name, tag) {
+    var out = []
+    for (var i = 0; i < n; i++) out.push(tagged(run("run-" + tag + "-done" + (1000 + i), "done", null, {}), root, name))
+    return out
+  }
+
+  // A history entry: no runs; `more`, `loading` and `error` from `o`, else
+  // false, false and "".
+  function page(o) {
+    var p = o || {}
+    return { runs: [], more: p.more === true, loading: p.loading === true, error: p.error || "" }
+  }
+
+  // An entries list as one string: h<g> a header, r<i> a run,
+  // o<k>:<root> a Show older, e the filtered project's error.
+  function shape(entries) {
+    return entries.map(function(e) {
+      return e.kind === "header" ? "h" + e.g : e.kind === "run" ? "r" + e.i
+        : e.kind === "showOlder" ? "o" + e.k + ":" + e.root : "e"
+    }).join(",")
+  }
+
+  // "r<from>,…,r<from + n - 1>".
+  function runIds(from, n) {
+    var out = []
+    for (var i = 0; i < n; i++) out.push("r" + (from + i))
+    return out.join(",")
+  }
 
   // The project chip row's chip ids, in model order, joined by ",".
   function projectChipIds(s) {
@@ -268,6 +356,159 @@ TestCase {
     compare(H.find(s.screen, "runRowState4").visible, false)
   }
 
+  // ---- titles (4.1)
+
+  // twoProjects(): row 2 is beta's run-b-live0003, milestone zeta.
+  function test_a_row_reads_its_title_then_its_short_id_in_dim() {
+    var s = make(twoProjects()); if (!s) return
+    s.titles.titlesByRoot = { "/home/u/b": { zeta: "Ship zeta" } }
+    wait(20)
+    var glyph = H.find(s.screen, "runRowGlyph2")
+    var title = H.find(s.screen, "runRowTitle2")
+    var id = H.find(s.screen, "runRowId2")
+    compare(title.text, "Ship zeta")
+    compare(id.text, "…live0003")
+    compare(id.visible, true)
+    compare(String(id.color), String(s.screen.theme.dim), "the short id is dim")
+    verify(glyph.x < title.x, "the glyph comes first")
+    verify(title.x < id.x, "the short id follows the title")
+  }
+
+  function test_the_open_and_another_project_title_from_their_own_maps() {
+    var s = make([tagged(run("run-a-live0001", "started", true, { milestone: "m1" }), "/home/u/a", "alpha"),
+                  tagged(run("run-b-live0002", "started", true, { milestone: "m1" }), "/home/u/b", "beta")]); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.titles.titlesByRoot = { "/home/u/a": { m1: "Alpha M" }, "/home/u/b": { m1: "Beta M" } }
+    wait(20)
+    compare(H.find(s.screen, "runRowTitle0").text, "Alpha M", "the open project's run")
+    compare(H.find(s.screen, "runRowId0").text, "…live0001")
+    compare(H.find(s.screen, "runRowTitle1").text, "Beta M", "another project's run, from its own map")
+    compare(H.find(s.screen, "runRowId1").text, "…live0002")
+  }
+
+  function test_without_a_map_the_row_falls_back() {
+    var s = make(twoProjects()); if (!s) return
+    compare(H.find(s.screen, "runRowTitle2").text, "milestone …zeta", "no map at all")
+    s.titles.titlesByRoot = { "/home/u/a": { zeta: "Wrong project" } }
+    compare(H.find(s.screen, "runRowTitle2").text, "milestone …zeta", "only another root's map")
+    s.titles.titlesByRoot = { "/home/u/b": { zeta: "Ship zeta" } }
+    compare(H.find(s.screen, "runRowTitle2").text, "Ship zeta", "a new titlesByRoot re-titles the row")
+    var garbage = [{ "/home/u/b": {} }, null, "x", [], { "/home/u/b": null }, { "/home/u/b": "Ship zeta" }]
+    for (var i = 0; i < garbage.length; i++) {
+      s.titles.titlesByRoot = garbage[i]
+      compare(H.find(s.screen, "runRowTitle2").text, "milestone …zeta", "garbage " + i)
+      compare(H.find(s.screen, "runRowId2").text, "…live0003", "garbage " + i + " keeps the id")
+    }
+    s.runs.runs = [run("run-x-none0009", "started", true, { milestone: "zeta" })]
+    s.titles.titlesByRoot = { "": { zeta: "Never" } }
+    wait(20)
+    compare(H.find(s.screen, "runRowTitle0").text, "milestone …zeta", "a run with no project uses no map")
+  }
+
+  // Review Focus 1.
+  function test_a_long_title_never_pushes_the_short_id_off_the_row() {
+    var s = make(twoProjects()); if (!s) return
+    var long = ""
+    for (var i = 0; i < 40; i++) long += "a very long run title "
+    s.titles.titlesByRoot = { "/home/u/b": { zeta: long } }
+    wait(20)
+    var title = H.find(s.screen, "runRowTitle2")
+    var id = H.find(s.screen, "runRowId2")
+    compare(title.elide, Text.ElideRight)
+    verify(title.width < title.implicitWidth, "the title is elided")
+    compare(id.text, "…live0003")
+    var right = id.mapToItem(s.screen, 0, 0).x + id.width
+    verify(right <= s.screen.width, "the short id stays on the row: right edge " + right)
+  }
+
+  // twoProjects(): alpha's header is runGroup0, beta's runGroup1.
+  function test_an_unreachable_project_header_says_titles_unavailable() {
+    var s = make(twoProjects()); if (!s) return
+    s.titles.titleStatus = { "/home/u/b": "unreachable", "/home/u/a": "ok" }
+    wait(20)
+    var beta = H.find(s.screen, "runGroupTitles1")
+    verify(beta, "beta's header has the caption")
+    compare(beta.visible, true)
+    compare(beta.text, "titles unavailable")
+    compare(String(beta.color), String(s.screen.theme.dim), "dim")
+    verify(String(beta.color) !== String(s.screen.theme.urgent), "never urgent")
+    verify(H.find(s.screen, "runGroupCounts1").x < beta.x, "after the counts")
+    compare(H.find(s.screen, "runGroupName1").text, "beta")
+    compare(H.find(s.screen, "runGroupTitles0").visible, false, "alpha's titles are ok")
+    compare(H.find(s.screen, "runRowId2").text, "…live0003", "beta's run keeps its id")
+    s.titles.titleStatus = { "/home/u/b": "loading" }
+    wait(20)
+    compare(H.find(s.screen, "runGroupTitles1").visible, false, "loading")
+    s.titles.titleStatus = { "/home/u/b": "unreachable" }
+    s.runs.projectFilter = "/home/u/b"
+    wait(20)
+    compare(H.find(s.screen, "runGroup0"), null, "flat under a project filter")
+    compare(H.find(s.screen, "runGroupTitles0"), null, "no caption under a project filter")
+  }
+
+  // Review Focus 2 and 4.
+  function test_titles_unavailable_matches_the_root_by_its_key_and_ignores_garbage() {
+    var s = make(twoProjects()); if (!s) return
+    s.titles.titleStatus = { "/home/u/b/": "unreachable" }
+    wait(20)
+    compare(H.find(s.screen, "runGroupTitles1").visible, true, "a trailing / on the key")
+    s.titles.titleStatus = { "/home/u/b//": "unreachable" }
+    wait(20)
+    compare(H.find(s.screen, "runGroupTitles1").visible, true, "several trailing /")
+    var none = [{ "/home/u": "unreachable" }, {}, null, "x", 5, [], { "/home/u/b": 1 },
+                { "/home/u/b": "Unreachable" }, { "/home/u/b": "ok" }]
+    for (var i = 0; i < none.length; i++) {
+      s.titles.titleStatus = none[i]
+      wait(20)
+      compare(H.find(s.screen, "runGroupTitles1").visible, false, "no caption for status " + i)
+      compare(H.find(s.screen, "runGroupTitles0").visible, false, "nor on alpha for status " + i)
+    }
+  }
+
+  // Review Focus 5.
+  function test_an_error_only_header_also_says_titles_unavailable() {
+    var s = make([tagged(run("run-a-live0001", "started", true, {}), "/home/u/a", "alpha")]); if (!s) return
+    s.runs.projectRoots = [{ root: "/home/u/a", name: "alpha" }, { root: "/home/u/b", name: "beta" }]
+    s.runs.projectErrors = { "/home/u/b": "AmFailed: boom" }
+    s.titles.titleStatus = { "/home/u/b": "unreachable" }
+    wait(20)
+    compare(H.find(s.screen, "runGroupName1").text, "beta")
+    compare(H.find(s.screen, "runGroupTitles1").visible, true)
+    compare(H.find(s.screen, "runGroupError1").text, "AmFailed: boom", "the error still shows")
+    compare(H.find(s.screen, "runGroupTitles0").visible, false)
+  }
+
+  // Review Focus 5.
+  function test_a_long_project_name_leaves_room_for_the_caption() {
+    var name = ""
+    for (var i = 0; i < 30; i++) name += "longname"
+    var s = make([tagged(run("run-b-live0003", "started", true, { milestone: "zeta" }), "/home/u/b", name)]); if (!s) return
+    s.titles.titleStatus = { "/home/u/b": "unreachable" }
+    wait(20)
+    var nameText = H.find(s.screen, "runGroupName0")
+    var caption = H.find(s.screen, "runGroupTitles0")
+    compare(caption.visible, true)
+    verify(nameText.width < nameText.implicitWidth, "the name elides")
+    var right = caption.mapToItem(s.screen, 0, 0).x + caption.width
+    verify(right <= s.screen.width, "the caption stays on the header: right edge " + right)
+  }
+
+  // Review Focus 3. The headers are rebuilt; the cursor and its run are not.
+  function test_a_title_status_change_keeps_the_cursor_on_its_run() {
+    var s = make(twoProjects()); if (!s) return
+    s.nav.cursorIndex = 2
+    wait(20)
+    s.titles.titleStatus = { "/home/u/b": "unreachable" }
+    wait(20)
+    compare(s.nav.cursorIndex, 2)
+    compare(s.runs.filteredRuns[2].id, "run-b-live0003")
+    compare(H.find(s.screen, "runRow2").hasCursor, true)
+    s.titles.titleStatus = {}
+    wait(20)
+    compare(s.nav.cursorIndex, 2)
+    compare(H.find(s.screen, "runRow2").hasCursor, true)
+  }
+
   function test_an_escalated_row_carries_its_reason() {
     var s = make(sample()); if (!s) return
     var reason = H.find(s.screen, "runRowReason1")
@@ -320,8 +561,354 @@ TestCase {
     compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
     compare(H.find(s.screen, "runChiplive").text, "Live 1")
     compare(H.find(s.screen, "runChipparked").text, "Parked 1")
+    compare(H.find(s.screen, "runChipfinished").text, "Finished 3")
     compare(H.find(s.screen, "runChipall").text, "All")
     compare(H.find(s.screen, "runChipall").active, true, "All is active with no filter")
+  }
+
+  function test_the_status_chips_are_in_order_and_count_from_run_filter_counts() {
+    var s = make(sample()); if (!s) return
+    var model = H.find(s.screen, "runChips").model
+    compare(model.map(function(c) { return c.id }).join(","), "attention,live,parked,finished,all")
+    s.runs.countsOverride = { attention: 7, live: 8, parked: 9, finished: 11, all: 50 }
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 7")
+    compare(H.find(s.screen, "runChiplive").text, "Live 8")
+    compare(H.find(s.screen, "runChipparked").text, "Parked 9")
+    compare(H.find(s.screen, "runChipfinished").text, "Finished 11", "the store's count, not the snapshot's 3")
+    compare(H.find(s.screen, "runChipall").text, "All")
+  }
+
+  function test_the_finished_chip_filters_and_names_its_empty_list() {
+    var s = make([run("run-x-live0001", "started", true, {}), run("run-x-dead0002", "started", false, {})]); if (!s) return
+    tap(H.find(s.screen, "runChipfinished"))
+    compare(s.runs.runFilter, "finished")
+    compare(H.find(s.screen, "runChipfinished").active, true)
+    compare(H.find(s.screen, "runRow0"), null)
+    compare(H.find(s.screen, "runsMessage").text, "No Finished runs.")
+    compare(s.screen.chipLabel("finished"), "Finished")
+  }
+
+  // ---- the Finished chip's rows (4.3)
+
+  function test_the_state_row_shows_under_finished_and_the_age_row_under_finished_and_all() {
+    var s = make(sample()); if (!s) return
+    var cases = [["", false, true], ["attention", false, false], ["live", false, false],
+                 ["parked", false, false], ["finished", true, true]]
+    for (var c = 0; c < cases.length; c++) {
+      s.runs.runFilter = cases[c][0]
+      wait(20)
+      compare(shown(s, "runStateChips"), cases[c][1], "the state row under '" + cases[c][0] + "'")
+      compare(shown(s, "runAgeChips"), cases[c][2], "the age row under '" + cases[c][0] + "'")
+      compare(H.find(s.screen, "runChipsFooter").visible, cases[c][2], "the slot under '" + cases[c][0] + "'")
+    }
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(shown(s, "runStateChips"), false, "am missing")
+    compare(shown(s, "runAgeChips"), false, "am missing")
+  }
+
+  function test_the_state_row_reads_and_toggles_the_finished_state() {
+    var s = make(sample()); if (!s) return
+    s.runs.toggleRunFilter("finished")
+    wait(20)
+    var ids = ["all", "done", "escalated", "cancelled"]
+    var labels = ["All finished", "Done", "Escalated", "Cancelled"]
+    for (var i = 0; i < ids.length; i++) compare(H.find(s.screen, "runStateChip" + ids[i]).text, labels[i])
+    compare(H.find(s.screen, "runStateChips").model.length, 4)
+    compare(H.find(s.screen, "runStateChipall").active, true, "\"\" is All finished")
+    s.runs.finishedState = "escalated"
+    compare(H.find(s.screen, "runStateChipescalated").active, true)
+    compare(H.find(s.screen, "runStateChipall").active, false)
+    s.runs.finishedState = ""
+    tap(H.find(s.screen, "runStateChipdone"))
+    compare(s.runs.finishedCalls.join(","), "state|done")
+    compare(s.runs.finishedState, "done")
+    compare(H.find(s.screen, "runStateChipdone").active, true)
+    tap(H.find(s.screen, "runStateChipall"))
+    compare(s.runs.finishedCalls.join(","), "state|done,state|all", "the chip id goes to the store unchanged")
+    compare(s.runs.finishedState, "")
+  }
+
+  function test_the_age_row_reads_and_toggles_the_finished_age() {
+    var s = make(sample()); if (!s) return
+    var ids = ["today", "week", "all"]
+    var labels = ["Today", "7 days", "All time"]
+    for (var i = 0; i < ids.length; i++) compare(H.find(s.screen, "runAgeChip" + ids[i]).text, labels[i])
+    compare(H.find(s.screen, "runAgeChips").model.length, 3)
+    compare(H.find(s.screen, "runAgeChipall").active, true, "All time by default")
+    s.runs.finishedAge = "today"
+    compare(H.find(s.screen, "runAgeChiptoday").active, true)
+    compare(H.find(s.screen, "runAgeChipall").active, false)
+    s.runs.finishedAge = "bogus"
+    compare(H.find(s.screen, "runAgeChipall").active, true, "anything else is All time")
+    s.runs.finishedAge = "all"
+    tap(H.find(s.screen, "runAgeChipweek"))
+    compare(s.runs.finishedCalls.join(","), "age|week")
+    compare(s.runs.finishedAge, "week")
+    compare(H.find(s.screen, "runAgeChipweek").active, true)
+  }
+
+  function test_the_finished_rows_sit_under_the_status_chips_and_above_the_list() {
+    var s = make([run("run-x-live0001", "started", true, {})]); if (!s) return
+    s.runs.toggleRunFilter("finished")
+    wait(20)
+    verify(topOf(s, "runChips") < topOf(s, "runStateChips"), "under the status chips")
+    verify(topOf(s, "runStateChips") < topOf(s, "runAgeChips"), "the state row first")
+    verify(topOf(s, "runAgeChips") < topOf(s, "runsMessage"), "above the status line")
+    s.runs.toggleRunFilter("all")
+    wait(20)
+    verify(topOf(s, "runAgeChips") < topOf(s, "runRow0"), "above the first row")
+  }
+
+  // ---- Show older (4.3)
+
+  function test_entries_place_show_older_after_each_eligible_projects_last_run() {
+    var s = make([]); if (!s) return
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(2, "/home/u/b", "beta", "b")
+    var c = doneRuns(10, "/home/u/c", "gamma", "c")
+    var loose = [run("run-x-done9999", "done", null, {})]
+    var groups = Runs.groupByProject(a.concat(b, loose))
+    var runs = Runs.displayOrder(groups)
+    var roots = [{ root: "/home/u/a", name: "alpha" }, { root: "/home/u/b", name: "beta" }, { root: "/home/u/c", name: "gamma" }]
+    var errors = { "/home/u/c": "AmFailed: c" }
+    var byProject = { "/home/u/a": a, "/home/u/b/": b, "/home/u/c": c, "": doneRuns(10, "", "", "x") }
+    var history = { "/home/u/b/": page({ more: true }) }
+    compare(shape(s.screen.entriesOf(groups, runs, roots, errors, "", {}, byProject, history, true)),
+            "h0," + runIds(0, 10) + ",o0:/home/u/a,h1," + runIds(10, 2) + ",o1:/home/u/b/,r12,h2",
+            "grouped: after a group's last run, the registry's spelling; none for the \"\" group or an error-only header")
+    compare(shape(s.screen.entriesOf(groups, runs, roots, errors, "", {}, byProject, history, false)),
+            "h0," + runIds(0, 10) + ",h1," + runIds(10, 2) + ",r12,h2", "none when it may not show")
+    compare(shape(s.screen.entriesOf(groups, runs, roots, errors, "", {}, null, null, true)),
+            "h0," + runIds(0, 10) + ",h1," + runIds(10, 2) + ",r12,h2", "none without maps")
+    var flatGroups = Runs.groupByProject(b)
+    compare(shape(s.screen.entriesOf(flatGroups, Runs.displayOrder(flatGroups), roots, errors, "/home/u/b", {}, byProject, history, true)),
+            "r0,r1,o0:/home/u/b/", "flat: after the last run")
+    compare(shape(s.screen.entriesOf([], [], roots, errors, "/home/u/c", {}, byProject, history, true)),
+            "e,o0:/home/u/c", "flat with no run passing the chips: the error line, then the button")
+  }
+
+  function test_ten_terminal_snapshot_runs_offer_show_older_and_nine_do_not() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(9, "/home/u/b", "beta", "b")
+    var bLive = [tagged(run("run-b-live0001", "started", true, {}), "/home/u/b", "beta"),
+                 tagged(run("run-b-live0002", "started", true, {}), "/home/u/b", "beta"),
+                 tagged(run("run-b-live0003", "started", true, {}), "/home/u/b", "beta")]
+    var s = make(a.concat(b, bLive)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b.concat(bLive) }
+    wait(20)
+    var button = H.find(s.screen, "runsShowOlder0")
+    verify(button, "alpha's button")
+    compare(button.visible, true)
+    compare(button.text, "Show older")
+    compare(H.find(s.screen, "runsShowOlder1"), null, "beta: 9 terminal runs plus live ones")
+    var parked = tagged(run("run-b-park0004", "stopped", null, {}), "/home/u/b", "beta")
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b.concat(bLive, [parked]) }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder1"), "a parked run is terminal: beta now has 10")
+  }
+
+  function test_a_history_entry_decides_over_the_snapshot_rule() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(2, "/home/u/b", "beta", "b")
+    var s = make(a.concat(b)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b }
+    s.history.historyByProject = { "/home/u/b": page({ more: true }) }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"), "alpha by its snapshot")
+    verify(H.find(s.screen, "runsShowOlder1"), "beta by its entry's more")
+    verify(topOf(s, "runRow11") < topOf(s, "runsShowOlder1"), "beta's after beta's last run")
+    s.history.historyByProject = { "/home/u/a": page({ more: false }), "/home/u/b": page({ more: true }) }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"), "only beta's now")
+    compare(H.find(s.screen, "runsShowOlder1"), null, "alpha is exhausted despite 10 terminal runs")
+    verify(topOf(s, "runRow11") < topOf(s, "runsShowOlder0"), "the one left is beta's")
+  }
+
+  function test_grouped_buttons_sit_between_a_groups_last_run_and_the_next_header() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(10, "/home/u/b", "beta", "b")
+    var c = doneRuns(1, "/home/u/c", "gamma", "c")
+    var s = make(a.concat(b, c)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b, "/home/u/c": c }
+    wait(20)
+    verify(topOf(s, "runRow9") < topOf(s, "runsShowOlder0"), "after alpha's last run")
+    verify(topOf(s, "runsShowOlder0") < topOf(s, "runGroup1"), "before beta's header")
+    verify(topOf(s, "runRow19") < topOf(s, "runsShowOlder1"), "after beta's last run")
+    verify(topOf(s, "runsShowOlder1") < topOf(s, "runGroup2"), "before gamma's header")
+    compare(H.find(s.screen, "runsShowOlder2"), null, "gamma is not eligible")
+  }
+
+  function test_flat_under_a_project_filter_one_button_also_with_no_row() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(2, "/home/u/b", "beta", "b")
+    var s = make(a.concat(b)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b }
+    s.history.historyByProject = { "/home/u/b": page({ more: true }) }
+    s.runs.projectFilter = "/home/u/b"
+    wait(20)
+    compare(H.find(s.screen, "runGroup0"), null, "flat")
+    verify(H.find(s.screen, "runsShowOlder0"))
+    compare(H.find(s.screen, "runsShowOlder1"), null, "one button, the filtered project's")
+    verify(topOf(s, "runRow1") < topOf(s, "runsShowOlder0"), "after the last row")
+    tap(H.find(s.screen, "runsShowOlder0"))
+    compare(s.history.showOlderCalls.join(","), "/home/u/b")
+    s.runs.toggleRunFilter("parked")
+    wait(20)
+    compare(H.find(s.screen, "runRow0"), null)
+    compare(H.find(s.screen, "runsMessage").text, "No Parked runs.")
+    verify(H.find(s.screen, "runsShowOlder0"), "still offered with no row")
+    verify(topOf(s, "runsMessage") < topOf(s, "runsShowOlder0"), "under the status line")
+  }
+
+  function test_show_older_passes_the_registry_spelling_and_a_doubled_root_gets_one_button() {
+    var r = tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha")
+    var s = make([r]); if (!s) return
+    s.runs.runsByProject = { "/home/u/a/": [r] }
+    s.history.historyByProject = { "/home/u/a/": page({ more: true }) }
+    wait(20)
+    tap(H.find(s.screen, "runsShowOlder0"))
+    compare(s.history.showOlderCalls.join(","), "/home/u/a/", "the key as the registry spells it")
+    s.runs.runsByProject = { "/home/u/a": doneRuns(10, "/home/u/a", "alpha", "a"), "/home/u/a/": [r] }
+    s.history.historyByProject = {}
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"))
+    compare(H.find(s.screen, "runsShowOlder1"), null, "one button for the project")
+    tap(H.find(s.screen, "runsShowOlder0"))
+    compare(s.history.showOlderCalls.join(","), "/home/u/a/,/home/u/a", "the first own key that matches")
+  }
+
+  function test_show_older_is_hidden_under_live_with_am_missing_and_without_a_run_history() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var live = tagged(run("run-a-live0001", "started", true, {}), "/home/u/a", "alpha")
+    var s = make(a.concat([live])); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a.concat([live]) }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"))
+    s.runs.toggleRunFilter("live")
+    wait(20)
+    verify(H.find(s.screen, "runRow0"), "alpha's live run is listed")
+    compare(H.find(s.screen, "runsShowOlder0"), null, "nothing to page under Live")
+    s.runs.toggleRunFilter("all")
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"), "back under All, with no new snapshot")
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "am missing")
+    s.runs.amStatus = "ok"
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"))
+    s.app.runHistory = null
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "no run history")
+    verify(H.find(s.screen, "runRow0"), "the rows stay")
+  }
+
+  function test_show_older_takes_no_index_and_the_cursor_walks_runs_only() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(10, "/home/u/b", "beta", "b")
+    var s = make(a.concat(b)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"), "a button between the groups")
+    for (var i = 0; i < 20; i++)
+      compare(H.find(s.screen, "runRowId" + i).text, Runs.runSubtitle(s.runs.filteredRuns[i]), "row " + i)
+    compare(H.find(s.screen, "runRow20"), null)
+    s.nav.cursorIndex = 19
+    for (var j = 0; j < 20; j++) compare(H.find(s.screen, "runRow" + j).hasCursor, j === 19, "row " + j)
+    var runsOnly = shape(s.screen.entries).split(",").filter(function(x) { return x.charAt(0) === "r" }).join(",")
+    compare(runsOnly, runIds(0, 20), "the same run indexes as without the buttons")
+  }
+
+  function test_show_older_is_not_a_row() {
+    var a = [tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha")]
+    var b = [tagged(run("run-b-done0002", "done", null, {}), "/home/u/b", "beta")]
+    var s = make(a.concat(b)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b }
+    s.history.historyByProject = { "/home/u/a": page({ more: true }), "/home/u/b": page({ more: true }) }
+    wait(20)
+    var button = H.find(s.screen, "runsShowOlder0")
+    verify(button)
+    compare(button.hasCursor, undefined, "not a ListRow")
+    mouseMove(H.find(s.screen, "runChips"), 1, 1)
+    s.navi.hovered = -1
+    mouseMove(button, button.width / 2, button.height / 2)
+    compare(s.navi.hovered, -1, "hovering it moves no cursor")
+    tap(button)
+    compare(s.navi.opened, "", "it opens no run")
+    compare(s.history.showOlderCalls.join(","), "/home/u/a", "it asks the history once")
+  }
+
+  // Review Focus 2.
+  function test_garbage_history_and_snapshot_maps_fall_back_and_do_not_throw() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var s = make(a); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a }
+    var cases = [[{ "/home/u/a": null }, true, "a null entry is no entry"],
+                 [{ "/home/u/a": "x" }, true, "a string entry is no entry"],
+                 [{ "/home/u/a": { loading: "yes", more: 1, error: 7 } }, false, "an entry with no true flag and no error"],
+                 [null, true, "no history map"],
+                 ["x", true, "a history map that is not an object"]]
+    for (var c = 0; c < cases.length; c++) {
+      s.history.historyByProject = cases[c][0]
+      wait(20)
+      compare(!!H.find(s.screen, "runsShowOlder0"), cases[c][1], cases[c][2])
+    }
+    s.history.historyByProject = {}
+    s.runs.runsByProject = { "/home/u/a": "nope" }
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "a list that is not an array counts 0")
+    s.runs.runsByProject = { "/home/u/a": [null, 3, "x", []].concat(a.slice(0, 9)) }
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "non-runs are not terminal: 9")
+    s.runs.runsByProject = null
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "no snapshot map")
+    verify(H.find(s.screen, "runRow0"), "the rows stay")
+  }
+
+  // Review Focus 5.
+  function test_a_page_in_flight_reads_loading_and_takes_no_click() {
+    var a = [tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha")]
+    var s = make(a); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a }
+    s.history.historyByProject = { "/home/u/a": page({ loading: true }) }
+    wait(20)
+    var button = H.find(s.screen, "runsShowOlder0")
+    compare(button.text, "Loading older runs…")
+    compare(button.enabled, false)
+    compare(H.find(s.screen, "runsShowOlderError0").visible, false)
+    tap(button)
+    compare(s.history.showOlderCalls.length, 0, "a click while loading calls nothing")
+    s.history.historyByProject = { "/home/u/a": page({ more: true }) }
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0").text, "Show older", "the page landed with more")
+    compare(H.find(s.screen, "runsShowOlder0").enabled, true)
+    s.history.historyByProject = { "/home/u/a": page({ more: false }) }
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "exhausted")
+  }
+
+  // Review Focus 1.
+  function test_a_failed_page_shows_its_sentence_in_urgent_and_stays_clickable() {
+    var a = [tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha")]
+    var s = make(a); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a }
+    s.history.historyByProject = { "/home/u/a": page({ more: false, error: "am failed" }) }
+    wait(20)
+    var button = H.find(s.screen, "runsShowOlder0")
+    verify(button, "a failed page keeps the button even with more false")
+    compare(button.text, "Show older")
+    compare(button.enabled, true)
+    var line = H.find(s.screen, "runsShowOlderError0")
+    compare(line.visible, true)
+    compare(line.text, "am failed")
+    verify(Qt.colorEqual(line.color, s.screen.theme.urgent), "drawn urgent")
+    compare(line.wrapMode, Text.WordWrap)
+    verify(topOf(s, "runsShowOlder0") < topOf(s, "runsShowOlderError0"), "under the button")
+    verify(H.find(s.screen, "runRow0"), "the listed rows stay")
+    tap(button)
+    compare(s.history.showOlderCalls.join(","), "/home/u/a", "retry")
   }
 
   function test_each_chip_filters_its_rows_and_the_active_one_returns_to_all() {
@@ -661,6 +1248,25 @@ TestCase {
     s.runs.watching = false
     compare(footer.text, "am · not watching")
     compare(footer.visible, true)
+  }
+
+  function test_refresh_titles_calls_the_store() {
+    var s = make(sample()); if (!s) return
+    var button = H.find(s.screen, "runsRefreshTitles")
+    verify(button, "the Refresh titles button")
+    compare(button.visible, true)
+    compare(button.text, "Refresh titles")
+    tap(button)
+    compare(s.titles.refreshCalls, 1)
+    compare(s.navi.opened, "", "it opens no run")
+    compare(s.nav.viewMode, "runs")
+    compare(s.control.notifyCalls.length, 0, "it is not the notify switch")
+    tap(button)
+    compare(s.titles.refreshCalls, 2, "once per click")
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(H.find(s.screen, "runsRefreshTitles").visible, false, "hidden while am is missing")
+    compare(H.find(s.screen, "runsNotifyRow").visible, true, "the notify switch still shows")
   }
 
   function test_an_error_shows_the_last_error_in_the_footer_and_keeps_the_rows() {

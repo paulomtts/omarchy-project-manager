@@ -4,8 +4,9 @@
 // line. A stub app: a REAL NavigationStore, a plain object carrying the
 // RunStore properties the screen reads (with recorders for selectAttempt and
 // refreshLogs) and, apart, one carrying the RunControlStore properties it
-// reads (with a recorder for control), and a board whose cardMap lends titles
-// and brd statuses.
+// reads (with a recorder for control), one carrying RunTitlesStore's
+// titlesByRoot (the open project's map, as the store mirrors it from the
+// board), and a board whose cardMap lends brd statuses.
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
@@ -65,11 +66,20 @@ TestCase {
   }
 
   Component {
+    id: titlesC
+    QtObject {
+      property var titlesByRoot: ({ "/home/u/a": { s1: "Runs screens", t1: "RunDetailScreen", t2: "Old work",
+                                                   s2: "Dropped story", t3: "Shelved" } })
+    }
+  }
+
+  Component {
     id: appC
     QtObject {
       property var nav: null
       property var runs: null
       property var runControl: null
+      property var runTitles: null
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" } })
       property var board: ({ cardMap: {
         s1: { id: "s1", title: "Runs screens", status: "in_progress" },
@@ -88,7 +98,8 @@ TestCase {
     var nav = navComp.createObject(host)
     var runs = runsC.createObject(host)
     var control = controlC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control })
+    var titles = titlesC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles })
     var sC = Qt.createComponent("../../../ui/screens/RunDetailScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
     var screen = sC.createObject(host, { width: 500, app: app, navigator: null })
@@ -97,7 +108,7 @@ TestCase {
     runs.selectedRunId = selectedId === undefined ? "run-20261004-19efcddc" : selectedId
     runs.selectedAttempt = attempt === undefined ? null : attempt
     wait(20)
-    return { app: app, runs: runs, control: control, nav: nav, screen: screen }
+    return { app: app, runs: runs, control: control, titles: titles, nav: nav, screen: screen }
   }
 
   // Two clicks inside the double-click interval make the second a double-click.
@@ -106,10 +117,12 @@ TestCase {
     mouseClick(item)
   }
 
-  // A normalised run, as RunStore holds them. live === null means no lease.
+  // A normalised run, as RunStore holds them. live === null means no lease;
+  // opts.root is its project's root ("/home/u/a" unless given, "" for none).
   function run(id, status, live, opts) {
     var o = opts || {}
-    return { id: id, repo_dir: "/home/u/a", milestone_id: o.milestone === undefined ? "M3" : o.milestone,
+    return { id: id, repo_dir: "/home/u/a", project: { root: o.root === undefined ? "/home/u/a" : o.root, name: "p" },
+             milestone_id: o.milestone === undefined ? "M3" : o.milestone,
              base_branch: o.base === undefined ? "master" : o.base,
              branch_prefix: o.prefix === undefined ? "m3" : o.prefix,
              status: status, started_at: "",
@@ -150,10 +163,44 @@ TestCase {
 
   function test_the_header_names_the_run_its_state_and_its_branches() {
     var s = make(detail()); if (!s) return
-    compare(H.find(s.screen, "runDetailTitle").text, "Run …19efcddc")
+    compare(H.find(s.screen, "runDetailTitle").text, "milestone …M3")
+    compare(H.find(s.screen, "runDetailId").text, "…19efcddc")
     compare(H.find(s.screen, "runDetailState").text, RG.glyphOf("running") + " running")
     compare(H.find(s.screen, "runDetailMeta").text, "Milestone M3 · prefix m3 · base master · lease pid 4121 live")
     compare(H.find(s.screen, "runDetailReason").visible, false, "only an escalated run has a reason")
+  }
+
+  function test_the_header_reads_the_runs_title_then_its_short_id_in_dim() {
+    var s = make(detail()); if (!s) return
+    var title = H.find(s.screen, "runDetailTitle")
+    var id = H.find(s.screen, "runDetailId")
+    var state = H.find(s.screen, "runDetailState")
+    compare(title.text, "milestone …M3", "M3 is not in the map")
+    s.titles.titlesByRoot = { "/home/u/a": { M3: "Runs monitor" } }
+    compare(title.text, "Runs monitor")
+    compare(id.text, "…19efcddc")
+    compare(String(id.color), String(s.screen.theme.dim))
+    compare(state.text, RG.glyphOf("running") + " running")
+    verify(id.x > title.x, "the short id follows the title")
+    verify(state.x > id.x, "the state follows the short id")
+  }
+
+  // A title of any length elides; the short id and the state stay on the row.
+  function test_a_long_run_title_never_pushes_the_short_id_or_the_state_off_the_row() {
+    var s = make(detail()); if (!s) return
+    var long = "Long"
+    for (var i = 0; i < 40; i++) long += " a very long run title"
+    s.titles.titlesByRoot = { "/home/u/a": { M3: long } }
+    var title = H.find(s.screen, "runDetailTitle")
+    compare(title.text, long)
+    compare(title.elide, Text.ElideRight)
+    verify(title.width < title.implicitWidth, "the title is elided")
+    var names = ["runDetailId", "runDetailState"]
+    for (var j = 0; j < names.length; j++) {
+      var t = H.find(s.screen, names[j])
+      var right = t.mapToItem(s.screen, 0, 0).x + t.width
+      verify(right <= s.screen.width, names[j] + " stays on the row: right edge " + right + " of " + s.screen.width)
+    }
   }
 
   function test_a_dead_lease_and_no_lease() {
@@ -182,11 +229,11 @@ TestCase {
 
   function test_story_and_subtask_rows_carry_glyph_title_status_and_phase() {
     var s = make(detail()); if (!s) return
-    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " s1 Runs screens · started")
-    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " t1 RunDetailScreen · started · implement.2")
-    compare(H.find(s.screen, "runSubtaskLabel0_1").text, RG.glyphOf("done") + " t2 Old work · done · spec.1")
-    compare(H.find(s.screen, "runStory1").text, RG.glyphOf("cancelled") + " s2 Dropped story · cancelled")
-    compare(H.find(s.screen, "runSubtaskLabel1_0").text, "t3 Shelved", "no status, no phase: just the card")
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " Runs screens · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " RunDetailScreen · started · implement.2")
+    compare(H.find(s.screen, "runSubtaskLabel0_1").text, RG.glyphOf("done") + " Old work · done · spec.1")
+    compare(H.find(s.screen, "runStory1").text, RG.glyphOf("cancelled") + " Dropped story · cancelled")
+    compare(H.find(s.screen, "runSubtaskLabel1_0").text, "Shelved", "no status, no phase: just the card")
   }
 
   function test_terminal_brd_cards_are_dimmed_not_hidden() {
@@ -198,6 +245,140 @@ TestCase {
     compare(H.find(s.screen, "runStory1").opacity, 0.5)
     compare(H.find(s.screen, "runSubtask1_0").opacity, 0.5, "archived too")
     compare(H.find(s.screen, "runStory0").opacity, 1)
+  }
+
+  // A run of /home/u/b with the open board's ids.
+  function betaDetail() { return [run("run-20261004-19efcddc", "started", true, { root: "/home/u/b", tree: detailTree() })] }
+
+  // A run of /home/u/b whose ids the open board lacks; storyTitle is am's
+  // own title of the story, when given.
+  function betaOnly(storyTitle) {
+    var story = { card_id: "s-beta-00000001", status: "started", subtasks: ["t-beta-00000002"] }
+    if (storyTitle !== undefined) story.title = storyTitle
+    return [run("run-20261004-19efcddc", "started", true, { root: "/home/u/b", tree: {
+      stories: [story], subtasks: [{ card_id: "t-beta-00000002", status: "started", phases: [] }] } })]
+  }
+
+  function test_a_run_of_another_project_titles_its_tree_from_its_own_map() {
+    var s = make(betaDetail()); if (!s) return
+    s.titles.titlesByRoot = {
+      "/home/u/a": { M3: "Alpha milestone", s1: "Alpha story", t1: "Alpha sub" },
+      "/home/u/b": { M3: "Beta milestone", s1: "Beta story", t1: "Beta sub", t2: "Beta old", s2: "Beta dropped", t3: "Beta shelved" } }
+    compare(H.find(s.screen, "runDetailTitle").text, "Beta milestone")
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " Beta story · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " Beta sub · started · implement.2")
+    compare(H.find(s.screen, "runSubtaskLabel1_0").text, "Beta shelved")
+  }
+
+  function test_cards_of_a_project_that_is_not_open_and_not_on_the_board() {
+    var s = make(betaOnly()); if (!s) return
+    s.titles.titlesByRoot = { "/home/u/b": { "s-beta-00000001": "Beta story", "t-beta-00000002": "Beta sub" } }
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " Beta story · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " Beta sub · started")
+    compare(H.find(s.screen, "runStory0").opacity, 1)
+    compare(H.find(s.screen, "runSubtask0_0").opacity, 1)
+  }
+
+  function test_a_card_without_a_title_shows_its_short_id() {
+    var s = make(betaOnly()); if (!s) return
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " …00000001 · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " …00000002 · started")
+    s.runs.runs = betaOnly("am story")
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " am story · started", "am's own story title")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " …00000002 · started", "am has no subtask titles")
+    s.runs.runs = betaOnly()
+    s.app.runTitles = null
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " …00000001 · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " …00000002 · started")
+    compare(H.find(s.screen, "runDetailTitle").text, "milestone …M3")
+  }
+
+  function test_titles_follow_the_map() {
+    var s = make(betaOnly()); if (!s) return
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " …00000001 · started")
+    s.titles.titlesByRoot = { "/home/u/b": { M3: "Beta milestone", "s-beta-00000001": "Beta story", "t-beta-00000002": "Beta sub" } }
+    compare(H.find(s.screen, "runDetailTitle").text, "Beta milestone")
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " Beta story · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " Beta sub · started")
+  }
+
+  // app.runTitles set after the screen exists is read.
+  function test_titles_arriving_after_the_screen_are_read() {
+    var s = make(betaOnly()); if (!s) return
+    var store = s.app.runTitles
+    s.app.runTitles = null
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " …00000001 · started")
+    store.titlesByRoot = { "/home/u/b": { "s-beta-00000001": "Beta story" } }
+    s.app.runTitles = store
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " Beta story · started")
+  }
+
+  function test_a_run_with_no_project_uses_no_map() {
+    var s = make([run("run-20261004-19efcddc", "started", true, { root: "", tree: detailTree() })]); if (!s) return
+    s.titles.titlesByRoot = { "/home/u/a": { M3: "Alpha milestone", s1: "Runs screens", t1: "RunDetailScreen" }, "": { s1: "Rootless" } }
+    compare(H.find(s.screen, "runDetailTitle").text, "milestone …M3")
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " …s1 · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " …t1 · started · implement.2")
+  }
+
+  function test_dimming_reads_the_open_board_only() {
+    var s = make(detail()); if (!s) return
+    compare(H.find(s.screen, "runSubtask0_1").opacity, 0.5)
+    compare(H.find(s.screen, "runStory1").opacity, 0.5)
+    compare(H.find(s.screen, "runSubtask1_0").opacity, 0.5)
+    compare(H.find(s.screen, "runStory0").opacity, 1)
+    compare(H.find(s.screen, "runSubtask0_0").opacity, 1)
+    var tree = detailTree()
+    tree.stories[0].subtasks.push("t-beta-00000002")
+    tree.subtasks.push({ card_id: "t-beta-00000002", status: "started", phases: [] })
+    s.runs.runs = [run("run-20261004-19efcddc", "started", true, { root: "/home/u/b", tree: tree })]
+    s.titles.titlesByRoot = { "/home/u/b": { t2: "Beta open", "t-beta-00000002": "Beta sub" } }
+    compare(H.find(s.screen, "runSubtaskLabel0_1").text, RG.glyphOf("done") + " Beta open · done · spec.1")
+    compare(H.find(s.screen, "runSubtask0_1").opacity, 0.5, "the open board has t2 merged")
+    compare(H.find(s.screen, "runSubtaskLabel0_2").text, RG.glyphOf("running") + " Beta sub · started")
+    compare(H.find(s.screen, "runSubtask0_2").opacity, 1, "an id the board lacks is never dimmed")
+  }
+
+  // A card title of any length elides; the status and phase stay on the row.
+  function test_a_long_card_title_never_pushes_the_status_or_phase_off_the_row() {
+    var s = make(detail()); if (!s) return
+    var long = "Long"
+    for (var i = 0; i < 40; i++) long += " a very long card title"
+    s.titles.titlesByRoot = { "/home/u/a": { s1: long, t1: long } }
+    var rows = [["runStory0", "started"], ["runSubtaskLabel0_0", "started · implement.2"]]
+    for (var j = 0; j < rows.length; j++) {
+      var line = H.find(s.screen, rows[j][0])
+      compare(line.text, RG.glyphOf("running") + " " + long + " · " + rows[j][1])
+      var lead = H.find(s.screen, rows[j][0] + "Lead")
+      verify(lead.width < lead.implicitWidth, rows[j][0] + "'s title is elided")
+      var tail = H.find(s.screen, rows[j][0] + "Tail")
+      compare(tail.text, "· " + rows[j][1])
+      var right = tail.mapToItem(line, 0, 0).x + tail.width
+      verify(right <= line.width, rows[j][0] + "'s status stays on the row: right edge " + right + " of " + line.width)
+    }
+  }
+
+  // Own keys only: an id named like a prototype member has no title.
+  function test_a_prototype_key_id_is_no_title() {
+    var tree = { stories: [{ card_id: "__proto__", status: "started", subtasks: ["constructor"] }],
+                 subtasks: [{ card_id: "constructor", status: "started", phases: [] }] }
+    var s = make([run("run-20261004-19efcddc", "started", true, { tree: tree })]); if (!s) return
+    compare(H.find(s.screen, "runStory0").text, RG.glyphOf("running") + " …_proto__ · started")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " …structor · started")
+  }
+
+  // A new map renames; the selected attempt, its timeline and output stay.
+  function test_a_new_map_keeps_the_selected_attempt_and_its_output() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsText = "3 passed"
+    s.runs.logsFetchedMs = Date.now() - 14000
+    s.titles.titlesByRoot = { "/home/u/a": { t1: "Renamed" } }
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, RG.glyphOf("running") + " Renamed · started · implement.2")
+    compare(s.runs.selectedAttempt, sel("t1", "implement", 2))
+    compare(H.find(s.screen, "runTimeline0_0").visible, true)
+    compare(H.find(s.screen, "runAttemptLabel0_0_2").text, "› " + RG.glyphOf("running") + " implement.2 started")
+    compare(H.find(s.screen, "runOutputHeading").text, "Output · t1 implement.2")
+    compare(H.find(s.screen, "runOutputText").text, "3 passed")
   }
 
   function test_the_timeline_and_attempts_show_under_the_selected_subtask_only() {
@@ -367,7 +548,7 @@ TestCase {
     var s = make([odd]); if (!s) return
     compare(H.find(s.screen, "runDetailMissing").visible, false)
     compare(H.find(s.screen, "runStory0").text, "Other")
-    compare(H.find(s.screen, "runSubtaskLabel0_0").text, "t9")
+    compare(H.find(s.screen, "runSubtaskLabel0_0").text, "…t9", "an id shorter than 8 is shown whole")
     compare(H.find(s.screen, "runOutputNone").visible, true)
   }
 

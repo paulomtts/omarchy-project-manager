@@ -125,6 +125,39 @@ TestCase {
     compare(p.app.runs.selectedRunId, "")
   }
 
+  function test_the_finished_chip_and_its_rows_set_the_real_store() {
+    var p = make(); if (!p) return
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    H.find(p, "runChipfinished").clicked()
+    compare(p.app.runs.runFilter, "finished")
+    wait(20)
+    compare(H.find(p, "runStateChips").visible, true)
+    H.find(p, "runStateChipdone").clicked()
+    compare(p.app.runs.finishedState, "done")
+    compare(H.find(p, "runStateChipdone").active, true)
+    H.find(p, "runAgeChipweek").clicked()
+    compare(p.app.runs.finishedAge, "week")
+    compare(H.find(p, "runAgeChipweek").active, true)
+  }
+
+  function test_show_older_reads_the_real_run_history_and_a_chip_change_drops_its_page() {
+    var p = make(); if (!p) return
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    p.app.runs.runsByProject = { "/home/u/a": [] }
+    p.app.runHistory.historyByProject = { "/home/u/a": { runs: [], more: false, loading: true, error: "" } }
+    wait(20)
+    var button = H.find(p, "runsShowOlder0")
+    verify(button, "the real store's entry is read")
+    compare(button.text, "Loading older runs…")
+    compare(button.enabled, false)
+    H.find(p, "runChipattention").clicked()
+    wait(20)
+    compare(Object.keys(p.app.runHistory.historyByProject).length, 0, "the real store dropped the page")
+    compare(H.find(p, "runsShowOlder0"), null, "back to the snapshot rule: no terminal runs")
+  }
+
   // A different chip is a different list: the panel scrolls back to its top.
   // The list stays taller than the panel either way, so nothing but that
   // scroll can bring the content back up.
@@ -260,7 +293,8 @@ TestCase {
     verify(view, "the Run detail screen is mounted")
     compare(view.visible, true)
     compare(H.find(p, "runsView").visible, false)
-    compare(H.find(p, "runDetailTitle").text, "Run …000000e5")
+    compare(H.find(p, "runDetailTitle").text, "milestone …alpha", "the open board has no card alpha")
+    compare(H.find(p, "runDetailId").text, "…000000e5")
     var proc = p.app.runs.logsRunner.current
     verify(proc, "the default attempt's logs were asked for")
     verify(String(proc.command[1]).indexOf("core/backend/runs/runs-logs.py") > 0, String(proc.command[1]))
@@ -425,6 +459,35 @@ TestCase {
     compare(p.focusItem.objectName, "searchField")
     verify(H.find(p, "searchField").activeFocus, "the focus is back in the search field")
     compare(controlOf(p, "Cancel").text, "Cancel requested…")
+  }
+
+  // make(): the open project is /home/u/a, whose map mirrors its board.
+  function test_the_cancel_dialog_detail_is_the_runs_title() {
+    var p = make(); if (!p) return
+    p.app.board.applyTreeData([{ id: "alpha", title: "Alpha work", status: "todo", description: "",
+                                 blocked_by: [], children: [] }])
+    compare(p.app.runTitles.titlesByRoot["/home/u/a"].alpha, "Alpha work", "the open project's map")
+    compare(p.app.runControl.openCancel("run-0000000000a1"), true)
+    wait(50)
+    var modal = cancelModal(p)
+    compare(modal.visible, true)
+    compare(modal.detail, "Alpha work")
+    compare(modal.message, "Cancel run …000000a1? Cancel is final. The run cannot be resumed, only relaunched; cards keep their current status. A phase in flight finishes first.")
+    p.app.runControl.closeCancel()
+  }
+
+  // makeTwo(): run-0000000000f6 is beta's (/home/u/b), milestone zeta.
+  function test_the_cancel_dialog_detail_of_another_projects_run_reads_its_own_map() {
+    var p = makeTwo(); if (!p) return
+    p.app.runTitles.titlesRunner.cancel()
+    var maps = Runs.copyMap(p.app.runTitles.titlesByRoot)
+    maps["/home/u/a"] = { zeta: "Alpha zeta" }
+    maps["/home/u/b"] = { zeta: "Beta zeta" }
+    p.app.runTitles.titlesByRoot = maps
+    compare(p.app.runControl.openCancel("run-0000000000f6"), true)
+    wait(50)
+    compare(cancelModal(p).detail, "Beta zeta")
+    p.app.runControl.closeCancel()
   }
 
   // 17 (Review Focus: a handled letter never types; Escape closes only the dialog)
