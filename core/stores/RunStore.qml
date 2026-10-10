@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
 import "../domain/board.js" as Board
+import "../domain/runEvents.js" as RunEvents
 
 // The am run monitor's data. One list snapshot covers every registered
 // project: runs-snapshot-all.py with each usable root of `projectRoots`, in
@@ -29,7 +30,11 @@ import "../domain/board.js" as Board
 // seen (storeId); the first store_id seen resets nothing. watchCursor is
 // the watch's last cursor, held in memory only. Logs are fetched on a
 // selection, on Refresh and when a snapshot changes the selected attempt's
-// status -- never on a timer.
+// status -- never on a timer. The selected run's events (runs-events.py RUN
+// --tail 200) are fetched on a selection and on refreshEvents(), and, while
+// `active`, the ones after eventsCursor (RUN --since eventsCursor) on each
+// runsNudged naming the selected run -- never on a timer, and a project
+// switch leaves them alone.
 // Pause, resume and cancel (control()) each get a HelperRunner of their own.
 // Dispatch (openDispatch, dispatchOpenFor .. dispatchStart) previews a run
 // for dispatchRoot with dispatch-preview.py and starts it with start-run.py,
@@ -123,6 +128,24 @@ Scope {
   property bool logsLoading: false    // a fetch is in flight
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
+  property string logsRunState: ""    // the run's Runs.runState when its opening attempt was chosen; "" when not in the snapshot
+
+  // The selected run's event timeline (3.1). `titles` is the open project's
+  // card id -> title map, handed in by App. `events` is RunEvents.eventRow
+  // rows, ascending seq, at most 500, replaced, never changed in place.
+  // A selection empties them and fetches the run's last 200 events; leaving
+  // Run detail empties them and fetches nothing. While active, a runsNudged
+  // naming the selected run fetches the events after eventsCursor.
+  property var titles: ({})
+  property var events: []
+  property int eventsDropped: 0       // the selected run's events not held
+  property int eventsCursor: 0        // the highest seq seen for the selected run
+  property string eventsStatus: "idle" // idle | loading | ok | error
+  property string eventsError: ""     // why the last fetch failed; "" after a good one and after a reset
+  property string eventsFilter: "All" // All | Phases | Failures, read by RunEvents.filterRows; the store never sets it
+  // Run detail's bottom area: output | events. Every selectedRunId change
+  // sets it to output; only setDetailTab and toggleDetailTab change it otherwise.
+  property string detailTab: "output"
 
   // Run controls (S2 4.1). `pending` holds the requests not yet settled,
   // {runId: action}; `stillWaiting` the pending ones 30 s or more old,
@@ -134,6 +157,7 @@ Scope {
   readonly property string stillWaitingText: "still waiting — the run may be between phases or dead"
   property string lastControlError: ""      // Runs.controlError sentence of the last failed request
   property string lastControlErrorRunId: "" // the run that sentence is about
+  property string lastControlErrorType: ""  // am's error type of that failure; "" when it carried none
 
   // The cancel confirmation (S2 4.3). Panel renders it; the store keeps the
   // run it asks about ("" = closed), the typed word and why the last confirm
@@ -222,6 +246,7 @@ Scope {
   readonly property alias staleTimer: staleTimer
   readonly property alias pollTimer: pollTimer
   readonly property alias logsRunner: logsRunner
+  readonly property alias eventsRunner: eventsRunner
   readonly property alias controlRunners: controlState.runners  // in-flight control requests, oldest first
   readonly property alias pendingTimer: pendingTimer
   readonly property alias flashTimer: flashTimer
@@ -388,12 +413,14 @@ Scope {
   // The panel closed: no process and no timer is left running, and no toast
   // or dispatch outlives the opening (a start in flight runs to its end). The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
-  // and is applied. The project filter is back to All projects, with no
-  // projectFilterToggled. The runs, the selection, the chip and amStatus stay
-  // for the next opening.
+  // and is applied. The queued events follow-up is dropped; an events fetch
+  // in flight runs to its end and is applied. The project filter is back to
+  // All projects, with no projectFilterToggled. The runs, the selection, the
+  // events, the chip and amStatus stay for the next opening.
   function stopLive() {
     store.projectFilter = ""
     snapshotState.pending = null
+    eventsState.followUp = false
     store.stopWatch()
     debounceTimer.stop()
     store.nudges = {}
@@ -666,7 +693,7 @@ Scope {
   }
 
   // Another project was opened, or none. The run list, the selection, the
-  // logs, the watch, the coverage, the requests (pending, stillWaiting,
+  // logs, the events, the watch, the coverage, the requests (pending, stillWaiting,
   // controlRunners), the control error, the cancel dialog, the footer flash,
   // the alerts, the toasts and the notify switch belong to every registered
   // project and stay, and no snapshot is launched. Reset: the run settings
@@ -793,12 +820,13 @@ Scope {
 
   // Shows (and fetches) one attempt of the selected run. Another attempt than
   // the one shown starts from an empty pane -- its predecessor's text is never
-  // shown under its heading. Nothing happens without a selected run or a real
-  // attempt (a non-empty card and phase, a number above 0).
+  // shown under its heading. Nothing happens without a selected run, a
+  // non-empty card and phase, and an attempt that is a number 0 or above; 0 is
+  // the phase's newest output, am's choice.
   function selectAttempt(cardId, phase, attempt) {
     if (store.selectedRunId === "") return
     if (typeof cardId !== "string" || cardId === "" || typeof phase !== "string" || phase === "") return
-    if (typeof attempt !== "number" || !isFinite(attempt) || attempt <= 0) return
+    if (typeof attempt !== "number" || !isFinite(attempt) || attempt < 0) return
     var old = store.selectedAttempt
     if (!old || old.card_id !== cardId || old.phase !== phase || old.attempt !== attempt) {
       store.logsText = ""
@@ -830,7 +858,8 @@ Scope {
     logsRunner.run([root, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
   }
 
-  // No selection and no logs; a fetch in flight is stopped and its reply dropped.
+  // No selection, no logs and no recorded run state; a fetch in flight is
+  // stopped and its reply dropped.
   function clearLogs() {
     logsRunner.cancel()
     store.selectedAttempt = null
@@ -840,33 +869,227 @@ Scope {
     store.logsLoading = false
     store.logsError = ""
     store.logsStatus = ""
+    store.logsRunState = ""
   }
 
-  // The selected run's default attempt, when it has one.
+  // The selected run's opening attempt: the attempt its stop report names,
+  // else its default attempt. It is selected when there is one; with none the
+  // selection is left alone. Either way logsRunState becomes the run's
+  // Runs.runState, or "" when the run is not in the snapshot.
   function openDefaultAttempt() {
-    var d = Runs.defaultAttempt(store.runById(store.selectedRunId))
-    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt)
+    var run = store.runById(store.selectedRunId)
+    var report = Runs.stopReport(run)
+    var target = report !== null && report.attempt !== null ? report.attempt : Runs.defaultAttempt(run)
+    store.logsRunState = run !== null ? Runs.runState(run) : ""
+    if (target) store.selectAttempt(target.card_id, target.phase, target.attempt)
   }
 
-  // After every applied snapshot: a selected run with no attempt yet gets its
-  // default once one exists; otherwise the selected attempt is fetched again
-  // only when its status moved since its fetch was launched. Nothing else
-  // fetches logs on its own.
+  // After every applied snapshot, for a selected run: when the run is in the
+  // snapshot and its Runs.runState is not logsRunState, it opens on its
+  // opening attempt again, over any attempt picked since; otherwise a run with
+  // no attempt yet gets its opening attempt once one exists, and the selected
+  // attempt is fetched again only when its status moved since its fetch was
+  // launched. Nothing else fetches logs on its own.
   function logsAfterSnapshot() {
     if (store.selectedRunId === "") return
+    var run = store.runById(store.selectedRunId)
+    if (run !== null && Runs.runState(run) !== store.logsRunState) {
+      store.openDefaultAttempt()
+      return
+    }
     var sel = store.selectedAttempt
     if (!sel) {
       store.openDefaultAttempt()
       return
     }
-    var status = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    var status = Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
     if (status !== store.logsStatus) store.fetchLogs()
   }
 
-  // Another run (or none): the pane starts over on that run's default attempt.
+  // Another run (or none): the pane starts over, a selected run opens on its
+  // opening attempt, the events start over (selectEvents) and the tab is
+  // Output.
   onSelectedRunIdChanged: {
     store.clearLogs()
     if (store.selectedRunId !== "") store.openDefaultAttempt()
+    store.selectEvents()
+    store.detailTab = "output"
+  }
+
+  // "output" or "events": sets detailTab and returns true; anything else
+  // leaves it and returns false.
+  function setDetailTab(tab) {
+    if (tab !== "output" && tab !== "events") return false
+    store.detailTab = tab
+    return true
+  }
+
+  // output -> events, events -> output.
+  function toggleDetailTab() {
+    store.detailTab = store.detailTab === "events" ? "output" : "events"
+  }
+
+  // ---- the selected run's events (3.1)
+
+  // No events held and no follow-up queued; then the selected run's last 200
+  // are fetched, or, with no run selected, the fetch in flight is stopped and
+  // the status is idle.
+  function selectEvents() {
+    eventsState.followUp = false
+    store.events = []
+    store.eventsDropped = 0
+    store.eventsCursor = 0
+    store.eventsError = ""
+    if (store.selectedRunId === "") {
+      eventsRunner.cancel()
+      store.eventsStatus = "idle"
+      return
+    }
+    store.fetchEvents()
+  }
+
+  // The selected run fetched again; the rows, eventsDropped, eventsCursor and
+  // eventsError stay until the reply. Nothing without a selected run.
+  function refreshEvents() {
+    if (store.selectedRunId === "") return
+    store.fetchEvents()
+  }
+
+  // runs-events.py RUN --tail 200 for the selected run, guarded by its id.
+  function fetchEvents() {
+    store.eventsStatus = "loading"
+    eventsRunner.guard = store.selectedRunId
+    eventsState.kind = "tail"
+    eventsRunner.run([store.selectedRunId, "--tail", "200"])
+  }
+
+  // A debounce window's run ids (runsNudged). While active, with ids an array
+  // holding selectedRunId: the change fetch (fetchNewEvents), or, while a
+  // fetch is in flight, one follow-up queued behind it (followUpEvents); the
+  // fetch in flight is left alone. The run's status is never read.
+  function nudgeEvents(ids) {
+    if (!store.active || store.selectedRunId === "" || !Array.isArray(ids)) return
+    if (ids.indexOf(store.selectedRunId) < 0) return
+    if (eventsRunner.busy) {
+      eventsState.followUp = true
+      return
+    }
+    store.fetchNewEvents()
+  }
+
+  onRunsNudged: function(ids) { store.nudgeEvents(ids) }
+
+  // The change fetch: runs-events.py RUN --since eventsCursor, guarded by the
+  // run id; with eventsCursor 0, fetchEvents (--tail 200). The rows,
+  // eventsDropped, eventsCursor and eventsError stay until the reply.
+  function fetchNewEvents() {
+    if (store.eventsCursor <= 0) {
+      store.fetchEvents()
+      return
+    }
+    store.eventsStatus = "loading"
+    eventsRunner.guard = store.selectedRunId
+    eventsState.kind = "since"
+    eventsRunner.run([store.selectedRunId, "--since", String(store.eventsCursor)])
+  }
+
+  // The fetch in flight ended and its reply is applied: a queued follow-up is
+  // taken and, while active with a run selected, the change fetch launches
+  // from the state that reply left.
+  function followUpEvents() {
+    if (!eventsState.followUp) return
+    eventsState.followUp = false
+    if (store.active && store.selectedRunId !== "") store.fetchNewEvents()
+  }
+
+  // The labels for an events reply, a fresh object: every own key of
+  // `titles` holding a non-empty string, then, for each story of the
+  // selected run's tree with a string card_id and a non-empty string title,
+  // that title where `titles` has none. `titles` is never modified.
+  function eventTitles() {
+    var out = {}
+    var own = store.titles
+    if (own !== null && typeof own === "object" && !Array.isArray(own)) {
+      for (var key in own) {
+        if (store.hasKey(own, key) && typeof own[key] === "string" && own[key] !== "") out[key] = own[key]
+      }
+    }
+    var run = store.runById(store.selectedRunId)
+    var tree = run !== null && typeof run === "object" && run.tree !== null && typeof run.tree === "object" ? run.tree : {}
+    var stories = Array.isArray(tree.stories) ? tree.stories : []
+    for (var i = 0; i < stories.length; i++) {
+      var s = stories[i]
+      if (s === null || typeof s !== "object") continue
+      if (typeof s.card_id !== "string" || typeof s.title !== "string" || s.title === "") continue
+      if (!store.hasKey(out, s.card_id)) out[s.card_id] = s.title
+    }
+    return out
+  }
+
+  // One events reply, applied only while `launchedGuard` is still the
+  // selected run. ok true with an events array: foldReply, unless its
+  // last_seq is a non-negative integer below eventsCursor, which keeps
+  // events, eventsDropped and eventsCursor. Either way ok, no error. ok
+  // false: error with Runs.errorText. Anything else: error, "no usable
+  // result". A failure keeps events, eventsDropped and eventsCursor. Never
+  // touches any other state.
+  function applyEvents(stdout, exitCode, launchedGuard) {
+    if (launchedGuard !== store.selectedRunId) return
+    var envelope = store.parseEnvelope(stdout)
+    if (envelope !== null && envelope.ok === true && Array.isArray(envelope.events)) {
+      if (store.isSeq(envelope.last_seq) && envelope.last_seq < store.eventsCursor) {
+        store.eventsStatus = "ok"
+        store.eventsError = ""
+        return
+      }
+      store.foldReply(envelope)
+      return
+    }
+    store.eventsStatus = "error"
+    if (envelope !== null && envelope.ok === false) store.eventsError = Runs.errorText(envelope)
+    else store.eventsError = "The events snapshot gave no usable result (exit " + exitCode + ")."
+  }
+
+  // A good reply. Its events become RunEvents.eventRow rows, labelled from
+  // eventTitles() at the local UTC offset (null rows skipped), folded into
+  // the held rows, at most 500.
+  // eventsDropped, after a --tail launch: (total - received) less the held
+  // rows below the reply's lowest seq, at least 0, plus the rows the cap
+  // removed; total is the reply's when an integer >= received, else
+  // received. After a --since launch: its value plus the rows the cap
+  // removed. eventsCursor: the highest of itself, a non-negative integer
+  // last_seq and the held rows' seqs.
+  function foldReply(envelope) {
+    var list = envelope.events
+    var titles = store.eventTitles()
+    var offset = -new Date().getTimezoneOffset()
+    var fresh = []
+    var lowest = null
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i]
+      if (e !== null && typeof e === "object" && typeof e.seq === "number" && isFinite(e.seq)
+          && (lowest === null || e.seq < lowest)) lowest = e.seq
+      var row = RunEvents.eventRow(e, titles, offset)
+      if (row !== null) fresh.push(row)
+    }
+    var held = store.events
+    var priorBelow = 0
+    for (var h = 0; h < held.length; h++) {
+      if (lowest !== null && held[h].seq < lowest) priorBelow += 1
+    }
+    var fold = RunEvents.foldEvents(held, fresh, 500)
+    var received = list.length
+    var total = Number.isInteger(envelope.total) && envelope.total >= received ? envelope.total : received
+    var cursor = store.eventsCursor
+    if (store.isSeq(envelope.last_seq) && envelope.last_seq > cursor) cursor = envelope.last_seq
+    var rows = fold.rows
+    if (rows.length > 0 && rows[rows.length - 1].seq > cursor) cursor = rows[rows.length - 1].seq
+    store.events = rows
+    if (eventsState.kind === "since") store.eventsDropped = store.eventsDropped + fold.dropped
+    else store.eventsDropped = Math.max(0, total - received - priorBelow) + fold.dropped
+    store.eventsCursor = cursor
+    store.eventsStatus = "ok"
+    store.eventsError = ""
   }
 
   // One logs reply. ok:true replaces the text with its last 200 lines; any
@@ -1115,12 +1338,11 @@ Scope {
     return Object.prototype.hasOwnProperty.call(map, key)
   }
 
-  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
-  // returns whether it started: only when refusalOf(action, runId) is "".
-  // The request acts on the run's repo_dir; a milestone resume reads the run
-  // settings of the run's project.root. Confirming a cancel is the caller's job.
-  function control(action, runId) {
-    if (store.refusalOf(action, runId) !== "") return false
+  // A new request for runId, a run in `runs`: the control error is dismissed,
+  // the request is recorded with the run's state as its baseline, pending is
+  // set, and its runner (repo_dir and project.root of the run, not launched
+  // yet) joins controlRunners and is returned.
+  function startRequest(action, runId) {
     var run = store.runById(runId)
     store.dismissControlError()
     controlState.nextToken += 1
@@ -1134,6 +1356,17 @@ Scope {
     var runner = controlC.createObject(store, { runId: runId, action: action, token: controlState.nextToken,
                                                 repoDir: run.repo_dir, projectRoot: store.runRoot(run) })
     controlState.runners = controlState.runners.concat([runner])
+    return runner
+  }
+
+  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
+  // returns whether it started: only when refusalOf(action, runId) is "".
+  // The request acts on the run's repo_dir; a milestone resume reads the run
+  // settings of the run's project.root. Confirming a cancel is the caller's job.
+  function control(action, runId) {
+    if (store.refusalOf(action, runId) !== "") return false
+    var run = store.runById(runId)
+    var runner = store.startRequest(action, runId)
     if (action === "resume" && run.workflow !== "task") {
       // A milestone resume reuses its project's stored verify set: read it first.
       runner.settingsStep = true
@@ -1183,16 +1416,19 @@ Scope {
   }
 
   // A request ended without am taking it: the buttons come back and the
-  // sentence shows under that run.
-  function failControl(runId, sentence) {
+  // sentence shows under that run. `type` is am's error type when a string,
+  // else "".
+  function failControl(runId, sentence, type) {
     store.settle(runId)
     store.lastControlError = sentence
     store.lastControlErrorRunId = runId
+    store.lastControlErrorType = typeof type === "string" ? type : ""
   }
 
   function dismissControlError() {
     store.lastControlError = ""
     store.lastControlErrorRunId = ""
+    store.lastControlErrorType = ""
   }
 
   // A runner's request is over: it leaves controlRunners and is destroyed.
@@ -1226,9 +1462,11 @@ Scope {
                                  launchedMs: req.launchedMs, acknowledged: true, requestedAt: requestedAt }
       controlState.requests = requests
     } else if (envelope !== null && envelope.ok === false) {
-      store.failControl(runner.runId, Runs.controlError(envelope))
+      var err = envelope.error
+      var type = err !== null && typeof err === "object" && typeof err.type === "string" ? err.type : ""
+      store.failControl(runner.runId, Runs.controlError(envelope), type)
     } else {
-      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").")
+      store.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").", "")
     }
     store.dropRunner(runner)
     store.refresh()
@@ -1236,13 +1474,14 @@ Scope {
 
   // The run settings' reply for a milestone resume. A stored verify set (a
   // non-empty list of strings) goes to run-control as --verify pairs in its
-  // order; otherwise the stored opt-out as --allow-no-verification; with
-  // neither, or no readable reply, run-control is never launched and the
-  // request ends with a sentence -- no re-snapshot, nothing was asked of am.
+  // order; otherwise the stored opt-out as --allow-no-verification. With
+  // neither, the request is settled and the Resume dialog opens for the run;
+  // with no readable reply, the request ends with a sentence. In both,
+  // run-control is never launched and there is no re-snapshot.
   function resumeWithSettings(runner, stdout, exitCode) {
     var settings = store.parseEnvelope(stdout)
     if (settings === null) {
-      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").")
+      store.failControl(runner.runId, "The run settings gave no usable result (exit " + exitCode + ").", "")
       store.dropRunner(runner)
       return
     }
@@ -1258,8 +1497,10 @@ Scope {
     } else if (settings.allowNoVerification === true) {
       store.launchControl(runner, ["--allow-no-verification"])
     } else {
-      store.failControl(runner.runId, "Resume needs verify commands: none are stored for this project, and running without verification was not chosen.")
+      var runId = runner.runId
+      store.settle(runId)
       store.dropRunner(runner)
+      store.resumeOpenFor(runId)
     }
   }
 
@@ -1366,6 +1607,89 @@ Scope {
     store.closeCancel()
     return true
   }
+
+  // ---- resume dialog
+
+  // The Resume dialog: a milestone resume with no stored verify set asks for
+  // the commands here. `resumeRunId` is the run it asks about ("" = closed),
+  // `resumeVerify` the commands as typed (blanks allowed),
+  // `resumeAllowNoVerification` the opt-out, and `resumeError` why the last
+  // confirm was refused.
+  property string resumeRunId: ""
+  property var resumeVerify: []
+  property bool resumeAllowNoVerification: false
+  property string resumeError: ""
+
+  // Opens the dialog for runId with empty fields, replacing any open one, and
+  // returns true. Returns false and changes nothing when runId is not a
+  // non-empty string, its run is not in the snapshot, or it is a task run.
+  function resumeOpenFor(runId) {
+    if (typeof runId !== "string" || runId === "") return false
+    var run = store.runById(runId)
+    if (run === null || run.workflow === "task") return false
+    store.resumeVerify = []
+    store.resumeAllowNoVerification = false
+    store.resumeError = ""
+    store.resumeRunId = runId
+    return true
+  }
+
+  function resumeClose() {
+    store.resumeRunId = ""
+    store.resumeVerify = []
+    store.resumeAllowNoVerification = false
+    store.resumeError = ""
+  }
+
+  // The dialog's confirm. Refused, with resumeError and the dialog left open,
+  // when the form has no non-blank command and no opt-out, or when the run
+  // cannot be resumed now (refusalOf). Otherwise the resume starts as
+  // control() starts one and launches run-control at once: the non-blank
+  // commands as --verify pairs in order, else --allow-no-verification. The
+  // set is saved for the run's project without waiting for the reply, the
+  // dialog closes, and true is returned.
+  function resumeConfirm() {
+    if (store.resumeRunId === "") return false
+    var form = { verify: store.resumeVerify, allowNoVerification: store.resumeAllowNoVerification }
+    var missing = Runs.validateDispatch(form).errors.filter(function(e) { return e.field === "verify" })
+    if (missing.length > 0) {
+      store.resumeError = missing[0].message
+      return false
+    }
+    var runId = store.resumeRunId
+    var reason = store.refusalOf("resume", runId)
+    if (reason !== "") {
+      store.resumeError = reason
+      return false
+    }
+    var commands = store.dispatchCommands(form)
+    var extra = []
+    for (var i = 0; i < commands.length; i++) extra.push("--verify", commands[i])
+    if (commands.length === 0) extra = ["--allow-no-verification"]
+    var runner = store.startRequest("resume", runId)
+    store.launchControl(runner, extra)
+    resumeSaveRunner.run(["set-run-settings", runner.projectRoot,
+                          JSON.stringify({ verify: commands, allowNoVerification: store.resumeAllowNoVerification === true })])
+    store.resumeClose()
+    return true
+  }
+
+  // set-run-settings: {"ok": true} changes nothing; anything else flashes.
+  // Never touches the request, the control error or the dialog.
+  function resumeSaveReplied(stdout, exitCode) {
+    var reply = store.parseEnvelope(stdout)
+    if (reply !== null && reply.ok === true) return
+    store.flash("The verify commands could not be saved")
+  }
+
+  // set-run-settings for a confirmed resume; latest wins. No guard: the save
+  // is for the run's project, whatever project is open.
+  HelperRunner {
+    id: resumeSaveRunner
+    script: store.backendDir + "projects/viewer-state.py"
+    onFinished: function(stdout, exitCode) { store.resumeSaveReplied(stdout, exitCode) }
+  }
+  readonly property alias resumeSaveRunner: resumeSaveRunner
 
   // ---- alerts (S2 4.4)
 
@@ -2080,6 +2404,29 @@ Scope {
     onFinished: function(stdout, exitCode) { store.dispatchTargetReplied(stdout) }
   }
 
+  // ---- relaunch
+
+  // Opens the dispatch for card as openDispatch does and returns its result;
+  // when it opens, relaunch.prefix and relaunch.base (Runs.stopReport's
+  // relaunch), each when a non-blank string, are set trimmed over the
+  // defaults, and a base set so is kept over the default branch (recorded as
+  // touched). Refused (false, nothing changes) when card or relaunch is not
+  // an object.
+  function relaunchOpenFor(card, cardMap, relaunch) {
+    var isObject = function(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+    if (!isObject(card) || !isObject(relaunch)) return false
+    if (!store.openDispatch(card, cardMap)) return false
+    if (typeof relaunch.prefix === "string" && relaunch.prefix.trim() !== "")
+      store.dispatchForm = store.withField(store.dispatchForm, "prefix", relaunch.prefix.trim())
+    if (typeof relaunch.base === "string" && relaunch.base.trim() !== "") {
+      store.dispatchForm = store.withField(store.dispatchForm, "base", relaunch.base.trim())
+      var touched = store.copyMap(dispatchBook.touched)
+      touched.base = true
+      dispatchBook.touched = touched
+    }
+    return true
+  }
+
   // The one list snapshot in flight (requestSnapshot). No guard: its reply is
   // matched to the registry by root, whatever project is open. Only
   // refresh() with no usable root and resetCursor() stop it.
@@ -2097,6 +2444,19 @@ Scope {
     script: store.backendDir + "runs/runs-logs.py"
     onBusyChanged: if (!logsRunner.busy) store.logsLoading = false
     onFinished: function(stdout, exitCode) { store.applyLogs(stdout, exitCode) }
+  }
+
+  // The selected run's events helper. Guard: the run id a fetch was launched
+  // for, never the open project. A newer fetch wins over an older one, and a
+  // reply is applied only while its run is still the selected one; then a
+  // queued follow-up launches (followUpEvents).
+  HelperRunner {
+    id: eventsRunner
+    script: store.backendDir + "runs/runs-events.py"
+    onFinished: function(stdout, exitCode, launchedGuard) {
+      store.applyEvents(stdout, exitCode, launchedGuard)
+      store.followUpEvents()
+    }
   }
 
   // get-global-settings, once per opening (startLive); latest wins. No guard:
@@ -2250,6 +2610,16 @@ Scope {
     id: snapshotState
     property var roots: []
     property var pending: null
+  }
+
+  // The selected run's events fetches' own state; kept apart so consumers
+  // cannot write it. `kind` is the newest launch's: "tail" (RUN --tail 200)
+  // or "since" (RUN --since eventsCursor). `followUp`: one change fetch
+  // waits behind the fetch in flight.
+  QtObject {
+    id: eventsState
+    property string kind: "tail"
+    property bool followUp: false
   }
 
   // The control requests' own state; kept apart so consumers cannot write it.

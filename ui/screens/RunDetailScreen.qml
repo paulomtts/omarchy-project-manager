@@ -8,14 +8,23 @@ import "../components" as UI
 import "../theme" as T
 
 // One am run (the "run" view): a header with its state, milestone, branch
-// prefix and base and lease; its story > subtask > phase > attempt tree, with
-// the orchestrator's own Integrate / Bases / Base rows when it has them; and an
-// output pane holding ONE attempt's `am logs` snapshot -- labelled with its age,
-// never presented as a live tail. Run state always comes from am (the run
-// store), never from a brd status; brd's board only lends titles and dims the
-// cards it has closed. It reads the run store and asks it to show another
-// attempt or fetch again; it owns no state of its own. Ages are read against
-// the clock when a logs reply lands or a snapshot replaces the runs: no timer.
+// prefix and base and lease; for a stopped run, Why it stopped
+// (StopReasonBlock: Runs.stopReport, am's note from the open project's
+// comments, Open card and Relaunch); its story > subtask > phase > attempt
+// tree, with the orchestrator's own Integrate / Bases / Base rows when it has
+// them; and a bottom area of two tabs, app.runs.detailTab, chosen by the
+// Output / Events chips. Output holds ONE attempt's `am logs` snapshot --
+// labelled with its age, never presented as a live tail. Events is the run's
+// event timeline (EventsPane over app.runs.events); its filter chips set
+// app.runs.eventsFilter, and a row naming an attempt selects that attempt and
+// shows Output. The Events chip counts the rows held plus
+// app.runs.eventsDropped. Run state always comes from am (the run store), never
+// from a brd status; brd's board only lends titles, dims the cards it has
+// closed and holds the card Relaunch opens. It reads the run store and asks it
+// to show another attempt or tab, fetch again or open a relaunch; it owns no
+// state of its own. A run outside the open project shows no note, and its Open
+// card and Relaunch are disabled with the reason. Ages are read against the
+// clock when a logs reply lands or a snapshot replaces the runs: no timer.
 Column {
   id: screen
   objectName: "runDetailView"
@@ -36,6 +45,13 @@ Column {
   readonly property var selection: screen.app.runs.selectedAttempt
   // Re-read whenever a logs reply lands or a snapshot replaces the runs.
   readonly property real nowMs: screen.app.runs.logsFetchedMs >= 0 && screen.app.runs.runs ? Date.now() : 0
+  readonly property var stopReport: Runs.stopReport(screen.run)
+  readonly property bool inOpenProject: screen.belongsTo(screen.run, screen.app.runs.project)
+  readonly property var stopNoteFound: screen.noteOf(screen.run, screen.stopReport, screen.inOpenProject)
+  readonly property var stopNote: screen.stopNoteFound.note
+  readonly property string stopNoteCardId: screen.stopNoteFound.cardId
+  // The rows the store holds; 0 when `events` is not an array.
+  readonly property int eventsHeld: Array.isArray(screen.app.runs.events) ? screen.app.runs.events.length : 0
 
   visible: screen.app.nav.viewMode === "run"
   spacing: Style.space(6)
@@ -161,6 +177,61 @@ Column {
     else screen.app.runs.control(action, id)
   }
 
+  // The run is in the open project: both roots are non-empty and equal, the
+  // open one with trailing "/" removed as runs are tagged.
+  function belongsTo(run, openRoot) {
+    if (typeof openRoot !== "string" || openRoot === "") return false
+    if (!run || run.project === null || typeof run.project !== "object") return false
+    var root = run.project.root
+    return typeof root === "string" && root !== "" && root === Runs.withProject({}, openRoot, "").project.root
+  }
+
+  // am's note on the stopped run, {note, cardId}: from the report's card, else
+  // from the milestone card; {null, ""} outside the open project or without
+  // an extras store.
+  function noteOf(run, report, inProject) {
+    var none = { note: null, cardId: "" }
+    var extras = screen.app.extras
+    if (!inProject || !extras || !report || !run) return none
+    if (report.cardId !== "") {
+      var onCard = Runs.stopComment(extras.commentsFor(report.cardId), run.id)
+      if (onCard !== null) return { note: onCard, cardId: report.cardId }
+    }
+    if (typeof run.milestone_id === "string" && run.milestone_id !== "") {
+      var onMilestone = Runs.stopComment(extras.commentsFor(run.milestone_id), run.id)
+      if (onMilestone !== null) return { note: onMilestone, cardId: run.milestone_id }
+    }
+    return none
+  }
+
+  // A dead run's last heartbeat age without "ago"; "" otherwise or unparseable.
+  function heartbeatAgeOf(report) {
+    if (!report || report.state !== "dead") return ""
+    return Runs.snapshotAgeText(Date.parse(report.heartbeatAt), screen.nowMs)
+  }
+
+  // Relaunch shows for a run with a relaunch target that cannot be resumed,
+  // or whose last resume am refused with a type relaunching answers.
+  function offersRelaunch(run, report) {
+    if (!report || report.relaunch === null || typeof report.relaunch !== "object") return false
+    if (!Runs.controls(run).resume.enabled) return true
+    var store = screen.app.runs
+    return store.lastControlErrorRunId === run.id && Runs.offersRelaunch({ type: store.lastControlErrorType })
+  }
+
+  // Opens the dispatch on the relaunch target's card; a card no longer on the
+  // board opens nothing and flashes why.
+  function relaunch() {
+    var report = screen.stopReport
+    if (!report || report.relaunch === null || typeof report.relaunch !== "object") return
+    var card = screen.cardOf(report.relaunch.cardId)
+    if (card === null) {
+      screen.app.runs.flash("The card to relaunch is no longer on the board")
+      return
+    }
+    screen.app.runs.relaunchOpenFor(card, screen.app.board.cardMap, report.relaunch)
+  }
+
   UI.ListStatus {
     objectName: "runDetailMissing"
     theme: screen.theme
@@ -205,15 +276,19 @@ Column {
       wrapMode: Text.WordWrap
     }
 
-    UI.ThemedText {
-      objectName: "runDetailReason"
-      variant: "caption"
-      theme: screen.theme
+    UI.StopReasonBlock {
+      objectName: "runDetailStop"
       width: parent.width
-      visible: screen.runState === "escalated"
-      text: Runs.escalationReason(screen.run)
-      color: screen.theme.urgent
-      wrapMode: Text.WordWrap
+      theme: screen.theme
+      report: screen.stopReport
+      note: screen.stopNote
+      heartbeatAge: screen.heartbeatAgeOf(screen.stopReport)
+      openCardId: screen.stopReport && screen.stopReport.cardId !== "" ? screen.stopReport.cardId : screen.stopNoteCardId
+      openCardReason: screen.inOpenProject ? "" : "Open this run's project to open its card"
+      relaunchOffered: screen.offersRelaunch(screen.run, screen.stopReport)
+      relaunchReason: screen.inOpenProject ? "" : "Open this run's project to relaunch it"
+      onOpenCardRequested: function(id) { if (screen.navigator) screen.navigator.openCard(id) }
+      onRelaunchRequested: screen.relaunch()
     }
 
     UI.RunControls {
@@ -240,10 +315,22 @@ Column {
       delegate: SyntheticRow {}
     }
 
+    UI.ChipRow {
+      objectName: "runTabs"
+      width: parent.width
+      theme: screen.theme
+      chipPrefix: "runTab"
+      active: screen.app.runs.detailTab
+      model: [{ id: "output", label: "Output" },
+              { id: "events", label: "Events", count: screen.eventsHeld + screen.app.runs.eventsDropped }]
+      onChosen: function(id) { screen.app.runs.setDetailTab(id) }
+    }
+
     Column {
       objectName: "runOutputPane"
       width: parent.width
       spacing: Style.space(4)
+      visible: screen.app.runs.detailTab === "output"
 
       Row {
         width: parent.width
@@ -252,9 +339,10 @@ Column {
         UI.ThemedText {
           objectName: "runOutputHeading"
           theme: screen.theme
-          text: screen.selection
-            ? "Output · " + screen.selection.card_id + " " + screen.selection.phase + "." + screen.selection.attempt
-            : "Output"
+          text: !screen.selection ? "Output"
+            : screen.selection.attempt > 0
+              ? "Output · " + screen.selection.card_id + " " + screen.selection.phase + "." + screen.selection.attempt
+              : "Output · " + screen.selection.card_id + " " + screen.selection.phase + " (newest)"
         }
 
         UI.ThemedText {
@@ -304,6 +392,22 @@ Column {
         text: screen.app.runs.logsText
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
+      }
+    }
+
+    UI.EventsPane {
+      width: parent.width
+      visible: screen.app.runs.detailTab === "events"
+      theme: screen.theme
+      rows: screen.app.runs.events
+      filter: screen.app.runs.eventsFilter
+      dropped: screen.app.runs.eventsDropped
+      status: screen.app.runs.eventsStatus
+      errorMessage: screen.app.runs.eventsError
+      onFilterRequested: function(f) { screen.app.runs.eventsFilter = f }
+      onAttemptRequested: function(card, phase, attempt) {
+        screen.app.runs.selectAttempt(card, phase, attempt)
+        screen.app.runs.setDetailTab("output")
       }
     }
 

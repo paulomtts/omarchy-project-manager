@@ -7,6 +7,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../../core/domain/runEvents.js" as RunEvents
 import "../../helpers/amFixtures.js" as F
 
 TestCase {
@@ -2486,7 +2487,7 @@ TestCase {
     compare(store.selectedAttempt, null)
     store.refreshLogs()
     verify(!store.logsRunner.current, "no selection")
-    store.selectAttempt(tc.doneCard, "spec", 0)
+    store.selectAttempt(tc.doneCard, "spec", -1)
     store.selectAttempt(tc.doneCard, "", 1)
     store.selectAttempt("", "spec", 1)
     store.selectAttempt(tc.doneCard, "spec", "1")
@@ -2709,6 +2710,188 @@ TestCase {
     compare(proc.command[3], "r1")
   }
 
+  // ---- stopped run opens its failed attempt (2.2)
+
+  // status-escalated.json's escalated subtask: its review attempt 1 failed its gate.
+  readonly property string escCard: "10e26d57-374c-48d3-bc45-09389b42cfac"
+
+  // status-escalated.json's snapshot entry under run id `id` and rootA. Its
+  // stop report names escCard review 1.
+  function escEntry(id) {
+    var e = rec("escalated")
+    // synthetic: the run id and project root are the test's.
+    e.id = id
+    e.repo_dir = tc.rootA
+    e.project.repo_dir = tc.rootA
+    e.status.run.id = id
+    return e
+  }
+
+  // treeEntry(id, "ok") escalated at a failed step: openCard's explore is done
+  // and its verify failed with no attempt. Its stop report names openCard
+  // verify 0; Runs.defaultAttempt names openCard explore 1 (the last row).
+  function stepEntry(id) {
+    var e = treeEntry(id, "ok")
+    // synthetic: the run escalated at openCard's verify, a step that records no attempt.
+    e.status.run.status = "escalated"
+    var open = e.status.stories[1].subtasks[1]
+    open.phases[1].status = "done"
+    open.phases.push({ name: "verify", kind: "deterministic", status: "failed",
+                       detail: "VerifyError: 2 tests failed", attempts: [] })
+    return e
+  }
+
+  // A store on rootA whose first snapshot lists `e`, with e.id selected.
+  function openOn(e) {
+    var store = makeWithProject(rootA); if (!store) return null
+    reply(store.snapshotRunner.current, okReply([e]), 0)
+    store.selectedRunId = e.id
+    return store
+  }
+
+  function test_an_escalated_run_opens_its_failed_attempt() {
+    var e = escEntry("r1")
+    // synthetic: a later ok row of escCard, so the default attempt is not the failed one.
+    e.status.rows.push({ attempt: 1, phase: "implement", state: "ok",
+                         story: "bf8154fc-e65c-46f5-b6e8-92b616a6e62b", subtask: tc.escCard })
+    var store = openOn(e); if (!store) return
+    compare(Runs.defaultAttempt(store.runById("r1")).phase, "implement", "the default is another attempt")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.escCard + "|review|1")
+    compare(store.selectedAttempt.card_id, tc.escCard)
+    compare(store.selectedAttempt.phase, "review")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(store.logsRunState, "escalated")
+  }
+
+  // Review Focus 1.
+  function test_a_failed_step_opens_attempt_0() {
+    var store = openOn(stepEntry("r1")); if (!store) return
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
+    compare(store.selectedAttempt.card_id, tc.openCard)
+    compare(store.selectedAttempt.phase, "verify")
+    compare(store.selectedAttempt.attempt, 0)
+    compare(store.logsStatus, "", "attempt 0 has no status")
+    compare(store.logsLoading, true)
+    reply(store.logsRunner.current, logsReply("2 tests failed\n"), 0)
+    compare(store.logsText, "2 tests failed")
+    compare(store.logsLoading, false)
+  }
+
+  function test_a_running_run_still_opens_its_default_attempt() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    compare(Runs.stopReport(store.runById("r1")), null)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+    compare(store.logsRunState, "running")
+  }
+
+  function test_a_parked_run_opens_its_default_attempt() {
+    var e = treeEntry("r1", "started")
+    // synthetic: the run parked with its explore attempt still started.
+    e.status.run.status = "stopped"
+    var store = openOn(e); if (!store) return
+    compare(Runs.stopReport(store.runById("r1")).attempt, null)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+    compare(store.logsRunState, "parked")
+  }
+
+  function test_select_attempt_accepts_0_and_refuses_the_rest() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    store.selectAttempt(tc.doneCard, "spec", 0)
+    compare(store.logsRunner.seq, seq + 1, "attempt 0 launches")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|0")
+    compare(store.logsText, "", "another attempt starts empty")
+    compare(store.selectedAttempt.attempt, 0)
+    var refused = [-1, NaN, Infinity, "1", null]
+    for (var i = 0; i < refused.length; i++) {
+      var label = JSON.stringify(refused[i]) + " (" + typeof refused[i] + ")"
+      store.selectAttempt(tc.doneCard, "spec", refused[i])
+      compare(store.logsRunner.seq, seq + 1, label + " is refused")
+      compare(store.selectedAttempt.card_id, tc.doneCard, label)
+      compare(store.selectedAttempt.phase, "spec", label)
+      compare(store.selectedAttempt.attempt, 0, label)
+    }
+  }
+
+  // Review Focus 2.
+  function test_a_state_move_to_escalated_retargets_once() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    snapshot(store, [stepEntry("r1")])
+    compare(store.logsRunner.seq, seq + 1, "running -> escalated re-targets")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
+    compare(store.logsText, "", "a new attempt starts empty")
+    compare(store.logsRunState, "escalated")
+    snapshot(store, [stepEntry("r1")])
+    compare(store.logsRunner.seq, seq + 1, "only once")
+    snapshot(store, [treeEntry("r1", "started")])
+    compare(store.logsRunner.seq, seq + 2, "escalated -> running re-targets")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|explore|1")
+    compare(store.logsRunState, "running")
+  }
+
+  // Review Focus 3.
+  function test_a_picked_attempt_survives_snapshots_that_keep_the_state() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    reply(store.logsRunner.current, logsReply("spec text\n"), 0)
+    var seq = store.logsRunner.seq
+    snapshot(store, [treeEntry("r1", "started")])
+    compare(store.logsRunner.seq, seq, "the same state keeps the picked attempt")
+    compare(store.selectedAttempt.card_id, tc.doneCard)
+    compare(store.selectedAttempt.phase, "spec")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(store.logsText, "spec text")
+    snapshot(store, [stepEntry("r1")])
+    compare(store.logsRunner.seq, seq + 1, "a state move re-targets")
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
+  }
+
+  // Review Focus 4.
+  function test_a_missing_run_is_not_a_state_move() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    reply(store.logsRunner.current, logsReply("spec text\n"), 0)
+    snapshot(store, [])
+    compare(store.runById("r1"), null)
+    compare(store.selectedAttempt.card_id, tc.doneCard)
+    compare(store.selectedAttempt.phase, "spec")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(store.logsRunState, "running", "a missing run records nothing")
+    snapshot(store, [treeEntry("r1", "started")])
+    compare(store.selectedAttempt.card_id, tc.doneCard, "back in the same state: no re-target")
+    compare(store.selectedAttempt.phase, "spec")
+    compare(store.selectedAttempt.attempt, 1)
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.doneCard + "|spec|1")
+  }
+
+  // Review Focus 5.
+  function test_a_failed_snapshot_does_not_retarget() {
+    var store = openOn(treeEntry("r1", "started")); if (!store) return
+    reply(store.logsRunner.current, logsReply("a\n"), 0)
+    var seq = store.logsRunner.seq
+    store.refresh()
+    reply(store.snapshotRunner.current, '{"ok": false, "error": {"type": "HelperError", "message": "boom"}}', 1)
+    compare(store.logsRunner.seq, seq, "a failed snapshot fetches nothing")
+    compare(store.logsRunState, "running")
+    compare(store.logsText, "a")
+  }
+
+  function test_selecting_a_run_absent_from_the_snapshot_targets_when_it_appears() {
+    var store = makeWithProject(rootA); if (!store) return
+    reply(store.snapshotRunner.current, okReply([]), 0)
+    store.selectedRunId = "r1"
+    compare(store.logsRunState, "", "the run is not in the snapshot")
+    compare(store.selectedAttempt, null)
+    verify(!store.logsRunner.current, "no logs launch")
+    snapshot(store, [stepEntry("r1")])
+    compare(argv(store.logsRunner.current), tc.logsCmd + "r1|" + tc.openCard + "|verify|0")
+    compare(store.logsRunState, "escalated")
+  }
+
   // ---- run controls (S2 4.1)
 
   property string ctlCmd: "python3|/plugin/core/backend/runs/run-control.py|"
@@ -2746,6 +2929,7 @@ TestCase {
     compare(store.stillWaitingText, "still waiting — the run may be between phases or dead")
     compare(store.lastControlError, "")
     compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "")
     compare(store.controlRunners.length, 0)
   }
 
@@ -2907,18 +3091,37 @@ TestCase {
     store.control("pause", "r1")
     reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
     compare(store.lastControlError, "am is busy; try again in a moment")
+    compare(store.lastControlErrorType, "LockTimeoutError", "am's error type is kept")
     compare(store.control("pause", "r1"), true, "the failed request no longer blocks the run")
     compare(store.lastControlError, "")
     compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "", "a new request clears the type")
     reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
     compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlErrorType, "LockTimeoutError")
     store.dismissControlError()
     compare(store.lastControlError, "")
     compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "")
+  }
+
+  // Review Focus 1.
+  function test_the_control_error_type_is_empty_without_a_string_type() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    var replies = [JSON.stringify({ ok: false, error: "boom" }) + "\n",
+                   JSON.stringify({ ok: false, error: { type: 5, message: "x" } }) + "\n",
+                   JSON.stringify({ ok: false }) + "\n",
+                   "garbage\n"]
+    for (var i = 0; i < replies.length; i++) {
+      compare(store.control("pause", "r1"), true)
+      reply(store.controlRunners[0].current, replies[i], 1)
+      compare(store.lastControlErrorRunId, "r1", "reply " + i + " failed the request")
+      verify(store.lastControlError !== "", "reply " + i + " says something")
+      compare(store.lastControlErrorType, "", "reply " + i + " carries no string type")
+    }
   }
 
   property string settingsCmd: "python3|/plugin/core/backend/projects/viewer-state.py|get-run-settings|/home/u/my proj"
-  property string noVerifySentence: "Resume needs verify commands: none are stored for this project, and running without verification was not chosen."
 
   // viewer-state.py get-run-settings: one bare object, not an envelope.
   function settingsReply(verify, allow) {
@@ -2961,8 +3164,9 @@ TestCase {
     compare(runner.seq, 1, "run-control was never launched")
     compare(store.controlRunners.length, 0)
     compare(Object.keys(store.pending).length, 0)
-    compare(store.lastControlError, tc.noVerifySentence)
-    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.resumeRunId, "r1", "the Resume dialog asks for the commands")
     compare(store.snapshotRunner.seq, seq, "nothing was asked of am, so no snapshot")
   }
 
@@ -2976,6 +3180,7 @@ TestCase {
     compare(Object.keys(store.pending).length, 0)
     compare(store.lastControlError, "The run settings gave no usable result (exit 2).")
     compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlErrorType, "")
   }
 
   function test_a_card_run_resume_skips_the_settings() {
@@ -2998,7 +3203,8 @@ TestCase {
     var runner = store.controlRunners[0]
     reply(runner.current, settingsReply(["a", 5], false), 0)
     compare(runner.seq, 1, "run-control was never launched")
-    compare(store.lastControlError, tc.noVerifySentence)
+    compare(store.resumeRunId, "r1", "the dialog opens instead")
+    compare(store.lastControlError, "")
     store.control("resume", "r2")
     reply(store.controlRunners[0].current, settingsReply(["a", 5], true), 0)
     compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r2|/home/u/my proj|--allow-no-verification")
@@ -3273,6 +3479,338 @@ TestCase {
     compare(store.cancelError, "This run is no longer in the snapshot")
     compare(store.cancelOpen, true)
     compare(store.controlRunners.length, 1, "no cancel was ever launched")
+  }
+
+  // ---- resume dialog (2.3)
+
+  // Project A listing `entries`, with the Resume dialog opened for `id` by a
+  // milestone resume that found nothing stored.
+  function resumeDialogStore(entries, id) {
+    var store = ctlStore(entries); if (!store) return null
+    compare(store.control("resume", id), true)
+    reply(store.controlRunners[store.controlRunners.length - 1].current, settingsReply([], false), 0)
+    compare(store.resumeRunId, id, "the dialog is open")
+    return store
+  }
+
+  // 1
+  function test_resume_dialog_defaults() {
+    var store = make(); if (!store) return
+    compare(store.resumeRunId, "")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+    compare(store.resumeError, "")
+  }
+
+  // 2
+  function test_nothing_stored_opens_the_dialog_and_leaves_nothing_pending() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    var seq = store.snapshotRunner.seq
+    reply(store.controlRunners[0].current, settingsReply([], false), 0)
+    compare(store.resumeRunId, "r1")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+    compare(store.resumeError, "")
+    compare(Object.keys(store.pending).length, 0)
+    compare(Object.keys(store.stillWaiting).length, 0)
+    compare(store.refusalOf("resume", "r1"), "", "no request is left pending, so the confirm can go")
+    compare(store.controlRunners.length, 0)
+    compare(store.snapshotRunner.seq, seq, "no snapshot")
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "")
+  }
+
+  // 3
+  function test_garbled_settings_open_no_dialog() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    store.control("resume", "r1")
+    reply(store.controlRunners[0].current, "oops\n", 2)
+    compare(store.resumeRunId, "")
+    compare(store.lastControlError, "The run settings gave no usable result (exit 2).")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlErrorType, "")
+  }
+
+  // 4
+  function test_a_task_run_never_opens_the_dialog() {
+    var store = ctlStore([ctlEntry("r1", "started", false, "task")]); if (!store) return
+    compare(store.control("resume", "r1"), true)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r1|/home/u/my proj")
+    compare(store.resumeRunId, "")
+    var other = ctlStore([ctlEntry("r1", "started", false, "task")]); if (!other) return
+    compare(other.resumeOpenFor("r1"), false, "not even when called directly")
+    compare(other.resumeRunId, "")
+  }
+
+  // 5 (and Review Focus 5)
+  function test_open_for_resets_the_fields_and_refuses_unknown_runs() {
+    var store = ctlStore([dead("r1"), dead("r2")]); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeAllowNoVerification = true
+    store.resumeError = "old"
+    compare(store.resumeOpenFor("r1"), true)
+    compare(store.resumeRunId, "r1")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+    compare(store.resumeError, "")
+    store.resumeVerify = ["b"]
+    store.resumeAllowNoVerification = true
+    var refused = ["", "nope", 5]
+    for (var i = 0; i < refused.length; i++) {
+      compare(store.resumeOpenFor(refused[i]), false, "refused: " + refused[i])
+      compare(store.resumeRunId, "r1", "unchanged after " + refused[i])
+      compare(JSON.stringify(store.resumeVerify), '["b"]')
+      compare(store.resumeAllowNoVerification, true)
+    }
+    compare(store.resumeOpenFor("r2"), true, "another run replaces the dialog")
+    compare(store.resumeRunId, "r2")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+
+    store.resumeVerify = ["c"]
+    store.control("resume", "r1")
+    reply(store.controlRunners[0].current, settingsReply([], false), 0)
+    compare(store.resumeRunId, "r1", "a resume that finds nothing stored replaces the open dialog")
+    compare(store.resumeVerify.length, 0)
+  }
+
+  // 6
+  function test_close_clears_every_field() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeAllowNoVerification = true
+    store.resumeError = "old"
+    store.resumeClose()
+    compare(store.resumeRunId, "")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeAllowNoVerification, false)
+    compare(store.resumeError, "")
+    store.resumeClose()
+    compare(store.resumeRunId, "", "closing a closed dialog is harmless")
+  }
+
+  property string resumeSaveCmd: "python3|/plugin/core/backend/projects/viewer-state.py|set-run-settings|/home/u/my proj|"
+  property string resumeSaveFailed: "The verify commands could not be saved"
+
+  // 7
+  function test_confirm_with_the_dialog_closed_does_nothing() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    compare(store.resumeConfirm(), false)
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.resumeSaveRunner.seq, 0, "nothing saved")
+  }
+
+  // 8
+  function test_confirm_without_commands_or_opt_out_is_refused() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["", "  "]
+    compare(store.resumeConfirm(), false)
+    compare(store.resumeError, "Add a verify command or choose to run without verification")
+    compare(store.resumeRunId, "r1", "the dialog stays open")
+    compare(store.controlRunners.length, 0)
+    compare(Object.keys(store.pending).length, 0)
+    compare(store.resumeSaveRunner.seq, 0)
+  }
+
+  // 9 (and Review Focus 2)
+  function test_confirm_with_commands_passes_them_in_order_dropping_blanks() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a", "", "  ", "-b c"]
+    compare(store.resumeConfirm(), true)
+    compare(store.controlRunners.length, 1)
+    var runner = store.controlRunners[0]
+    compare(runner.runId, "r1")
+    compare(runner.action, "resume")
+    compare(runner.seq, 1, "run-control directly, no settings read")
+    compare(argv(runner.current), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a|--verify|-b c")
+    compare(runner.current.command.length, 9)
+    compare(store.pending.r1, "resume")
+    compare(store.resumeRunId, "")
+    compare(store.resumeVerify.length, 0)
+    compare(store.resumeError, "")
+    compare(store.resumeConfirm(), false, "a second confirm finds the dialog closed")
+    compare(store.controlRunners.length, 1, "one run-control launch")
+    compare(store.resumeSaveRunner.seq, 1, "one save")
+  }
+
+  // 10
+  function test_confirm_with_the_opt_out_passes_allow_no_verification() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = []
+    store.resumeAllowNoVerification = true
+    compare(store.resumeConfirm(), true)
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--allow-no-verification")
+    compare(proc.command.length, 6)
+  }
+
+  // 11
+  function test_commands_win_over_the_opt_out() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeAllowNoVerification = true
+    compare(store.resumeConfirm(), true)
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(proc.command.indexOf("--allow-no-verification"), -1)
+  }
+
+  // 12
+  function test_confirm_saves_the_set_for_the_runs_project() {
+    var store = resumeDialogStore([dead("r1"), dead("r2")], "r1"); if (!store) return
+    store.resumeVerify = ["a", "", "-b c"]
+    store.resumeConfirm()
+    var save = store.resumeSaveRunner.current
+    compare(argv(save), tc.resumeSaveCmd + '{"verify":["a","-b c"],"allowNoVerification":false}')
+    compare(save.command.length, 5, "the root with a space and the JSON are one argument each")
+    compare(save.launchGuard, "", "no guard")
+    compare(store.resumeOpenFor("r2"), true)
+    store.resumeAllowNoVerification = true
+    store.resumeConfirm()
+    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":[],"allowNoVerification":true}')
+  }
+
+  // Review Focus 3.
+  function test_non_string_commands_are_neither_passed_nor_saved() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = [5, "a", null]
+    compare(store.resumeConfirm(), true)
+    compare(argv(store.controlRunners[0].current), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":["a"],"allowNoVerification":false}')
+    var only = resumeDialogStore([dead("r1")], "r1"); if (!only) return
+    only.resumeVerify = [5]
+    compare(only.resumeConfirm(), false, "a non-string is not a command")
+    compare(only.resumeError, "Add a verify command or choose to run without verification")
+  }
+
+  // Review Focus 4.
+  function test_commands_are_passed_and_saved_verbatim() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["  make test  "]
+    compare(store.resumeConfirm(), true)
+    compare(store.controlRunners[0].current.command[6], "  make test  ")
+    compare(argv(store.resumeSaveRunner.current), tc.resumeSaveCmd + '{"verify":["  make test  "],"allowNoVerification":false}')
+  }
+
+  // 13
+  function test_the_resume_does_not_wait_for_the_save() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    compare(store.resumeConfirm(), true)
+    compare(store.resumeSaveRunner.busy, true, "the save has not replied")
+    var proc = store.controlRunners[0].current
+    compare(argv(proc), tc.ctlCmd + "resume|r1|/home/u/my proj|--verify|a")
+    compare(proc.running, true)
+    compare(store.pending.r1, "resume")
+    compare(store.resumeRunId, "")
+  }
+
+  // 14
+  function test_a_changed_run_keeps_the_dialog_open() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    snapshot(store, [running("r1")])
+    compare(store.resumeConfirm(), false)
+    compare(store.resumeError, store.refusalOf("resume", "r1"))
+    compare(store.resumeError, "The run is still running")
+    compare(store.resumeRunId, "r1")
+    compare(store.controlRunners.length, 0)
+    compare(store.resumeSaveRunner.seq, 0)
+    snapshot(store, [])
+    compare(store.resumeConfirm(), false)
+    compare(store.resumeError, "This run is no longer in the snapshot")
+    compare(store.resumeRunId, "r1")
+    compare(store.controlRunners.length, 0)
+    compare(store.resumeSaveRunner.seq, 0)
+  }
+
+  // 15
+  function test_a_pending_request_refuses_the_confirm() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    compare(store.control("cancel", "r1"), true)
+    store.resumeVerify = ["a"]
+    compare(store.resumeConfirm(), false)
+    compare(store.resumeError, "A request for this run is pending")
+    compare(store.resumeRunId, "r1")
+    compare(store.controlRunners.length, 1, "only the cancel")
+    compare(store.resumeSaveRunner.seq, 0)
+  }
+
+  // 16
+  function test_a_failed_save_flashes_but_the_resume_runs() {
+    var replies = [[JSON.stringify({ ok: false, error: { type: "X", message: "y" } }) + "\n", 1],
+                   ["garbage\n", 0],
+                   ["", 1]]
+    for (var i = 0; i < replies.length; i++) {
+      var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+      store.resumeVerify = ["a"]
+      store.resumeConfirm()
+      reply(store.resumeSaveRunner.current, replies[i][0], replies[i][1])
+      compare(store.flashText, tc.resumeSaveFailed, "reply " + i)
+      compare(store.controlRunners.length, 1, "the run-control runner is still there")
+      compare(store.pending.r1, "resume")
+      compare(store.lastControlError, "")
+      compare(store.resumeRunId, "")
+    }
+  }
+
+  // 17
+  function test_a_good_save_flashes_nothing() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeConfirm()
+    reply(store.resumeSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.flashText, "")
+    compare(store.pending.r1, "resume")
+  }
+
+  // 18
+  function test_the_resume_save_runner_is_not_the_notify_runner() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    var resumeSeq = store.resumeSaveRunner.seq
+    store.setNotifyOnEscalation(true)
+    compare(store.resumeSaveRunner.seq, resumeSeq, "the switch does not use the resume runner")
+    var notifySeq = store.settingsSaveRunner.seq
+    var notifySave = store.settingsSaveRunner.current
+    store.resumeVerify = ["a"]
+    store.resumeConfirm()
+    compare(store.settingsSaveRunner.seq, notifySeq, "the confirm does not use the notify runner")
+    reply(notifySave, "garbage\n", 1)
+    compare(store.flashText, "Notify on escalation could not be saved", "not the resume sentence")
+    reply(store.resumeSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)
+    compare(store.flashText, "Notify on escalation could not be saved", "a good resume save changes nothing")
+  }
+
+  // 19
+  function test_the_confirmed_resume_clears_the_control_error() {
+    var store = ctlStore([dead("r1")]); if (!store) return
+    compare(store.control("cancel", "r1"), true)
+    reply(store.controlRunners[0].current, ctlFail("LockTimeoutError", "busy"), 0)
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.lastControlErrorType, "LockTimeoutError")
+    compare(store.resumeOpenFor("r1"), true)
+    store.resumeVerify = ["a"]
+    compare(store.resumeConfirm(), true)
+    compare(store.lastControlError, "")
+    compare(store.lastControlErrorRunId, "")
+    compare(store.lastControlErrorType, "")
+  }
+
+  // 20
+  function test_a_refused_confirmed_resume_keeps_ams_error_type() {
+    var store = resumeDialogStore([dead("r1")], "r1"); if (!store) return
+    store.resumeVerify = ["a"]
+    store.resumeConfirm()
+    var text = ctlFail("NotResumableError", "x")
+    reply(store.controlRunners[0].current, text, 0)
+    compare(store.lastControlError, Runs.controlError(JSON.parse(text)))
+    compare(store.lastControlErrorType, "NotResumableError")
+    compare(store.lastControlErrorRunId, "r1")
+    compare(store.pending.r1, undefined, "the request is settled")
+    compare(store.controlRunners.length, 0)
   }
 
   // ---- alerts: the toasts (S2 4.4)
@@ -7077,5 +7615,1108 @@ TestCase {
     compare(store.storeId, otherStore(), "and names no store")
     reply(store.snapshotRunner.current, capturedList(), 0)
     compare(store.runs.length, 2)
+  }
+
+  // ---- relaunch
+
+  // Runs.stopReport's relaunch for m1 with a recorded prefix and base; extra's
+  // keys are set over it.
+  function relaunchOf(extra) {
+    var r = { level: "milestone", cardId: "m1", prefix: "relaunch/m1", base: "release" }
+    for (var key in extra) r[key] = extra[key]
+    return r
+  }
+
+  property string relaunchArgs: "/home/u/my proj|milestone|m1|--base-branch|release|--branch-prefix|relaunch/m1|--max-concurrent|4|--verify|uv run pytest"
+
+  function test_relaunch_overrides_prefix_and_base() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf()), true)
+    compare(store.dispatchState, "previewing")
+    compare(store.dispatchTarget.level, "milestone")
+    compare(store.dispatchTargetLabel, Runs.dispatchLabel(cards.m1, cards))
+    compare(store.dispatchForm.prefix, "relaunch/m1")
+    compare(store.dispatchForm.base, "release")
+    compare(store.dispatchError, "")
+    compare(store.dispatchDebounceTimer.running, false, "no check is scheduled before the defaults reply")
+    verify(!store.dispatchPreviewRunner.current, "no preview before the defaults reply")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchForm.base, "release", "the default branch does not replace the recorded base")
+    compare(store.dispatchForm.prefix, "relaunch/m1")
+  }
+
+  function test_relaunch_takes_verify_and_parallelism_from_the_settings() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    var r = relaunchOf({ verify: ["make lint"], parallelism: 9, allowNoVerification: true })
+    compare(store.relaunchOpenFor(cards.m1, cards, r), true)
+    var form = store.dispatchForm
+    compare(Object.keys(form).sort().join(","), "allowNoVerification,base,parallelism,prefix,verify")
+    compare(form.verify.length, 1)
+    compare(form.verify[0], "uv run pytest")
+    compare(form.parallelism, 4)
+    compare(form.allowNoVerification, false)
+  }
+
+  function test_relaunch_dispatches_from_the_open_project() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
+    compare(store.project, rootA)
+    var lookup = store.dispatchDefaultsRunner.current
+    compare(argv(lookup), tc.previewCmd + "--defaults|/home/u/my proj")
+    reply(lookup, defaultsOk("main"), 0)
+    var proc = store.dispatchPreviewRunner.current
+    verify(proc, "the preview is launched")
+    compare(proc.command[2], "/home/u/my proj", "the first argument after the script is the open project")
+    compare(proc.launchGuard, "/home/u/my proj")
+  }
+
+  function test_relaunch_preview_and_start_carry_the_recorded_values() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.relaunchArgs)
+    reply(store.dispatchPreviewRunner.current, previewOk(dispatchDryRun()), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchStart(), true)
+    compare(argv(store.dispatchStartRunners[0].current), tc.startCmd + tc.relaunchArgs)
+  }
+
+  function test_relaunch_without_a_card_or_relaunch_is_refused() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    var noCards = [null, undefined, [], "m1"]
+    for (var i = 0; i < noCards.length; i++) {
+      compare(store.relaunchOpenFor(noCards[i], cards, relaunchOf()), false, "card " + i)
+      checkDispatchIdle(store, "card " + i)
+    }
+    var noRelaunch = [null, undefined, []]
+    for (var j = 0; j < noRelaunch.length; j++) {
+      compare(store.relaunchOpenFor(cards.m1, cards, noRelaunch[j]), false, "relaunch " + j)
+      checkDispatchIdle(store, "relaunch " + j)
+    }
+    verify(!store.dispatchDefaultsRunner.current, "no defaults lookup")
+
+    compare(store.openDispatch(cards.m1, cards), true)
+    var target = store.dispatchTarget
+    var form = store.dispatchForm
+    var lookup = store.dispatchDefaultsRunner.current
+    compare(store.relaunchOpenFor(null, cards, relaunchOf()), false)
+    compare(store.dispatchState, "previewing", "the open dispatch stays open")
+    verify(store.dispatchTarget === target, "same target")
+    verify(store.dispatchForm === form, "same form")
+    compare(store.dispatchForm.prefix, "old")
+    verify(store.dispatchDefaultsRunner.current === lookup, "the same lookup")
+    compare(lookup.running, true, "still in flight")
+
+    compare(store.relaunchOpenFor(cards.d1, cards, relaunchOf({ cardId: "d1" })), false)
+    compare(store.dispatchState, "refused")
+    compare(store.dispatchErrorType, "Target")
+    compare(store.dispatchError, "The card is done")
+    compare(store.dispatchForm, null, "nothing overridden")
+  }
+
+  function test_relaunch_blank_values_keep_the_defaults() {
+    var variants = [{ prefix: "", base: "  " }, { prefix: 7, base: null }, { prefix: undefined, base: undefined }]
+    for (var i = 0; i < variants.length; i++) {
+      var store = dispatchStore(); if (!store) return
+      var cards = dispatchCards()
+      compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf(variants[i])), true, "variant " + i)
+      compare(store.dispatchForm.prefix, "old", "variant " + i + ": dispatchDefaults' prefix")
+      compare(store.dispatchForm.base, "", "variant " + i + ": no base until the lookup replies")
+      reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+      compare(store.dispatchForm.base, "main", "variant " + i + ": the default branch fills base")
+      compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.previewArgs, "variant " + i)
+    }
+  }
+
+  function test_relaunch_values_are_trimmed() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.relaunchOpenFor(cards.m1, cards, relaunchOf({ prefix: "  relaunch/m1 ", base: " release\n" })), true)
+    compare(store.dispatchForm.prefix, "relaunch/m1")
+    compare(store.dispatchForm.base, "release")
+  }
+
+  // Review Focus 1.
+  function test_relaunch_is_refused_without_a_project_or_while_starting() {
+    var bare = make(); if (!bare) return
+    var cards = dispatchCards()
+    compare(bare.relaunchOpenFor(cards.m1, cards, relaunchOf()), false)
+    checkDispatchIdle(bare, "no project")
+    verify(!bare.dispatchDefaultsRunner.current, "no defaults lookup")
+
+    var store = readyStore(); if (!store) return
+    compare(store.dispatchStart(), true)
+    var form = store.dispatchForm
+    compare(store.relaunchOpenFor(cards.s1, cards, relaunchOf({ level: "story", cardId: "s1" })), false)
+    compare(store.dispatchState, "starting")
+    compare(store.dispatchTarget.level, "milestone", "the start's target stays")
+    verify(store.dispatchForm === form, "the start's form stays")
+    compare(store.dispatchForm.prefix, "old")
+    compare(store.dispatchStartRunners.length, 1)
+  }
+
+  // Review Focus 2.
+  function test_relaunch_keeps_the_recorded_base_when_the_defaults_lookup_fails() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
+    reply(store.dispatchDefaultsRunner.current, "Traceback: boom\n", 1)
+    compare(store.dispatchForm.base, "release")
+    compare(argv(store.dispatchPreviewRunner.current), tc.previewCmd + tc.relaunchArgs)
+  }
+
+  // Review Focus 3.
+  function test_relaunch_of_a_subtask_is_ready_with_the_recorded_values() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    compare(store.relaunchOpenFor(cards.t1, cards, relaunchOf({ level: "subtask", cardId: "t1", prefix: "relaunch/t1" })), true)
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchState, "ready")
+    compare(store.dispatchTarget.level, "subtask")
+    compare(store.dispatchForm.prefix, "relaunch/t1")
+    compare(store.dispatchForm.base, "release")
+    verify(!store.dispatchPreviewRunner.current, "a subtask has no preview")
+  }
+
+  // Review Focus 4.
+  function test_an_opening_after_a_relaunch_takes_the_default_branch_again() {
+    var store = dispatchStore(); if (!store) return
+    var cards = dispatchCards()
+    store.relaunchOpenFor(cards.m1, cards, relaunchOf())
+    compare(store.openDispatch(cards.m1, cards), true)
+    compare(store.dispatchForm.prefix, "old")
+    compare(store.dispatchForm.base, "")
+    reply(store.dispatchDefaultsRunner.current, defaultsOk("main"), 0)
+    compare(store.dispatchForm.base, "main", "the relaunch's base override is not inherited")
+  }
+
+  // ---- the selected run's events (3.1)
+
+  property string eventsCmd: "python3|/plugin/core/backend/runs/runs-events.py|"
+
+  // 1
+  function test_events_defaults() {
+    var store = make(); if (!store) return
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsStatus, "idle")
+    compare(store.eventsError, "")
+    compare(store.eventsFilter, "All")
+    compare(JSON.stringify(store.titles), "{}")
+    verify(!store.eventsRunner.current, "no events fetch at start")
+  }
+
+  // 2
+  function test_selecting_a_run_fetches_its_last_200_events() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    verify(proc, "a run the snapshot does not list is still fetched")
+    compare(argv(proc), tc.eventsCmd + "r1|--tail|200")
+    compare(proc.command.length, 5, "no project root argument")
+    compare(proc.launchGuard, "r1", "guarded by the run id")
+    compare(store.eventsStatus, "loading")
+    compare(store.eventsRunner.busy, true)
+    // synthetic: a run id with a space and a ";".
+    store.selectedRunId = "r 2;x"
+    compare(store.eventsRunner.current.command.length, 5)
+    compare(store.eventsRunner.current.command[2], "r 2;x", "one argument, unchanged")
+  }
+
+  // 3 (the reset)
+  function test_switching_runs_resets_the_events_and_stops_the_old_fetch() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var first = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsStatus = "error"
+    store.eventsError = "UnknownRunError: no run r1"
+    store.eventsFilter = "Failures"
+    store.selectedRunId = "r2"
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "loading")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r2|--tail|200")
+    compare(first.running, false, "r1's fetch was stopped")
+    compare(store.eventsFilter, "Failures", "the filter is never touched")
+  }
+
+  // 9 (the reset)
+  function test_leaving_run_detail_resets_and_launches_nothing() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsError = "AmMissing: am is not on PATH."
+    store.eventsFilter = "Phases"
+    store.selectedRunId = ""
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "idle")
+    compare(store.eventsRunner.busy, false)
+    compare(proc.running, false, "r1's fetch was stopped")
+    verify(store.eventsRunner.current === proc, "nothing new is launched")
+    compare(store.eventsFilter, "Phases")
+  }
+
+  // 12
+  function test_selecting_the_selected_run_again_does_nothing() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var proc = store.eventsRunner.current
+    var seq = store.eventsRunner.seq
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsStatus = "ok"
+    store.selectedRunId = "r1"
+    compare(store.eventsRunner.seq, seq, "no new launch")
+    verify(store.eventsRunner.current === proc)
+    compare(store.events.length, 1, "no reset")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // Behavior: Selection 6
+  function test_refresh_events_fetches_again_without_a_reset() {
+    var store = make(); if (!store) return
+    store.refreshEvents()
+    verify(!store.eventsRunner.current, "no run selected: nothing is launched")
+    compare(store.eventsStatus, "idle")
+    store.selectedRunId = "r1"
+    var first = store.eventsRunner.current
+    // synthetic: the state a reply would have left.
+    store.events = [{ seq: 4 }]
+    store.eventsDropped = 7
+    store.eventsCursor = 9
+    store.eventsStatus = "error"
+    store.eventsError = "AmMissing: am is not on PATH."
+    store.refreshEvents()
+    verify(store.eventsRunner.current !== first, "a new fetch")
+    compare(first.running, false, "the older fetch was stopped")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+    compare(store.eventsRunner.current.launchGuard, "r1")
+    compare(store.eventsStatus, "loading")
+    compare(store.events.length, 1, "the rows stay until the reply")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 9)
+    compare(store.eventsError, "AmMissing: am is not on PATH.", "the error stays until the reply")
+  }
+
+  // runs-events.py's good line: {"ok": true, "events", "last_seq", "total"}.
+  function eventsReply(events, lastSeq, total) {
+    return JSON.stringify({ ok: true, events: events, last_seq: lastSeq, total: total }) + "\n"
+  }
+
+  // `n` attempt_upsert journal events of card c1's explore attempt 1, seq
+  // first .. first + n - 1.
+  function attemptEvents(first, n) {
+    var out = []
+    for (var i = 0; i < n; i++) {
+      out.push({ seq: first + i, gseq: 1000 + first + i, ts: "2026-10-08T14:38:07Z", run_id: "r1",
+                 event: "attempt_upsert", story: "s1", card: "c1", phase: "explore", attempt: 1,
+                 payload: { status: "ok", duration: 1.5 } })
+    }
+    return out
+  }
+
+  function seqs(rows) { return rows.map(function(r) { return r.seq }).join(",") }
+
+  // r1 selected and its reply applied: events 8..10 of 10 (last_seq 10), so
+  // three rows, eventsDropped 7, eventsCursor 10.
+  function heldStore() {
+    var store = make(); if (!store) return null
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    return store
+  }
+
+  // 4
+  function test_a_good_reply_holds_one_row_per_upsert_event() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var list = F.load("watch-events.json").data.events
+    reply(store.eventsRunner.current, eventsReply(list, 60, 475), 0)
+    var want = list.filter(function(e) { return /_upsert$/.test(e.event) })
+                   .map(function(e) { return e.seq }).join(",")
+    compare(seqs(store.events), want, "only the *_upsert events, ascending seq")
+    compare(store.events.length, 59)
+    compare(JSON.stringify(store.events[0]),
+            JSON.stringify(RunEvents.eventRow(list[1], {}, -new Date().getTimezoneOffset())),
+            "a row is RunEvents.eventRow at the local offset")
+    compare(store.eventsCursor, 60, "last_seq")
+    compare(store.eventsDropped, 415, "475 - 60: the events the tail left out")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(store.eventsRunner.busy, false)
+  }
+
+  // 6
+  function test_one_reply_over_the_cap_keeps_the_newest_500() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 600), 600, 1000), 0)
+    compare(store.events.length, 500)
+    compare(store.events[0].seq, 101, "the lowest seqs were dropped")
+    compare(store.events[499].seq, 600)
+    compare(store.eventsDropped, 500, "1000 - 600 + 100")
+    compare(store.eventsCursor, 600)
+  }
+
+  // 7
+  function test_a_failure_keeps_the_rows() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    compare(seqs(store.events), "8,9,10")
+    store.refreshEvents()
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+    compare(store.eventsStatus, "loading")
+    compare(JSON.stringify(store.events), held, "the rows stay while refreshing")
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsStatus, "error")
+    compare(store.eventsError, "UnknownRunError: no run r1")
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current, "not json\n", 1)
+    compare(store.eventsStatus, "error")
+    compare(store.eventsError, "The events snapshot gave no usable result (exit 1).")
+    compare(JSON.stringify(store.events), held)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "Usage", message: "runs-events.py RUN [--since SEQ] [--tail N]" } }) + "\n", 2)
+    compare(store.eventsError, "Usage: runs-events.py RUN [--since SEQ] [--tail N]")
+    compare(JSON.stringify(store.events), held)
+
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "", "a good reply clears the error")
+  }
+
+  // Review Focus 1
+  function test_a_refresh_folds_into_the_held_rows() {
+    var store = heldStore(); if (!store) return
+    store.refreshEvents()
+    var fresh = attemptEvents(9, 4)
+    fresh[0].payload.status = "failed"
+    reply(store.eventsRunner.current, eventsReply(fresh, 12, 12), 0)
+    compare(seqs(store.events), "8,9,10,11,12", "one row per seq")
+    compare(store.events[1].status, "failed", "the reply's row wins")
+    compare(store.eventsDropped, 7, "events 1..7: the held seq 8 fills part of the gap")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsStatus, "ok")
+  }
+
+  // Applying a reply: eventsDropped is never below 0
+  function test_held_rows_below_a_refresh_never_make_dropped_negative() {
+    var store = heldStore(); if (!store) return
+    store.refreshEvents()
+    // synthetic: no total, so it counts the 4 received; held 8 lies below them.
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: true, events: attemptEvents(9, 4), last_seq: 12 }) + "\n", 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsDropped, 0, "4 - 4 - 1 is floored at 0")
+  }
+
+  // Review Focus 2
+  function test_an_ok_reply_without_an_events_list_is_unusable() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    // synthetic: lines runs-events.py never prints.
+    var bad = [JSON.stringify({ ok: true }), JSON.stringify({ ok: true, events: { seq: 1 } }),
+               JSON.stringify({ ok: "yes", events: [] }), "[1, 2]", "", "   \n\n"]
+    for (var i = 0; i < bad.length; i++) {
+      store.refreshEvents()
+      reply(store.eventsRunner.current, bad[i] + "\n", 0)
+      compare(store.eventsStatus, "error", bad[i])
+      compare(store.eventsError, "The events snapshot gave no usable result (exit 0).", bad[i])
+      compare(JSON.stringify(store.events), held, bad[i])
+      compare(store.eventsDropped, 7, bad[i])
+      compare(store.eventsCursor, 10, bad[i])
+    }
+    // synthetic: junk and unknown kinds among the events are skipped.
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          eventsReply([null, 5, "x", [], { seq: 11, event: "lease_acquired", payload: {} }, attemptEvents(11, 1)[0]], 11, 11), 0)
+    compare(store.eventsStatus, "ok")
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.eventsCursor, 11)
+  }
+
+  // Review Focus 3
+  function test_a_bad_total_or_last_seq_falls_back() {
+    // synthetic: totals runs-events.py never prints count the events received.
+    var totals = [undefined, null, "10", 2, 2.5, -1]
+    for (var i = 0; i < totals.length; i++) {
+      var store = make(); if (!store) return
+      store.selectedRunId = "r1"
+      reply(store.eventsRunner.current,
+            JSON.stringify({ ok: true, events: attemptEvents(8, 3), last_seq: 10, total: totals[i] }) + "\n", 0)
+      compare(store.eventsStatus, "ok", String(totals[i]))
+      compare(store.eventsDropped, 0, String(totals[i]))
+    }
+    // synthetic: a last_seq that is not a non-negative integer is ignored.
+    var lasts = [undefined, null, "12", -1, 12.5, 3]
+    for (var j = 0; j < lasts.length; j++) {
+      var other = make(); if (!other) return
+      other.selectedRunId = "r1"
+      reply(other.eventsRunner.current,
+            JSON.stringify({ ok: true, events: attemptEvents(8, 3), last_seq: lasts[j], total: 3 }) + "\n", 0)
+      compare(other.eventsCursor, 10, "the highest held seq: " + String(lasts[j]))
+    }
+    var ahead = make(); if (!ahead) return
+    ahead.selectedRunId = "r1"
+    reply(ahead.eventsRunner.current, eventsReply(attemptEvents(8, 3), 12, 3), 0)
+    compare(ahead.eventsCursor, 12, "last_seq above the rows")
+  }
+
+  // 3
+  function test_switching_after_a_good_reply_starts_over() {
+    var store = heldStore(); if (!store) return
+    store.eventsFilter = "Failures"
+    store.refreshEvents()
+    var inFlight = store.eventsRunner.current
+    store.selectedRunId = "r2"
+    compare(JSON.stringify(store.events), "[]")
+    compare(store.eventsDropped, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsError, "")
+    compare(store.eventsStatus, "loading")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r2|--tail|200")
+    compare(inFlight.running, false, "r1's fetch was stopped")
+    compare(store.eventsFilter, "Failures")
+  }
+
+  // 8
+  function test_a_reply_for_a_run_no_longer_selected_is_dropped() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var p1 = store.eventsRunner.current
+    store.selectedRunId = "r2"
+    var p2 = store.eventsRunner.current
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "loading", "r1's reply changes nothing")
+    compare(store.events.length, 0)
+    compare(store.eventsCursor, 0)
+    compare(store.eventsDropped, 0)
+    compare(store.eventsRunner.busy, true, "r2's fetch is still in flight")
+    // The run-id check on its own, past the runner's latest-wins.
+    store.applyEvents(eventsReply(attemptEvents(1, 3), 3, 3), 0, "r1")
+    compare(store.eventsStatus, "loading")
+    compare(store.events.length, 0)
+    reply(p2, eventsReply(attemptEvents(5, 2), 6, 6), 0)
+    compare(seqs(store.events), "5,6", "r2's reply lands")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 9 (the late reply) and Review Focus 4
+  function test_a_reply_after_leaving_or_reselecting_is_dropped() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    var p1 = store.eventsRunner.current
+    store.selectedRunId = ""
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "idle", "a late reply after leaving changes nothing")
+    compare(store.events.length, 0)
+    compare(store.eventsCursor, 0)
+    store.selectedRunId = "r1"
+    var p2 = store.eventsRunner.current
+    verify(p2 !== p1)
+    store.selectedRunId = ""
+    store.selectedRunId = "r1"
+    var p3 = store.eventsRunner.current
+    reply(p2, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsStatus, "loading", "the same run's superseded fetch changes nothing")
+    compare(store.events.length, 0)
+    reply(p3, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(seqs(store.events), "1,2,3")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 10
+  function test_a_project_switch_leaves_the_events_alone() {
+    var store = makeWithRoots([tc.rootA, tc.rootB]); if (!store) return
+    store.project = tc.rootA
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    var held = JSON.stringify(store.events)
+    var seq = store.eventsRunner.seq
+    store.project = tc.rootB
+    store.projectRoots = registry([tc.rootB])
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(store.eventsRunner.seq, seq, "nothing is launched")
+
+    store.refreshEvents()
+    var proc = store.eventsRunner.current
+    store.project = tc.rootA
+    store.projectRoots = registry([tc.rootA, tc.rootB])
+    compare(proc.running, true, "the fetch in flight is not stopped")
+    verify(store.eventsRunner.current === proc)
+    reply(proc, eventsReply(attemptEvents(11, 1), 11, 11), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply lands")
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 11
+  function test_an_events_reply_touches_nothing_else() {
+    var store = opened(); if (!store) return
+    var before = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                  selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                                  logsLoading: store.logsLoading, logsError: store.logsError,
+                                  logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "AmMissing", message: "am is not on PATH." } }) + "\n", 0)
+    compare(store.eventsError, "AmMissing: am is not on PATH.")
+    var after = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                 selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                                 logsLoading: store.logsLoading, logsError: store.logsError,
+                                 logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    compare(after, before, "an error reply")
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 2), 2, 2), 0)
+    compare(store.eventsStatus, "ok")
+    after = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                             selectedAttempt: store.selectedAttempt, logsText: store.logsText,
+                             logsLoading: store.logsLoading, logsError: store.logsError,
+                             logsStatus: store.logsStatus, logsSeq: store.logsRunner.seq })
+    compare(after, before, "a good reply")
+  }
+
+  // 5
+  function test_titles_come_from_the_project_then_the_run_tree_then_the_short_id() {
+    var store = opened(); if (!store) return
+    var domain = "9f0f68fc-f231-4ef2-b646-00a7af925ea2"   // tree title "Dispatch domain"
+    var backend = "7a7effb4-6ec5-4596-bcf1-be24546d4ac1"  // tree title "Dispatch backend"
+    var stranger = "11111111-2222-3333-4444-5555deadbeef" // in neither map
+    var t = {}
+    t[tc.openCard] = "Open subtask"
+    t[backend] = "Board story"
+    store.titles = t
+    var events = [
+      { seq: 1, event: "story_upsert", story: domain, payload: { status: "pending" } },
+      { seq: 2, event: "story_upsert", story: backend, payload: { status: "started" } },
+      { seq: 3, event: "subtask_upsert", story: backend, card: tc.openCard, payload: { status: "started" } },
+      { seq: 4, event: "phase_upsert", story: backend, card: stranger, phase: "explore",
+        payload: { name: "explore", status: "started" } }
+    ]
+    reply(store.eventsRunner.current, eventsReply(events, 4, 4), 0)
+    compare(store.events.map(function(r) { return r.label }).join("|"),
+            "Dispatch domain|Board story|Open subtask|…deadbeef explore")
+    compare(JSON.stringify(store.titles), JSON.stringify(t), "titles is never modified")
+    store.titles = {}
+    compare(store.events[0].label, "Dispatch domain", "held rows are not relabelled")
+    compare(store.events[1].label, "Board story")
+  }
+
+  // Review Focus 5
+  function test_titles_that_are_not_text_fall_back_to_the_short_id() {
+    var store = make(); if (!store) return
+    // synthetic: titles App never hands over.
+    store.titles = null
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: 7 }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: "" }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events[0].label, "…c1 explore.1")
+    store.titles = { c1: "Card one" }
+    store.refreshEvents()
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 1), 1, 1), 0)
+    compare(store.events.length, 1)
+    compare(store.events[0].label, "Card one explore.1", "the reply's row replaces the held one")
+  }
+
+  // ---- the follow-up fetch on a change (3.2)
+
+  // heldStore()'s rows (8..10, cursor 10, dropped 7) with the panel open.
+  function activeHeld() {
+    var store = make(); if (!store) return null
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    return store
+  }
+
+  // 1
+  function test_a_change_fetches_since_the_cursor() {
+    var store = activeHeld(); if (!store) return
+    var others = JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                                  logsSeq: store.logsRunner.seq, filter: store.eventsFilter })
+    store.runsNudged(["r1"])
+    var proc = store.eventsRunner.current
+    compare(argv(proc), tc.eventsCmd + "r1|--since|10")
+    compare(proc.command.length, 5, "no project root argument")
+    compare(proc.launchGuard, "r1", "guarded by the run id")
+    compare(store.eventsStatus, "loading")
+    compare(seqs(store.events), "8,9,10", "the rows stay until the reply")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    reply(proc, eventsReply(attemptEvents(11, 2), 12, 2), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsDropped, 7, "a --since reply counts only events after the cursor")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(JSON.stringify({ amStatus: store.amStatus, lastError: store.lastError, runs: store.runs.length,
+                             logsSeq: store.logsRunner.seq, filter: store.eventsFilter }),
+            others, "nothing else is touched")
+  }
+
+  // 2 and Review Focus 5
+  function test_a_change_for_other_runs_fetches_nothing() {
+    var store = activeHeld(); if (!store) return
+    var held = JSON.stringify(store.events)
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r2", "z9"])
+    compare(store.eventsRunner.seq, seq, "nothing is launched")
+    compare(JSON.stringify(store.events), held)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsCursor, 10)
+    compare(store.eventsDropped, 7)
+    // synthetic: the selected id twice, among other ids and non-strings.
+    store.runsNudged(["r2", "r1", null, 5, "r1"])
+    compare(store.eventsRunner.seq, seq + 1, "one launch")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+  }
+
+  // Review Focus 5
+  function test_a_change_passes_the_run_id_verbatim() {
+    var store = make(); if (!store) return
+    store.active = true
+    // synthetic: a run id with a space and a ";".
+    store.selectedRunId = "r 2;x"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 2), 2, 2), 0)
+    store.runsNudged(["r 2;x"])
+    var proc = store.eventsRunner.current
+    compare(proc.command.length, 5)
+    compare(proc.command[2], "r 2;x", "one argument, unchanged")
+    compare(proc.command[3], "--since")
+    compare(proc.command[4], "2")
+  }
+
+  // 3
+  function test_no_selection_a_closed_panel_or_bad_ids_fetch_nothing() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.runsNudged(["r1"])
+    verify(!store.eventsRunner.current, "no run selected: nothing is launched")
+    compare(store.eventsStatus, "idle")
+    var closed = heldStore(); if (!closed) return
+    var seq = closed.eventsRunner.seq
+    closed.runsNudged(["r1"])
+    compare(closed.eventsRunner.seq, seq, "the panel is closed")
+    compare(closed.eventsStatus, "ok")
+    var open = activeHeld(); if (!open) return
+    seq = open.eventsRunner.seq
+    // synthetic: ids that are not a list.
+    var bad = ["r1", null, undefined, { r1: true }, 7]
+    for (var i = 0; i < bad.length; i++) {
+      open.runsNudged(bad[i])
+      compare(open.eventsRunner.seq, seq, String(bad[i]))
+      compare(open.eventsStatus, "ok", String(bad[i]))
+    }
+    open.runsNudged(["r1"])
+    compare(open.eventsRunner.seq, seq + 1, "a list naming the selected run launches")
+    compare(argv(open.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+  }
+
+  // 9 and Review Focus 4
+  function test_a_finished_run_gets_its_last_events_from_the_watch() {
+    var store = threeRoots(); if (!store) return
+    compare(Runs.runState(store.runById("a1")), "done")
+    store.selectedRunId = "a1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    nudge(store, ["a1", 11])
+    fire(store.debounceTimer)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "a1|--since|10")
+    reply(store.eventsRunner.current,
+          eventsReply([{ seq: 11, gseq: 1011, ts: "2026-10-08T14:40:00Z", run_id: "a1", event: "run_upsert",
+                         payload: { status: "done" } }], 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.events[3].level, "run")
+    compare(store.events[3].label, "run done")
+    compare(store.events[3].status, "done")
+    compare(store.eventsCursor, 11)
+    compare(store.eventsDropped, 7)
+  }
+
+  // 10
+  function test_a_change_reply_out_of_order_with_repeats_folds_one_row_per_seq() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    // synthetic: am lists each seq once, ascending; this reply does neither.
+    var first12 = attemptEvents(12, 1)[0]
+    var nine = attemptEvents(9, 1)[0]
+    nine.payload.status = "failed"
+    var eleven = attemptEvents(11, 1)[0]
+    var last12 = attemptEvents(12, 1)[0]
+    last12.payload.status = "escalated"
+    reply(store.eventsRunner.current, eventsReply([first12, nine, eleven, last12], 12, 4), 0)
+    compare(seqs(store.events), "8,9,10,11,12", "ascending, one row per seq")
+    compare(store.events[1].status, "failed", "the reply's 9 wins over the held one")
+    compare(store.events[4].status, "escalated", "the reply's last 12 wins")
+    compare(store.eventsCursor, 12)
+    compare(store.eventsDropped, 7)
+  }
+
+  // 12
+  function test_a_change_with_no_cursor_fetches_the_last_200() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsCursor, 0)
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq + 1, "a fetch is launched")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--tail|200", "never --since 0")
+    compare(store.eventsStatus, "loading")
+    compare(store.eventsError, "UnknownRunError: no run r1", "the error stays until the reply")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.eventsDropped, 7, "a --tail reply keeps 3.1's count")
+    compare(store.eventsCursor, 10)
+
+    var empty = make(); if (!empty) return
+    empty.active = true
+    empty.selectedRunId = "r1"
+    reply(empty.eventsRunner.current, eventsReply([], 0, 0), 0)
+    compare(empty.eventsCursor, 0, "a run with no events")
+    var emptySeq = empty.eventsRunner.seq
+    empty.runsNudged(["r1"])
+    compare(empty.eventsRunner.seq, emptySeq + 1)
+    compare(argv(empty.eventsRunner.current), tc.eventsCmd + "r1|--tail|200")
+  }
+
+  // 13
+  function test_the_cap_counts_on_a_change_reply() {
+    var store = make(); if (!store) return
+    store.active = true
+    store.selectedRunId = "r1"
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(1, 500), 500, 500), 0)
+    compare(store.events.length, 500)
+    compare(store.eventsDropped, 0)
+    store.runsNudged(["r1"])
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|500")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(501, 20), 520, 20), 0)
+    compare(store.events.length, 500)
+    compare(store.events[0].seq, 21, "the lowest seqs were dropped")
+    compare(store.events[499].seq, 520)
+    compare(store.eventsDropped, 20)
+    compare(store.eventsCursor, 520)
+  }
+
+  // Review Focus 3
+  function test_a_change_reply_with_a_bad_last_seq_is_folded() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    // synthetic: last_seq values runs-events.py never prints.
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: true, events: attemptEvents(11, 1), total: 1 }) + "\n", 0)
+    compare(seqs(store.events), "8,9,10,11")
+    compare(store.eventsCursor, 11, "the highest held seq")
+    compare(store.eventsDropped, 7)
+    var lasts = [null, "5", -1, 2.5]
+    for (var i = 0; i < lasts.length; i++) {
+      store.runsNudged(["r1"])
+      compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|11", String(lasts[i]))
+      reply(store.eventsRunner.current,
+            JSON.stringify({ ok: true, events: [], last_seq: lasts[i], total: 0 }) + "\n", 0)
+      compare(store.eventsStatus, "ok", String(lasts[i]))
+      compare(seqs(store.events), "8,9,10,11", String(lasts[i]))
+      compare(store.eventsCursor, 11, String(lasts[i]))
+      compare(store.eventsDropped, 7, String(lasts[i]))
+    }
+  }
+
+  // 11
+  function test_a_reply_behind_the_cursor_is_ignored() {
+    var store = heldStore(); if (!store) return
+    var held = JSON.stringify(store.events)
+    store.refreshEvents()
+    reply(store.eventsRunner.current,
+          JSON.stringify({ ok: false, error: { type: "StoreBusyError", message: "the store is busy" } }) + "\n", 0)
+    compare(store.eventsStatus, "error")
+    store.refreshEvents()
+    // synthetic: a reply whose last_seq lies below the cursor.
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(4, 3), 6, 6), 0)
+    compare(JSON.stringify(store.events), held, "the rows are unchanged")
+    compare(store.eventsDropped, 7)
+    compare(store.eventsCursor, 10)
+    compare(store.eventsStatus, "ok", "the read succeeded")
+    compare(store.eventsError, "")
+    store.refreshEvents()
+    var again = attemptEvents(9, 2)
+    again[0].payload.status = "failed"
+    reply(store.eventsRunner.current, eventsReply(again, 10, 10), 0)
+    compare(store.events[1].status, "failed", "a last_seq equal to the cursor is folded")
+    compare(seqs(store.events), "8,9,10")
+    compare(store.eventsCursor, 10)
+    compare(store.eventsDropped, 7, "10 - 2 - 1 held below")
+  }
+
+  // An open panel with r1 selected: its --tail 200 fetch in flight.
+  function activeSelected() {
+    var store = make(); if (!store) return null
+    store.active = true
+    store.selectedRunId = "r1"
+    return store
+  }
+
+  // 4
+  function test_changes_during_a_fetch_queue_one_follow_up() {
+    var store = activeSelected(); if (!store) return
+    var tail = store.eventsRunner.current
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    store.runsNudged(["r1"])
+    store.runsNudged(["r2", "r1"])
+    verify(store.eventsRunner.current === tail, "the fetch in flight is left alone")
+    compare(tail.running, true)
+    compare(store.eventsRunner.seq, seq)
+    reply(tail, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(seqs(store.events), "8,9,10", "its reply is applied")
+    compare(store.eventsRunner.seq, seq + 1, "exactly one follow-up")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+    compare(store.eventsStatus, "loading")
+    reply(store.eventsRunner.current, eventsReply([], 10, 0), 0)
+    compare(store.eventsRunner.seq, seq + 1, "nothing more")
+    compare(store.eventsRunner.busy, false)
+    compare(store.eventsStatus, "ok")
+  }
+
+  // 5
+  function test_a_change_during_the_follow_up_queues_one_more() {
+    var store = activeSelected(); if (!store) return
+    store.runsNudged(["r1"])
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    var followUp = store.eventsRunner.current
+    compare(argv(followUp), tc.eventsCmd + "r1|--since|10")
+    var seq = store.eventsRunner.seq
+    store.runsNudged(["r1"])
+    verify(store.eventsRunner.current === followUp, "the follow-up is left alone")
+    reply(followUp, eventsReply(attemptEvents(11, 2), 12, 2), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsRunner.seq, seq + 1)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|12", "from the cursor the reply raised")
+  }
+
+  // 6
+  function test_the_follow_up_runs_after_a_failed_reply() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var first = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    reply(first, JSON.stringify({ ok: false, error: { type: "UnknownRunError", message: "no run r1" } }) + "\n", 0)
+    compare(store.eventsError, "UnknownRunError: no run r1", "the failure was applied")
+    verify(store.eventsRunner.current !== first, "then the follow-up launched")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10", "from the unchanged cursor")
+    compare(store.eventsStatus, "loading")
+    compare(seqs(store.events), "8,9,10")
+    compare(store.eventsDropped, 7)
+    var second = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    reply(second, "not json\n", 1)
+    compare(store.eventsError, "The events snapshot gave no usable result (exit 1).")
+    verify(store.eventsRunner.current !== second, "an unusable reply is followed up too")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsError, "")
+    compare(seqs(store.events), "8,9,10,11")
+  }
+
+  // Review Focus 1
+  function test_a_refresh_supersedes_a_change_fetch_and_the_follow_up_waits() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.refreshEvents()
+    var refresh = store.eventsRunner.current
+    compare(argv(refresh), tc.eventsCmd + "r1|--tail|200")
+    compare(change.running, false, "latest wins")
+    var seq = store.eventsRunner.seq
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(store.eventsRunner.seq, seq, "the superseded fetch's exit launches nothing")
+    compare(seqs(store.events), "8,9,10", "and is not applied")
+    reply(refresh, eventsReply(attemptEvents(11, 2), 12, 20), 0)
+    compare(seqs(store.events), "8,9,10,11,12")
+    compare(store.eventsDropped, 15, "a --tail reply: 20 - 2 - 3 held below")
+    compare(store.eventsRunner.seq, seq + 1, "the queued follow-up runs after the refresh")
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|12")
+  }
+
+  // 7
+  function test_a_new_selection_clears_the_queue() {
+    var store = activeSelected(); if (!store) return
+    var p1 = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.selectedRunId = "r2"
+    var p2 = store.eventsRunner.current
+    compare(argv(p2), tc.eventsCmd + "r2|--tail|200")
+    var seq = store.eventsRunner.seq
+    reply(p1, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsRunner.seq, seq, "r1's late exit launches nothing")
+    reply(p2, eventsReply(attemptEvents(5, 2), 6, 6), 0)
+    compare(seqs(store.events), "5,6")
+    compare(store.eventsRunner.seq, seq, "no follow-up: the queue went with r1")
+    compare(store.eventsRunner.busy, false)
+
+    store.selectedRunId = "r1"
+    var p3 = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.selectedRunId = ""
+    compare(store.eventsRunner.busy, false)
+    seq = store.eventsRunner.seq
+    reply(p3, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(store.eventsRunner.seq, seq, "nothing is launched after leaving")
+    compare(store.eventsStatus, "idle")
+    store.selectedRunId = "r1"
+    var p4 = store.eventsRunner.current
+    seq = store.eventsRunner.seq
+    reply(p4, eventsReply(attemptEvents(1, 3), 3, 3), 0)
+    compare(seqs(store.events), "1,2,3")
+    compare(store.eventsRunner.seq, seq, "the queue went with leaving")
+  }
+
+  // 8 and Review Focus 2
+  function test_closing_the_panel_starts_nothing_new() {
+    var store = activeSelected(); if (!store) return
+    var tail = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    compare(tail.running, true, "the fetch in flight is not stopped")
+    verify(store.eventsRunner.current === tail)
+    var seq = store.eventsRunner.seq
+    reply(tail, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(seqs(store.events), "8,9,10", "its reply is applied")
+    compare(store.eventsStatus, "ok")
+    compare(store.eventsRunner.seq, seq, "nothing is launched after it")
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq, "a change while closed starts nothing")
+    store.active = true
+    compare(store.eventsRunner.seq, seq, "reopening launches no events fetch")
+    compare(store.eventsRunner.busy, false)
+    compare(seqs(store.events), "8,9,10", "reopening keeps the rows")
+    store.runsNudged(["r1"])
+    compare(store.eventsRunner.seq, seq + 1)
+    compare(argv(store.eventsRunner.current), tc.eventsCmd + "r1|--since|10")
+
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply is applied")
+    compare(store.eventsRunner.seq, seq + 1, "a change queued before a closing does not outlive it")
+  }
+
+  // 8: the queue is cleared on closing, not merely skipped while closed.
+  function test_a_change_queued_before_a_closing_is_gone_after_reopening() {
+    var store = activeHeld(); if (!store) return
+    store.runsNudged(["r1"])
+    var change = store.eventsRunner.current
+    store.runsNudged(["r1"])
+    store.active = false
+    store.active = true
+    var seq = store.eventsRunner.seq
+    reply(change, eventsReply(attemptEvents(11, 1), 11, 1), 0)
+    compare(seqs(store.events), "8,9,10,11", "its reply is applied")
+    compare(store.eventsRunner.seq, seq, "the follow-up queued before the closing is not launched")
+    compare(store.eventsRunner.busy, false)
+  }
+
+  // ---- Run detail's tab (4.3)
+
+  // 1
+  function test_the_detail_tab_starts_on_output() {
+    var store = make(); if (!store) return
+    compare(store.detailTab, "output")
+  }
+
+  // 2
+  function test_set_detail_tab_takes_output_and_events_only() {
+    var store = make(); if (!store) return
+    compare(store.setDetailTab("events"), true)
+    compare(store.detailTab, "events")
+    compare(store.setDetailTab("output"), true)
+    compare(store.detailTab, "output")
+    store.setDetailTab("events")
+    var bad = ["Events", "", undefined, "logs", null, 1]
+    for (var i = 0; i < bad.length; i++) {
+      compare(store.setDetailTab(bad[i]), false, String(bad[i]))
+      compare(store.detailTab, "events", "unchanged by " + String(bad[i]))
+    }
+  }
+
+  // 3
+  function test_toggle_detail_tab_alternates() {
+    var store = make(); if (!store) return
+    store.toggleDetailTab()
+    compare(store.detailTab, "events")
+    store.toggleDetailTab()
+    compare(store.detailTab, "output")
+  }
+
+  // 4
+  function test_a_selection_change_puts_the_tab_back_on_output() {
+    var store = make(); if (!store) return
+    store.selectedRunId = "r1"
+    store.setDetailTab("events")
+    store.selectedRunId = "r2"
+    compare(store.detailTab, "output", "another run")
+    store.setDetailTab("events")
+    store.selectedRunId = ""
+    compare(store.detailTab, "output", "no run")
+  }
+
+  // 5
+  function test_nothing_else_moves_the_detail_tab() {
+    var store = opened(); if (!store) return
+    store.setDetailTab("events")
+    store.refresh()
+    reply(store.snapshotRunner.current, okReply([treeEntry("r1", "done")]), 0)
+    compare(store.selectedRunId, "r1", "the snapshot kept the selection")
+    compare(store.detailTab, "events", "a snapshot")
+    store.eventsFilter = "Failures"
+    compare(store.detailTab, "events", "the filter")
+    store.selectAttempt(tc.doneCard, "spec", 1)
+    reply(store.logsRunner.current, logsReply("3 passed\n"), 0)
+    compare(store.detailTab, "events", "an attempt and its logs")
+    reply(store.eventsRunner.current, eventsReply(attemptEvents(8, 3), 10, 10), 0)
+    compare(store.detailTab, "events", "an events reply")
+    // synthetic: rows as a reply would leave them.
+    store.events = [{ seq: 4 }]
+    store.runsNudged(["r1"])
+    compare(store.detailTab, "events", "rows and a nudge")
   }
 }

@@ -3,8 +3,8 @@ import qs.Commons
 
 // Every key the panel reacts to, in one place: the Ctrl chords, the run keys
 // (p / r / c), the dispatch key (d: a card's dispatch on the board list and
-// a card, the Runs dispatch on the Runs list), the Escape chain, the arrows
-// the key catcher reports, and the search field's own keys.
+// a card, the Runs dispatch on the Runs list), the events key (e), the Escape
+// chain, the arrows the key catcher reports, and the search field's own keys.
 // The ORDER of the guards here is load bearing -- a modal must swallow the
 // global shortcuts, and Escape must unwind the modals before it unwinds the
 // navigation -- so nothing in this file may be reordered.
@@ -42,9 +42,10 @@ QtObject {
   // Escape with toasts showing never goes Back or closes the panel. An open
   // dispatch -- any state but idle, or a Runs dispatch at any step -- closes
   // like the other modals; while its start is in flight closeDispatch()
-  // refuses, so that Escape does nothing at all.
+  // refuses, so that Escape does nothing at all. The Resume dialog closes
+  // after the cancel confirmation and before the toasts.
   function closeRequested() {
-    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.runs.dispatchState !== "idle" || keys.app.runs.dispatchStep !== "") ? keys.app.runs.closeDispatch() : keys.app.runs.cancelOpen ? keys.app.runs.closeCancel() : keys.app.runs.toasts.length > 0 ? keys.app.runs.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
+    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.runs.dispatchState !== "idle" || keys.app.runs.dispatchStep !== "") ? keys.app.runs.closeDispatch() : keys.app.runs.cancelOpen ? keys.app.runs.closeCancel() : keys.app.runs.resumeRunId !== "" ? keys.app.runs.resumeClose() : keys.app.runs.toasts.length > 0 ? keys.app.runs.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
   }
 
   // A modal is open: the global shortcuts, the run keys and d do nothing under
@@ -53,7 +54,8 @@ QtObject {
   function modalOpen() {
     return !!(keys.app.deleter.deleteTarget || keys.app.memories.memoryDeleteOpen || keys.app.memories.newMemoryOpen
               || keys.app.milestones.dialogOpen || keys.app.board.archiveOpen || keys.app.runs.cancelOpen
-              || keys.app.runs.dispatchState !== "idle" || keys.app.runs.dispatchStep !== "")
+              || keys.app.runs.dispatchState !== "idle" || keys.app.runs.dispatchStep !== ""
+              || keys.app.runs.resumeRunId !== "")
   }
 
   // p / r / c with no modifier at all pause, resume or cancel a run, with or
@@ -107,6 +109,17 @@ QtObject {
     var id = card && typeof card.id === "string" ? card.id : ""
     if (id === "") return false
     keys.actions.openDispatch(id)
+    return true
+  }
+
+  // e with no modifier at all switches Run detail's bottom area between
+  // Output and Events. Returns true when it did. Anywhere but Run detail,
+  // under a modal or the open dropdown, the letter is left alone; Run detail
+  // shows no search field, so no text field has the keys there.
+  function handleEventsKey(event) {
+    if (event.modifiers !== Qt.NoModifier || event.key !== Qt.Key_E) return false
+    if (keys.app.nav.viewMode !== "run" || keys.modalOpen() || keys.app.nav.dropdownOpen) return false
+    keys.app.runs.toggleDetailTab()
     return true
   }
 

@@ -174,4 +174,16 @@ TestCase {
     compare(app.nav.cursorIndex, 0)
     compare(app.nav.scrollOnCursor, false)
   }
+
+  // ---- the event timeline's titles (run events 3.1)
+
+  // 13
+  function test_titles_follow_the_board() {
+    var app = makeBare(); if (!app) return
+    compare(JSON.stringify(app.runs.titles), "{}")
+    app.board.cardMap = { c1: { title: "One" }, c2: { title: 7 } }
+    compare(JSON.stringify(app.runs.titles), JSON.stringify({ c1: "One" }), "only string titles")
+    app.board.cardMap = { c3: { title: "Three" } }
+    compare(JSON.stringify(app.runs.titles), JSON.stringify({ c3: "Three" }), "a new board replaces the map")
+  }
 }
