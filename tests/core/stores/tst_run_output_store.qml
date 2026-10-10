@@ -1,8 +1,9 @@
 // tests/core/stores/tst_run_output_store.qml
 // Run detail's live output store: when runs-logs-follow.py starts and stops
-// for the selected attempt or step, its exact argv, how its stdout lines fold
-// into the live buffer, the end line, an error line, an exit with no end, and
-// latest wins. Built directly and driven through stubbed Process objects.
+// for the selected attempt or step, its exact argv (OFFSET on a resume), how
+// its stdout lines fold into the live buffer, the end line, typed failure
+// lines, the restart backoff and its limit, and latest wins. Built directly
+// and driven through stubbed Process objects and the aliased retryTimer.
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
@@ -143,6 +144,9 @@ TestCase {
       store.retryTimer.triggered()
     }
   }
+
+  // A runs-logs-follow.py failure line of `type` with `message`.
+  function refusal(type, message) { return JSON.stringify({ ok: false, error: { type: type, message: message } }) }
 
   // T1
   function test_defaults() {
@@ -854,5 +858,134 @@ TestCase {
     compare(store.liveText, "")
     compare(store.reconnects, 0)
     compare(store.retryTimer.running, false)
+  }
+
+  // N13
+  function test_follow_unsupported_falls_back_to_snapshots() {
+    var store = following(); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+    var seen = recorder(store)
+    var proc = store.followProc
+    send(proc, refusal("FollowUnsupported", "am logs cannot follow (exit 2)."))
+    compare(store.followStatus, "unsupported")
+    compare(store.endStatus, "")
+    compare(store.followError, "This am cannot stream output (am logs --follow is missing)")
+    compare(spy.count, 1)
+    proc.exited(0)
+    compare(store.followProc, null)
+    compare(store.retryTimer.running, false, "no reconnect")
+    store.inRunDetail = false
+    store.inRunDetail = true
+    compare(seen.length, 0, "no process on return")
+    compare(store.followStatus, "unsupported")
+    compare(spy.count, 1)
+  }
+
+  // N14, Review Focus 4 (3.3)
+  function test_schema_mismatch_falls_back_with_its_schema() {
+    var cases = [
+      ["am logs speaks schema 3; this helper reads schema 1 or 2.", "Unknown output stream schema 3"],
+      ["am logs speaks schema null; this helper reads schema 1 or 2.", "Unknown output stream schema null"],
+      ['am logs speaks schema "1"; this helper reads schema 1 or 2.', 'Unknown output stream schema "1"'],
+      ["weird", "Unknown output stream schema"],
+      [7, "Unknown output stream schema"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var store = following(); if (!store) return
+      var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+      var proc = store.followProc
+      send(proc, refusal("SchemaMismatch", cases[i][0]))
+      compare(store.followStatus, "unsupported", String(cases[i][0]))
+      compare(store.followError, cases[i][1])
+      compare(spy.count, 1)
+      proc.exited(0)
+      compare(store.retryTimer.running, false, "no reconnect")
+    }
+  }
+
+  // N15
+  function test_am_missing_stops_silently() {
+    var store = following(stepRun(false), explore()); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+    var proc = store.followProc
+    send(proc, streamLines("logs-follow-agent.jsonl")[0])
+    send(proc, tc.chunkLine)
+    send(proc, refusal("AmMissing", "am is not installed."))
+    compare(store.followStatus, "idle")
+    compare(store.followError, "")
+    compare(store.endStatus, "")
+    compare(store.followKey.phase, "explore", "the key is held")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer is held")
+    compare(spy.count, 0)
+    var seen = recorder(store)
+    proc.exited(0)
+    compare(store.retryTimer.running, false)
+    store.run = stepRun(false)
+    compare(seen.length, 0, "a new snapshot starts nothing")
+    store.inRunDetail = false
+    store.inRunDetail = true
+    compare(seen.length, 0, "a return starts nothing")
+    store.selection = verifyStep()
+    compare(seen.length, 1, "another selection starts normally")
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|verify|0")
+    compare(store.followStatus, "connecting")
+  }
+
+  // N16, Review Focus 5 (3.3): malformed envelopes are errors too
+  function test_a_refusal_or_a_stream_error_is_an_error() {
+    var envelope = F.load("logs-follow-refusal.json")
+    var cases = [
+      [JSON.stringify(envelope), Runs.errorText(envelope)],
+      [refusal("StreamError", "am logs: run left"), "StreamError: am logs: run left"],
+      ['{"ok":false,"error":"boom"}', Runs.errorText({ ok: false, error: "boom" })],
+      ['{"ok":false}', Runs.errorText({ ok: false })]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var store = following(); if (!store) return
+      var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+      var proc = store.followProc
+      send(proc, tc.chunkLine)
+      send(proc, cases[i][0])
+      compare(store.followStatus, "error", cases[i][0])
+      compare(store.followError, cases[i][1])
+      compare(store.liveText, "stub claude ok phase=review")
+      compare(spy.count, 0)
+      proc.exited(0)
+      compare(store.retryTimer.running, false, "no reconnect")
+      compare(store.followStatus, "error")
+    }
+  }
+
+  // N17
+  function test_a_step_with_no_recorded_attempt_has_no_output() {
+    var store = following(stepRun(true), verifyStep()); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "snapshotWanted" })
+    var seen = recorder(store)
+    var proc = store.followProc
+    send(proc, JSON.stringify(F.load("logs-follow-refusal.json")))
+    compare(store.followStatus, "ended")
+    compare(store.endStatus, "")
+    compare(store.followError, "This step records no output")
+    compare(spy.count, 0)
+    proc.exited(0)
+    compare(store.retryTimer.running, false)
+    store.active = false
+    store.active = true
+    compare(seen.length, 0, "no restart on return")
+    compare(store.followStatus, "ended")
+  }
+
+  // N18
+  function test_lines_after_a_fallback_or_am_missing_are_ignored() {
+    var cases = [["FollowUnsupported", "unsupported"], ["AmMissing", "idle"]]
+    for (var i = 0; i < cases.length; i++) {
+      var store = following(); if (!store) return
+      var proc = store.followProc
+      send(proc, tc.chunkLine)
+      send(proc, refusal(cases[i][0], "x"))
+      send(proc, tc.moreLine)
+      compare(store.liveText, "stub claude ok phase=review", cases[i][0])
+      compare(store.followStatus, cases[i][1])
+    }
   }
 }

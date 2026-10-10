@@ -17,13 +17,31 @@ import "../domain/runs.js" as Runs
 // step). Every input change reconciles once: another key stops the process
 // (latest wins), clears the state and, while the panel is open on Run detail
 // and the selection is live (Runs.isLiveSelection) with a usable repo_dir,
-// follows it from offset 0. Leaving Run detail or closing the panel stops the
-// process and keeps the key and the buffer; coming back on the same live key
-// follows it again from offset 0, unless its follow ended or failed. A key
-// that stops being live keeps its process until the end line or the exit.
+// follows it from offset 0 into an empty buffer. Leaving Run detail or
+// closing the panel stops the process, cancels a pending restart and keeps
+// the key, the buffer and `reconnects`; coming back on the same live key
+// while it is connecting or following resumes from the buffer's nextOffset
+// (OFFSET is passed only when > 0). A key that stops being live keeps its
+// process until the end line or the exit, and is cleared once no process is
+// left.
+//
+// An exit of the current process before its end line or a failure line
+// restarts the same key from nextOffset after 1 s, 2 s, then 4 s
+// (`retryTimer`); a new snapshot of the same key during the wait starts
+// nothing early. The fourth such exit within 60 s (clock `nowMs`, 0 =
+// Date.now()) is `error` "Live output stopped: the helper exited with code
+// N". `reconnects` counts those exits; a chunk of new output resets it.
+//
 // The end line sets `ended` and endStatus; for a step it asks for one logs
-// snapshot. An {"ok": false} line, or an exit before the end line, is an
-// error. A stopped process's lines and exit are ignored.
+// snapshot. An {"ok": false} line, by error.type: FollowUnsupported is
+// `unsupported` "This am cannot stream output (am logs --follow is
+// missing)" and SchemaMismatch `unsupported` "Unknown output stream schema
+// N", each asking for one logs snapshot; AmMissing is `idle` with the key and
+// buffer held (Run detail shows RunStore.amStatus); a step's
+// UnknownAttemptError is `ended` "This step records no output"; anything
+// else is `error` with its Runs.errorText. After any of them, and after the
+// end, lines are ignored and nothing restarts. A stopped process's lines and
+// exit are ignored.
 Scope {
   id: store
 
@@ -156,16 +174,16 @@ Scope {
     return proc !== null && proc === store.followProc && proc.launchSeq === store.followSeq
   }
 
-  // One stdout line of the current process, after its end or error ignored:
-  // trimmed and parsed (blank or not JSON is null), then one LogStream.foldLine.
-  // A hello or a chunk replaces the buffer and is `following`; a chunk (new
-  // output, not a duplicate) also resets `reconnects`. The end is
-  // `ended` with am's status, and asks for a logs snapshot for a step (attempt
-  // 0); an {"ok": false} line is `error` with its Runs.errorText. The buffer
-  // stays on the end and on an error.
+  // One stdout line of the current process while connecting or following
+  // (any other status ignores it): trimmed and parsed (blank or not JSON is
+  // null), then one LogStream.foldLine. A hello or a chunk replaces the buffer
+  // and is `following`; a chunk (new output, not a duplicate) also resets
+  // `reconnects`. The end is `ended` with am's status, and asks for a logs
+  // snapshot for a step (attempt 0); an {"ok": false} line goes to refuse().
+  // The buffer stays on the end and on a refusal.
   function followLine(proc, data) {
     if (!store.isCurrentFollow(proc)) return
-    if (store.followStatus === "ended" || store.followStatus === "error") return
+    if (store.followStatus !== "connecting" && store.followStatus !== "following") return
     var text = String(data || "").trim()
     var value = null
     if (text !== "") {
@@ -184,6 +202,44 @@ Scope {
       store.endStatus = typeof value.status === "string" ? value.status : ""
       if (store.followKey.attempt === 0) store.snapshotWanted()
     } else if (r.kind === "refusal") {
+      store.refuse(value)
+    }
+  }
+
+  // "Unknown output stream schema N", N the text of a SchemaMismatch message
+  // "am logs speaks schema N; ..."; with no N in that shape, the sentence alone.
+  function schemaSentence(message) {
+    var prefix = "am logs speaks schema "
+    var text = typeof message === "string" ? message : ""
+    var end = text.indexOf(";", prefix.length)
+    if (text.indexOf(prefix) !== 0 || end <= prefix.length) return "Unknown output stream schema"
+    return "Unknown output stream schema " + text.slice(prefix.length, end)
+  }
+
+  // An {"ok": false} line, by error.type: FollowUnsupported and SchemaMismatch
+  // are `unsupported` with their sentence and ask for one logs snapshot;
+  // AmMissing is `idle` with the key and buffer held; UnknownAttemptError on a
+  // step (attempt 0) is `ended` "This step records no output"; anything else
+  // is `error` with its Runs.errorText. None schedules a restart.
+  function refuse(value) {
+    var e = store.isObject(value.error) ? value.error : {}
+    var type = typeof e.type === "string" ? e.type : ""
+    if (type === "FollowUnsupported" || type === "SchemaMismatch") {
+      store.followStatus = "unsupported"
+      store.endStatus = ""
+      store.followError = type === "FollowUnsupported"
+          ? "This am cannot stream output (am logs --follow is missing)"
+          : store.schemaSentence(e.message)
+      store.snapshotWanted()
+    } else if (type === "AmMissing") {
+      store.followStatus = "idle"
+      store.endStatus = ""
+      store.followError = ""
+    } else if (type === "UnknownAttemptError" && store.followKey.attempt === 0) {
+      store.followStatus = "ended"
+      store.endStatus = ""
+      store.followError = "This step records no output"
+    } else {
       store.followStatus = "error"
       store.followError = Runs.errorText(value)
     }
