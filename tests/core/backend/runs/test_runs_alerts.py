@@ -456,3 +456,247 @@ def test_signal_stops_am_and_exits_zero(world, sig):
     assert out == ""  # no envelope
     assert "Traceback" not in err
     assert_gone(pid)
+
+
+# --- the alert ---------------------------------------------------------------------
+
+def test_no_backlog_alert(world):
+    # synthetic: an escalated upsert before the hello is ignored, state and all.
+    set_script(world, [upsert("escalated", world["repo"]), hello(),
+                       upsert("escalated", world["repo"])])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"])]
+
+
+@pytest.mark.parametrize("schema", [1, 2], ids=["schema-1", "schema-2"])
+def test_hello_accepted_then_alert(world, schema):
+    set_script(world, [hello(schema), upsert("escalated", world["repo"])])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"])]
+
+
+def test_alert_line_shape_and_realpath_match(world):
+    real_dir = world["tmp"] / "real"
+    real_dir.mkdir()
+    link = world["tmp"] / "link"
+    link.symlink_to(real_dir)
+    set_brd(world, projects(project(link, name="proj")))
+    # synthetic: the run's repo_dir is the real directory, brd printed the link.
+    set_script(world, [hello(), upsert("escalated", real_dir)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [{"alert": {"run_id": RUN, "root": str(link), "project": "proj",
+                                "state": "escalated"}}]
+    assert list(lines[0]) == ["alert"]
+    assert list(lines[0]["alert"]) == ["run_id", "root", "project", "state"]
+
+
+def test_no_duplicate(world):
+    set_script(world, [hello()] + [upsert("escalated", world["repo"])] * 3)
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"])]
+
+
+def test_re_alert_after_resume(world):
+    set_script(world, [hello(), upsert("escalated", world["repo"]),
+                       upsert("started", world["repo"]), upsert("escalated", world["repo"])])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"])] * 2
+
+
+def test_repo_dir_carried(world):
+    set_script(world, [hello(), upsert("started", world["repo"]), upsert("escalated")])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"])]
+
+
+def test_no_repo_dir_no_alert(world):
+    set_script(world, [hello(), upsert("escalated"), upsert("escalated", "")])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == []
+    assert brd_calls(world) == [["projects"]]
+
+
+# --- the registry ------------------------------------------------------------------
+
+def test_unregistered_is_ignored(world):
+    set_script(world, [hello(), upsert("escalated", world["tmp"] / "elsewhere")])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == []
+    assert brd_calls(world) == [["projects"], ["projects"]]  # start + one re-read
+
+
+def test_root_learned(world):
+    set_brd(world, projects(), projects(project(world["repo"])))
+    set_script(world, [hello(), upsert("escalated", world["repo"])])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"])]
+    assert brd_calls(world) == [["projects"], ["projects"]]
+
+
+def test_registered_root_does_not_re_read(world):
+    set_script(world, [hello(),
+                       upsert("started", world["tmp"] / "a"),
+                       upsert("started", world["tmp"] / "b", run_id="r2"),
+                       upsert("escalated", world["repo"])])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"])]
+    assert brd_calls(world) == [["projects"]]
+
+
+BRD_FAILURES = ["missing", "exit-1", "garbage", "ok-false", "data-not-list"]
+
+
+@pytest.mark.parametrize("failure", BRD_FAILURES)
+def test_brd_failing_at_start(world, failure):
+    registering = projects(project(world["repo"]))["stdout"]
+    answers = {
+        "exit-1": {"stdout": registering, "exit": 1},
+        "garbage": {"stdout": "not json\n", "exit": 0},
+        # synthetic: brd refusal envelope.
+        "ok-false": {"stdout": json.dumps({"ok": False, "error": {"type": "X",
+                                                                   "message": "no"}}) + "\n"},
+        "data-not-list": {"stdout": json.dumps({"ok": True, "data": {}}) + "\n"},
+    }
+    if failure == "missing":
+        os.unlink(world["bin"] / "brd")
+    else:
+        set_brd(world, answers[failure])
+    set_script(world, [hello(), upsert("escalated", world["repo"])])
+    code, lines, err = run_helper(world)
+    assert code == 0, err
+    assert lines == []
+    assert "Traceback" not in err
+    assert brd_calls(world) == ([] if failure == "missing" else [["projects"], ["projects"]])
+
+
+def test_failed_re_read_keeps_registry(world):
+    set_brd(world, projects(project(world["repo"])), {"stdout": "", "exit": 1})
+    set_script(world, [hello(),
+                       upsert("escalated", world["tmp"] / "elsewhere"),
+                       upsert("escalated", world["repo"], run_id="r2")])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"], run_id="r2")]
+    assert brd_calls(world) == [["projects"], ["projects"]]
+
+
+# --- review focus ------------------------------------------------------------------
+
+def test_non_string_status_keeps_last_status(world):
+    set_script(world, [hello(), upsert("escalated", world["repo"]),
+                       upsert(None, world["repo"]), upsert("escalated", world["repo"])])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"])]
+
+
+def test_repo_dir_with_nul_is_ignored(world):
+    # synthetic: a repo_dir realpath cannot take.
+    set_script(world, [hello(), upsert("escalated", str(world["repo"]) + "\u0000x"),
+                       upsert("escalated", world["repo"], run_id="r2")])
+    code, lines, err = run_helper(world)
+    assert code == 0, err
+    assert lines == [alert(world["repo"], run_id="r2")]
+    assert brd_calls(world) == [["projects"]]  # no re-read for the NUL path
+
+
+def test_bad_registry_entries_are_skipped(world):
+    good = project(world["repo"], name="good")
+    nameless = project(world["tmp"] / "nameless")
+    del nameless["name"]
+    set_brd(world, projects("not an object", project(str(world["tmp"]) + "\u0000x"),
+                            {**project(""), "root_path": ""}, nameless,
+                            {**project(world["tmp"] / "n"), "root_path": 5}, good))
+    set_script(world, [hello(), upsert("escalated", world["repo"])])
+    code, lines, err = run_helper(world)
+    assert code == 0, err
+    assert lines == [alert(world["repo"], name="good")]
+
+
+def test_first_registry_entry_wins(world):
+    link = world["tmp"] / "link"
+    link.symlink_to(world["repo"])
+    set_brd(world, projects(project(link, name="first"), project(world["repo"], name="second")))
+    set_script(world, [hello(), upsert("escalated", world["repo"])])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(link, name="first")]
+
+
+def test_runs_are_tracked_separately(world):
+    set_script(world, [hello(),
+                       upsert("escalated", world["repo"], run_id="r1"),
+                       upsert("escalated", world["repo"], run_id="r2"),
+                       upsert("escalated", world["repo"], run_id="r1"),
+                       upsert("escalated", world["repo"], run_id="r2")])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == [alert(world["repo"], run_id="r1"), alert(world["repo"], run_id="r2")]
+
+
+# --- ignored lines -----------------------------------------------------------------
+
+def test_ignored_lines(world):
+    empty_run = upsert("escalated", world["repo"], run_id="")
+    bad_payload = upsert("escalated", world["repo"])
+    bad_payload["line"]["payload"] = "escalated"
+    # synthetic: another event kind carrying an escalated status and a repo_dir.
+    phase = ev("phase_upsert")
+    phase["line"]["payload"] = {"status": "escalated", "repo_dir": str(world["repo"])}
+    set_script(world, [hello(), raw("not json"), raw("[1, 2]"), raw('"text"'), empty_run,
+                       bad_payload, phase, upsert("escalated", world["repo"])])
+    code, lines, err = run_helper(world)
+    assert code == 0, err
+    assert "Traceback" not in err
+    assert lines == [alert(world["repo"])]
+    assert brd_calls(world) == [["projects"]]
+
+
+# --- flushing and a closed stdout --------------------------------------------------
+
+def test_alert_flushed_at_once(world):
+    set_script(world, [hello(), upsert("escalated", world["repo"]), pause(30)])
+    p = start_helper(world)
+    try:
+        began = time.monotonic()
+        line = p.stdout.readline()
+        assert time.monotonic() - began < 10  # read while am still runs
+        assert json.loads(line) == alert(world["repo"])
+        pid = am_pid(world)
+        p.send_signal(signal.SIGTERM)
+        code = p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    p.stdout.close()
+    p.stderr.close()
+    assert code == 0
+    assert_gone(pid)
+
+
+def test_closed_stdout_exits_zero(world):
+    set_script(world, [hello(), pause(0.6), upsert("escalated", world["repo"]), pause(30)])
+    p = start_helper(world)
+    p.stdout.close()  # the reader goes away before the alert
+    try:
+        code = p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    err = p.stderr.read()
+    p.stderr.close()
+    assert code == 0, err
+    assert "Traceback" not in err
+    assert_gone(am_pid(world))
