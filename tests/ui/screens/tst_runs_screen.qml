@@ -1033,12 +1033,16 @@ TestCase {
     var caption = H.find(s.screen, "runsNotifyCaption")
     verify(label, "the switch's label")
     verify(caption, "the switch's caption")
+    // The stub switch has no size, and a Row skips zero-size children.
+    toggle.width = 30
+    toggle.height = 16
+    wait(20)
     var t = toggle.mapToItem(s.screen, 0, 0)
     var l = label.mapToItem(s.screen, 0, 0)
     var c = caption.mapToItem(s.screen, 0, 0)
     verify(c.y > l.y, "the caption is under the label")
-    verify(l.x >= t.x + toggle.width, "the label is not over the toggle")
-    verify(c.x >= t.x + toggle.width, "the caption is not over the toggle")
+    verify(l.x > t.x + toggle.width, "the label is right of the toggle")
+    verify(c.x > t.x + toggle.width, "the caption is right of the toggle")
     var text = caption.text
     s.control.notifyOnEscalation = true
     compare(caption.text, text, "the caption does not follow the switch on")
