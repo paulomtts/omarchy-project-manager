@@ -119,6 +119,48 @@ Scope {
     store.followProc = null
   }
 
+  function isCurrentFollow(proc) {
+    return proc !== null && proc === store.followProc && proc.launchSeq === store.followSeq
+  }
+
+  // One stdout line of the current process, after its end or error ignored:
+  // trimmed and parsed (blank or not JSON is null), then one LogStream.foldLine.
+  // A hello or a chunk replaces the buffer and is `following`; the end is
+  // `ended` with am's status, and asks for a logs snapshot for a step (attempt
+  // 0); an {"ok": false} line is `error` with its Runs.errorText. The buffer
+  // stays on the end and on an error.
+  function followLine(proc, data) {
+    if (!store.isCurrentFollow(proc)) return
+    if (store.followStatus === "ended" || store.followStatus === "error") return
+    var text = String(data || "").trim()
+    var value = null
+    if (text !== "") {
+      try { value = JSON.parse(text) } catch (e) { value = null }
+    }
+    var r = LogStream.foldLine(store.buffer, value)
+    if (r.kind === "hello" || r.kind === "chunk") {
+      store.setBuffer(r.buffer)
+      store.followStatus = "following"
+    } else if (r.kind === "end") {
+      store.followStatus = "ended"
+      store.endStatus = typeof value.status === "string" ? value.status : ""
+      if (store.followKey.attempt === 0) store.snapshotWanted()
+    } else if (r.kind === "refusal") {
+      store.followStatus = "error"
+      store.followError = Runs.errorText(value)
+    }
+  }
+
+  // The current process exited: no process is left; with no end line and no
+  // error line before it, the follow is an error naming the exit code.
+  function followExited(proc, exitCode) {
+    if (!store.isCurrentFollow(proc)) return
+    store.followProc = null
+    if (store.followStatus === "ended" || store.followStatus === "error") return
+    store.followStatus = "error"
+    store.followError = "Live output stopped: the helper exited with code " + exitCode
+  }
+
   onActiveChanged: store.reconcile()
   onInRunDetailChanged: store.reconcile()
   onRunChanged: store.reconcile()
@@ -133,8 +175,12 @@ Scope {
       id: fp
       objectName: "followProc"
       property int launchSeq: 0
+      stdout: SplitParser { onRead: function(data) { store.followLine(fp, data) } }
       stderr: StdioCollector { waitForEnd: true }
-      onExited: function(exitCode) { fp.destroy() }
+      onExited: function(exitCode) {
+        store.followExited(fp, exitCode)
+        fp.destroy()
+      }
     }
   }
 }
