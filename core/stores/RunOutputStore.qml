@@ -43,6 +43,10 @@ Scope {
   property var followProc: null       // the current follow Process, or null
   property int followSeq: 0           // bumped on every start and stop: the launch guard
   property var buffer: LogStream.emptyBuffer()
+  property int reconnects: 0          // unexpected exits counted toward the limit; 0 after a good chunk or clear()
+  property real nowMs: 0              // the restart window's clock, epoch ms; 0 = Date.now()
+  property var exitTimes: []          // the counted exits' times, epoch ms
+  readonly property alias retryTimer: retryTimer   // the pending restart; running while one is scheduled
 
   // A followed step ended: RunStore should fetch its logs snapshot.
   signal snapshotWanted()
@@ -117,6 +121,7 @@ Scope {
   // runs-logs-follow.py REPO RUN CARD PHASE ATTEMPT, plus OFFSET when offset
   // > 0. The buffer is kept: a new key reaches here only after clear().
   function start(k, offset) {
+    store.retryTimer.stop()
     store.followSeq += 1
     store.followKey = k
     store.followStatus = "connecting"
@@ -170,14 +175,38 @@ Scope {
     }
   }
 
-  // The current process exited: no process is left; with no end line and no
-  // error line before it, the follow is an error naming the exit code.
+  // The current process exited: no process is left. While connecting or
+  // following it is an unexpected exit: exits 60 s or older leave the window,
+  // this one is counted in `reconnects`, and the same key restarts after 1 s,
+  // 2 s, then 4 s (retryTimer); the fourth within 60 s is an error naming the
+  // exit code.
   function followExited(proc, exitCode) {
     if (!store.isCurrentFollow(proc)) return
     store.followProc = null
-    if (store.followStatus === "ended" || store.followStatus === "error") return
+    if (store.followStatus !== "connecting" && store.followStatus !== "following") return
+    var t = store.nowMs > 0 ? store.nowMs : Date.now()
+    var kept = store.exitTimes.filter(function(e) { return t - e < 60000 })
+    kept.push(t)
+    store.exitTimes = kept
+    store.reconnects = kept.length
+    if (store.reconnects <= 3) {
+      store.retryTimer.interval = 1000 * Math.pow(2, store.reconnects - 1)
+      store.retryTimer.start()
+      return
+    }
     store.followStatus = "error"
     store.followError = "Live output stopped: the helper exited with code " + exitCode
+  }
+
+  // The pending restart is due: the same key, with no process and still
+  // connecting or following, resumes from nextOffset when it can be followed
+  // and is cleared once it is not live; any other fire does nothing.
+  function retry() {
+    var k = store.selectionKey(store.run, store.selection)
+    if (k === null || !store.sameKey(k, store.followKey) || store.followProc) return
+    if (store.followStatus !== "connecting" && store.followStatus !== "following") return
+    if (store.canStart(k)) store.start(k, store.buffer.nextOffset)
+    else if (!store.isLive()) store.clear()
   }
 
   onActiveChanged: store.reconcile()
@@ -185,6 +214,13 @@ Scope {
   onRunChanged: store.reconcile()
   onSelectionChanged: store.reconcile()
   Component.onCompleted: store.reconcile()
+
+  Timer {
+    id: retryTimer
+    objectName: "retryTimer"
+    repeat: false
+    onTriggered: store.retry()
+  }
 
   // One Process per follow launch, so each carries the launch it belongs to.
   Component {

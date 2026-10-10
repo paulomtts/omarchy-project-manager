@@ -132,6 +132,18 @@ TestCase {
     return procs.filter(function(p) { return p.running === true }).length
   }
 
+  // The current follow process exits with `code` (0 by default).
+  function crash(store, code) { store.followProc.exited(code === undefined ? 0 : code) }
+
+  // One exit at each epoch-ms time in `times`, each followed by its restart.
+  function crashesAt(store, times) {
+    for (var i = 0; i < times.length; i++) {
+      store.nowMs = times[i]
+      crash(store)
+      store.retryTimer.triggered()
+    }
+  }
+
   // T1
   function test_defaults() {
     var store = make(); if (!store) return
@@ -389,10 +401,14 @@ TestCase {
     var proc = store.followProc
     send(proc, tc.chunkLine)
     proc.exited(0)
-    compare(store.followStatus, "error")
-    compare(store.followError, "Live output stopped: the helper exited with code 0")
     compare(store.followProc, null)
+    compare(store.followStatus, "following", "a restart is pending, not an error")
+    compare(store.followError, "")
+    compare(store.reconnects, 1)
+    compare(store.retryTimer.running, true)
+    compare(store.retryTimer.interval, 1000)
     compare(store.liveText, "stub claude ok phase=review")
+    store.retryTimer.stop()
   }
 
   // Review Focus 1
@@ -552,6 +568,7 @@ TestCase {
     var seen2 = recorder(failed)
     var p2 = failed.followProc
     send(p2, tc.chunkLine)
+    send(p2, '{"ok":false,"error":{"type":"StreamError","message":"am logs: run left"}}')
     p2.exited(0)
     failed.inRunDetail = false
     failed.inRunDetail = true
@@ -611,5 +628,102 @@ TestCase {
     compare(seen.length, 1)
     compare(store.followProc.command.length, 7, "no OFFSET at 0")
     compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+  }
+
+  // N4
+  function test_a_crash_resumes_from_next_offset() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    old.exited(0)
+    compare(store.followProc, null)
+    compare(store.reconnects, 1)
+    compare(store.retryTimer.running, true)
+    compare(store.retryTimer.interval, 1000)
+    compare(seen.length, 0, "nothing starts before the timer fires")
+    store.retryTimer.triggered()
+    compare(seen.length, 1)
+    compare(store.retryTimer.running, false)
+    compare(store.followProc.command.length, 8)
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1|28")
+    compare(store.followStatus, "connecting")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer is kept")
+  }
+
+  // N5
+  function test_restarts_back_off_1_2_4_seconds() {
+    var store = following(); if (!store) return
+    store.nowMs = 100000
+    send(store.followProc, tc.chunkLine)
+    var expected = [1000, 2000, 4000]
+    for (var i = 0; i < expected.length; i++) {
+      crash(store)
+      compare(store.reconnects, i + 1)
+      compare(store.retryTimer.interval, expected[i])
+      compare(store.retryTimer.running, true)
+      store.retryTimer.triggered()
+      verify(store.followProc, "restarted after exit " + (i + 1))
+    }
+    store.retryTimer.stop()
+  }
+
+  // N6, Review Focus 3 (3.3): a stray fire after the error starts nothing
+  function test_the_fourth_exit_within_60_s_is_an_error() {
+    var codes = [0, 1]
+    for (var c = 0; c < codes.length; c++) {
+      var store = following(); if (!store) return
+      var seen = recorder(store)
+      store.nowMs = 100000
+      send(store.followProc, tc.chunkLine)
+      for (var i = 0; i < 3; i++) {
+        crash(store, codes[c])
+        store.retryTimer.triggered()
+      }
+      compare(seen.length, 3)
+      crash(store, codes[c])
+      compare(store.reconnects, 4)
+      compare(store.followStatus, "error")
+      compare(store.followError, "Live output stopped: the helper exited with code " + codes[c])
+      compare(store.retryTimer.running, false)
+      compare(store.followProc, null)
+      compare(store.liveText, "stub claude ok phase=review")
+      store.retryTimer.triggered()
+      compare(seen.length, 3, "a stray fire after the error starts nothing")
+      store.inRunDetail = false
+      store.inRunDetail = true
+      compare(seen.length, 3, "nor does a return")
+    }
+  }
+
+  // N9
+  function test_exits_older_than_60_s_leave_the_window() {
+    var store = following(); if (!store) return
+    send(store.followProc, tc.chunkLine)
+    crashesAt(store, [10000, 11000, 13000])
+    store.nowMs = 80000
+    crash(store)
+    compare(store.reconnects, 1)
+    compare(store.retryTimer.interval, 1000)
+    store.retryTimer.stop()
+
+    var edge = following(); if (!edge) return
+    send(edge.followProc, tc.chunkLine)
+    crashesAt(edge, [10000, 11000, 13000])
+    edge.nowMs = 69999
+    crash(edge)
+    compare(edge.reconnects, 4, "59999 ms after the first still counts")
+    compare(edge.followStatus, "error")
+
+    var past = following(); if (!past) return
+    send(past.followProc, tc.chunkLine)
+    crashesAt(past, [10000, 11000, 13000])
+    past.nowMs = 70000
+    crash(past)
+    compare(past.reconnects, 3, "60000 ms after the first drops it")
+    compare(past.retryTimer.interval, 4000)
+    compare(past.followStatus, "connecting", "a restart is pending, not an error")
+    past.retryTimer.stop()
   }
 }
