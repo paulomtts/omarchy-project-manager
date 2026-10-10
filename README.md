@@ -282,6 +282,7 @@ Layout (details and rules in `docs/architecture.md`):
 
 ```
 manifest.json          entryPoints.barWidget -> ui/Panel.qml
+                       entryPoints.service   -> core/stores/RunAlertsService.qml
 install.sh             installer (the only source file at the root)
 core/domain/           pure JavaScript rules and parsers
 core/backend/<domain>/ Python helpers (one JSON line each) + common/

@@ -6,10 +6,11 @@
   "author": "paulomtts",
   "license": "MIT",
   "description": "Per-project board, milestone graph, documents and Claude memories for brd projects, right from the bar.",
-  "kinds": ["bar-widget"],
+  "kinds": ["bar-widget", "service"],
   "activation": "on-demand",
   "entryPoints": {
-    "barWidget": "ui/Panel.qml"
+    "barWidget": "ui/Panel.qml",
+    "service": "core/stores/RunAlertsService.qml"
   },
   "barWidget": {
     "displayName": "Project Manager",

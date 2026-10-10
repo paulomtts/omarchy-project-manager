@@ -141,14 +141,11 @@ QtObject {
     onRunSettingsSaveFailed: function(root, patch) { app.runDispatch.dispatchSaveFailed(root, patch) }
   }
 
-  // The run alerts never import the run store: App hands them the backend
-  // directory, the panel-open flag, run control's notify switch and the
-  // registry, and routes every project's snapshot reply (runs.snapshotReplied)
-  // here.
+  // The run alerts never import the run store: App hands them the panel-open
+  // flag and the registry, and routes every project's snapshot reply
+  // (runs.snapshotReplied) here.
   readonly property RunAlertsStore runAlerts: RunAlertsStore {
-    backendDir: app.backendDir
     active: app.panelOpen
-    notifyOnEscalation: app.runControl.notifyOnEscalation
     projectRoots: app.runs.projectRoots
   }
 
