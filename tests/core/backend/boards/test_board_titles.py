@@ -235,3 +235,75 @@ def test_never_writes(box):
     assert set(after) == set(before)
     assert {k: v for k, v in after.items() if k not in logs} == {k: v for k, v in before.items() if k not in logs}
     assert calls(box) == ["brd tree (cwd=%s)" % box["project"].resolve()]
+
+
+NOT_FOUND = {"ok": False, "error": {"type": "ProjectNotFoundError",
+                                    "message": "no registered project at or above /x; run `brd init` there"}}
+
+
+def test_brd_envelope_is_passed_through_unchanged(box):
+    set_out(box, NOT_FOUND)
+    code, out = run(box, str(box["project"]), extra_env={"BRD_EXIT": "1"})
+    assert code == 1
+    assert out == NOT_FOUND
+
+
+def test_brd_envelope_passthrough_ignores_brd_exit_code(box):
+    set_out(box, NOT_FOUND)
+    code, out = run(box, str(box["project"]), extra_env={"BRD_EXIT": "0"})
+    assert code == 1
+    assert out == NOT_FOUND
+
+
+BAD_OUTPUTS = {
+    "not json": "garbage <<>> output\n",
+    "empty stdout": "",
+    "json list": "[1, 2]\n",
+    "json null": "null\n",
+    "no ok": {"data": []},
+    "ok string true": {"ok": "true", "data": []},
+    "ok one": {"ok": 1, "data": []},
+    "data missing": {"ok": True},
+    "data object": {"ok": True, "data": {}},
+    "card is a string": {"ok": True, "data": ["m1"]},
+    "card without id": {"ok": True, "data": [{"title": "No id", "children": []}]},
+    "id is a number": {"ok": True, "data": [{"id": 5, "title": "Five", "children": []}]},
+    "id empty": {"ok": True, "data": [{"id": "", "title": "Blank", "children": []}]},
+    "title null": {"ok": True, "data": [{"id": "m1", "title": None, "children": []}]},
+    "title missing": {"ok": True, "data": [{"id": "m1", "children": []}]},
+    "children object two levels down": {"ok": True, "data": [
+        {"id": "m1", "title": "M", "children": [
+            {"id": "s1", "title": "S", "children": [
+                {"id": "t1", "title": "T", "children": {}},
+            ]},
+        ]},
+    ]},
+}
+
+
+@pytest.mark.parametrize("name", list(BAD_OUTPUTS))
+def test_bad_output(box, name):
+    set_out(box, BAD_OUTPUTS[name])
+    code, out = run(box, str(box["project"]))
+    assert code == 1
+    assert out["ok"] is False
+    assert out["error"]["type"] == "BrdBadOutput"
+    assert out["error"]["message"]
+    assert "garbage" not in out["error"]["message"]
+    assert "titles" not in out
+
+
+def test_ok_envelope_with_nonzero_exit_is_bad_output(box):
+    set_out(box, {"ok": True, "data": [{"id": "m1", "title": "One", "children": []}]})
+    code, out = run(box, str(box["project"]), extra_env={"BRD_EXIT": "3"})
+    assert code == 1
+    assert out["ok"] is False
+    assert out["error"]["type"] == "BrdBadOutput"
+    assert out["error"]["message"]
+
+
+def test_empty_title_is_kept(box):
+    set_out(box, {"ok": True, "data": [{"id": "m1", "title": "", "children": []}]})
+    code, out = run(box, str(box["project"]))
+    assert code == 0
+    assert out == {"ok": True, "titles": {"m1": ""}}
