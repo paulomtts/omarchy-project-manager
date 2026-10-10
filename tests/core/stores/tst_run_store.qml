@@ -3842,4 +3842,73 @@ TestCase {
     store.searchQuery = "milestone …m-a-h2"
     compare(ids(store.filteredRuns), "a-h2", "runTitle's fallback title")
   }
+
+  // H6
+  function test_toggle_finished_state() {
+    var store = make(); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runFilterToggled" })
+    var steps = [["done", "done"], ["escalated", "escalated"], ["escalated", ""], ["cancelled", "cancelled"],
+                 ["all", ""], ["cancelled", "cancelled"], ["bogus", ""], ["", ""], ["done", "done"], [undefined, ""]]
+    for (var i = 0; i < steps.length; i++) {
+      store.toggleFinishedState(steps[i][0])
+      compare(store.finishedState, steps[i][1], "toggleFinishedState(" + steps[i][0] + ")")
+      compare(spy.count, i + 1, "one runFilterToggled per call, changed or not")
+    }
+    compare(store.runFilter, "", "the chip is untouched")
+    compare(store.finishedAge, "all")
+  }
+
+  // H6
+  function test_toggle_finished_age() {
+    var store = make(); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runFilterToggled" })
+    var steps = [["today", "today"], ["week", "week"], ["week", "all"], ["today", "today"], ["all", "all"],
+                 ["week", "week"], ["bogus", "all"], ["all", "all"]]
+    for (var i = 0; i < steps.length; i++) {
+      store.toggleFinishedAge(steps[i][0])
+      compare(store.finishedAge, steps[i][1], "toggleFinishedAge(" + steps[i][0] + ")")
+      compare(spy.count, i + 1, "one runFilterToggled per call, changed or not")
+    }
+    compare(store.runFilter, "", "the chip is untouched")
+    compare(store.finishedState, "")
+  }
+
+  // H6
+  function test_the_chip_and_the_finished_rows_are_independent_and_survive_a_project_switch() {
+    var store = makeWithProject(rootA); if (!store) return
+    store.toggleFinishedState("escalated")
+    store.toggleFinishedAge("week")
+    store.toggleRunFilter("finished")
+    compare(store.runFilter, "finished")
+    compare(store.finishedState, "escalated", "the chip leaves the state row")
+    compare(store.finishedAge, "week", "and the age row")
+    store.toggleRunFilter("finished")
+    compare(store.runFilter, "")
+    compare(store.finishedState, "escalated")
+    compare(store.finishedAge, "week")
+    store.project = rootB
+    compare(store.finishedState, "escalated", "a project switch keeps the state row")
+    compare(store.finishedAge, "week", "and the age row")
+  }
+
+  // H7
+  function test_closing_the_panel_resets_the_finished_rows_and_keeps_the_chip() {
+    var store = projectsStore(true); if (!store) return
+    store.historyRuns = [histRun("a-h1", tc.rootA, "done", "2026-09-20T00:00:00Z")]
+    store.toggleRunFilter("finished")
+    store.searchQuery = "a-"
+    store.toggleFinishedState("done")
+    store.toggleFinishedAge("week")
+    store.toggleProjectFilter(tc.rootB)
+    compare(store.projectFilter, tc.rootB)
+    var spy = createTemporaryObject(spyC, tc, { target: store, signalName: "runFilterToggled" })
+    store.active = false
+    compare(store.finishedState, "")
+    compare(store.finishedAge, "all")
+    compare(store.projectFilter, "")
+    compare(spy.count, 0, "no runFilterToggled")
+    compare(store.runFilter, "finished", "the chip stays")
+    compare(store.searchQuery, "a-", "the search stays")
+    verify(ids(store.listedRuns).split(",").indexOf("a-h1") >= 0, "the history is App's input: kept")
+  }
 }

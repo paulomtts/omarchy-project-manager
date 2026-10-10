@@ -64,7 +64,8 @@ Scope {
   // navigation store; the chip survives a section switch and a project switch.
   property string runFilter: ""
   property string searchQuery: ""
-  // The chip changed: a different list, so the cursor goes home (App's job).
+  // The chip, the finished-state row or the age row was chosen: a different
+  // list, so the cursor goes home (App's job).
   signal runFilterToggled()
   // The Runs screen's project filter: "" is All projects, else a filterable
   // root (isFilterable). Set by toggleProjectFilter; back to "" when it stops
@@ -87,7 +88,8 @@ Scope {
   // "escalated" | "cancelled") and age row ("today" | "week" | "all", by
   // started_at against nowMs). The state row narrows finished runs under
   // Finished only, the age row under Finished and All; neither hides a run
-  // that is not finished.
+  // that is not finished. Set by toggleFinishedState and toggleFinishedAge;
+  // a project switch keeps them, the panel closing resets them.
   property string finishedState: ""
   property string finishedAge: "all"
   // The age row's clock in ms; 0 is Date.now() whenever `groups` is
@@ -254,6 +256,24 @@ Scope {
     store.runFilterToggled()
   }
 
+  // A state row button: "done", "escalated" or "cancelled" other than the
+  // current one selects it; the current one again, or anything else, means
+  // every finished state (""). Emits runFilterToggled once.
+  function toggleFinishedState(id) {
+    var known = id === "done" || id === "escalated" || id === "cancelled"
+    store.finishedState = known && id !== store.finishedState ? id : ""
+    store.runFilterToggled()
+  }
+
+  // An age row button: "today" or "week" other than the current one selects
+  // it; the current one again, or anything else, means all time ("all").
+  // Emits runFilterToggled once.
+  function toggleFinishedAge(id) {
+    var known = id === "today" || id === "week"
+    store.finishedAge = known && id !== store.finishedAge ? id : "all"
+    store.runFilterToggled()
+  }
+
   // A project chip was chosen (projectRootOf(root)): "", or the active
   // project again, means All; a root that is not filterable means All.
   // Emits projectFilterToggled once, whether or not the filter changed.
@@ -316,11 +336,14 @@ Scope {
 
   // The panel closed: no process and no timer is left running. The
   // pending snapshot request is dropped; a snapshot in flight runs to its end
-  // and is applied. The project filter is back to All projects, with no
-  // projectFilterToggled. The runs, the selection, the chip and amStatus stay
-  // for the next opening.
+  // and is applied. The project filter is back to All projects and the
+  // finished rows to every state and all time, with no projectFilterToggled
+  // or runFilterToggled. The runs, the history, the selection, the chip, the
+  // search and amStatus stay for the next opening.
   function stopLive() {
     store.projectFilter = ""
+    store.finishedState = ""
+    store.finishedAge = "all"
     snapshotState.pending = null
     store.stopWatch()
     debounceTimer.stop()
