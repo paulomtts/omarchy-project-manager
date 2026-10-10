@@ -732,6 +732,25 @@ function withinAge(run, age, nowMs, utcOffsetMinutes) {
   return start >= Math.floor((nowMs + off) / _DAY_MS) * _DAY_MS - off
 }
 
+// The runs to list under the Finished chip's state and age rows, same objects
+// in input order; [] when `runs` is not an array. A run that is not finished
+// (running, dead, parked or unknown) is always kept. A finished run is kept
+// when its state equals `finishedState` ("done", "escalated" or "cancelled",
+// which covers both spellings; any other value matches every finished run) and
+// withinAge(run, finishedAge, nowMs, utcOffsetMinutes) is true. Never mutates,
+// never throws.
+function filterFinished(runs, finishedState, finishedAge, nowMs, utcOffsetMinutes) {
+  var list = _arrayOr(runs)
+  var anyState = finishedState !== "done" && finishedState !== "escalated" && finishedState !== "cancelled"
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var state = runState(list[i])
+    if (!_isFinishedState(state)) out.push(list[i])
+    else if ((anyState || state === finishedState) && withinAge(list[i], finishedAge, nowMs, utcOffsetMinutes)) out.push(list[i])
+  }
+  return out
+}
+
 // The titles map of run's project: titlesByRoot's own entry for runRoot(run)
 // when titlesByRoot is a plain object and that entry a plain object; {} for
 // anything else, and always for a run whose root is "".

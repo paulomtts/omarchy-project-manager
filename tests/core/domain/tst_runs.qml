@@ -1840,6 +1840,91 @@ TestCase {
     }
   }
 
+  function stateList(list) { return list.map(function(r) { return r.status }).join(",") }
+
+  // The ids of the runs in list whose state is not finished.
+  function unfinishedIds(list) {
+    var out = []
+    for (var i = 0; i < list.length; i++)
+      if (["done", "escalated", "cancelled"].indexOf(Runs.runState(list[i])) < 0) out.push(list[i].id)
+    return out.join(",")
+  }
+
+  function test_filter_finished_state_chips() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    var list = [mkRun("d", "done", null), mkRun("e", "escalated", null), cancelledRun("cancelled"),
+                cancelledRun("canceled"), mkRun("p", "stopped", null)]
+    compare(stateList(Runs.filterFinished(list, "done", "all", now, 0)), "done,stopped")
+    compare(stateList(Runs.filterFinished(list, "escalated", "all", now, 0)), "escalated,stopped")
+    compare(stateList(Runs.filterFinished(list, "cancelled", "all", now, 0)), "cancelled,canceled,stopped",
+            "cancelled covers both spellings")
+    var anyState = ["all", "", "bogus", undefined, "constructor", "__proto__", "canceled", null, 5]
+    for (var i = 0; i < anyState.length; i++)
+      compare(stateList(Runs.filterFinished(list, anyState[i], "all", now, 0)),
+              "done,escalated,cancelled,canceled,stopped", "state " + i + " keeps every finished run")
+    var kept = Runs.filterFinished(list, "cancelled", "all", now, 0)
+    compare(kept[0] === list[2] && kept[1] === list[3] && kept[2] === list[4], true, "the same objects")
+  }
+
+  function test_filter_finished_state_and_age() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    var list = [mkRun("done-new", "done", null, { started_at: "2026-10-04 09:00:00+00:00" }),
+                mkRun("done-old", "done", null, { started_at: "2026-09-01T00:00:00Z" }),
+                mkRun("esc-new", "escalated", null, { started_at: "2026-10-04T10:00:00Z" }),
+                mkRun("done-none", "done", null)]
+    compare(ids(Runs.filterFinished(list, "done", "week", now, 0)), "done-new", "state and age must both hold")
+    compare(ids(Runs.filterFinished(list, "all", "today", now, 0)), "done-new,esc-new", "today, UTC")
+    compare(ids(Runs.filterFinished(list, "all", "today", now, 780)), "",
+            "UTC+13: both started before local midnight")
+    compare(ids(Runs.filterFinished(list, "all", "all", now, 0)), "done-new,done-old,esc-new,done-none",
+            "All time keeps a run with no started_at")
+  }
+
+  function test_filter_finished_never_hides_unfinished() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    var old = "2020-01-01T00:00:00Z"
+    var list = [mkRun("live", "started", true, { started_at: old }),
+                mkRun("old-done", "done", null, { started_at: old }),
+                mkRun("dead", "started", false, { started_at: old }),
+                mkRun("old-esc", "escalated", null, { started_at: old }),
+                mkRun("parked", "stopped", null, { started_at: old }),
+                mkRun("old-canc", "canceled", null, { started_at: old }),
+                mkRun("unknown", "weird", null),
+                mkRun("new-done", "done", null, { started_at: "2026-10-04T11:00:00Z" })]
+    var before = JSON.stringify(list)
+    var states = ["all", "done", "escalated", "cancelled", "", "bogus", undefined, "constructor"]
+    var ages = ["all", "today", "week", "", "bogus", undefined]
+    var offsets = [0, -180, 600, 780, undefined, NaN]
+    var clocks = [now, NaN, undefined]
+    for (var s = 0; s < states.length; s++)
+      for (var a = 0; a < ages.length; a++)
+        for (var o = 0; o < offsets.length; o++)
+          for (var c = 0; c < clocks.length; c++)
+            compare(unfinishedIds(Runs.filterFinished(list, states[s], ages[a], clocks[c], offsets[o])),
+                    "live,dead,parked,unknown", "state " + s + " age " + a + " offset " + o + " clock " + c)
+    compare(ids(Runs.filterFinished(list, "all", "today", now, 0)), "live,dead,parked,unknown,new-done",
+            "only finished runs are dropped")
+    compare(JSON.stringify(list), before, "input unchanged")
+  }
+
+  function test_filter_finished_garbage() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    var list = [mkRun("d", "done", null, { started_at: "2026-10-04T11:00:00Z" }), mkRun("p", "stopped", null)]
+    var before = ids(list)
+    var bad = [undefined, null, "x", 5, [], {}]
+    for (var i = 0; i < bad.length; i++) {
+      compare(Runs.filterFinished(bad[i], "all", "all", now, 0).length, 0, "runs " + i)
+      compare(ids(Runs.filterFinished(list, bad[i], "today", now, 0)), "d,p", "finishedState " + i)
+      compare(ids(Runs.filterFinished(list, "done", bad[i], now, 0)), "d,p", "finishedAge " + i)
+      compare(ids(Runs.filterFinished(list, "done", "today", bad[i], 0)), "d,p", "nowMs " + i)
+      compare(ids(Runs.filterFinished(list, "done", "today", now, bad[i])), "d,p", "utcOffsetMinutes " + i)
+    }
+    var junk = [undefined, null, "x", 5, [], {}]
+    compare(Runs.filterFinished(junk, "done", "today", now, 0).length, junk.length,
+            "junk entries are not finished, so they are kept")
+    compare(ids(list), before, "input unchanged")
+  }
+
   // ---- Run detail (5.2)
 
   function test_normalize_branch_fields() {
