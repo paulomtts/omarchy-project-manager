@@ -5110,4 +5110,34 @@ TestCase {
     compare(JSON.stringify(next), nextJson, "nextRuns unchanged")
     compare(JSON.stringify(byRoot), rootsJson, "titlesByRoot unchanged")
   }
+
+  function test_titles_of_run_is_the_runs_project_map() {
+    var a = Runs.withProject(mkRun("run-a-000001", "started", true, {}), "/home/u/a", "A")
+    var b = Runs.withProject(mkRun("run-b-000002", "started", true, {}), "/home/u/b", "B")
+    var byRoot = { "/home/u/a": { m: "M" }, "/home/u/b": { m: "Other" } }
+    compare(JSON.stringify(Runs.titlesOfRun(a, byRoot)), '{"m":"M"}', "the run's own project map")
+    compare(JSON.stringify(Runs.titlesOfRun(b, byRoot)), '{"m":"Other"}', "another run, its own map")
+    compare(JSON.stringify(Runs.titlesOfRun(mkRun("run-c-000003", "started", true, {}), byRoot)), "{}", "an untagged run")
+    var c = Runs.withProject(mkRun("run-c-000003", "started", true, {}), "/home/u/c", "C")
+    compare(JSON.stringify(Runs.titlesOfRun(c, byRoot)), "{}", "a root absent from titlesByRoot")
+
+    var outer = [undefined, null, "x", 5, [], true]
+    for (var i = 0; i < outer.length; i++)
+      compare(JSON.stringify(Runs.titlesOfRun(a, outer[i])), "{}", "titlesByRoot " + i)
+    var inner = [null, "M", 5, [], true]
+    for (var j = 0; j < inner.length; j++)
+      compare(JSON.stringify(Runs.titlesOfRun(a, { "/home/u/a": inner[j] })), "{}", "a non-object entry " + j)
+
+    var emptyRoot = mkRun("run-g-000007", "stopped", null, {})
+    emptyRoot.project = { root: "", name: "" }
+    compare(JSON.stringify(Runs.titlesOfRun(emptyRoot, { "": { m1: "Never" } })), "{}", "root \"\" never uses a map")
+    compare(JSON.stringify(Runs.titlesOfRun(null, byRoot)), "{}", "a null run")
+    compare(JSON.stringify(Runs.titlesOfRun("x", byRoot)), "{}", "a string run")
+    var ctor = Runs.withProject(mkRun("run-d-000004", "stopped", null, {}), "constructor", "D")
+    compare(JSON.stringify(Runs.titlesOfRun(ctor, {})), "{}", "an inherited key is no map")
+
+    var rootsJson = JSON.stringify(byRoot)
+    Runs.titlesOfRun(a, byRoot)
+    compare(JSON.stringify(byRoot), rootsJson, "titlesByRoot unchanged")
+  }
 }
