@@ -44,8 +44,6 @@ Column {
   // Re-read whenever the list changes, i.e. with every snapshot.
   readonly property real nowMs: screen.app.runs.filteredRuns ? Date.now() : 0
   readonly property bool amMissing: screen.app.runs.amStatus === "missing"
-  // The status chips' counts: the project filter's runs, whatever the search.
-  readonly property var counts: Runs.runFilterCounts(Runs.filterByProject(screen.app.runs.runs, screen.app.runs.projectFilter))
   // The registry is empty: the status line says so whatever the chip or the
   // search.
   readonly property bool noProjects: screen.sizeOf(screen.app.runs.projectRoots) === 0
@@ -69,7 +67,8 @@ Column {
 
   // A chip's wording, also used by the "No <chip> runs." line.
   function chipLabel(id) {
-    return id === "attention" ? "Needs attention" : id === "live" ? "Live" : id === "parked" ? "Parked" : "All"
+    return id === "attention" ? "Needs attention" : id === "live" ? "Live" : id === "parked" ? "Parked"
+      : id === "finished" ? "Finished" : "All"
   }
 
   // The length of a list or array-like object; 0 for anything else.
@@ -309,9 +308,11 @@ Column {
     chipsObjectName: "runChips"
     chipPrefix: "runChip"
     statusObjectName: "runsMessage"
-    chips: ["attention", "live", "parked", "all"].map(function(id) {
+    // Counts from the store: listed runs (snapshot and loaded history) in the
+    // project filter, whatever the chip, the finished rows or the search.
+    chips: ["attention", "live", "parked", "finished", "all"].map(function(id) {
       var chip = { id: id, label: screen.chipLabel(id), tint: screen.theme.dim }
-      if (id !== "all") chip.count = screen.counts[id]
+      if (id !== "all") chip.count = screen.app.runs.runFilterCounts[id]
       return chip
     })
     activeChip: screen.app.runs.runFilter === "" ? "all" : screen.app.runs.runFilter

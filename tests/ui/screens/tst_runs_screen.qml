@@ -47,9 +47,37 @@ TestCase {
       property var projectRoots: [{ root: "/home/u/a", name: "alpha" }]
       property var projectErrors: ({})
       property string projectFilter: ""
-      readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(rs.runs, rs.runFilter), rs.searchQuery), rs.projectFilter))
+      // The Finished chip's state and age rows, as the real store holds them.
+      property string finishedState: ""
+      property string finishedAge: "all"
+      // Each runsByProject key is a registry root as the registry spells it.
+      property var runsByProject: ({})
+      // When not null, the chip counts a test forces; else the real store's.
+      property var countsOverride: null
+      readonly property var runFilterCounts: rs.countsOverride !== null ? rs.countsOverride
+        : Runs.runFilterCounts(Runs.filterByProject(rs.runs, rs.projectFilter))
+      readonly property var groups: {
+        var now = Date.now()
+        var state = rs.runFilter === "finished" ? rs.finishedState : ""
+        var age = rs.runFilter === "finished" || rs.runFilter === "" ? rs.finishedAge : "all"
+        var kept = Runs.filterFinished(Runs.filterRuns(rs.runs, rs.runFilter), state, age, now, -new Date(now).getTimezoneOffset())
+        return Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(kept, rs.searchQuery), rs.projectFilter))
+      }
       readonly property var filteredRuns: Runs.displayOrder(rs.groups)
       function toggleRunFilter(id) { rs.runFilter = id === "all" || id === rs.runFilter ? "" : id }
+      // The real store's toggles; every call is recorded as "state|<id>" or
+      // "age|<id>".
+      property var finishedCalls: []
+      function toggleFinishedState(id) {
+        rs.finishedCalls = rs.finishedCalls.concat(["state|" + id])
+        var known = id === "done" || id === "escalated" || id === "cancelled"
+        rs.finishedState = known && id !== rs.finishedState ? id : ""
+      }
+      function toggleFinishedAge(id) {
+        rs.finishedCalls = rs.finishedCalls.concat(["age|" + id])
+        var known = id === "today" || id === "week"
+        rs.finishedAge = known && id !== rs.finishedAge ? id : "all"
+      }
       // The open project's root ("" = none) and the project filter's toggle,
       // as the real store has them: toggleProjectFilter records its argument;
       // "", or the active root again, means All; a root no run has means All.
@@ -116,6 +144,18 @@ TestCase {
     }
   }
 
+  // The run history store's surface: {root: {runs, more, loading, error}}
+  // and showOlder(root), which only records its argument.
+  Component {
+    id: historyC
+    QtObject {
+      id: hs
+      property var historyByProject: ({})
+      property var showOlderCalls: []
+      function showOlder(root) { hs.showOlderCalls = hs.showOlderCalls.concat([root]) }
+    }
+  }
+
   Component {
     id: appC
     QtObject {
@@ -123,6 +163,7 @@ TestCase {
       property var runs: null
       property var runControl: null
       property var runTitles: null
+      property var runHistory: null
       // The project registry, as ProjectStore holds it: alpha and beta. A test
       // that changes it assigns a whole new object, so bindings follow.
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" },
@@ -153,7 +194,8 @@ TestCase {
     runs.searchQuery = Qt.binding(function() { return nav.searchQuery })
     var control = controlC.createObject(host)
     var titles = titlesC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles })
+    var history = historyC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles, runHistory: history })
     var navi = naviC.createObject(host)
     var sC = Qt.createComponent("../../../ui/screens/RunsScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
@@ -161,7 +203,7 @@ TestCase {
     nav.viewMode = "runs"
     runs.runs = list || []
     wait(20)
-    return { app: app, runs: runs, control: control, titles: titles, nav: nav, navi: navi, screen: screen }
+    return { app: app, runs: runs, control: control, titles: titles, history: history, nav: nav, navi: navi, screen: screen }
   }
 
   function ago(ms) { return new Date(Date.now() - ms).toISOString() }
@@ -195,6 +237,37 @@ TestCase {
 
   // An item's top edge in the screen's coordinates.
   function topOf(s, name) { return H.find(s.screen, name).mapToItem(s.screen, 0, 0).y }
+
+  // `n` done runs of the project at `root` named `name`, ids
+  // run-<tag>-done1000, run-<tag>-done1001, …
+  function doneRuns(n, root, name, tag) {
+    var out = []
+    for (var i = 0; i < n; i++) out.push(tagged(run("run-" + tag + "-done" + (1000 + i), "done", null, {}), root, name))
+    return out
+  }
+
+  // A history entry: no runs; `more`, `loading` and `error` from `o`, else
+  // false, false and "".
+  function page(o) {
+    var p = o || {}
+    return { runs: [], more: p.more === true, loading: p.loading === true, error: p.error || "" }
+  }
+
+  // An entries list as one string: h<g> a header, r<i> a run,
+  // o<k>:<root> a Show older, e the filtered project's error.
+  function shape(entries) {
+    return entries.map(function(e) {
+      return e.kind === "header" ? "h" + e.g : e.kind === "run" ? "r" + e.i
+        : e.kind === "showOlder" ? "o" + e.k + ":" + e.root : "e"
+    }).join(",")
+  }
+
+  // "r<from>,…,r<from + n - 1>".
+  function runIds(from, n) {
+    var out = []
+    for (var i = 0; i < n; i++) out.push("r" + (from + i))
+    return out.join(",")
+  }
 
   // The project chip row's chip ids, in model order, joined by ",".
   function projectChipIds(s) {
@@ -488,8 +561,31 @@ TestCase {
     compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
     compare(H.find(s.screen, "runChiplive").text, "Live 1")
     compare(H.find(s.screen, "runChipparked").text, "Parked 1")
+    compare(H.find(s.screen, "runChipfinished").text, "Finished 3")
     compare(H.find(s.screen, "runChipall").text, "All")
     compare(H.find(s.screen, "runChipall").active, true, "All is active with no filter")
+  }
+
+  function test_the_status_chips_are_in_order_and_count_from_run_filter_counts() {
+    var s = make(sample()); if (!s) return
+    var model = H.find(s.screen, "runChips").model
+    compare(model.map(function(c) { return c.id }).join(","), "attention,live,parked,finished,all")
+    s.runs.countsOverride = { attention: 7, live: 8, parked: 9, finished: 11, all: 50 }
+    compare(H.find(s.screen, "runChipattention").text, "Needs attention 7")
+    compare(H.find(s.screen, "runChiplive").text, "Live 8")
+    compare(H.find(s.screen, "runChipparked").text, "Parked 9")
+    compare(H.find(s.screen, "runChipfinished").text, "Finished 11", "the store's count, not the snapshot's 3")
+    compare(H.find(s.screen, "runChipall").text, "All")
+  }
+
+  function test_the_finished_chip_filters_and_names_its_empty_list() {
+    var s = make([run("run-x-live0001", "started", true, {}), run("run-x-dead0002", "started", false, {})]); if (!s) return
+    tap(H.find(s.screen, "runChipfinished"))
+    compare(s.runs.runFilter, "finished")
+    compare(H.find(s.screen, "runChipfinished").active, true)
+    compare(H.find(s.screen, "runRow0"), null)
+    compare(H.find(s.screen, "runsMessage").text, "No Finished runs.")
+    compare(s.screen.chipLabel("finished"), "Finished")
   }
 
   function test_each_chip_filters_its_rows_and_the_active_one_returns_to_all() {
