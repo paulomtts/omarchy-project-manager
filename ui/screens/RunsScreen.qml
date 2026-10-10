@@ -24,8 +24,8 @@ import "../theme" as T
 // with the cursor shows Open project for a run of a registered project other
 // than the open one; the button asks the navigator to choose that project. It
 // reads the run store, the run titles and the project registry and asks the
-// navigator to open a run, choose a project or move the cursor; it owns no
-// state of its own.
+// navigator to open a run, choose a project or move the cursor, and the run
+// titles to read every project's titles again; it owns no state of its own.
 // Ages are read against the clock once per snapshot: there is no timer.
 Column {
   id: screen
@@ -331,6 +331,8 @@ Column {
 
   // The global Notify on escalation setting: a desktop notification for
   // every run toast. Shown with or without a project, and while am is missing.
+  // Beside it, while am is present, Refresh titles asks the run titles to
+  // read every project's titles again.
   Row {
     objectName: "runsNotifyRow"
     spacing: Style.space(8)
@@ -348,6 +350,15 @@ Column {
       variant: "caption"
       theme: screen.theme
       text: "Notify on escalation"
+    }
+
+    UI.ActionButton {
+      objectName: "runsRefreshTitles"
+      anchors.verticalCenter: parent.verticalCenter
+      theme: screen.theme
+      visible: !screen.amMissing
+      text: "Refresh titles"
+      onClicked: screen.app.runTitles.refreshTitles()
     }
   }
 

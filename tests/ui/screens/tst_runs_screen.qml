@@ -831,6 +831,25 @@ TestCase {
     compare(footer.visible, true)
   }
 
+  function test_refresh_titles_calls_the_store() {
+    var s = make(sample()); if (!s) return
+    var button = H.find(s.screen, "runsRefreshTitles")
+    verify(button, "the Refresh titles button")
+    compare(button.visible, true)
+    compare(button.text, "Refresh titles")
+    tap(button)
+    compare(s.titles.refreshCalls, 1)
+    compare(s.navi.opened, "", "it opens no run")
+    compare(s.nav.viewMode, "runs")
+    compare(s.control.notifyCalls.length, 0, "it is not the notify switch")
+    tap(button)
+    compare(s.titles.refreshCalls, 2, "once per click")
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(H.find(s.screen, "runsRefreshTitles").visible, false, "hidden while am is missing")
+    compare(H.find(s.screen, "runsNotifyRow").visible, true, "the notify switch still shows")
+  }
+
   function test_an_error_shows_the_last_error_in_the_footer_and_keeps_the_rows() {
     var s = make(sample()); if (!s) return
     s.runs.amStatus = "error"
