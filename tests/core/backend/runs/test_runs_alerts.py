@@ -365,14 +365,109 @@ def test_lines_are_capture_copies():
 
 # --- argv, Usage, am missing ----------------------------------------------------
 
+WATCH = ["watch", "--all", "--follow", "--from-now"]
+
+
 def test_argv(world):
     set_script(world, [hello()])
     code, lines, _ = run_helper(world)
     assert code == 0
     assert lines == []
-    # argv list, no shell: the fake am sees exactly these arguments.
-    assert calls(world) == [["watch", "--all", "--follow", "--from-now"]]
-    assert "--from-now" in calls(world)[0]
+    # argv lists, no shell: the fake am sees exactly these arguments.
+    assert calls(world) == [["runs", "--repo-dir", str(world["repo"])], WATCH]
+
+
+def test_argv_empty_registry(world):
+    set_brd(world, projects())
+    set_script(world, [hello()])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == []
+    assert calls(world) == [WATCH]
+
+
+def test_seed_argv_order(world):
+    real1 = world["tmp"] / "real1"
+    real1.mkdir()
+    r1 = world["tmp"] / "r1"
+    r1.symlink_to(real1)
+    r2 = world["tmp"] / "r2"
+    r2.mkdir()
+    set_brd(world, projects(project(r1, name="one"), project(r2, name="two")))
+    set_script(world, [hello()])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == []
+    # once per root, brd's order, the root as brd printed it (the link), before the watch.
+    assert calls(world) == [["runs", "--repo-dir", str(r1)],
+                            ["runs", "--repo-dir", str(r2)], WATCH]
+
+
+def test_seed_never_alerts(world):
+    set_runs(world, {world["repo"]: [runs_reply(row(lease=None), row(RUN_B))]})
+    set_script(world, [hello()])
+    code, lines, err = run_helper(world)
+    assert code == 0, err
+    assert lines == []
+
+
+@pytest.mark.parametrize("failure", ["ok-false", "not-json", "no-runs"])
+def test_failed_seed_of_one_root(world, failure):
+    r1, r2 = world["tmp"] / "r1", world["tmp"] / "r2"
+    r1.mkdir()
+    r2.mkdir()
+    set_brd(world, projects(project(r1, name="one"), project(r2, name="two")))
+    set_runs(world, {r1: [RUNS_FAILURES[failure]], r2: [runs_reply(row(RUN_B))]})
+    set_script(world, [hello(), upsert("escalated", r2, run_id=RUN_B)])
+    code, lines, err = run_helper(world)
+    assert code == 0, err
+    assert "Traceback" not in err
+    assert lines == [alert(r2, run_id=RUN_B, name="two")]
+    assert calls(world) == [["runs", "--repo-dir", str(r1)],
+                            ["runs", "--repo-dir", str(r2)], WATCH]
+
+
+def test_no_poll_when_idle_subprocess(world):
+    set_script(world, [hello(), pause(2)])
+    code, lines, _ = run_helper(world)
+    assert code == 0
+    assert lines == []
+    assert calls(world) == [["runs", "--repo-dir", str(world["repo"])], WATCH]
+
+
+def wait_for_runs(world, within=10.0):
+    """The pid of the fake am's latest `am runs`, once one has started."""
+    end = time.monotonic() + within
+    while time.monotonic() < end:
+        try:
+            return int((world["am"] / "runs.pid").read_text())
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.05)
+    pytest.fail("am runs never started")
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT], ids=["SIGTERM", "SIGINT"])
+def test_signal_during_seed_leaves_no_am(world, sig):
+    set_runs(world, {world["repo"]: [{**runs_reply(row()), "sleep": 30}]})
+    set_script(world, [hello()])
+    p = start_helper(world)
+    try:
+        pid = wait_for_runs(world)  # sync point: the seed read is running
+        p.send_signal(sig)
+        code = p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    out = p.stdout.read()
+    err = p.stderr.read()
+    p.stdout.close()
+    p.stderr.close()
+    assert code == 0, err
+    assert out == ""
+    assert "Traceback" not in err
+    assert_gone(pid)
+    assert calls(world) == [["runs", "--repo-dir", str(world["repo"])]]  # no watch spawned
 
 
 @pytest.mark.parametrize("args", [["x"], ["--from-now"], [""], ["/some/root"], ["a", "b"]],
@@ -1072,3 +1167,33 @@ def test_upsert_never_arms_and_non_string_status_keeps(world, mod, capsys):
     at(clock, tracker, 120)
     assert printed(capsys) == []  # seeded unarmed; an upsert never arms
     assert len(runs_calls(world)) == 3  # still tracked: polled at 60 and 120
+
+
+def test_stream_polls_when_due(world, mod, capsys):
+    tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply(row(lease=None)))
+    watcher = mod.Watcher(registry((world["repo"], NAME)), tracker)
+    lines = queue.Queue()
+    lines.put(json.dumps(hello()["line"]) + "\n")
+    lines.put(mod.EOF)
+    clock.now = 60
+    assert mod.stream(lines, watcher) is None
+    assert printed(capsys) == [dead(world["repo"])]
+
+
+def test_stream_polls_on_idle_wake(world, mod, capsys):
+    tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply(row(lease=None)))
+    watcher = mod.Watcher(registry((world["repo"], NAME)), tracker)
+    lines = queue.Queue()
+
+    def later():
+        time.sleep(0.3)
+        clock.now = 60  # due while no am line is pending
+        time.sleep(2.5)
+        lines.put(mod.EOF)
+
+    feeder = threading.Thread(target=later, daemon=True)
+    feeder.start()
+    assert mod.stream(lines, watcher) is None
+    feeder.join(timeout=10)
+    assert printed(capsys) == [dead(world["repo"])]
+    assert len(runs_calls(world)) == 2

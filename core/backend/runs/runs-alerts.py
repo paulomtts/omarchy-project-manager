@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """Print an alert when a run of a registered project escalates, from
-`am watch --all --follow --from-now`.
+`am watch --all --follow --from-now`, or dies, from `am runs --repo-dir R`.
 
     runs-alerts.py
 
 Takes no argument; any argument is a Usage error (exit 2) and neither am nor
 brd is looked up or run. Long-lived. Looks up `am` (AmMissing when it is not on
-PATH), reads the registry, then spawns `am watch --all --follow --from-now` as
-an argv list, never a shell. Prints one JSON object per line, flushed at once:
+PATH), reads the registry, reads each registered root once in the registry's
+order (the seed), then spawns `am watch --all --follow --from-now`; every am
+and brd command is an argv list, never a shell. Prints one JSON object per
+line, flushed at once:
   {"alert": {"run_id": R, "root": P, "project": N, "state": "escalated"}}
       for each transition into escalated of a run whose last repo_dir names
       (realpath) a registered root; P is that root as brd printed it, N its
       project name.
+  {"alert": {"run_id": R, "root": P, "project": N, "state": "dead"}}
+      when a read finds an armed tracked run started with a lease that is not
+      live; the run is disarmed until a read finds it started with a live
+      lease. P and N are those of the root it was first tracked under.
   {"ok": false, "error": {"type", "message"}}
       then exit 1, with type SchemaMismatch, CorruptJournal (am exited 3),
       HelperError or AmMissing (Usage exits 2). An am refusal envelope is
@@ -28,9 +34,26 @@ The registry maps realpath(root_path) to (root_path, name) for each entry of
 entry winning. It is read at start and again when a transition names a
 repo_dir it does not hold; a successful read replaces it, a failed one (brd
 missing, non-zero exit, a 30 s timeout, any other output) keeps it and prints
-nothing. am exiting 0, SIGINT, SIGTERM or a closed stdout end the helper with
-exit 0. Only the `am` and `brd` commands are used; am's database and on-disk
-layout are never read.
+nothing.
+A read of root R is `am runs --repo-dir R`, R as brd printed it, bounded by
+60 s; am's ok:false envelope, any other output, a malformed run list, a
+timeout or am failing to start is a failed read, which prints nothing and
+changes nothing. A lease is live when it is an object whose live is the JSON
+true. Tracked runs are the runs last seen started. The seed tracks every
+started row of each root it reads, armed when its lease is live, and prints
+nothing. While a run is tracked, a poll is due 60 s after the latest of the
+seed, the previous poll and the tracked set becoming non-empty, checked after
+every am line and every 1 s idle wake; it reads each root holding a tracked
+run, in registry order. A read of R arms each run tracked under R whose row is
+started with a live lease, alerts dead (when armed) a started row whose lease
+is not live, drops a run whose row has any other status or is absent, and
+tracks an untracked started row without alerting. A run_upsert whose status is
+"started" tracks, armed, a run not yet tracked whose last repo_dir is
+registered; any other status string drops the run. No run tracked, no read.
+am exiting 0, SIGINT, SIGTERM or a closed stdout end the helper with exit 0,
+an `am runs` read in progress included (that am is killed and reaped). Only
+the `am` and `brd` commands are used; am's database and on-disk layout are
+never read.
 """
 import json
 import os
@@ -314,13 +337,15 @@ def stop(proc):
 
 
 def stream(lines, watcher):
-    """Read am's stream until it ends, line by line as it arrives. Every hello
-    line (event "watch") is checked; each run_upsert after the first hello goes
-    to `watcher`; every other line is ignored. Returns am's refusal envelope
-    (the last line with an "ok" key) if it printed one, else None. Raises
-    SchemaMismatch."""
+    """Read am's stream until it ends, line by line as it arrives, giving the
+    tracker its "poll if due" call before each line and on each idle wake.
+    Every hello line (event "watch") is checked; each run_upsert after the
+    first hello goes to `watcher`; every other line is ignored. Returns am's
+    refusal envelope (the last line with an "ok" key) if it printed one, else
+    None. Raises SchemaMismatch."""
     refusal, greeted = None, False
     while True:
+        watcher.tracker.poll_if_due()
         try:
             raw = lines.get(timeout=IDLE_POLL)
         except queue.Empty:
@@ -369,7 +394,9 @@ def main(argv):
     if am is None:
         return failure("AmMissing", "am is not installed.")
     registry = read_registry() or {}
-    watcher = Watcher(registry, Tracker(am))
+    tracker = Tracker(am)
+    tracker.seed(registry)
+    watcher = Watcher(registry, tracker)
     proc = spawn(am)
     lines, err = queue.Queue(), []
     threading.Thread(target=pump, args=(proc.stdout, lines), daemon=True).start()
