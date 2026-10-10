@@ -115,9 +115,11 @@ Column {
     return subtask.currentAttempt > 0 ? subtask.currentPhase + "." + subtask.currentAttempt : subtask.currentPhase
   }
 
+  // "<glyph> <phase>.<n> <status>"; a step reads its phase alone, an
+  // unnumbered attempt "<phase>.?".
   function attemptText(a) {
     var glyph = screen.glyphOf(a.status)
-    var label = a.phase + "." + (a.attempt > 0 ? a.attempt : "?")
+    var label = a.step === true ? a.phase : a.phase + "." + (a.attempt > 0 ? a.attempt : "?")
     return (glyph !== "" ? glyph + " " : "") + label + (a.status !== "" ? " " + a.status : "")
   }
 
@@ -126,9 +128,12 @@ Column {
     return (glyph !== "" ? glyph + " " : "") + entry.label + " " + (entry.status !== "" ? entry.status : "not started")
   }
 
-  function isSelected(cardId, phase, attempt) {
+  // A step row is selected by a step selection of its card and phase; an
+  // attempt row by an attempt selection of its card, phase and number.
+  function isSelected(cardId, phase, attempt, step) {
     var s = screen.selection
-    return !!s && s.card_id === cardId && s.phase === phase && s.attempt === attempt
+    if (!s || s.card_id !== cardId || s.phase !== phase) return false
+    return step === true ? s.step === true : s.step !== true && s.attempt === attempt
   }
 
   // The pane's age line: the snapshot's age (and "last 200 lines" when cut),
@@ -271,9 +276,9 @@ Column {
         UI.ThemedText {
           objectName: "runOutputHeading"
           theme: screen.theme
-          text: screen.selection
-            ? "Output · " + screen.selection.card_id + " " + screen.selection.phase + "." + screen.selection.attempt
-            : "Output"
+          text: !screen.selection ? "Output"
+            : "Output · " + screen.selection.card_id + " " + screen.selection.phase
+              + (screen.selection.step === true ? "" : "." + screen.selection.attempt)
         }
 
         UI.ThemedText {
@@ -435,16 +440,19 @@ Column {
     property int subtaskIndex: -1
     readonly property var subtask: screen.subtaskAt(attemptRow.storyIndex, attemptRow.subtaskIndex)
     readonly property var attempt: screen.attemptAt(attemptRow.subtask, attemptRow.index)
-    readonly property bool selected: screen.isSelected(attemptRow.subtask.card_id, attemptRow.attempt.phase, attemptRow.attempt.attempt)
+    readonly property bool isStep: attemptRow.attempt.step === true
+    readonly property bool selected: screen.isSelected(attemptRow.subtask.card_id, attemptRow.attempt.phase, attemptRow.attempt.attempt, attemptRow.isStep)
     readonly property string key: attemptRow.storyIndex + "_" + attemptRow.subtaskIndex + "_" + attemptRow.index
 
     objectName: "runAttempt" + attemptRow.key
     width: screen.width
     theme: screen.theme
     contentMargin: Style.space(32)
-    hoverCursorShape: attemptRow.attempt.attempt > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+    hoverCursorShape: attemptRow.isStep || attemptRow.attempt.attempt > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
     onActivated: {
-      if (attemptRow.attempt.attempt > 0)
+      if (attemptRow.isStep)
+        screen.app.runs.selectAttempt(attemptRow.subtask.card_id, attemptRow.attempt.phase, 0, true)
+      else if (attemptRow.attempt.attempt > 0)
         screen.app.runs.selectAttempt(attemptRow.subtask.card_id, attemptRow.attempt.phase, attemptRow.attempt.attempt)
     }
 

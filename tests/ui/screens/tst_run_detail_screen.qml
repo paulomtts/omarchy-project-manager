@@ -37,9 +37,11 @@ TestCase {
       property string flashText: ""
       property var selected: null
       property int refreshed: 0
-      function selectAttempt(cardId, phase, attempt) {
-        rs.selected = [cardId, phase, attempt]
-        rs.selectedAttempt = { card_id: cardId, phase: phase, attempt: attempt }
+      // As RunStore: (card, phase, 0, true) is a step, stored with step: true.
+      function selectAttempt(cardId, phase, attempt, step) {
+        rs.selected = [cardId, phase, attempt, step === true]
+        rs.selectedAttempt = step === true ? { card_id: cardId, phase: phase, attempt: 0, step: true }
+                                           : { card_id: cardId, phase: phase, attempt: attempt }
       }
       function refreshLogs() { rs.refreshed += 1 }
       // The events and the tab (4.3). setDetailTab records every call and,
@@ -135,6 +137,17 @@ TestCase {
 
   function detail() { return [run("run-20261004-19efcddc", "started", true, { tree: detailTree() })] }
   function sel(card, phase, n) { return { card_id: card, phase: phase, attempt: n } }
+
+  // t1 with a numbered implement.1 and a started verify step (kind
+  // deterministic, no attempts): the tree lists implement.1 then the step.
+  function stepTree() {
+    return { stories: [{ card_id: "s1", status: "started", subtasks: ["t1"] }],
+             subtasks: [{ card_id: "t1", status: "started", phases: [
+               { name: "implement", status: "done", attempts: [{ n: 1, status: "done" }] },
+               { name: "verify", kind: "deterministic", status: "started", attempts: [] }] }] }
+  }
+  function stepRun() { return [run("run-20261004-19efcddc", "started", true, { tree: stepTree() })] }
+  function stepSel(card, phase) { return { card_id: card, phase: phase, attempt: 0, step: true } }
 
   // One am run as RunStore hands it to normalizeRun, fresh on every call: the
   // fixture's `am runs` row (runs.json's entry with the same run id, else the
@@ -232,7 +245,7 @@ TestCase {
   function test_clicking_an_attempt_selects_it() {
     var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
     tap(H.find(s.screen, "runAttempt0_0_0"))
-    compare(s.runs.selected.join("|"), "t1|spec|1")
+    compare(s.runs.selected.join("|"), "t1|spec|1|false")
     compare(H.find(s.screen, "runAttemptLabel0_0_0").text.indexOf("› "), 0, "the clicked row is marked")
     compare(H.find(s.screen, "runAttemptLabel0_0_2").text.indexOf("  "), 0)
   }
@@ -241,7 +254,7 @@ TestCase {
   function test_clicking_a_subtask_selects_its_current_attempt() {
     var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
     tap(H.find(s.screen, "runSubtask0_1"))
-    compare(s.runs.selected.join("|"), "t2|spec|1")
+    compare(s.runs.selected.join("|"), "t2|spec|1|false")
     verify(H.find(s.screen, "runAttempt0_1_0"), "its attempts unfold")
     compare(H.find(s.screen, "runAttempt0_0_0"), null, "the other subtask folds")
     s.runs.selected = null
@@ -302,6 +315,49 @@ TestCase {
     s.runs.selected = null
     tap(H.find(s.screen, "runAttempt0_0_0"))
     compare(s.runs.selected, null)
+  }
+
+  // ---- step rows
+
+  function test_a_step_row_reads_its_phase_without_a_number() {
+    var s = make(stepRun(), undefined, sel("t1", "implement", 1)); if (!s) return
+    compare(H.find(s.screen, "runAttemptLabel0_0_0").text, "› " + RG.glyphOf("done") + " implement.1 done")
+    compare(H.find(s.screen, "runAttemptLabel0_0_1").text, "  " + RG.glyphOf("running") + " verify started")
+  }
+
+  function test_clicking_a_step_row_selects_the_step() {
+    var s = make(stepRun(), undefined, sel("t1", "implement", 1)); if (!s) return
+    compare(H.find(s.screen, "runAttempt0_0_1").hoverCursorShape, Qt.PointingHandCursor)
+    tap(H.find(s.screen, "runAttempt0_0_1"))
+    compare(JSON.stringify(s.runs.selected), JSON.stringify(["t1", "verify", 0, true]))
+    compare(H.find(s.screen, "runAttemptLabel0_0_1").text, "› " + RG.glyphOf("running") + " verify started")
+    compare(H.find(s.screen, "runAttemptLabel0_0_1").font.bold, true)
+    compare(H.find(s.screen, "runAttemptLabel0_0_0").text, "  " + RG.glyphOf("done") + " implement.1 done")
+    tap(H.find(s.screen, "runAttempt0_0_0"))
+    compare(s.runs.selected.join("|"), "t1|implement|1|false", "a numbered attempt still selects itself")
+  }
+
+  function test_a_step_selection_heading_has_no_number() {
+    var s = make(stepRun(), undefined, stepSel("t1", "verify")); if (!s) return
+    compare(H.find(s.screen, "runOutputHeading").text, "Output · t1 verify")
+    s.runs.selectedAttempt = sel("t1", "implement", 1)
+    compare(H.find(s.screen, "runOutputHeading").text, "Output · t1 implement.1")
+    s.runs.selectedAttempt = null
+    compare(H.find(s.screen, "runOutputHeading").text, "Output")
+  }
+
+  // Review Focus 2.
+  function test_a_step_and_an_attempt_of_one_phase_are_never_both_selected() {
+    var tree = stepTree()
+    tree.subtasks[0].phases[1].attempts = [{ status: "started" }]
+    var s = make([run("run-20261004-19efcddc", "started", true, { tree: tree })], undefined, stepSel("t1", "verify")); if (!s) return
+    var step = H.find(s.screen, "runAttemptLabel0_0_1")
+    var unnumbered = H.find(s.screen, "runAttemptLabel0_0_2")
+    compare(step.text, "› " + RG.glyphOf("running") + " verify started")
+    compare(unnumbered.text, "  " + RG.glyphOf("running") + " verify.? started", "the step selection is not the attempt's")
+    s.runs.selectedAttempt = sel("t1", "verify", 0)
+    compare(step.text.indexOf("  "), 0, "an attempt-shaped selection never marks the step")
+    compare(unnumbered.text.indexOf("› "), 0)
   }
 
   function test_bookkeeping_rows_only_when_present() {
@@ -562,7 +618,7 @@ TestCase {
     s.runs.events = [eventRow(5, { card: "t1", phase: "implement", attempt: 1 })]
     wait(30)
     tap(H.find(s.screen, "eventsRow5"))
-    compare(s.runs.selected.join("|"), "t1|implement|1")
+    compare(s.runs.selected.join("|"), "t1|implement|1|false")
     compare(s.runs.detailTab, "output")
     compare(shown(s, "runOutputPane"), true)
     compare(shown(s, "eventsPane"), false)
