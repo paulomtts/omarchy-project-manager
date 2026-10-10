@@ -4747,4 +4747,100 @@ TestCase {
     compare(JSON.stringify(run), runJson, "run unchanged")
     compare(JSON.stringify(titles), titlesJson, "titles unchanged")
   }
+
+  // Runs of four projects: two share a milestone id under different roots; one
+  // root is named after an Object.prototype member, one is __proto__.
+  function titledRuns() {
+    return [
+      Runs.withProject(mkRun("run-a-000001", "started", true, { milestone_id: "ms-alpha-1" }), "/p/a", "A"),
+      Runs.withProject(mkRun("run-b-000002", "escalated", null, { milestone_id: "ms-alpha-1" }), "/p/b", "B"),
+      Runs.withProject(mkRun("run-c-000003", "stopped", null, { milestone_id: "ms-gamma" }), "/p/c", "C"),
+      Runs.withProject(mkRun("run-d-000004", "stopped", null, { milestone_id: "ms-delta" }), "constructor", "D"),
+      Runs.withProject(mkRun("run-e-000005", "stopped", null, { milestone_id: "ms-eps" }), "__proto__", "E"),
+      mkRun("run-f-000006", "stopped", null, { milestone_id: "ms-zeta" })
+    ]
+  }
+
+  function test_search_runs_by_title() {
+    var list = titledRuns()
+    var byRoot = { "/p/a": { "ms-alpha-1": "Release Train" }, "/p/b": { "ms-alpha-1": "Other Title" }, "/p/c": null }
+    compare(ids(Runs.searchRuns(list, "release TRAIN", byRoot)), "run-a-000001", "a title substring, any case")
+    compare(ids(Runs.searchRuns(list, "other title", byRoot)), "run-b-000002", "another root uses its own map")
+    compare(ids(Runs.searchRuns(list, "milestone …ms-gamma", byRoot)), "run-c-000003", "a null root map gives fallbacks")
+    compare(ids(Runs.searchRuns(list, "ms-delta", byRoot)), "run-d-000004", "a root absent from titlesByRoot gives fallbacks")
+    compare(ids(Runs.searchRuns(list, "ms-zeta", byRoot)), "run-f-000006", "a run without a root gives fallbacks")
+    compare(ids(Runs.searchRuns(list, "run-b", byRoot)), "run-b-000002", "the id still matches")
+    compare(ids(Runs.searchRuns(list, "escalated", byRoot)), "run-b-000002", "the state still matches")
+    compare(Runs.searchRuns(list, "", byRoot) === list, true, "an empty query returns the input itself")
+
+    var protoRoots = JSON.parse('{"constructor": {"ms-delta": "Ctor Title"}, "__proto__": {"ms-eps": "Proto Title"}}')
+    compare(ids(Runs.searchRuns(list, "ctor title", protoRoots)), "run-d-000004", "a root named constructor")
+    compare(ids(Runs.searchRuns(list, "proto title", protoRoots)), "run-e-000005", "a root named __proto__")
+    compare(ids(Runs.searchRuns(list, "ms-eps", {})), "run-e-000005", "an inherited __proto__ root is no map")
+
+    compare(ids(Runs.searchRuns(list, "milestone")),
+            "run-a-000001,run-b-000002,run-c-000003,run-d-000004,run-e-000005,run-f-000006",
+            "titlesByRoot omitted: every untitled milestone run matches milestone")
+  }
+
+  function test_search_runs_titles_by_root_garbage() {
+    var list = titledRuns()
+    var outer = [undefined, null, "x", 5, [], true]
+    for (var i = 0; i < outer.length; i++)
+      compare(ids(Runs.searchRuns(list, "milestone …-alpha-1", outer[i])), "run-a-000001,run-b-000002", "titlesByRoot " + i)
+
+    var inner = [[], "Release", 5, true]
+    for (var j = 0; j < inner.length; j++)
+      compare(ids(Runs.searchRuns(list, "milestone …-alpha-1", { "/p/a": inner[j] })), "run-a-000001,run-b-000002",
+              "root map " + JSON.stringify(inner[j]) + " acts as {}")
+
+    var bareRoots = Object.create(null)
+    var bareMap = Object.create(null)
+    bareMap["ms-alpha-1"] = "Bare Title"
+    bareRoots["/p/a"] = bareMap
+    compare(ids(Runs.searchRuns(list, "bare title", bareRoots)), "run-a-000001", "prototype-less maps")
+
+    var emptyRoot = mkRun("run-g-000007", "stopped", null, { milestone_id: "ms-eta" })
+    emptyRoot.project = { root: "", name: "" }
+    compare(ids(Runs.searchRuns([emptyRoot], "milestone …ms-eta", { "": { "ms-eta": "Never" } })), "run-g-000007",
+            "an empty root always uses {}")
+
+    var byRoot = { "/p/a": { "ms-alpha-1": "Release Train" } }
+    var listJson = JSON.stringify(list), rootsJson = JSON.stringify(byRoot)
+    Runs.searchRuns(list, "release", byRoot)
+    compare(JSON.stringify(list), listJson, "runs unchanged")
+    compare(JSON.stringify(byRoot), rootsJson, "titlesByRoot unchanged")
+  }
+
+  function test_new_alerts_titles_by_root() {
+    var noIds = mkRun("r3", "started", false, { milestone_id: "" })
+    var prev = [Runs.withProject(alRunning("r1"), "/p/a", "A"), Runs.withProject(alRunning("r2"), "/p/b", "B"), alRunning("r3")]
+    var next = [Runs.withProject(alEscalated("r1"), "/p/a", "A"), Runs.withProject(alDead("r2"), "/p/b", "B"), noIds]
+    var byRoot = { "/p/a": { m1: "Alpha milestone" }, "/p/b": { other: "Unused" } }
+
+    var a = Runs.newAlerts(prev, next, byRoot)
+    compare(alIds(a), "r1,r2,r3")
+    checkAlert(a[0], "r1", "Alpha milestone", "escalated", "escalated at review", "mapped title")
+    checkAlert(a[1], "r2", "milestone …m1", "dead", "process died", "its root's map lacks the id")
+    checkAlert(a[2], "r3", "…r3", "dead", "process died", "no ids keep the short-id title")
+
+    var b = Runs.newAlerts(prev, next)
+    checkAlert(b[0], "r1", "milestone …m1", "escalated", "escalated at review", "titlesByRoot omitted")
+    checkAlert(b[2], "r3", "…r3", "dead", "process died", "titlesByRoot omitted, no ids")
+
+    var garbage = [null, "x", 5, [], { "/p/a": [] }, { "/p/a": "Alpha" }, { "/p/a": null }]
+    for (var i = 0; i < garbage.length; i++)
+      compare(Runs.newAlerts(prev, next, garbage[i])[0].title, "milestone …m1", "garbage titlesByRoot " + i)
+
+    var protoRoot = Runs.withProject(alEscalated("r4"), "constructor", "C")
+    compare(Runs.newAlerts([], [protoRoot], {})[0].title, "milestone …m1", "a root named constructor, empty map")
+    compare(Runs.newAlerts([], [protoRoot], JSON.parse('{"constructor": {"m1": "Ctor"}}'))[0].title, "Ctor",
+            "a root named constructor, own key")
+
+    var prevJson = JSON.stringify(prev), nextJson = JSON.stringify(next), rootsJson = JSON.stringify(byRoot)
+    Runs.newAlerts(prev, next, byRoot)
+    compare(JSON.stringify(prev), prevJson, "prevRuns unchanged")
+    compare(JSON.stringify(next), nextJson, "nextRuns unchanged")
+    compare(JSON.stringify(byRoot), rootsJson, "titlesByRoot unchanged")
+  }
 }
