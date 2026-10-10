@@ -396,4 +396,72 @@ TestCase {
     reply(procs.a, pageOk([h2()], false), 0)
     compare(idsOf(s, tc.rootA), "h1,h2", "rootA's reply still lands")
   }
+
+  // ---- dropped pages
+
+  // The processes `procs` (from inFlight) reply after their roots were
+  // dropped: no entry comes back.
+  function lateRepliesLandNowhere(s, procs) {
+    reply(procs.a, pageOk([h2()], false), 0)
+    reply(procs.b, pageOk([hb2()], false), 0)
+    compare(JSON.stringify(Object.keys(s.historyByProject)), "[]", "the dropped roots' old replies create no entry")
+  }
+
+  function test_a_changed_age_drops_every_root() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    var procs = inFlight(s)
+    s.finishedAge = "week"
+    compare(JSON.stringify(Object.keys(s.historyByProject)), "[]")
+    compare(s.runnerFor(tc.rootA).busy, false, "rootA's fetch is cancelled")
+    compare(s.runnerFor(tc.rootB).busy, false)
+    lateRepliesLandNowhere(s, procs)
+  }
+
+  function test_a_changed_finished_state_under_finished_drops_every_root() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    s.runFilter = "finished"
+    var procs = inFlight(s)
+    s.finishedState = "done"
+    compare(JSON.stringify(Object.keys(s.historyByProject)), "[]")
+    lateRepliesLandNowhere(s, procs)
+  }
+
+  function test_a_changed_chip_drops_every_root() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    var procs = inFlight(s)
+    s.runFilter = "parked"
+    compare(JSON.stringify(Object.keys(s.historyByProject)), "[]")
+    lateRepliesLandNowhere(s, procs)
+  }
+
+  function test_a_finished_state_change_under_all_drops_nothing() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    var procs = inFlight(s)
+    s.finishedState = "done"
+    compare(idsOf(s, tc.rootA), "h1", "the All chip's status list did not change")
+    compare(idsOf(s, tc.rootB), "hb1")
+    compare(s.historyByProject[tc.rootA].loading, true)
+    reply(procs.a, pageOk([h2()], false), 0)
+    compare(idsOf(s, tc.rootA), "h1,h2", "the page in flight still lands")
+  }
+
+  function test_closing_the_panel_drops_every_root() {
+    var s = openHistory(snap(baseA(), baseB())); if (!s) return
+    var procs = inFlight(s)
+    s.active = false
+    compare(JSON.stringify(Object.keys(s.historyByProject)), "[]")
+    lateRepliesLandNowhere(s, procs)
+  }
+
+  function test_show_older_after_a_drop_starts_over_from_the_snapshot() {
+    var s = openHistory(snap(baseA(), null)); if (!s) return
+    page(s, tc.rootA, [h1(), h2()], true)
+    s.finishedAge = "week"
+    s.showOlder(tc.rootA)
+    var cmd = argv(s.runnerFor(tc.rootA).current)
+    compare(cmd.indexOf(tc.historyCmd + tc.rootA + "|--before|2026-10-03T00:00:00Z|--status|" + tc.allStatuses + "|--since|"), 0,
+            "the cursor comes from the snapshot alone: " + cmd)
+    compare(JSON.stringify(s.historyByProject[tc.rootA].runs), "[]")
+    compare(s.historyByProject[tc.rootA].more, false)
+  }
 }

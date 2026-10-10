@@ -39,8 +39,15 @@ Scope {
 
   property var historyByProject: ({})   // {root: {runs, more, loading, error}}
 
+  onActiveChanged: if (!history.active) history.dropAll()
   onSnapshotByProjectChanged: history.snapshotChanged()
-  Component.onCompleted: historyState.previous = history.snapshotByProject
+  onRunFilterChanged: history.queryChanged()
+  onFinishedStateChanged: history.queryChanged()
+  onFinishedAgeChanged: history.queryChanged()
+  Component.onCompleted: {
+    historyState.previous = history.snapshotByProject
+    historyState.query = history.queryKey()
+  }
 
   // The HelperRunner that serves `root`; null when there is none.
   function runnerFor(root) {
@@ -234,11 +241,34 @@ Scope {
     if (changed) history.historyByProject = map
   }
 
+
+  // The query the loaded pages were fetched under: the status list and finishedAge.
+  function queryKey() {
+    return Runs.historyStatuses(history.runFilter, history.finishedState).join(",") + "|" + history.finishedAge
+  }
+
+  // runFilter, finishedState or finishedAge changed: when the query differs
+  // from the last one, every root's pages are dropped.
+  function queryChanged() {
+    var key = history.queryKey()
+    if (key === historyState.query) return
+    historyState.query = key
+    history.dropAll()
+  }
+
+  // Every root's entry goes and every fetch in flight is cancelled.
+  function dropAll() {
+    var roots = Object.keys(historyState.runners)
+    for (var i = 0; i < roots.length; i++) history.cancelRunner(roots[i])
+    if (Object.keys(history.historyByProject).length > 0) history.historyByProject = {}
+  }
+
   // Bookkeeping kept apart so consumers cannot write it.
   QtObject {
     id: historyState
     property var runners: ({})    // {root: HelperRunner}, made on each root's first launch
     property var previous: ({})   // the snapshotByProject value the last change left
+    property string query: ""     // queryKey() of the loaded pages
   }
 
   // One runs-history.py runner per root. Guard "": the store cancels a
