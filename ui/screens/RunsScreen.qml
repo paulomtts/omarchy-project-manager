@@ -10,8 +10,9 @@ import "../theme" as T
 // The Runs section: every registered project's am runs, grouped by project
 // with a header each (name; live, parked and needs-attention counts; the
 // project's snapshot error), flat with no header under a project filter. Each
-// run is one row (state glyph, short id, title, done/total, current phase,
-// age) whose index is its position in the store's filteredRuns, the one list
+// run is one row (state glyph; title, from the run's own project's map in
+// app.runTitles; short id in dim; done/total, current phase, age) whose index
+// is its position in the store's filteredRuns, the one list
 // the cursor walks; headers are not cursor targets. A project chip row (All
 // projects, This project when one is open, one chip per project with runs,
 // with run counts) sits above the status chips, hidden when only one project
@@ -21,8 +22,9 @@ import "../theme" as T
 // means All again -- and a footer says whether the runs are watched. The row
 // with the cursor shows Open project for a run of a registered project other
 // than the open one; the button asks the navigator to choose that project. It
-// reads the run store and the project registry and asks the navigator to open
-// a run, choose a project or move the cursor; it owns no state of its own.
+// reads the run store, the run titles and the project registry and asks the
+// navigator to open a run, choose a project or move the cursor; it owns no
+// state of its own.
 // Ages are read against the clock once per snapshot: there is no timer.
 Column {
   id: screen
@@ -491,20 +493,21 @@ Column {
       }
 
       UI.ThemedText {
-        id: rowId
-        objectName: "runRowId" + row.index
-        variant: "caption"
-        theme: screen.theme
-        text: Runs.shortId(row.run)
-      }
-
-      UI.ThemedText {
         objectName: "runRowTitle" + row.index
         theme: screen.theme
         width: Math.max(0, parent.width - (rowGlyph.visible ? rowGlyph.width + parent.spacing : 0)
           - rowId.width - parent.spacing)
-        text: Runs.runTitle(row.run)
+        text: Runs.runTitle(row.run, Runs.titlesOfRun(row.run, screen.app.runTitles.titlesByRoot))
         elide: Text.ElideRight
+      }
+
+      UI.ThemedText {
+        id: rowId
+        objectName: "runRowId" + row.index
+        variant: "caption"
+        theme: screen.theme
+        text: Runs.runSubtitle(row.run)
+        color: screen.theme.dim
       }
     }
 

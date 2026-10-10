@@ -2,7 +2,7 @@
 // ui/screens/RunsScreen.qml on its own: the rows it renders, the chips, the
 // footer and banners, and the empty and missing states. A stub app: a REAL
 // NavigationStore, plus plain objects carrying the RunStore properties and,
-// apart, the RunControlStore properties the screen reads (the real store's
+// apart, the RunControlStore and RunTitlesStore properties the screen reads (the real store's
 // `watching` is a read-only alias that cannot be set from a test); the run
 // list is filtered through the same domain functions the store uses. The
 // navigator is a recorder.
@@ -103,12 +103,26 @@ TestCase {
     }
   }
 
+  // The run titles store's surface: the {root: {id: title}} maps, the
+  // {root: status} statuses and refreshTitles(), which only counts.
+  Component {
+    id: titlesC
+    QtObject {
+      id: ts
+      property var titlesByRoot: ({})
+      property var titleStatus: ({})
+      property int refreshCalls: 0
+      function refreshTitles() { ts.refreshCalls += 1 }
+    }
+  }
+
   Component {
     id: appC
     QtObject {
       property var nav: null
       property var runs: null
       property var runControl: null
+      property var runTitles: null
       // The project registry, as ProjectStore holds it: alpha and beta. A test
       // that changes it assigns a whole new object, so bindings follow.
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" },
@@ -138,7 +152,8 @@ TestCase {
     var runs = runsC.createObject(host)
     runs.searchQuery = Qt.binding(function() { return nav.searchQuery })
     var control = controlC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control })
+    var titles = titlesC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles })
     var navi = naviC.createObject(host)
     var sC = Qt.createComponent("../../../ui/screens/RunsScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
@@ -146,7 +161,7 @@ TestCase {
     nav.viewMode = "runs"
     runs.runs = list || []
     wait(20)
-    return { app: app, runs: runs, control: control, nav: nav, navi: navi, screen: screen }
+    return { app: app, runs: runs, control: control, titles: titles, nav: nav, navi: navi, screen: screen }
   }
 
   function ago(ms) { return new Date(Date.now() - ms).toISOString() }
@@ -266,6 +281,71 @@ TestCase {
     compare(H.find(s.screen, "runRowAge4").visible, false)
     compare(H.find(s.screen, "runRowReason4").visible, false)
     compare(H.find(s.screen, "runRowState4").visible, false)
+  }
+
+  // ---- titles (4.1)
+
+  // twoProjects(): row 2 is beta's run-b-live0003, milestone zeta.
+  function test_a_row_reads_its_title_then_its_short_id_in_dim() {
+    var s = make(twoProjects()); if (!s) return
+    s.titles.titlesByRoot = { "/home/u/b": { zeta: "Ship zeta" } }
+    wait(20)
+    var glyph = H.find(s.screen, "runRowGlyph2")
+    var title = H.find(s.screen, "runRowTitle2")
+    var id = H.find(s.screen, "runRowId2")
+    compare(title.text, "Ship zeta")
+    compare(id.text, "…live0003")
+    compare(id.visible, true)
+    compare(String(id.color), String(s.screen.theme.dim), "the short id is dim")
+    verify(glyph.x < title.x, "the glyph comes first")
+    verify(title.x < id.x, "the short id follows the title")
+  }
+
+  function test_the_open_and_another_project_title_from_their_own_maps() {
+    var s = make([tagged(run("run-a-live0001", "started", true, { milestone: "m1" }), "/home/u/a", "alpha"),
+                  tagged(run("run-b-live0002", "started", true, { milestone: "m1" }), "/home/u/b", "beta")]); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.titles.titlesByRoot = { "/home/u/a": { m1: "Alpha M" }, "/home/u/b": { m1: "Beta M" } }
+    wait(20)
+    compare(H.find(s.screen, "runRowTitle0").text, "Alpha M", "the open project's run")
+    compare(H.find(s.screen, "runRowId0").text, "…live0001")
+    compare(H.find(s.screen, "runRowTitle1").text, "Beta M", "another project's run, from its own map")
+    compare(H.find(s.screen, "runRowId1").text, "…live0002")
+  }
+
+  function test_without_a_map_the_row_falls_back() {
+    var s = make(twoProjects()); if (!s) return
+    compare(H.find(s.screen, "runRowTitle2").text, "milestone …zeta", "no map at all")
+    s.titles.titlesByRoot = { "/home/u/a": { zeta: "Wrong project" } }
+    compare(H.find(s.screen, "runRowTitle2").text, "milestone …zeta", "only another root's map")
+    s.titles.titlesByRoot = { "/home/u/b": { zeta: "Ship zeta" } }
+    compare(H.find(s.screen, "runRowTitle2").text, "Ship zeta", "a new titlesByRoot re-titles the row")
+    var garbage = [{ "/home/u/b": {} }, null, "x", [], { "/home/u/b": null }, { "/home/u/b": "Ship zeta" }]
+    for (var i = 0; i < garbage.length; i++) {
+      s.titles.titlesByRoot = garbage[i]
+      compare(H.find(s.screen, "runRowTitle2").text, "milestone …zeta", "garbage " + i)
+      compare(H.find(s.screen, "runRowId2").text, "…live0003", "garbage " + i + " keeps the id")
+    }
+    s.runs.runs = [run("run-x-none0009", "started", true, { milestone: "zeta" })]
+    s.titles.titlesByRoot = { "": { zeta: "Never" } }
+    wait(20)
+    compare(H.find(s.screen, "runRowTitle0").text, "milestone …zeta", "a run with no project uses no map")
+  }
+
+  // Review Focus 1.
+  function test_a_long_title_never_pushes_the_short_id_off_the_row() {
+    var s = make(twoProjects()); if (!s) return
+    var long = ""
+    for (var i = 0; i < 40; i++) long += "a very long run title "
+    s.titles.titlesByRoot = { "/home/u/b": { zeta: long } }
+    wait(20)
+    var title = H.find(s.screen, "runRowTitle2")
+    var id = H.find(s.screen, "runRowId2")
+    compare(title.elide, Text.ElideRight)
+    verify(title.width < title.implicitWidth, "the title is elided")
+    compare(id.text, "…live0003")
+    var right = id.mapToItem(s.screen, 0, 0).x + id.width
+    verify(right <= s.screen.width, "the short id stays on the row: right edge " + right)
   }
 
   function test_an_escalated_row_carries_its_reason() {
