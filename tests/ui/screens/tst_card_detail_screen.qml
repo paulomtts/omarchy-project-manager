@@ -296,7 +296,7 @@ TestCase {
     verify(first, "a row per touching run, newest first")
     compare(H.find(first, "runBadge").text, "⟳")
     compare(H.find(first, "cardRunId0").text, "…000000a1")
-    compare(H.find(first, "cardRunTitle0").text, "m1")
+    compare(H.find(first, "cardRunTitle0").text, "milestone …m1")
     compare(H.find(first, "cardRunPhase0").text, "implement")
     compare(H.find(first, "cardRunAge0").text, "2h")
     var second = H.find(s, "cardRunRow1")

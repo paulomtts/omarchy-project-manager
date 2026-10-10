@@ -556,10 +556,49 @@ function shortId(run) {
   return typeof id === "string" ? "…" + id.slice(-8) : "…"
 }
 
-// The run's milestone, else its short id.
-function runTitle(run) {
-  var milestone = _isObject(run) ? _stringOr(run.milestone_id) : ""
-  return milestone !== "" ? milestone : shortId(run)
+// A milestone, story or card id: a non-empty string.
+function _isTitleId(v) { return typeof v === "string" && v !== "" }
+
+// v when it is a plain object (a titles map), else {}.
+function _titlesOr(v) { return _isObject(v) ? v : {} }
+
+// The usable title titles holds for id as an own key, else "".
+function _mappedTitle(titles, id) {
+  var map = _titlesOr(titles)
+  return hasKey(map, id) ? _usableTitle(map[id]) : ""
+}
+
+// The usable title of the first object in run.tree.stories whose card_id is id, else "".
+function _amStoryTitle(run, id) {
+  var story = _findByCardId(_treeOf(run).stories, id)
+  return story === null ? "" : _usableTitle(story.title)
+}
+
+// "<kind> …" and the last 8 characters of id (all of a shorter one).
+function _fallbackTitle(kind, id) { return kind + " …" + id.slice(-8) }
+
+// The run's title from titles, its {id: title} map (any non-plain-object is {}):
+// a card run (card_id an id) is the card's title, else "card …<8>"; else a
+// story run is the story's title, else am's own story title, else "story …<8>";
+// else a milestone run is the milestone's title, else "milestone …<8>"; else
+// shortId(run). No kind falls back to another kind's title.
+function runTitle(run, titles) {
+  var r = _isObject(run) ? run : {}
+  var title
+  if (_isTitleId(r.card_id)) {
+    title = _mappedTitle(titles, r.card_id)
+    return title !== "" ? title : _fallbackTitle("card", r.card_id)
+  }
+  if (_isTitleId(r.story_id)) {
+    title = _mappedTitle(titles, r.story_id)
+    if (title === "") title = _amStoryTitle(run, r.story_id)
+    return title !== "" ? title : _fallbackTitle("story", r.story_id)
+  }
+  if (_isTitleId(r.milestone_id)) {
+    title = _mappedTitle(titles, r.milestone_id)
+    return title !== "" ? title : _fallbackTitle("milestone", r.milestone_id)
+  }
+  return shortId(run)
 }
 
 // Counts of the run's real subtasks (an object with a real card id) and of those whose own

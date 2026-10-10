@@ -1508,7 +1508,7 @@ TestCase {
   }
 
   function test_run_title() {
-    compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "4bf4fb2f" })), "4bf4fb2f")
+    compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "4bf4fb2f" })), "milestone …4bf4fb2f")
     compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "" })), "…abcd1234",
             "falls back to the short id")
     compare(Runs.runTitle({ id: "r1", milestone_id: 5 }), "…r1", "a non-string milestone is no title")
@@ -2398,7 +2398,7 @@ TestCase {
     var id = "run-20261004-0123456789abcdef"
     var a = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null, { tree: alTree() })])
     compare(a.length, 1, "one alert")
-    checkAlert(a[0], id, "m1", "escalated", "escalated at review", "with milestone")
+    checkAlert(a[0], id, "milestone …m1", "escalated", "escalated at review", "with milestone")
 
     var b = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null, { milestone_id: "", tree: alTree() })])
     compare(b.length, 1, "one alert without a milestone")
@@ -2408,7 +2408,7 @@ TestCase {
                        phases: [{ name: "review", status: "failed", detail: "3 tests failed" }] }] }
     var c = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", true, { tree: detailTree })])
     compare(c.length, 1, "one alert with a detail")
-    checkAlert(c[0], id, "m1", "escalated", "3 tests failed", "detail reason")
+    checkAlert(c[0], id, "milestone …m1", "escalated", "3 tests failed", "detail reason")
 
     var d = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null)])
     compare(d.length, 1, "one alert with no tree")
@@ -2418,11 +2418,11 @@ TestCase {
   function test_new_alerts_entering_dead() {
     var a = Runs.newAlerts([alRunning("r1")], [mkRun("r1", "started", false)])
     compare(a.length, 1, "running -> dead (live false)")
-    checkAlert(a[0], "r1", "m1", "dead", "process died", "live false")
+    checkAlert(a[0], "r1", "milestone …m1", "dead", "process died", "live false")
 
     var b = Runs.newAlerts([mkRun("r1", "stopped", null)], [mkRun("r1", "started", null)])
     compare(b.length, 1, "parked -> dead (lease null)")
-    checkAlert(b[0], "r1", "m1", "dead", "process died", "lease null")
+    checkAlert(b[0], "r1", "milestone …m1", "dead", "process died", "lease null")
 
     var c = Runs.newAlerts([alRunning("r1")], [mkRun("r1", "started", false, { tree: alTree() })])
     compare(c.length, 1, "dead with a failed phase")
@@ -2464,11 +2464,11 @@ TestCase {
   function test_new_alerts_switch_between() {
     var a = Runs.newAlerts([alEscalated("r")], [mkRun("r", "started", false, { tree: alTree() })])
     compare(a.length, 1, "escalated -> dead")
-    checkAlert(a[0], "r", "m1", "dead", "process died", "escalated -> dead")
+    checkAlert(a[0], "r", "milestone …m1", "dead", "process died", "escalated -> dead")
 
     var b = Runs.newAlerts([alDead("r")], [alEscalated("r")])
     compare(b.length, 1, "dead -> escalated")
-    checkAlert(b[0], "r", "m1", "escalated", "escalated at review", "dead -> escalated")
+    checkAlert(b[0], "r", "milestone …m1", "escalated", "escalated at review", "dead -> escalated")
   }
 
   function test_new_alerts_one_per_transition() {
@@ -2562,7 +2562,7 @@ TestCase {
                                          status: { run: { milestone_id: "m9", status: "escalated" } } })
     var fromNormalised = Runs.newAlerts([], [normalised])
     compare(fromNormalised.length, 1, "a normalised escalated run")
-    checkAlert(fromNormalised[0], "rz", "m9", "escalated", "escalated", "normalised run")
+    checkAlert(fromNormalised[0], "rz", "milestone …m9", "escalated", "escalated", "normalised run")
   }
 
   function test_new_alerts_fresh_and_pure() {
@@ -2583,7 +2583,7 @@ TestCase {
     x.push({ id: "junk" })
     var z = Runs.newAlerts(prev, next)
     compare(alIds(z), "a,c", "mutating a result does not change the next one")
-    checkAlert(z[0], "a", "m1", "escalated", "escalated at review", "after mutation")
+    checkAlert(z[0], "a", "milestone …m1", "escalated", "escalated at review", "after mutation")
 
     compare(JSON.stringify(prev), prevJson, "prevRuns unchanged")
     compare(JSON.stringify(next), nextJson, "nextRuns unchanged")
@@ -4563,5 +4563,129 @@ TestCase {
     var bare = Object.create(null)
     bare.c1 = { title: "Bare" }
     compare(JSON.stringify(Runs.titlesFromCards(bare)), '{"c1":"Bare"}', "a prototype-less card map")
+  }
+
+  // A normalised run naming a card, story and/or milestone (mkRun, plus story_id/card_id).
+  function idRun(id, milestoneId, storyId, cardId, stories) {
+    var r = mkRun(id, "started", true, { milestone_id: milestoneId, tree: { stories: stories || [], subtasks: [] } })
+    r.story_id = storyId
+    r.card_id = cardId
+    return r
+  }
+
+  function test_run_title_with_titles() {
+    var titles = { "card-0000000c1": "Card title", "story-00000s1": "Story title", "mile-00000m1": "Milestone title" }
+    compare(Runs.runTitle(idRun("r1", "mile-00000m1", "story-00000s1", "card-0000000c1"), titles), "Card title", "card run")
+    compare(Runs.runTitle(idRun("r1", "mile-00000m1", "story-00000s1", ""), titles), "Story title", "story run")
+    compare(Runs.runTitle(idRun("r1", "mile-00000m1", "", ""), titles), "Milestone title", "milestone run")
+    compare(Runs.runTitle(idRun("r1", "mile-00000m1", "", ""), { "mile-00000m1": "  Padded  " }), "Padded", "trimmed")
+  }
+
+  function test_run_title_without_titles() {
+    var card = idRun("r1", "mile-0123456789", "story-0123456789", "card-0123456789")
+    var story = idRun("r1", "mile-0123456789", "story-0123456789", "")
+    var milestone = idRun("r1", "mile-0123456789", "", "")
+    var maps = [undefined, {}, null, [], "x", 5]
+    for (var i = 0; i < maps.length; i++) {
+      var label = "map " + JSON.stringify(maps[i])
+      compare(Runs.runTitle(card, maps[i]), "card …23456789", label + " card")
+      compare(Runs.runTitle(story, maps[i]), "story …23456789", label + " story")
+      compare(Runs.runTitle(milestone, maps[i]), "milestone …23456789", label + " milestone")
+    }
+    compare(Runs.runTitle(card), "card …23456789", "titles omitted")
+    compare(Runs.runTitle(idRun("r1", "", "", "c1")), "card …c1", "a short id is shown whole")
+    compare(Runs.runTitle(idRun("r1", "", "s1", "")), "story …s1", "a short story id")
+    compare(Runs.runTitle(idRun("r1", "m1", "", "")), "milestone …m1", "a short milestone id")
+    compare(Runs.runTitle(idRun("r1", "12345678", "", "")), "milestone …12345678", "exactly 8 characters")
+    // an array map holding the id as an index-like key is still no map
+    var arr = []
+    arr["m1"] = "From array"
+    compare(Runs.runTitle(idRun("r1", "m1", "", ""), arr), "milestone …m1", "an array is no map")
+  }
+
+  function test_run_title_unusable_map_values() {
+    var values = [5, {}, null, true, [], "", "   "]
+    for (var i = 0; i < values.length; i++) {
+      var label = "value " + JSON.stringify(values[i])
+      compare(Runs.runTitle(idRun("r1", "", "", "c1"), { c1: values[i] }), "card …c1", label + " card")
+      compare(Runs.runTitle(idRun("r1", "m1", "", ""), { m1: values[i] }), "milestone …m1", label + " milestone")
+      compare(Runs.runTitle(idRun("r1", "", "s1", ""), { s1: values[i] }), "story …s1", label + " story")
+    }
+  }
+
+  function test_run_title_story_from_am_status() {
+    // synthetic: the started capture's am status run edited to name its first story
+    var raw = amRun("status-started.json")
+    raw.status.run.story_id = "9f0f68fc-f231-4ef2-b646-00a7af925ea2"
+    var run = Runs.normalizeRun(raw)
+    compare(Runs.runTitle(run), "Dispatch domain", "am status story title, titles omitted")
+    compare(Runs.runTitle(run, {}), "Dispatch domain", "am status story title, empty map")
+    compare(Runs.runTitle(run, { "9f0f68fc-f231-4ef2-b646-00a7af925ea2": "From brd" }), "From brd", "the map wins")
+    compare(Runs.runTitle(run, { "9f0f68fc-f231-4ef2-b646-00a7af925ea2": "   " }), "Dispatch domain",
+            "an unusable map title falls through to am's")
+    compare(Runs.runTitle(Runs.normalizeRun(amRun("status-started.json"))), "milestone …ab5f860b",
+            "the unedited capture is a milestone run")
+
+    // synthetic: am story titles that are unusable, and stories that are not objects
+    var bad = [undefined, null, 5, "", "   ", {}]
+    for (var i = 0; i < bad.length; i++) {
+      var r = idRun("r1", "m1", "story-0123456789", "", [null, "x", { card_id: "story-0123456789", title: bad[i] }])
+      compare(Runs.runTitle(r), "story …23456789", "am title " + JSON.stringify(bad[i]))
+    }
+    var first = idRun("r1", "", "s1", "", [{ card_id: "s1", title: " First " }, { card_id: "s1", title: "Second" }])
+    compare(Runs.runTitle(first), "First", "the first matching story, trimmed")
+    var noTree = idRun("r1", "", "s1", "")
+    noTree.tree = "x"
+    compare(Runs.runTitle(noTree), "story …s1", "a garbage tree has no story titles")
+  }
+
+  function test_run_title_precedence() {
+    var all = idRun("r1", "m1", "s1", "c1", [{ card_id: "s1", title: "Am story" }])
+    var titles = { s1: "Story", m1: "Milestone" }
+    compare(Runs.runTitle(all, titles), "card …c1", "a card run never falls back to its story or milestone")
+    compare(Runs.runTitle(idRun("r1", "m1", "s1", "", []), { m1: "Milestone" }), "story …s1",
+            "a story run never falls back to its milestone")
+    compare(Runs.runTitle(idRun("run-0000abcd1234", "", "", ""), titles), "…abcd1234", "naming nothing gives the short id")
+    compare(Runs.runTitle({ id: "r1", milestone_id: 5, story_id: 6, card_id: [] }, titles), "…r1", "non-string ids are no ids")
+    var bad = [undefined, null, "x", 5, [], {}, { id: 7 }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.runTitle(bad[i], titles), "…", "garbage " + i)
+  }
+
+  function test_run_title_prototype_ids() {
+    var names = ["constructor", "__proto__", "toString", "hasOwnProperty"]
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i]
+      var expected8 = n.slice(-8)
+      compare(Runs.runTitle(idRun("r1", "", "", n), {}), "card …" + expected8, n + " card, empty map")
+      compare(Runs.runTitle(idRun("r1", "", n, ""), {}), "story …" + expected8, n + " story, empty map")
+      compare(Runs.runTitle(idRun("r1", n, "", ""), {}), "milestone …" + expected8, n + " milestone, empty map")
+      compare(Runs.runTitle(idRun("r1", n, "", "")), "milestone …" + expected8, n + " milestone, no map")
+      var own = JSON.parse('{"' + n + '": "Own ' + n + '"}')
+      compare(Runs.runTitle(idRun("r1", "", "", n), own), "Own " + n, n + " card, own key")
+      compare(Runs.runTitle(idRun("r1", "", n, ""), own), "Own " + n, n + " story, own key")
+      compare(Runs.runTitle(idRun("r1", n, "", ""), own), "Own " + n, n + " milestone, own key")
+    }
+  }
+
+  function test_run_title_prototype_less() {
+    var titles = Object.create(null)
+    titles.c1 = "Bare title"
+    compare(Runs.runTitle(idRun("r1", "", "", "c1"), titles), "Bare title", "a prototype-less map")
+    compare(Runs.runTitle(idRun("r1", "", "", "c2"), titles), "card …c2", "a prototype-less map without the id")
+    var run = Object.create(null)
+    run.id = "run-bare-0001"
+    run.milestone_id = "m1"
+    compare(Runs.runTitle(run, { m1: "Bare run" }), "Bare run", "a prototype-less run")
+    compare(Runs.runTitle(run), "milestone …m1", "a prototype-less run, no map")
+  }
+
+  function test_run_title_pure() {
+    var run = idRun("r1", "m1", "s1", "", [{ card_id: "s1", title: "Am" }])
+    var titles = { s1: "Story" }
+    var runJson = JSON.stringify(run), titlesJson = JSON.stringify(titles)
+    Runs.runTitle(run, titles)
+    Runs.runTitle(run)
+    compare(JSON.stringify(run), runJson, "run unchanged")
+    compare(JSON.stringify(titles), titlesJson, "titles unchanged")
   }
 }

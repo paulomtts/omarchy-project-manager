@@ -250,7 +250,7 @@ TestCase {
   function test_a_row_shows_short_id_title_progress_phase_and_age() {
     var s = make(sample()); if (!s) return
     compare(H.find(s.screen, "runRowId0").text, "…live0001")
-    compare(H.find(s.screen, "runRowTitle0").text, "alpha")
+    compare(H.find(s.screen, "runRowTitle0").text, "milestone …alpha")
     compare(H.find(s.screen, "runRowProgress0").text, "1/2")
     compare(H.find(s.screen, "runRowPhase0").text, "implement")
     compare(H.find(s.screen, "runRowAge0").text, "5m")

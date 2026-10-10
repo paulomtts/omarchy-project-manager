@@ -405,7 +405,7 @@ TestCase {
     var accept = inModal(p, "confirmAccept")
     compare(accept.text, "Cancel run")
     compare(modal.message, "Cancel run …000000a1? Cancel is final. The run cannot be resumed, only relaunched; cards keep their current status. A phase in flight finishes first.")
-    compare(modal.detail, "alpha")
+    compare(modal.detail, "milestone …alpha")
 
     field.text = "cancle"
     compare(p.app.runControl.cancelText, "cancle")
@@ -594,7 +594,7 @@ TestCase {
     feedTwo(p, aEntries, [snapEntryB("run-0000000000f6", "escalated", null, "zeta")])
     compare(p.app.runAlerts.toasts.length, 2)
     wait(50)
-    compare(H.find(p, "runToastLine1").text, "zeta escalated")
+    compare(H.find(p, "runToastLine1").text, "milestone …zeta escalated")
     compare(H.find(p, "runToastProject1").text, "beta")
     compare(H.find(p, "runToastProject0").text, "alpha", "the older toast keeps its project")
   }
@@ -646,7 +646,7 @@ TestCase {
     var toast = H.find(p, "runToast0")
     verify(toast, "the toast card")
     compare(toast.visible, true)
-    compare(H.find(p, "runToastLine0").text, "beta escalated")
+    compare(H.find(p, "runToastLine0").text, "milestone …beta escalated")
     var kc = H.find(p, "keyCatcher")
     var pt = toast.mapToItem(kc, 0, 0)
     verify(pt.x + toast.width <= kc.width && pt.x + toast.width >= kc.width - 40, "against the right edge")
@@ -682,7 +682,7 @@ TestCase {
     compare(p.app.runAlerts.toasts.length, 1)
     compare(p.app.runAlerts.toasts[0].id, "run-0000000000a1")
     wait(50)
-    compare(H.find(p, "runToastLine0").text, "alpha died")
+    compare(H.find(p, "runToastLine0").text, "milestone …alpha died")
   }
 
   // 29
@@ -696,7 +696,7 @@ TestCase {
     compare(p.app.runAlerts.notifyRunners.length, 1)
     var cmd = p.app.runAlerts.notifyRunners[0].current.command
     compare(cmd[1], p.pluginDir + "core/backend/runs/notify.py")
-    compare(cmd[cmd.length - 2], "beta")
+    compare(cmd[cmd.length - 2], "milestone …beta")
     compare(cmd[cmd.length - 1], "escalated")
     p.app.runControl.setNotifyOnEscalation(false)
     reply(p.app.runControl.settingsSaveRunner.current, JSON.stringify({ ok: true }) + "\n", 0)

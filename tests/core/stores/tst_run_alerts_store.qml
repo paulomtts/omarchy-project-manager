@@ -146,7 +146,7 @@ TestCase {
     compare(toastIdsOf(a), "b1,b3", "in the order of runs")
     compare(a.toasts[0].project, "beta", "run.project.name")
     compare(a.toasts[0].title, expected[0].title)
-    compare(a.toasts[0].title, "m-b1")
+    compare(a.toasts[0].title, "milestone …m-b1")
     compare(a.toasts[0].state, "escalated")
     compare(a.toasts[0].reason, expected[0].reason)
     compare(a.toasts[1].project, "beta")
@@ -278,7 +278,7 @@ TestCase {
     a.snapshotReplied(tc.rootA, "ok", [runningRun("a1")], [escalatedRun("a1")])
     compare(a.notifyRunners.length, 1, "one runner per alert")
     var proc = a.notifyRunners[0].current
-    compare(argv(proc), tc.notifyCmd + "m-a1|escalated")
+    compare(argv(proc), tc.notifyCmd + "milestone …m-a1|escalated")
     compare(proc.command.length, 4)
     compare(proc.launchGuard, "", "guard \"\"")
     compare(proc.running, true)
@@ -540,7 +540,7 @@ TestCase {
     compare(alerts(store).toasts.length, 1)
     var t = alerts(store).toasts[0]
     compare(t.id, "b")
-    compare(t.title, "m-b")
+    compare(t.title, "milestone …m-b")
     compare(t.state, "escalated")
     compare(t.reason, Runs.escalationReason(store.runById("b")))
     compare(t.reason, "escalated")
@@ -700,10 +700,10 @@ TestCase {
     answer(store, [okEntry(tc.rootA, [running("a1")]), okEntry(tc.rootB, [escalated("b1")])])
     compare(toastIds(store), "b1")
     compare(alerts(store).toasts[0].project, "beta")
-    compare(alerts(store).toasts[0].title, "m-b1")
+    compare(alerts(store).toasts[0].title, "milestone …m-b1")
     compare(alerts(store).toasts[0].state, "escalated")
     compare(alerts(store).notifyRunners.length, 1, "one notification")
-    compare(argv(alerts(store).notifyRunners[0].current), tc.notifyCmd + "m-b1|escalated", "its text does not change")
+    compare(argv(alerts(store).notifyRunners[0].current), tc.notifyCmd + "milestone …m-b1|escalated", "its text does not change")
   }
 
   // 2
@@ -859,8 +859,8 @@ TestCase {
     snapshot(store, [escalated("a"), dead("b")])
     compare(alerts(store).notifyRunners.length, 2, "one runner per alert")
     var first = alerts(store).notifyRunners[0].current, second = alerts(store).notifyRunners[1].current
-    compare(argv(first), tc.notifyCmd + "m-a|escalated")
-    compare(argv(second), tc.notifyCmd + "m-b|process died")
+    compare(argv(first), tc.notifyCmd + "milestone …m-a|escalated")
+    compare(argv(second), tc.notifyCmd + "milestone …m-b|process died")
     compare(first.running, true, "the second launch did not stop the first")
     compare(second.running, true)
     compare(first.launchGuard, "")
