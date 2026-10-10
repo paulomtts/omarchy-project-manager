@@ -42,12 +42,59 @@ Scope {
 
   readonly property alias titlesRunner: titlesRunner
 
-  onActiveChanged: if (titles.active) titles.needCheck()
-  onProjectRootsChanged: titles.needCheck()
+  onActiveChanged: if (titles.active) titles.refreshTitles()
+  onProjectRootsChanged: titles.registryChanged()
   onOpenRootChanged: titles.openRootMoved()
   onOpenCardMapChanged: titles.mirrorOpen()
   onRunsChanged: titles.needCheck()
   Component.onCompleted: titles.openRootMoved()
+
+  // Starts over the way each opening does: every ok map but the open
+  // project's is marked stale, every "unreachable" status goes and every
+  // missing id may be asked about again; then the roots are checked. A root
+  // already queued or in flight is not queued twice.
+  function refreshTitles() {
+    var open = titles.openKey()
+    var stale = Runs.copyMap(titlesState.stale)
+    for (var root in titles.titleStatus) {
+      if (Runs.hasKey(titles.titleStatus, root) && titles.titleStatus[root] === "ok" && root !== open) stale[root] = true
+    }
+    titlesState.stale = stale
+    titles.titleStatus = titles.keptOf(titles.titleStatus, function(root, st) { return st !== "unreachable" })
+    titlesState.asked = {}
+    titles.needCheck()
+  }
+
+  // The registry changed: every root it no longer names, unless it is the
+  // open root, loses its map, status, stale mark and asked ids and leaves
+  // the queue, and its fetch in flight is cancelled; every "unreachable"
+  // status goes. Then the queue launches and the roots are checked again.
+  function registryChanged() {
+    var roots = titles.registeredRoots()
+    var open = titles.openKey()
+    function kept(root) { return root === open || roots.indexOf(root) >= 0 }
+    titles.titlesByRoot = titles.keptOf(titles.titlesByRoot, function(root) { return kept(root) })
+    titles.titleStatus = titles.keptOf(titles.titleStatus, function(root, st) { return kept(root) && st !== "unreachable" })
+    titlesState.stale = titles.keptOf(titlesState.stale, function(root) { return kept(root) })
+    titlesState.asked = titles.keptOf(titlesState.asked, function(root) { return kept(root) })
+    var queue = titles.titleQueue.filter(function(root) { return kept(root) })
+    if (queue.length !== titles.titleQueue.length) titles.titleQueue = queue
+    if (titles.fetchingRoot !== "" && !kept(titles.fetchingRoot)) {
+      titlesRunner.cancel()
+      titles.fetchingRoot = ""
+    }
+    titles.launchNext()
+    titles.needCheck()
+  }
+
+  // A new map of the own keys of `map` for which keep(key, value) is true.
+  function keptOf(map, keep) {
+    var out = {}
+    for (var key in map) {
+      if (Runs.hasKey(map, key) && keep(key, map[key])) out[key] = map[key]
+    }
+    return out
+  }
 
   // `path` with every trailing "/" removed ("/" for a path of only slashes);
   // "" when it is not a string.
@@ -132,10 +179,10 @@ Scope {
 
   // Queues, in registry order, every registered root other than the open
   // one that has a run in `runs`, is neither queued nor in flight, and has
-  // no entry, or an ok map that lacks an id one of its runs names and that
-  // was not asked about yet (those ids are then marked asked). A queued
-  // root's status becomes "loading"; its map stays until the reply. Then
-  // the queue launches.
+  // no entry, or an ok map that is stale or lacks an id one of its runs
+  // names and that was not asked about yet (those ids are then marked
+  // asked). A queued root's status becomes "loading"; its map stays until
+  // the reply. Then the queue launches.
   function needCheck() {
     var open = titles.openKey()
     var roots = titles.registeredRoots()
@@ -152,6 +199,7 @@ Scope {
       if (!Runs.hasKey(status, root)) {
         want = true
       } else if (status[root] === "ok") {
+        if (Runs.hasKey(titlesState.stale, root)) want = true
         var map = Runs.hasKey(titles.titlesByRoot, root) ? titles.titlesByRoot[root] : {}
         var mine = Runs.hasKey(asked, root) ? asked[root] : {}
         var missing = titles.missingIds(byRoot[root], map, mine)
@@ -202,6 +250,7 @@ Scope {
       if (got !== null && typeof got === "object" && !Array.isArray(got)) {
         maps[root] = titles.stringTitles(got)
         status[root] = "ok"
+        if (Runs.hasKey(titlesState.stale, root)) titlesState.stale = titles.keptOf(titlesState.stale, function(key) { return key !== root })
       } else {
         delete maps[root]
         status[root] = "unreachable"
@@ -269,7 +318,8 @@ Scope {
   QtObject {
     id: titlesState
     property string mirrored: ""   // the root whose map mirrors openCardMap; "" when none
-    property var asked: ({})       // {root: {id: true}}: missing ids already asked about
+    property var asked: ({})       // {root: {id: true}}: missing ids already asked about since the last opening
+    property var stale: ({})       // {root: true}: ok maps to fetch again the next time they are needed
   }
 
   // The one board-titles.py runner. Guard "": the store tracks the root in

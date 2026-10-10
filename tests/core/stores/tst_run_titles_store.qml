@@ -306,4 +306,136 @@ TestCase {
     compare(s.fetchingRoot, "", "integrate and bases are not ids brd knows")
     compare(s.titleStatus[tc.rootA], "ok")
   }
+
+  // ---- invalidation
+
+  // An open store with runs of rootA and rootB: rootA ok, rootB unreachable,
+  // nothing in flight.
+  function okAndUnreachable() {
+    var s = openTitles([tc.rootA, tc.rootB], [runOf("ra", tc.rootA), runOf("rb", tc.rootB)]); if (!s) return null
+    answer(s, titlesOk(plain()), 0)
+    answer(s, "", 1)
+    compare(s.titleStatus[tc.rootA], "ok")
+    compare(s.titleStatus[tc.rootB], "unreachable")
+    compare(s.fetchingRoot, "")
+    return s
+  }
+
+  function test_refresh_titles_fetches_every_root_again_in_registry_order() {
+    var s = okAndUnreachable(); if (!s) return
+    s.refreshTitles()
+    compare(argv(s.titlesRunner.current), tc.titlesCmd + tc.rootA)
+    compare(s.fetchingRoot, tc.rootA)
+    compare(queueOf(s), tc.rootB)
+    compare(s.titleStatus[tc.rootA], "loading")
+    compare(s.titleStatus[tc.rootB], "loading")
+    compare(JSON.stringify(s.titlesByRoot[tc.rootA]), JSON.stringify(plain()), "rootA's stale map stays while it loads")
+    answer(s, titlesOk(plain()), 0)
+    compare(s.titleStatus[tc.rootA], "ok")
+    compare(s.fetchingRoot, tc.rootB)
+    answer(s, titlesOk(plain()), 0)
+    compare(s.titleStatus[tc.rootB], "ok")
+    compare(s.fetchingRoot, "", "a fresh ok map is not stale")
+  }
+
+  function test_refresh_titles_queues_no_root_twice() {
+    var s = openTitles([tc.rootA, tc.rootB], [runOf("ra", tc.rootA), runOf("rb", tc.rootB)]); if (!s) return
+    var first = s.titlesRunner.current
+    s.refreshTitles()
+    verify(s.titlesRunner.current === first, "the fetch in flight is not relaunched")
+    compare(s.fetchingRoot, tc.rootA)
+    compare(queueOf(s), tc.rootB)
+  }
+
+  function test_reopening_the_panel_fetches_every_root_again() {
+    var s = okAndUnreachable(); if (!s) return
+    s.active = false
+    compare(s.fetchingRoot, "")
+    compare(s.titleStatus[tc.rootA], "ok", "closing drops nothing")
+    compare(JSON.stringify(s.titlesByRoot[tc.rootA]), JSON.stringify(plain()))
+    s.active = true
+    compare(argv(s.titlesRunner.current), tc.titlesCmd + tc.rootA)
+    compare(s.fetchingRoot, tc.rootA)
+    compare(queueOf(s), tc.rootB)
+  }
+
+  function test_a_reopening_fetches_nothing_for_a_root_without_runs() {
+    var s = okAndUnreachable(); if (!s) return
+    s.active = false
+    s.runs = [runOf("rb", tc.rootB)]
+    s.active = true
+    compare(s.fetchingRoot, tc.rootB, "only rootB, which still has runs")
+    compare(argv(s.titlesRunner.current), tc.titlesCmd + tc.rootB)
+    compare(queueOf(s), "")
+    compare(s.titleStatus[tc.rootA], "ok")
+    compare(JSON.stringify(s.titlesByRoot[tc.rootA]), JSON.stringify(plain()), "rootA's map stays")
+  }
+
+  function test_a_reopening_refetches_a_root_with_a_missing_id_once() {
+    var s = openTitles([tc.rootA], [runOf("r1", tc.rootA, [{ card_id: "st1", subtasks: [{ card_id: "s9" }] }])]); if (!s) return
+    var known = { m1: "Milestone one", st1: "Story one" }
+    answer(s, titlesOk(known), 0)
+    compare(s.fetchingRoot, tc.rootA, "s9 is missing: one more fetch")
+    answer(s, titlesOk(known), 0)
+    compare(s.fetchingRoot, "")
+    s.active = false
+    s.active = true
+    compare(s.fetchingRoot, tc.rootA, "the opening fetches rootA again")
+    answer(s, titlesOk(known), 0)
+    compare(s.titleStatus[tc.rootA], "ok")
+    compare(s.fetchingRoot, "", "that fetch asked about s9: no loop")
+  }
+
+  function test_a_root_that_leaves_the_registry_loses_its_titles() {
+    var s = openTitles([tc.rootA, tc.rootB, tc.rootC],
+                       [runOf("ra", tc.rootA), runOf("rb", tc.rootB), runOf("rc", tc.rootC)]); if (!s) return
+    answer(s, titlesOk(plain()), 0)
+    answer(s, titlesOk(plain()), 0)
+    answer(s, titlesOk(plain()), 0)
+    compare(s.fetchingRoot, "")
+    s.projectRoots = registry([tc.rootA, tc.rootC])
+    compare(Runs.hasKey(s.titlesByRoot, tc.rootB), false)
+    compare(Runs.hasKey(s.titleStatus, tc.rootB), false)
+    compare(s.titleStatus[tc.rootA], "ok")
+    compare(s.titleStatus[tc.rootC], "ok")
+    compare(s.fetchingRoot, "", "the roots still registered are not fetched again")
+  }
+
+  function test_a_queued_root_that_leaves_the_registry_leaves_the_queue() {
+    var s = openTitles([tc.rootA, tc.rootB, tc.rootC],
+                       [runOf("ra", tc.rootA), runOf("rb", tc.rootB), runOf("rc", tc.rootC)]); if (!s) return
+    compare(queueOf(s), tc.rootB + "," + tc.rootC)
+    s.projectRoots = registry([tc.rootA, tc.rootC])
+    compare(queueOf(s), tc.rootC)
+    compare(Runs.hasKey(s.titleStatus, tc.rootB), false)
+    compare(s.fetchingRoot, tc.rootA)
+  }
+
+  function test_a_root_in_flight_that_leaves_the_registry_is_cancelled() {
+    var s = openTitles([tc.rootA, tc.rootB, tc.rootC],
+                       [runOf("ra", tc.rootA), runOf("rb", tc.rootB), runOf("rc", tc.rootC)]); if (!s) return
+    answer(s, titlesOk(plain()), 0)
+    var procB = s.titlesRunner.current
+    compare(argv(procB), tc.titlesCmd + tc.rootB)
+    s.projectRoots = registry([tc.rootA, tc.rootC])
+    compare(argv(s.titlesRunner.current), tc.titlesCmd + tc.rootC, "rootB's fetch is cancelled and rootC launches")
+    compare(s.fetchingRoot, tc.rootC)
+    compare(queueOf(s), "")
+    reply(procB, titlesOk(plain()), 0)
+    compare(Runs.hasKey(s.titlesByRoot, tc.rootB), false, "a late reply on rootB's old fetch changes nothing")
+    compare(Runs.hasKey(s.titleStatus, tc.rootB), false)
+    compare(s.fetchingRoot, tc.rootC)
+  }
+
+  function test_a_registry_change_asks_an_unreachable_root_again() {
+    var s = openTitles([tc.rootA, tc.rootB, tc.rootC], [runOf("ra", tc.rootA), runOf("rc", tc.rootC)]); if (!s) return
+    answer(s, titlesOk(plain()), 0)
+    answer(s, "", 1)
+    compare(s.titleStatus[tc.rootC], "unreachable")
+    compare(s.fetchingRoot, "")
+    s.projectRoots = registry([tc.rootA, tc.rootC])
+    compare(argv(s.titlesRunner.current), tc.titlesCmd + tc.rootC, "rootC is still registered: asked again")
+    compare(s.titleStatus[tc.rootC], "loading")
+    compare(s.titleStatus[tc.rootA], "ok")
+  }
 }
