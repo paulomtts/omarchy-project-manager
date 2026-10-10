@@ -1,10 +1,11 @@
 import QtQuick
 import qs.Commons
 
-// The shape both list sections share: a row of filter chips, one status line
-// instead of the rows when there is something to say, and the rows themselves.
-// The caller supplies the row delegate and every piece of wording, so nothing
-// domain-specific lives here.
+// The shape both list sections share: a row of filter chips, optionally an
+// item of the caller's under it, one status line instead of the rows when
+// there is something to say, and the rows themselves. The caller supplies the
+// row delegate and every piece of wording, so nothing domain-specific lives
+// here.
 Column {
   id: list
 
@@ -14,6 +15,11 @@ Column {
   property var chips: []
   property string activeChip: ""
   property Component rowDelegate: null
+  // Made once, directly under the chip row and above the status line, when
+  // not null; shown while chipsFooterShown is true and the chip row's rule
+  // holds (not loading, no error). Hidden, it takes no height and no gap.
+  property Component chipsFooter: null
+  property bool chipsFooterShown: true
 
   // The callers' tests look the chip row, the chips and the status up by name.
   property string chipsObjectName: "chips"
@@ -41,6 +47,13 @@ Column {
     active: list.activeChip
     model: list.chips
     onChosen: function(id) { list.chipToggled(id) }
+  }
+
+  Loader {
+    objectName: list.chipsObjectName + "Footer"
+    width: parent.width
+    sourceComponent: list.chipsFooter
+    visible: list.chipsFooter !== null && list.chipsFooterShown && !list.loading && list.error === ""
   }
 
   ListStatus {

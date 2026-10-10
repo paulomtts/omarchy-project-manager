@@ -35,9 +35,16 @@ import "../domain/runEvents.js" as RunEvents
 // switch leaves them alone.
 // Each applied list snapshot reply is announced per project
 // (snapshotReplied).
-// The registry, the open project's root and the backend directory are handed
-// to it from outside -- it never reaches for another store. App composes it
-// as `app.runs` and binds `active` to the panel being open.
+// The Runs screen's list (groups, filteredRuns) is listedRuns -- `runs`, then
+// the ids of `historyRuns` that `runs` lacks -- past the chip, the
+// finished-state and age rows, the search (titles from `titlesByRoot`) and
+// the project filter, each project's history after its snapshot runs;
+// runById falls back to the listed history. History changes no snapshot
+// member.
+// The registry, the open project's root, the history, the titles and the
+// backend directory are handed to it from outside -- it never reaches for
+// another store. App composes it as `app.runs` and binds `active` to the
+// panel being open.
 Scope {
   id: store
 
@@ -63,12 +70,13 @@ Scope {
   property bool stale: false          // the last good snapshot is over 30 s old while active
   property string watchWarning: ""    // the corrupt-journal chip; "" when there is none
 
-  // The Runs screen's chip ("" means All, else "attention" | "live" | "parked")
-  // and search text. App binds searchQuery to the navigation store; the chip
-  // survives a section switch and a project switch.
+  // The Runs screen's chip ("" means All, else "attention" | "live" |
+  // "parked" | "finished") and search text. App binds searchQuery to the
+  // navigation store; the chip survives a section switch and a project switch.
   property string runFilter: ""
   property string searchQuery: ""
-  // The chip changed: a different list, so the cursor goes home (App's job).
+  // The chip, the finished-state row or the age row was chosen: a different
+  // list, so the cursor goes home (App's job).
   signal runFilterToggled()
   // The Runs screen's project filter: "" is All projects, else a filterable
   // root (isFilterable). Set by toggleProjectFilter; back to "" when it stops
@@ -78,9 +86,40 @@ Scope {
   // The project filter's list changed under the cursor: emitted once per
   // toggleProjectFilter call and once per fallback to All.
   signal projectFilterToggled()
-  // The runs past the chip, the search and the project filter, grouped by
-  // project in display order (Runs.groupByProject).
-  readonly property var groups: Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(Runs.filterRuns(store.runs, store.runFilter), store.searchQuery), store.projectFilter))
+  // Older runs, each built like a snapshot run
+  // (Runs.withProject(Runs.normalizeRun(..), root, name)); App binds it. It
+  // changes no snapshot member.
+  property var historyRuns: []
+  // `runs`, then each historyRuns entry that is a plain object whose id
+  // neither `runs` nor an earlier entry lists, in historyRuns order.
+  readonly property var listedRuns: store.listed(store.runs, store.historyRuns)
+  // {root: {id: title}}, the titles the search matches; App binds it.
+  property var titlesByRoot: ({})
+  // The Finished chip's state row ("" is every finished state, else "done" |
+  // "escalated" | "cancelled") and age row ("today" | "week" | "all", by
+  // started_at against nowMs). The state row narrows finished runs under
+  // Finished only, the age row under Finished and All; neither hides a run
+  // that is not finished. Set by toggleFinishedState and toggleFinishedAge;
+  // a project switch keeps them, the panel closing resets them.
+  property string finishedState: ""
+  property string finishedAge: "all"
+  // The age row's clock in ms; 0 is Date.now() whenever `groups` is
+  // evaluated. Time passing alone re-evaluates nothing.
+  property real nowMs: 0
+  // The chip counts, {attention, live, parked, finished, all}, over
+  // listedRuns in the project filter; the chip, the finished rows and the
+  // search never narrow them.
+  readonly property var runFilterCounts: Runs.runFilterCounts(Runs.filterByProject(store.listedRuns, store.projectFilter))
+  // listedRuns past the chip, the finished rows, the search (titles from
+  // titlesByRoot) and the project filter, grouped by project in display
+  // order (Runs.groupByProject).
+  readonly property var groups: {
+    var now = store.nowMs > 0 ? store.nowMs : Date.now()
+    var state = store.runFilter === "finished" ? store.finishedState : ""
+    var age = store.runFilter === "finished" || store.runFilter === "" ? store.finishedAge : "all"
+    var kept = Runs.filterFinished(Runs.filterRuns(store.listedRuns, store.runFilter), state, age, now, -new Date(now).getTimezoneOffset())
+    return Runs.groupByProject(Runs.filterByProject(Runs.searchRuns(kept, store.searchQuery, store.titlesByRoot), store.projectFilter))
+  }
   // The one filtered list: the screen's rows and the navigator's cursor list,
   // group by group (Runs.displayOrder of groups).
   readonly property var filteredRuns: Runs.displayOrder(store.groups)
@@ -248,6 +287,24 @@ Scope {
     store.runFilterToggled()
   }
 
+  // A state row button: "done", "escalated" or "cancelled" other than the
+  // current one selects it; the current one again, or anything else, means
+  // every finished state (""). Emits runFilterToggled once.
+  function toggleFinishedState(id) {
+    var known = id === "done" || id === "escalated" || id === "cancelled"
+    store.finishedState = known && id !== store.finishedState ? id : ""
+    store.runFilterToggled()
+  }
+
+  // An age row button: "today" or "week" other than the current one selects
+  // it; the current one again, or anything else, means all time ("all").
+  // Emits runFilterToggled once.
+  function toggleFinishedAge(id) {
+    var known = id === "today" || id === "week"
+    store.finishedAge = known && id !== store.finishedAge ? id : "all"
+    store.runFilterToggled()
+  }
+
   // A project chip was chosen (projectRootOf(root)): "", or the active
   // project again, means All; a root that is not filterable means All.
   // Emits projectFilterToggled once, whether or not the filter changed.
@@ -312,10 +369,14 @@ Scope {
   // pending snapshot request is dropped; a snapshot in flight runs to its end
   // and is applied. The queued events follow-up is dropped; an events fetch
   // in flight runs to its end and is applied. The project filter is back to
-  // All projects, with no projectFilterToggled. The runs, the selection, the
-  // events, the chip and amStatus stay for the next opening.
+  // All projects and the finished rows to every state and all time, with no
+  // projectFilterToggled or runFilterToggled. The runs, the history, the
+  // selection, the events, the chip, the search and amStatus stay for the
+  // next opening.
   function stopLive() {
     store.projectFilter = ""
+    store.finishedState = ""
+    store.finishedAge = "all"
     snapshotState.pending = null
     eventsState.followUp = false
     store.stopWatch()
@@ -660,9 +721,25 @@ Scope {
 
   // ---- attempt logs (5.2)
 
-  // The run with this id in the snapshot, or null.
+  // The run with this id in the snapshot, else in the listed history, or null.
   function runById(id) {
-    return Runs.runById(store.runs, id)
+    return Runs.runById(store.listedRuns, id)
+  }
+
+  // A new array: `runs`, then each entry of `history` that is a plain object
+  // whose id no entry before it lists. `runs` itself when `history` is not
+  // an array.
+  function listed(runs, history) {
+    if (!Array.isArray(history)) return runs
+    var out = runs.slice()
+    var ids = runs.map(function(run) { return run === null || typeof run !== "object" ? undefined : run.id })
+    for (var i = 0; i < history.length; i++) {
+      var run = history[i]
+      if (run === null || typeof run !== "object" || Array.isArray(run) || ids.indexOf(run.id) >= 0) continue
+      ids.push(run.id)
+      out.push(run)
+    }
+    return out
   }
 
   // The run's project root when it is a non-empty string, else "".
@@ -712,7 +789,7 @@ Scope {
 
   // One runs-logs.py launch for the selection, the selected run's repo_dir
   // first, remembering the status it was launched for (a snapshot that changes
-  // it fetches again). Nothing launches for a run not in the snapshot or one
+  // it fetches again). Nothing launches for a run runById does not find or one
   // with no repo_dir.
   function fetchLogs() {
     var sel = store.selectedAttempt

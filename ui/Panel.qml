@@ -832,6 +832,8 @@ Panel {
       TypedConfirmDialog {
         id: runCancelModal
         objectName: "runCancelModal"
+        // The run the dialog asks about; null when it is not listed.
+        readonly property var cancelRun: appStores.runs.runById(appStores.runControl.cancelRunId)
         anchors.fill: parent
         backdropObjectName: "runCancelBackdrop"
         cardObjectName: "runCancelCard"
@@ -839,7 +841,9 @@ Panel {
         shown: appStores.runControl.cancelOpen
         confirmWord: "cancel"
         message: "Cancel run " + Runs.shortId({ id: appStores.runControl.cancelRunId }) + "? Cancel is final. The run cannot be resumed, only relaunched; cards keep their current status. A phase in flight finishes first."
-        detail: appStores.runs.runById(appStores.runControl.cancelRunId) ? Runs.runTitle(appStores.runs.runById(appStores.runControl.cancelRunId)) : ""
+        detail: runCancelModal.cancelRun
+          ? Runs.runTitle(runCancelModal.cancelRun, Runs.titlesOfRun(runCancelModal.cancelRun, appStores.runTitles.titlesByRoot))
+          : ""
         confirmLabel: "Cancel run"
         dismissLabel: "Keep running"
         error: appStores.runControl.cancelError

@@ -23,14 +23,17 @@ import "../theme" as T
 // app.runs.events); its filter chips set app.runs.eventsFilter, and a row
 // naming an attempt selects that attempt and shows Output. The Events chip
 // counts the rows held plus app.runs.eventsDropped. Run state always comes
-// from am (the run store), never from a brd status; brd's board only lends
-// titles, dims the cards it has closed and holds the card Relaunch opens. It
-// reads the run store, app.runControl and app.runOutput, asks the run store
-// to show another attempt or tab or fetch again, run control to pause or
-// resume and the dispatch (app.runDispatch) to open a relaunch; it owns no
-// state of its own. A run outside the open project shows no note, and its Open card
-// and Relaunch are disabled with the reason. Ages are read against the clock
-// when a logs reply lands or a snapshot replaces the runs: no timer.
+// from am (the run store), never from a brd status. Titles come from the
+// run's own project map in app.runTitles: the header reads the run's title,
+// then its short id in dim; each tree card its title, else its short card
+// id. brd's board only dims the cards it has closed and holds the card
+// Relaunch opens. It reads the run store, app.runControl and app.runOutput,
+// asks the run store to show another attempt or tab or fetch again, run
+// control to pause or resume and the dispatch (app.runDispatch) to open a
+// relaunch; it owns no state of its own. A run outside the open project shows
+// no note, and its Open card and Relaunch are disabled with the reason. Ages
+// are read against the clock when a logs reply lands or a snapshot replaces
+// the runs: no timer.
 Column {
   id: screen
   objectName: "runDetailView"
@@ -48,6 +51,8 @@ Column {
   readonly property var run: screen.runById(screen.app.runs.runs, screen.app.runs.selectedRunId)
   readonly property var tree: Runs.runTree(screen.run)
   readonly property string runState: Runs.runState(screen.run)
+  // The run's project titles map (titlesOfRun); {} without app.runTitles.
+  readonly property var titles: Runs.titlesOfRun(screen.run, screen.app.runTitles ? screen.app.runTitles.titlesByRoot : null)
   readonly property var selection: screen.app.runs.selectedAttempt
   // Re-read whenever a logs reply lands or a snapshot replaces the runs.
   readonly property real nowMs: screen.app.runs.logsFetchedMs >= 0 && screen.app.runs.runs ? Date.now() : 0
@@ -97,16 +102,20 @@ Column {
     return parts.join(" · ")
   }
 
-  // The brd card behind an id, or null. Own keys only, so "__proto__" is no card.
+  // The brd card behind an id on the open board, or null. Own keys only, so
+  // "__proto__" is no card.
   function cardOf(id) {
     var map = screen.app.board ? screen.app.board.cardMap : null
     if (!map || typeof id !== "string" || id === "") return null
     return Object.prototype.hasOwnProperty.call(map, id) ? map[id] : null
   }
 
-  function titleOf(id) {
-    var card = screen.cardOf(id)
-    return card && typeof card.title === "string" ? card.title : ""
+  // The card's title in the run's map (cardTitle), else "…" and the id's last
+  // 8 characters (all of a shorter one); "" for a non-string or empty id.
+  function nameOf(id) {
+    var title = Runs.cardTitle(id, screen.run, screen.titles)
+    if (title !== "") return title
+    return typeof id === "string" && id !== "" ? "…" + id.slice(-8) : ""
   }
 
   // brd has closed this card: it is listed dimmed, never hidden.
@@ -122,16 +131,22 @@ Column {
     return s === "escalated" || s === "dead"
   }
 
-  // "<glyph> <id> <title> · <status>", each part only when it has something.
-  function cardLine(id, status) {
+  // "<glyph> <name>", each part only when it has something.
+  function leadOf(id, status) {
     var parts = []
     var glyph = screen.glyphOf(status)
     if (glyph !== "") parts.push(glyph)
-    parts.push(id)
-    var title = screen.titleOf(id)
-    if (title !== "") parts.push(title)
-    var line = parts.join(" ")
-    return status !== "" ? line + " · " + status : line
+    var name = screen.nameOf(id)
+    if (name !== "") parts.push(name)
+    return parts.join(" ")
+  }
+
+  // "<status> · <phase>", each part only when it has something.
+  function tailOf(status, phase) {
+    var parts = []
+    if (status !== "") parts.push(status)
+    if (phase !== "") parts.push(phase)
+    return parts.join(" · ")
   }
 
   function phaseText(subtask) {
@@ -324,14 +339,27 @@ Column {
       width: parent.width
       spacing: Style.space(8)
 
+      // Takes the width the others leave and elides, so they stay on the row.
       UI.ThemedText {
         objectName: "runDetailTitle"
         variant: "heading"
         theme: screen.theme
-        text: "Run " + Runs.shortId(screen.run)
+        width: Math.max(0, Math.min(implicitWidth, parent.width - detailId.width - detailState.width - parent.spacing * 2))
+        text: Runs.runTitle(screen.run, screen.titles)
+        elide: Text.ElideRight
       }
 
       UI.ThemedText {
+        id: detailId
+        objectName: "runDetailId"
+        variant: "caption"
+        theme: screen.theme
+        text: Runs.runSubtitle(screen.run)
+        color: screen.theme.dim
+      }
+
+      UI.ThemedText {
+        id: detailState
         objectName: "runDetailState"
         variant: "heading"
         theme: screen.theme
@@ -552,14 +580,13 @@ Column {
     width: screen.width
     spacing: Style.space(2)
 
-    UI.ThemedText {
+    CardLine {
       objectName: "runStory" + storyBlock.index
-      theme: screen.theme
       width: parent.width
       opacity: !storyBlock.story.other && screen.isClosed(storyBlock.story.card_id) ? 0.5 : 1
-      text: storyBlock.story.other ? storyBlock.story.label : screen.cardLine(storyBlock.story.card_id, storyBlock.story.status)
+      lead: storyBlock.story.other ? storyBlock.story.label : screen.leadOf(storyBlock.story.card_id, storyBlock.story.status)
+      tail: storyBlock.story.other ? "" : screen.tailOf(storyBlock.story.status, "")
       color: screen.isUrgent(storyBlock.story.status) ? screen.theme.urgent : screen.theme.foreground
-      elide: Text.ElideRight
     }
 
     Repeater {
@@ -590,17 +617,12 @@ Column {
           screen.app.runs.selectAttempt(subBlock.subtask.card_id, subBlock.subtask.currentPhase, subBlock.subtask.currentAttempt)
       }
 
-      UI.ThemedText {
+      CardLine {
         objectName: "runSubtaskLabel" + subBlock.key
-        theme: screen.theme
         width: parent.width
-        text: {
-          var line = screen.cardLine(subBlock.subtask.card_id, subBlock.subtask.status)
-          var phase = screen.phaseText(subBlock.subtask)
-          return phase !== "" ? line + " · " + phase : line
-        }
+        lead: screen.leadOf(subBlock.subtask.card_id, subBlock.subtask.status)
+        tail: screen.tailOf(subBlock.subtask.status, screen.phaseText(subBlock.subtask))
         color: screen.isUrgent(subBlock.subtask.status) ? screen.theme.urgent : screen.theme.foreground
-        elide: Text.ElideRight
       }
     }
 
@@ -615,6 +637,37 @@ Column {
     Repeater {
       model: subBlock.expanded ? subBlock.subtask.attempts.length : 0
       delegate: AttemptRow { storyIndex: subBlock.storyIndex; subtaskIndex: subBlock.index }
+    }
+  }
+
+  // A card's line, `text` "<lead> · <tail>" (just the one that is not ""):
+  // the lead elides so the tail stays on the row.
+  component CardLine: Row {
+    id: cardLine
+    property string lead: ""
+    property string tail: ""
+    property color color: screen.theme.foreground
+    readonly property string text: cardLine.lead === "" || cardLine.tail === ""
+      ? cardLine.lead + cardLine.tail : cardLine.lead + " · " + cardLine.tail
+
+    spacing: Style.space(4)
+
+    UI.ThemedText {
+      objectName: cardLine.objectName + "Lead"
+      theme: screen.theme
+      width: Math.max(0, Math.min(implicitWidth, cardLine.width - (lineTail.visible ? lineTail.width + cardLine.spacing : 0)))
+      text: cardLine.lead
+      color: cardLine.color
+      elide: Text.ElideRight
+    }
+
+    UI.ThemedText {
+      id: lineTail
+      objectName: cardLine.objectName + "Tail"
+      theme: screen.theme
+      visible: cardLine.tail !== ""
+      text: cardLine.lead !== "" ? "· " + cardLine.tail : cardLine.tail
+      color: cardLine.color
     }
   }
 

@@ -5,6 +5,7 @@ reply for its call ("runs" or "status-<id>"; "" when none) and exits with the
 given code. The real am is never run.
 """
 import copy
+import datetime
 import json
 import os
 import subprocess
@@ -249,3 +250,29 @@ def test_single_snapshot_shape_and_key_order(tmp_path, monkeypatch):
     assert list(result) == ["ok", "run", "as_of_seq", "store_id", "status", "data_dir"]
     assert result == {"ok": True, "run": "r1", "as_of_seq": 9, "store_id": "",
                       "status": status, "data_dir": str(tmp_path / "data")}
+
+
+# --- parse_time ------------------------------------------------------------------
+
+UTC = datetime.timezone.utc
+AT = datetime.datetime(2026, 10, 8, 14, 38, 23, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("value, want", [
+    ("2026-10-08T14:38:23Z", AT),
+    ("2026-10-08T14:38:23+00:00", AT),
+    ("2026-10-08T16:38:23+02:00", AT),
+    ("2026-10-08 14:38:23.739155+00:00", AT.replace(microsecond=739155)),
+    ("2026-10-08", datetime.datetime(2026, 10, 8, tzinfo=UTC)),
+    ("2026-10-08T14:38:23", AT),
+], ids=["z", "utc-offset", "plus-two", "space-micro", "date-only", "naive"])
+def test_parse_time(value, want):
+    got = am_runs.parse_time(value)
+    assert got == want
+    assert got.utcoffset() is not None
+
+
+@pytest.mark.parametrize("value", [None, 5, "", "yesterday"],
+                         ids=["none", "int", "empty", "words"])
+def test_parse_time_rejects(value):
+    assert am_runs.parse_time(value) is None

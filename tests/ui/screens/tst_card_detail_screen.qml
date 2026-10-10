@@ -7,6 +7,7 @@
 import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
+import "../../../core/domain/runs.js" as Runs
 
 TestCase {
   id: tc
@@ -296,7 +297,7 @@ TestCase {
     verify(first, "a row per touching run, newest first")
     compare(H.find(first, "runBadge").text, "⟳")
     compare(H.find(first, "cardRunId0").text, "…000000a1")
-    compare(H.find(first, "cardRunTitle0").text, "m1")
+    compare(H.find(first, "cardRunTitle0").text, "milestone …m1")
     compare(H.find(first, "cardRunPhase0").text, "implement")
     compare(H.find(first, "cardRunAge0").text, "2h")
     var second = H.find(s, "cardRunRow1")
@@ -307,6 +308,50 @@ TestCase {
     compare(H.find(second, "cardRunAge1").text, "1d")
     verify(!H.find(s, "cardRunRow2"), "the escalated run of x1 does not touch s1")
     compare(first.index, -1, "a RUNS row is not in the keyboard's link list")
+  }
+
+  // withRuns()' runs, tagged with a project that is not the open one.
+  function test_a_runs_row_reads_its_projects_title_then_its_short_id() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.app.runs.runs = s.app.runs.runs.map(function(r) { return Runs.withProject(r, "/home/u/b", "beta") })
+    s.app.runTitles.titlesRunner.cancel()
+    s.app.runTitles.titlesByRoot = { "/home/u/b": { m1: "Shipped M1" } }
+    s.navigator.openCard("s1")
+    wait(50)
+    var title = H.find(s, "cardRunTitle0")
+    var id = H.find(s, "cardRunId0")
+    compare(title.text, "Shipped M1")
+    compare(id.text, "…000000a1")
+    compare(String(id.color), String(s.theme.dim), "the short id is dim")
+    verify(title.x < id.x, "the short id follows the title")
+    compare(H.find(s, "cardRunTitle1").text, "Shipped M1", "the done run of m1 too")
+    compare(H.find(s, "cardRunPhase0").text, "implement", "the phase is unchanged")
+    s.app.runTitles.titlesByRoot = { "/home/u/a": { m1: "Wrong project" } }
+    compare(H.find(s, "cardRunTitle0").text, "milestone …m1", "another project's map is not the run's")
+  }
+
+  // A brd title of any length elides; the short id, phase and age stay on the row.
+  function test_a_long_runs_row_title_never_pushes_the_short_id_off_the_row() {
+    var s = make(); if (!s) return
+    withRuns(s)
+    s.app.runs.runs = s.app.runs.runs.map(function(r) { return Runs.withProject(r, "/home/u/b", "beta") })
+    s.app.runTitles.titlesRunner.cancel()
+    var long = ""
+    for (var i = 0; i < 40; i++) long += "a very long run title "
+    s.app.runTitles.titlesByRoot = { "/home/u/b": { m1: long } }
+    s.navigator.openCard("s1")
+    wait(50)
+    var row = H.find(s, "cardRunRow0")
+    var title = H.find(s, "cardRunTitle0")
+    compare(title.elide, Text.ElideRight)
+    verify(title.width < title.implicitWidth, "the title is elided")
+    var names = ["cardRunId0", "cardRunPhase0", "cardRunAge0"]
+    for (var j = 0; j < names.length; j++) {
+      var t = H.find(s, names[j])
+      var right = t.mapToItem(row, 0, 0).x + t.width
+      verify(right <= row.width, names[j] + " stays on the row: right edge " + right + " of " + row.width)
+    }
   }
 
   function test_an_escalated_run_row_reads_urgent() {

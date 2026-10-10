@@ -33,6 +33,8 @@ TestCase {
 
   function checkDefaults(r, label) {
     compare(Object.keys(r).sort().join(","), "base_branch,branch_prefix,card_id,id,lease,milestone_id,project,repo_dir,requests,rows,started_at,status,story_id,tree,workflow", label)
+    compare(r.story_id, "", label)
+    compare(r.card_id, "", label)
     compare(r.started_at, "", label)
     compare(r.id, "", label)
     compare(r.repo_dir, "", label)
@@ -1016,13 +1018,13 @@ TestCase {
   }
 
   // A cancelled run in either spelling is found by its state name and sits in
-  // no chip but `all`.
+  // the `finished` and `all` chips only.
   function test_fixture_cancel_spellings_filters_and_search() {
     var spellings = cancelSpellings()
     for (var i = 0; i < spellings.length; i++) {
       var run = cancelledRun(spellings[i])
       var counts = Runs.runFilterCounts([run])
-      compare([counts.attention, counts.live, counts.parked, counts.all].join(","), "0,0,0,1",
+      compare([counts.attention, counts.live, counts.parked, counts.finished, counts.all].join(","), "0,0,0,1,1",
               spellings[i] + ": chip counts")
       compare(Runs.searchRuns([run], "cancelled").length, 1, spellings[i] + ": found by its state name")
       compare(Runs.searchRuns([run], "unknown").length, 0, spellings[i] + ": not unknown")
@@ -1685,7 +1687,7 @@ TestCase {
   }
 
   function test_run_title() {
-    compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "4bf4fb2f" })), "4bf4fb2f")
+    compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "4bf4fb2f" })), "milestone …4bf4fb2f")
     compare(Runs.runTitle(mkRun("run-0000abcd1234", "started", true, { milestone_id: "" })), "…abcd1234",
             "falls back to the short id")
     compare(Runs.runTitle({ id: "r1", milestone_id: 5 }), "…r1", "a non-string milestone is no title")
@@ -1879,12 +1881,12 @@ TestCase {
 
   function test_run_filter_counts() {
     var c = Runs.runFilterCounts(screenRuns())
-    compare(Object.keys(c).sort().join(","), "all,attention,live,parked")
-    compare([c.attention, c.live, c.parked, c.all].join(","), "2,1,1,5")
+    compare(Object.keys(c).sort().join(","), "all,attention,finished,live,parked")
+    compare([c.attention, c.live, c.parked, c.finished, c.all].join(","), "2,1,1,2,5")
     var bad = [undefined, null, "x", 5, {}]
     for (var i = 0; i < bad.length; i++) {
       var b = Runs.runFilterCounts(bad[i])
-      compare([b.attention, b.live, b.parked, b.all].join(","), "0,0,0,0", "garbage " + i)
+      compare([b.attention, b.live, b.parked, b.finished, b.all].join(","), "0,0,0,0,0", "garbage " + i)
     }
   }
 
@@ -1917,6 +1919,273 @@ TestCase {
     compare(ids(Runs.searchRuns([null, 5, list[1]], "beta")), "run-esc-00002", "junk entries never match")
     var bad = [undefined, null, "x", 5, {}]
     for (var i = 0; i < bad.length; i++) compare(Runs.searchRuns(bad[i], "a").length, 0, "garbage " + i)
+  }
+
+  // ---- History filters (2.2) -------------------------------------------------------------
+
+  // mkRun with started_at and a `project` of { root: root }.
+  function rootedRun(id, status, live, root, startedAt) {
+    var run = mkRun(id, status, live, { started_at: startedAt })
+    run.project = { root: root }
+    return run
+  }
+
+  // One run per state, both cancel spellings, input order mixed.
+  function finishedMix() {
+    return [
+      mkRun("c-cancelled", "cancelled", null),
+      mkRun("p-parked", "stopped", null),
+      mkRun("d-done", "done", null),
+      mkRun("x-dead", "started", false),
+      mkRun("c-canceled", "canceled", null),
+      mkRun("u-unknown", "weird", null),
+      mkRun("l-live", "started", true),
+      mkRun("e-escalated", "escalated", null)
+    ]
+  }
+
+  function test_filter_runs_finished() {
+    compare(ids(Runs.filterRuns(screenRuns(), "finished")), "run-esc-00002,run-done-0005")
+    var list = finishedMix()
+    var before = ids(list)
+    var kept = Runs.filterRuns(list, "finished")
+    compare(ids(kept), "c-cancelled,d-done,c-canceled,e-escalated", "finished states only, input order")
+    compare(kept[0] === list[0] && kept[3] === list[7], true, "the same objects")
+    compare(Runs.runFilterCounts(list).finished, 4, "the count is the list's length")
+    compare(ids(list), before, "input unchanged")
+    var junk = Runs.filterRuns([null, 5, "x", {}, [], list[2]], "finished")
+    compare(junk.length === 1 && junk[0] === list[2], true, "junk entries are not finished")
+    var bad = [undefined, null, "x", 5, [], {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.filterRuns(bad[i], "finished").length, 0, "garbage " + i)
+  }
+
+  // A done run started at startedAt (undefined: no started_at).
+  function startedRun(startedAt) { return mkRun("s", "done", null, { started_at: startedAt }) }
+
+  // "a,b": withinAge "today" for a run started at `inside`, then at `outside`.
+  function todayPair(inside, outside, now, offset) {
+    return [Runs.withinAge(startedRun(inside), "today", now, offset),
+            Runs.withinAge(startedRun(outside), "today", now, offset)].join(",")
+  }
+
+  function test_within_age_today_at_fixed_offsets() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    compare(todayPair("2026-10-04T00:00:00Z", "2026-10-03T23:59:59Z", now, 0), "true,false", "UTC")
+    compare(todayPair("2026-10-04T03:00:00Z", "2026-10-04T02:59:59Z", now, -180), "true,false", "UTC-3")
+    compare(todayPair("2026-10-03T14:00:00Z", "2026-10-03T13:59:59Z", now, 600), "true,false",
+            "UTC+10: the previous UTC day")
+    compare(todayPair("2026-10-04T11:00:00Z", "2026-10-04T10:59:59Z", now, 780), "true,false",
+            "UTC+13: the next local day")
+    var atMidnight = Date.parse("2026-10-04T03:00:00Z")
+    compare(todayPair("2026-10-04T03:00:00Z", "2026-10-04T02:59:59.999Z", atMidnight, -180), "true,false",
+            "now exactly at local midnight")
+    compare(todayPair("2026-10-04 00:00:00-03:00", "2026-10-03 23:59:59-03:00", now, -180), "true,false",
+            "am's format with an offset")
+    var badOffsets = [undefined, NaN, "x", null, Infinity, {}, "-180"]
+    for (var i = 0; i < badOffsets.length; i++)
+      compare(todayPair("2026-10-04T00:00:00Z", "2026-10-03T23:59:59Z", now, badOffsets[i]), "true,false",
+              "non-finite offset " + i + " is 0")
+    var run = startedRun("2026-10-04T03:00:00Z")
+    var json = JSON.stringify(run)
+    Runs.withinAge(run, "today", now, -180)
+    compare(JSON.stringify(run), json, "the run is unchanged")
+  }
+
+  function test_within_age_week_and_defaults() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    compare(Runs.withinAge(startedRun("2026-09-27T12:00:00Z"), "week", now, 0), true, "exactly 7 days")
+    compare(Runs.withinAge(startedRun("2026-09-27T11:59:59Z"), "week", now, 0), false, "a second over")
+    compare(Runs.withinAge(startedRun("2026-09-27 12:00:00+00:00"), "week", now, 600), true,
+            "the offset never moves the week")
+    compare(Runs.withinAge(startedRun("2026-10-05T12:00:00Z"), "week", now, 0), true, "a future start, week")
+    compare(Runs.withinAge(startedRun("2026-10-05T12:00:00Z"), "today", now, 0), true, "a future start, today")
+    compare(Runs.withinAge(mkRun("l", "started", true, { started_at: "2020-01-01T00:00:00Z" }), "week", now, 0),
+            false, "the run's state is not consulted")
+    var anyAge = ["all", "", "bogus", undefined, null, 5, "constructor", "__proto__", "Today"]
+    for (var i = 0; i < anyAge.length; i++) {
+      compare(Runs.withinAge(startedRun(undefined), anyAge[i], now, 0), true, "age " + i + " with no started_at")
+      compare(Runs.withinAge(startedRun("2020-01-01T00:00:00Z"), anyAge[i], now, 0), true, "age " + i + " with an old start")
+    }
+    var badNow = [undefined, null, "x", NaN, Infinity, -Infinity, {}, []]
+    for (var j = 0; j < badNow.length; j++) {
+      compare(Runs.withinAge(startedRun("2020-01-01T00:00:00Z"), "today", badNow[j], 0), true, "no clock, today " + j)
+      compare(Runs.withinAge(startedRun(undefined), "week", badNow[j], 0), true, "no clock, week " + j)
+    }
+    var noStart = [startedRun(undefined), startedRun(""), startedRun("not a date"), startedRun(5),
+                   startedRun(null), startedRun({}), undefined, null, "x", 5, [], {}]
+    for (var k = 0; k < noStart.length; k++) {
+      compare(Runs.withinAge(noStart[k], "today", now, 0), false, "no start instant, today " + k)
+      compare(Runs.withinAge(noStart[k], "week", now, 0), false, "no start instant, week " + k)
+    }
+  }
+
+  function stateList(list) { return list.map(function(r) { return r.status }).join(",") }
+
+  // The ids of the runs in list whose state is not finished.
+  function unfinishedIds(list) {
+    var out = []
+    for (var i = 0; i < list.length; i++)
+      if (["done", "escalated", "cancelled"].indexOf(Runs.runState(list[i])) < 0) out.push(list[i].id)
+    return out.join(",")
+  }
+
+  function test_filter_finished_state_chips() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    var list = [mkRun("d", "done", null), mkRun("e", "escalated", null), cancelledRun("cancelled"),
+                cancelledRun("canceled"), mkRun("p", "stopped", null)]
+    compare(stateList(Runs.filterFinished(list, "done", "all", now, 0)), "done,stopped")
+    compare(stateList(Runs.filterFinished(list, "escalated", "all", now, 0)), "escalated,stopped")
+    compare(stateList(Runs.filterFinished(list, "cancelled", "all", now, 0)), "cancelled,canceled,stopped",
+            "cancelled covers both spellings")
+    var anyState = ["all", "", "bogus", undefined, "constructor", "__proto__", "canceled", null, 5]
+    for (var i = 0; i < anyState.length; i++)
+      compare(stateList(Runs.filterFinished(list, anyState[i], "all", now, 0)),
+              "done,escalated,cancelled,canceled,stopped", "state " + i + " keeps every finished run")
+    var kept = Runs.filterFinished(list, "cancelled", "all", now, 0)
+    compare(kept[0] === list[2] && kept[1] === list[3] && kept[2] === list[4], true, "the same objects")
+  }
+
+  function test_filter_finished_state_and_age() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    var list = [mkRun("done-new", "done", null, { started_at: "2026-10-04 09:00:00+00:00" }),
+                mkRun("done-old", "done", null, { started_at: "2026-09-01T00:00:00Z" }),
+                mkRun("esc-new", "escalated", null, { started_at: "2026-10-04T10:00:00Z" }),
+                mkRun("done-none", "done", null)]
+    compare(ids(Runs.filterFinished(list, "done", "week", now, 0)), "done-new", "state and age must both hold")
+    compare(ids(Runs.filterFinished(list, "all", "today", now, 0)), "done-new,esc-new", "today, UTC")
+    compare(ids(Runs.filterFinished(list, "all", "today", now, 780)), "",
+            "UTC+13: both started before local midnight")
+    compare(ids(Runs.filterFinished(list, "all", "all", now, 0)), "done-new,done-old,esc-new,done-none",
+            "All time keeps a run with no started_at")
+  }
+
+  function test_filter_finished_never_hides_unfinished() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    var old = "2020-01-01T00:00:00Z"
+    var list = [mkRun("live", "started", true, { started_at: old }),
+                mkRun("old-done", "done", null, { started_at: old }),
+                mkRun("dead", "started", false, { started_at: old }),
+                mkRun("old-esc", "escalated", null, { started_at: old }),
+                mkRun("parked", "stopped", null, { started_at: old }),
+                mkRun("old-canc", "canceled", null, { started_at: old }),
+                mkRun("unknown", "weird", null),
+                mkRun("new-done", "done", null, { started_at: "2026-10-04T11:00:00Z" })]
+    var before = JSON.stringify(list)
+    var states = ["all", "done", "escalated", "cancelled", "", "bogus", undefined, "constructor"]
+    var ages = ["all", "today", "week", "", "bogus", undefined]
+    var offsets = [0, -180, 600, 780, undefined, NaN]
+    var clocks = [now, NaN, undefined]
+    for (var s = 0; s < states.length; s++)
+      for (var a = 0; a < ages.length; a++)
+        for (var o = 0; o < offsets.length; o++)
+          for (var c = 0; c < clocks.length; c++)
+            compare(unfinishedIds(Runs.filterFinished(list, states[s], ages[a], clocks[c], offsets[o])),
+                    "live,dead,parked,unknown", "state " + s + " age " + a + " offset " + o + " clock " + c)
+    compare(ids(Runs.filterFinished(list, "all", "today", now, 0)), "live,dead,parked,unknown,new-done",
+            "only finished runs are dropped")
+    compare(JSON.stringify(list), before, "input unchanged")
+  }
+
+  function test_filter_finished_garbage() {
+    var now = Date.parse("2026-10-04T12:00:00Z")
+    var list = [mkRun("d", "done", null, { started_at: "2026-10-04T11:00:00Z" }), mkRun("p", "stopped", null)]
+    var before = ids(list)
+    var bad = [undefined, null, "x", 5, [], {}]
+    for (var i = 0; i < bad.length; i++) {
+      compare(Runs.filterFinished(bad[i], "all", "all", now, 0).length, 0, "runs " + i)
+      compare(ids(Runs.filterFinished(list, bad[i], "today", now, 0)), "d,p", "finishedState " + i)
+      compare(ids(Runs.filterFinished(list, "done", bad[i], now, 0)), "d,p", "finishedAge " + i)
+      compare(ids(Runs.filterFinished(list, "done", "today", bad[i], 0)), "d,p", "nowMs " + i)
+      compare(ids(Runs.filterFinished(list, "done", "today", now, bad[i])), "d,p", "utcOffsetMinutes " + i)
+    }
+    var junk = [undefined, null, "x", 5, [], {}]
+    compare(Runs.filterFinished(junk, "done", "today", now, 0).length, junk.length,
+            "junk entries are not finished, so they are kept")
+    compare(ids(list), before, "input unchanged")
+  }
+
+  function test_history_statuses() {
+    var all = "done,escalated,stopped,cancelled,canceled"
+    var finishedAll = "done,escalated,cancelled,canceled"
+    compare(Runs.historyStatuses("all").join(","), all)
+    compare(Runs.historyStatuses("parked").join(","), "stopped")
+    compare(Runs.historyStatuses("attention").join(","), "escalated")
+    compare(Runs.historyStatuses("live").length, 0, "a live run is never terminal")
+    compare(Runs.historyStatuses("finished", "done").join(","), "done")
+    compare(Runs.historyStatuses("finished", "escalated").join(","), "escalated")
+    compare(Runs.historyStatuses("finished", "cancelled").join(","), "cancelled,canceled")
+    var anyState = ["all", "", "bogus", "canceled", undefined, null, 5, [], {}, "constructor"]
+    for (var i = 0; i < anyState.length; i++)
+      compare(Runs.historyStatuses("finished", anyState[i]).join(","), finishedAll, "finishedState " + i)
+    var badFilter = ["", "bogus", "Finished", undefined, null, "x", 5, [], {}, "constructor", "__proto__"]
+    for (var j = 0; j < badFilter.length; j++)
+      compare(Runs.historyStatuses(badFilter[j], "done").join(","), all, "filter " + j + " is All")
+    compare(Runs.historyStatuses("parked", "done").join(","), "stopped", "finishedState only matters to finished")
+    var a = Runs.historyStatuses("all"), b = Runs.historyStatuses("all")
+    compare(a === b, false, "a new array per call")
+    a.push("x")
+    compare(Runs.historyStatuses("all").join(","), all, "a caller's change never leaks")
+  }
+
+  function test_history_cursor_per_root() {
+    var list = [
+      rootedRun("a-live", "started", true, "/a", "2026-09-01T00:00:00Z"),
+      rootedRun("b-canc", "canceled", null, "/b", "2026-10-03T02:00:00Z"),
+      rootedRun("a-done", "done", null, "/a", "2026-10-03 10:00:00+00:00"),
+      rootedRun("a-dead", "started", false, "/a", "2026-09-02 00:00:00+00:00"),
+      rootedRun("b-live", "started", true, "/b", "2026-01-01T00:00:00Z"),
+      rootedRun("a-esc", "escalated", null, "/a", "2026-10-03T12:00:00+05:00"),
+      rootedRun("a-bad", "cancelled", null, "/a", "not a date"),
+      rootedRun("b-park", "stopped", null, "/b", "2026-10-02 23:00:00-02:00"),
+      rootedRun("a-unk", "weird", null, "/a", "2026-08-01T00:00:00Z")
+    ]
+    var before = JSON.stringify(list)
+    compare(Runs.historyCursor(list, "/a"), "2026-10-03T12:00:00+05:00",
+            "the oldest instant (07:00Z), not the smallest string; running, dead, unknown and unparsable ignored")
+    compare(Runs.historyCursor(list, "/b"), "2026-10-02 23:00:00-02:00", "a parked run can be the cursor")
+    compare(JSON.stringify(list), before, "input unchanged")
+  }
+
+  function test_history_cursor_ties_and_empty() {
+    var tie = [rootedRun("t1", "done", null, "/a", "2026-10-03T10:00:00Z"),
+               rootedRun("t2", "escalated", null, "/a", "2026-10-03 10:00:00+00:00"),
+               rootedRun("t3", "stopped", null, "/a", "2026-10-03 07:00:00-03:00")]
+    compare(Runs.historyCursor(tie, "/a"), "2026-10-03T10:00:00Z", "a tie goes to the first in input order")
+    compare(Runs.historyCursor(tie.slice(1), "/a"), "2026-10-03 10:00:00+00:00", "verbatim, am's format")
+    var unfinished = [rootedRun("l", "started", true, "/a", "2026-10-01T00:00:00Z"),
+                      rootedRun("d", "started", false, "/a", "2026-10-01T00:00:00Z"),
+                      rootedRun("u", "weird", null, "/a", "2026-10-01T00:00:00Z")]
+    compare(Runs.historyCursor(unfinished, "/a"), "", "no terminal run")
+    compare(Runs.historyCursor(tie, "/zzz"), "", "an unknown root")
+    compare(Runs.historyCursor(tie, "/a/"), "", "roots compare exactly")
+    compare(Runs.historyCursor([], "/a"), "", "no runs")
+    compare(Runs.historyCursor([mkRun("n", "done", null, { started_at: "2026-10-01T00:00:00Z" })], "/a"), "",
+            "a run with no project")
+    var odd = ["x", 5, null, [], { root: 5 }, { name: "/a" }]
+    for (var k = 0; k < odd.length; k++) {
+      var r = mkRun("o", "done", null, { started_at: "2026-10-01T00:00:00Z" })
+      r.project = odd[k]
+      compare(Runs.historyCursor([r], "/a"), "", "project " + k + " never matches")
+    }
+    var badStart = [undefined, "", "not a date", 5, null, {}]
+    for (var m = 0; m < badStart.length; m++)
+      compare(Runs.historyCursor([rootedRun("s", "done", null, "/a", badStart[m])], "/a"), "", "started_at " + m)
+  }
+
+  function test_history_cursor_garbage() {
+    var list = [rootedRun("a", "done", null, "/a", "2026-10-03T10:00:00Z")]
+    var bad = [undefined, null, "x", 5, [], {}]
+    for (var i = 0; i < bad.length; i++) {
+      compare(Runs.historyCursor(bad[i], "/a"), "", "runs " + i)
+      compare(Runs.historyCursor(list, bad[i]), "", "root " + i)
+    }
+    compare(Runs.historyCursor(list, ""), "", "an empty root")
+    compare(Runs.historyCursor([undefined, null, "x", 5, [], {}, list[0]], "/a"), "2026-10-03T10:00:00Z",
+            "junk entries are skipped")
+    compare(Runs.historyCursor([rootedRun("c", "done", null, "constructor", "2026-10-03T10:00:00Z")], "constructor"),
+            "2026-10-03T10:00:00Z", "a root named constructor")
+    compare(Runs.historyCursor(list, "__proto__"), "", "a root named __proto__")
+    compare(ids(list), "a", "input unchanged")
   }
 
   // ---- Run detail (5.2)
@@ -2939,7 +3208,7 @@ TestCase {
     var id = "run-20261004-0123456789abcdef"
     var a = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null, { tree: alTree() })])
     compare(a.length, 1, "one alert")
-    checkAlert(a[0], id, "m1", "escalated", "escalated at review", "with milestone")
+    checkAlert(a[0], id, "milestone …m1", "escalated", "escalated at review", "with milestone")
 
     var b = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null, { milestone_id: "", tree: alTree() })])
     compare(b.length, 1, "one alert without a milestone")
@@ -2949,7 +3218,7 @@ TestCase {
                        phases: [{ name: "review", status: "failed", detail: "3 tests failed" }] }] }
     var c = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", true, { tree: detailTree })])
     compare(c.length, 1, "one alert with a detail")
-    checkAlert(c[0], id, "m1", "escalated", "3 tests failed", "detail reason")
+    checkAlert(c[0], id, "milestone …m1", "escalated", "3 tests failed", "detail reason")
 
     var d = Runs.newAlerts([alRunning(id)], [mkRun(id, "escalated", null)])
     compare(d.length, 1, "one alert with no tree")
@@ -2959,11 +3228,11 @@ TestCase {
   function test_new_alerts_entering_dead() {
     var a = Runs.newAlerts([alRunning("r1")], [mkRun("r1", "started", false)])
     compare(a.length, 1, "running -> dead (live false)")
-    checkAlert(a[0], "r1", "m1", "dead", "process died", "live false")
+    checkAlert(a[0], "r1", "milestone …m1", "dead", "process died", "live false")
 
     var b = Runs.newAlerts([mkRun("r1", "stopped", null)], [mkRun("r1", "started", null)])
     compare(b.length, 1, "parked -> dead (lease null)")
-    checkAlert(b[0], "r1", "m1", "dead", "process died", "lease null")
+    checkAlert(b[0], "r1", "milestone …m1", "dead", "process died", "lease null")
 
     var c = Runs.newAlerts([alRunning("r1")], [mkRun("r1", "started", false, { tree: alTree() })])
     compare(c.length, 1, "dead with a failed phase")
@@ -3005,11 +3274,11 @@ TestCase {
   function test_new_alerts_switch_between() {
     var a = Runs.newAlerts([alEscalated("r")], [mkRun("r", "started", false, { tree: alTree() })])
     compare(a.length, 1, "escalated -> dead")
-    checkAlert(a[0], "r", "m1", "dead", "process died", "escalated -> dead")
+    checkAlert(a[0], "r", "milestone …m1", "dead", "process died", "escalated -> dead")
 
     var b = Runs.newAlerts([alDead("r")], [alEscalated("r")])
     compare(b.length, 1, "dead -> escalated")
-    checkAlert(b[0], "r", "m1", "escalated", "escalated at review", "dead -> escalated")
+    checkAlert(b[0], "r", "milestone …m1", "escalated", "escalated at review", "dead -> escalated")
   }
 
   function test_new_alerts_one_per_transition() {
@@ -3103,7 +3372,7 @@ TestCase {
                                          status: { run: { milestone_id: "m9", status: "escalated" } } })
     var fromNormalised = Runs.newAlerts([], [normalised])
     compare(fromNormalised.length, 1, "a normalised escalated run")
-    checkAlert(fromNormalised[0], "rz", "m9", "escalated", "escalated", "normalised run")
+    checkAlert(fromNormalised[0], "rz", "milestone …m9", "escalated", "escalated", "normalised run")
   }
 
   function test_new_alerts_fresh_and_pure() {
@@ -3124,7 +3393,7 @@ TestCase {
     x.push({ id: "junk" })
     var z = Runs.newAlerts(prev, next)
     compare(alIds(z), "a,c", "mutating a result does not change the next one")
-    checkAlert(z[0], "a", "m1", "escalated", "escalated at review", "after mutation")
+    checkAlert(z[0], "a", "milestone …m1", "escalated", "escalated at review", "after mutation")
 
     compare(JSON.stringify(prev), prevJson, "prevRuns unchanged")
     compare(JSON.stringify(next), nextJson, "nextRuns unchanged")
@@ -3148,7 +3417,7 @@ TestCase {
   function test_alertNotification_escalated_fixture() {
     var run = Runs.normalizeRun(amRun("status-escalated.json"))
     var n = Runs.alertNotification(run, "escalated", "omarchy-project-manager", run.id)
-    checkNotification(n, "‼ f18d342f-4887-4cd8-a86e-dd2755237c2c escalated · omarchy-project-manager",
+    checkNotification(n, "‼ milestone …55237c2c escalated · omarchy-project-manager",
                       anFixtureReason(), "fixture")
     compare(n.body, Runs.escalationReason(run), "body is the run's escalation reason")
   }
@@ -3156,7 +3425,7 @@ TestCase {
   function test_alertNotification_dead() {
     var run = mkRun("20261008T000000Z-deadbeef", "started", false)
     var n = Runs.alertNotification(run, "dead", "alpha", run.id)
-    checkNotification(n, "✖ m1 died · alpha", "process died", "dead")
+    checkNotification(n, "✖ milestone …m1 died · alpha", "process died", "dead")
 
     // exact code points: glyph + space, then space, U+00B7, space before the project
     var t = n.title
@@ -3171,7 +3440,7 @@ TestCase {
 
     // runId is not compared with run.id: a usable run titles from itself
     checkNotification(Runs.alertNotification(run, "dead", "alpha", "20261008T143755Z-f18d342f"),
-                      "✖ m1 died · alpha", "process died", "runId differs from run.id")
+                      "✖ milestone …m1 died · alpha", "process died", "runId differs from run.id")
   }
 
   function test_alertNotification_title_without_milestone() {
@@ -3223,9 +3492,9 @@ TestCase {
       var p = projects[i][1]
       var label = projects[i][0] + " project"
       checkNotification(Runs.alertNotification(run, "escalated", p, runId),
-                        "‼ f18d342f-4887-4cd8-a86e-dd2755237c2c escalated", anFixtureReason(), label + ", fixture")
+                        "‼ milestone …55237c2c escalated", anFixtureReason(), label + ", fixture")
       checkNotification(Runs.alertNotification(run, "dead", p, runId),
-                        "✖ f18d342f-4887-4cd8-a86e-dd2755237c2c died", "process died", label + ", fixture, dead")
+                        "✖ milestone …55237c2c died", "process died", label + ", fixture, dead")
       checkNotification(Runs.alertNotification(null, "escalated", p, runId),
                         "‼ …f18d342f escalated", "escalated", label + ", no run")
       checkNotification(Runs.alertNotification(null, "dead", p, runId),
@@ -3243,7 +3512,7 @@ TestCase {
                   ["undefined", undefined], ["number", 5]]
     for (var i = 0; i < states.length; i++) {
       checkNotification(Runs.alertNotification(run, states[i][1], "alpha", run.id),
-                        "‼ f18d342f-4887-4cd8-a86e-dd2755237c2c escalated · alpha", Runs.escalationReason(run),
+                        "‼ milestone …55237c2c escalated · alpha", Runs.escalationReason(run),
                         states[i][0] + " state, fixture")
       checkNotification(Runs.alertNotification(null, states[i][1], "alpha", "20261008T143755Z-f18d342f"),
                         "‼ …f18d342f escalated · alpha", "escalated", states[i][0] + " state, no run")
@@ -3261,7 +3530,7 @@ TestCase {
     verify(a !== b, "distinct result objects")
     a.title = "changed"
     a.body = "changed"
-    compare(b.title, "‼ f18d342f-4887-4cd8-a86e-dd2755237c2c escalated · alpha", "mutating one result leaves the other")
+    compare(b.title, "‼ milestone …55237c2c escalated · alpha", "mutating one result leaves the other")
     compare(Runs.alertNotification(run, "escalated", "alpha", run.id).body, anFixtureReason(),
             "mutating a result does not change the next one")
     compare(JSON.stringify(run), before, "run unchanged")
@@ -5168,6 +5437,405 @@ TestCase {
   function test_run_root_of_anything_else_is_empty() {
     var others = [null, undefined, 5, "x", {}, { project: null }, { project: "x" }, { project: {} }, { project: { root: 7 } }]
     for (var i = 0; i < others.length; i++) compare(Runs.runRoot(others[i]), "", JSON.stringify(others[i]))
+  }
+
+  // ---- history-and-titles 2.1: run titles ---------------------------------------------------
+
+  function test_normalize_story_and_card_ids() {
+    // synthetic: bare am runs rows and am status runs naming a story and a card
+    var fromRow = Runs.normalizeRun({ row: { id: "r1", story_id: "s1", card_id: "c1" } })
+    compare(fromRow.story_id, "s1", "story from the row")
+    compare(fromRow.card_id, "c1", "card from the row")
+
+    var fromStatus = Runs.normalizeRun({ status: { run: { id: "r2", story_id: "s2", card_id: "c2" } } })
+    compare(fromStatus.story_id, "s2", "story from the am status run")
+    compare(fromStatus.card_id, "c2", "card from the am status run")
+
+    var both = Runs.normalizeRun({ row: { story_id: "s-row", card_id: "c-row" },
+                                   status: { run: { story_id: "s-st", card_id: "c-st" } } })
+    compare(both.story_id, "s-row", "the row wins over the am status run")
+    compare(both.card_id, "c-row", "the row wins over the am status run (card)")
+
+    var missing = [null, undefined, ""]
+    for (var i = 0; i < missing.length; i++) {
+      var r = Runs.normalizeRun({ row: { story_id: missing[i], card_id: missing[i] },
+                                  status: { run: { story_id: "s-st", card_id: "c-st" } } })
+      compare(r.story_id, "s-st", "row story " + JSON.stringify(missing[i]) + " counts as missing")
+      compare(r.card_id, "c-st", "row card " + JSON.stringify(missing[i]) + " counts as missing")
+      var bare = Runs.normalizeRun({ row: { story_id: missing[i], card_id: missing[i] } })
+      compare(bare.story_id, "", "row story " + JSON.stringify(missing[i]) + " gives empty")
+      compare(bare.card_id, "", "row card " + JSON.stringify(missing[i]) + " gives empty")
+    }
+
+    // the captures: am status runs have story_id null, runs.json rows have null story and card ids
+    var runs = fixtureRuns()
+    for (var j = 0; j < runs.length; j++) {
+      compare(runs[j].story_id, "", "fixture " + j + " story_id")
+      compare(runs[j].card_id, "", "fixture " + j + " card_id")
+    }
+
+    // synthetic: the started capture's am status run story_id set; the row's stays null
+    var raw = amRun("status-started.json")
+    raw.status.run.story_id = "9f0f68fc-f231-4ef2-b646-00a7af925ea2"
+    compare(Runs.normalizeRun(raw).story_id, "9f0f68fc-f231-4ef2-b646-00a7af925ea2", "capture with a story id")
+    // synthetic: the row names the story, the am status run keeps its null
+    var rowOnly = amRun("status-started.json")
+    rowOnly.row.story_id = "row-story"
+    compare(Runs.normalizeRun(rowOnly).story_id, "row-story", "a null am status story_id falls back to the row")
+  }
+
+  function test_titles_from_cards() {
+    // synthetic: a brd tree as `brd tree` returns it, indexed by Board.indexTree
+    var roots = [{ id: "m1", title: " Milestone one ", children: [
+      { id: "s1", title: "Story one", children: [
+        { id: "t1", title: "Subtask one", children: [] },
+        { id: "t2", children: [] },
+        { id: "t3", title: 7, children: [] },
+        { id: "t4", title: "", children: [] },
+        { id: "t5", title: "   ", children: [] }] }] }]
+    var cardMap = Board.indexTree(roots).cardMap
+    var before = JSON.stringify(cardMap)
+    var titles = Runs.titlesFromCards(cardMap)
+    compare(Object.keys(titles).sort().join(","), "m1,s1,t1", "nested cards included, untitled ones skipped")
+    compare(titles.m1, "Milestone one", "trimmed")
+    compare(titles.s1, "Story one")
+    compare(titles.t1, "Subtask one")
+    compare(JSON.stringify(cardMap), before, "the card map is not mutated")
+    verify(Runs.titlesFromCards(cardMap) !== titles, "a new object on each call")
+
+    // synthetic: non-object cards are skipped
+    compare(JSON.stringify(Runs.titlesFromCards({ a: "x", b: null, c: [], d: 5, e: { title: "E" } })), '{"e":"E"}')
+
+    var bad = [undefined, null, "x", 5, []]
+    for (var i = 0; i < bad.length; i++)
+      compare(JSON.stringify(Runs.titlesFromCards(bad[i])), "{}", "garbage " + i)
+  }
+
+  function test_titles_from_cards_prototype_keys() {
+    // synthetic: JSON.parse makes __proto__ and constructor own keys of the card map
+    var cardMap = JSON.parse('{"__proto__": {"title": "Proto card"}, "constructor": {"title": "Ctor card"}, "toString": {"id": "x"}}')
+    var titles = Runs.titlesFromCards(cardMap)
+    verify(Object.getPrototypeOf(titles) === Object.prototype, "the result's prototype is unchanged")
+    compare(Object.keys(titles).sort().join(","), "__proto__,constructor", "own keys, toString skipped")
+    compare(Object.prototype.hasOwnProperty.call(titles, "__proto__"), true, "__proto__ is an own key")
+    compare(titles["__proto__"], "Proto card")
+    compare(titles.constructor, "Ctor card")
+    compare(({}).polluted, undefined, "nothing leaks into Object.prototype")
+    compare(Object.prototype.title, undefined, "no title on Object.prototype")
+    compare(typeof ({}).constructor, "function", "plain objects keep their constructor")
+
+    var bare = Object.create(null)
+    bare.c1 = { title: "Bare" }
+    compare(JSON.stringify(Runs.titlesFromCards(bare)), '{"c1":"Bare"}', "a prototype-less card map")
+  }
+
+  // A normalised run naming a card, story and/or milestone (mkRun, plus story_id/card_id).
+  function idRun(id, milestoneId, storyId, cardId, stories) {
+    var r = mkRun(id, "started", true, { milestone_id: milestoneId, tree: { stories: stories || [], subtasks: [] } })
+    r.story_id = storyId
+    r.card_id = cardId
+    return r
+  }
+
+  function test_run_title_with_titles() {
+    var titles = { "card-0000000c1": "Card title", "story-00000s1": "Story title", "mile-00000m1": "Milestone title" }
+    compare(Runs.runTitle(idRun("r1", "mile-00000m1", "story-00000s1", "card-0000000c1"), titles), "Card title", "card run")
+    compare(Runs.runTitle(idRun("r1", "mile-00000m1", "story-00000s1", ""), titles), "Story title", "story run")
+    compare(Runs.runTitle(idRun("r1", "mile-00000m1", "", ""), titles), "Milestone title", "milestone run")
+    compare(Runs.runTitle(idRun("r1", "mile-00000m1", "", ""), { "mile-00000m1": "  Padded  " }), "Padded", "trimmed")
+  }
+
+  function test_run_title_without_titles() {
+    var card = idRun("r1", "mile-0123456789", "story-0123456789", "card-0123456789")
+    var story = idRun("r1", "mile-0123456789", "story-0123456789", "")
+    var milestone = idRun("r1", "mile-0123456789", "", "")
+    var maps = [undefined, {}, null, [], "x", 5]
+    for (var i = 0; i < maps.length; i++) {
+      var label = "map " + JSON.stringify(maps[i])
+      compare(Runs.runTitle(card, maps[i]), "card …23456789", label + " card")
+      compare(Runs.runTitle(story, maps[i]), "story …23456789", label + " story")
+      compare(Runs.runTitle(milestone, maps[i]), "milestone …23456789", label + " milestone")
+    }
+    compare(Runs.runTitle(card), "card …23456789", "titles omitted")
+    compare(Runs.runTitle(idRun("r1", "", "", "c1")), "card …c1", "a short id is shown whole")
+    compare(Runs.runTitle(idRun("r1", "", "s1", "")), "story …s1", "a short story id")
+    compare(Runs.runTitle(idRun("r1", "m1", "", "")), "milestone …m1", "a short milestone id")
+    compare(Runs.runTitle(idRun("r1", "12345678", "", "")), "milestone …12345678", "exactly 8 characters")
+    // an array map holding the id as an index-like key is still no map
+    var arr = []
+    arr["m1"] = "From array"
+    compare(Runs.runTitle(idRun("r1", "m1", "", ""), arr), "milestone …m1", "an array is no map")
+  }
+
+  function test_run_title_unusable_map_values() {
+    var values = [5, {}, null, true, [], "", "   "]
+    for (var i = 0; i < values.length; i++) {
+      var label = "value " + JSON.stringify(values[i])
+      compare(Runs.runTitle(idRun("r1", "", "", "c1"), { c1: values[i] }), "card …c1", label + " card")
+      compare(Runs.runTitle(idRun("r1", "m1", "", ""), { m1: values[i] }), "milestone …m1", label + " milestone")
+      compare(Runs.runTitle(idRun("r1", "", "s1", ""), { s1: values[i] }), "story …s1", label + " story")
+    }
+  }
+
+  function test_run_title_story_from_am_status() {
+    // synthetic: the started capture's am status run edited to name its first story
+    var raw = amRun("status-started.json")
+    raw.status.run.story_id = "9f0f68fc-f231-4ef2-b646-00a7af925ea2"
+    var run = Runs.normalizeRun(raw)
+    compare(Runs.runTitle(run), "Dispatch domain", "am status story title, titles omitted")
+    compare(Runs.runTitle(run, {}), "Dispatch domain", "am status story title, empty map")
+    compare(Runs.runTitle(run, { "9f0f68fc-f231-4ef2-b646-00a7af925ea2": "From brd" }), "From brd", "the map wins")
+    compare(Runs.runTitle(run, { "9f0f68fc-f231-4ef2-b646-00a7af925ea2": "   " }), "Dispatch domain",
+            "an unusable map title falls through to am's")
+    compare(Runs.runTitle(Runs.normalizeRun(amRun("status-started.json"))), "milestone …ab5f860b",
+            "the unedited capture is a milestone run")
+
+    // synthetic: am story titles that are unusable, and stories that are not objects
+    var bad = [undefined, null, 5, "", "   ", {}]
+    for (var i = 0; i < bad.length; i++) {
+      var r = idRun("r1", "m1", "story-0123456789", "", [null, "x", { card_id: "story-0123456789", title: bad[i] }])
+      compare(Runs.runTitle(r), "story …23456789", "am title " + JSON.stringify(bad[i]))
+    }
+    var first = idRun("r1", "", "s1", "", [{ card_id: "s1", title: " First " }, { card_id: "s1", title: "Second" }])
+    compare(Runs.runTitle(first), "First", "the first matching story, trimmed")
+    var noTree = idRun("r1", "", "s1", "")
+    noTree.tree = "x"
+    compare(Runs.runTitle(noTree), "story …s1", "a garbage tree has no story titles")
+  }
+
+  function test_run_title_precedence() {
+    var all = idRun("r1", "m1", "s1", "c1", [{ card_id: "s1", title: "Am story" }])
+    var titles = { s1: "Story", m1: "Milestone" }
+    compare(Runs.runTitle(all, titles), "card …c1", "a card run never falls back to its story or milestone")
+    compare(Runs.runTitle(idRun("r1", "m1", "s1", "", []), { m1: "Milestone" }), "story …s1",
+            "a story run never falls back to its milestone")
+    compare(Runs.runTitle(idRun("run-0000abcd1234", "", "", ""), titles), "…abcd1234", "naming nothing gives the short id")
+    compare(Runs.runTitle({ id: "r1", milestone_id: 5, story_id: 6, card_id: [] }, titles), "…r1", "non-string ids are no ids")
+    var bad = [undefined, null, "x", 5, [], {}, { id: 7 }]
+    for (var i = 0; i < bad.length; i++) compare(Runs.runTitle(bad[i], titles), "…", "garbage " + i)
+  }
+
+  function test_run_title_prototype_ids() {
+    var names = ["constructor", "__proto__", "toString", "hasOwnProperty"]
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i]
+      var expected8 = n.slice(-8)
+      compare(Runs.runTitle(idRun("r1", "", "", n), {}), "card …" + expected8, n + " card, empty map")
+      compare(Runs.runTitle(idRun("r1", "", n, ""), {}), "story …" + expected8, n + " story, empty map")
+      compare(Runs.runTitle(idRun("r1", n, "", ""), {}), "milestone …" + expected8, n + " milestone, empty map")
+      compare(Runs.runTitle(idRun("r1", n, "", "")), "milestone …" + expected8, n + " milestone, no map")
+      var own = JSON.parse('{"' + n + '": "Own ' + n + '"}')
+      compare(Runs.runTitle(idRun("r1", "", "", n), own), "Own " + n, n + " card, own key")
+      compare(Runs.runTitle(idRun("r1", "", n, ""), own), "Own " + n, n + " story, own key")
+      compare(Runs.runTitle(idRun("r1", n, "", ""), own), "Own " + n, n + " milestone, own key")
+    }
+  }
+
+  function test_run_title_prototype_less() {
+    var titles = Object.create(null)
+    titles.c1 = "Bare title"
+    compare(Runs.runTitle(idRun("r1", "", "", "c1"), titles), "Bare title", "a prototype-less map")
+    compare(Runs.runTitle(idRun("r1", "", "", "c2"), titles), "card …c2", "a prototype-less map without the id")
+    var run = Object.create(null)
+    run.id = "run-bare-0001"
+    run.milestone_id = "m1"
+    compare(Runs.runTitle(run, { m1: "Bare run" }), "Bare run", "a prototype-less run")
+    compare(Runs.runTitle(run), "milestone …m1", "a prototype-less run, no map")
+  }
+
+  function test_run_title_pure() {
+    var run = idRun("r1", "m1", "s1", "", [{ card_id: "s1", title: "Am" }])
+    var titles = { s1: "Story" }
+    var runJson = JSON.stringify(run), titlesJson = JSON.stringify(titles)
+    Runs.runTitle(run, titles)
+    Runs.runTitle(run)
+    compare(JSON.stringify(run), runJson, "run unchanged")
+    compare(JSON.stringify(titles), titlesJson, "titles unchanged")
+  }
+
+  function test_run_subtitle() {
+    var runs = [{ id: "run-20261003-abcdef12" }, { id: "abc" }, { id: "" }, idRun("r1", "m1", "s1", "c1"),
+                undefined, null, "x", 5, [], {}, { id: 7 }, { id: null }]
+    for (var i = 0; i < runs.length; i++)
+      compare(Runs.runSubtitle(runs[i]), Runs.shortId(runs[i]), "input " + i)
+    compare(Runs.runSubtitle({ id: "run-20261003-abcdef12" }), "…abcdef12")
+  }
+
+  function test_card_title() {
+    var run = idRun("r1", "m1", "", "", [{ card_id: "s1", title: " Am story " }, { card_id: "s2", title: "Am two" }])
+    compare(Runs.cardTitle("t1", run, { t1: "Subtask" }), "Subtask", "from the map")
+    compare(Runs.cardTitle("s1", run, {}), "Am story", "from the run's story title, trimmed")
+    compare(Runs.cardTitle("s1", run), "Am story", "titles omitted")
+    compare(Runs.cardTitle("s2", run, { s2: "Brd two" }), "Brd two", "the map wins over am")
+    compare(Runs.cardTitle("s2", run, { s2: "  " }), "Am two", "an unusable map title falls through to am's")
+    compare(Runs.cardTitle("t9", run, { t1: "Subtask" }), "", "an unknown id")
+    compare(Runs.cardTitle("t1", run, { t1: 5 }), "", "a non-string map title")
+    compare(Runs.cardTitle("t1", run, { t1: {} }), "", "an object map title")
+
+    var ids = [undefined, null, 5, "", [], {}]
+    for (var i = 0; i < ids.length; i++)
+      compare(Runs.cardTitle(ids[i], run, { "": "Empty", "5": "Five" }), "", "id " + JSON.stringify(ids[i]))
+
+    var runs = [undefined, null, "x", 5, [], {}, { tree: "x" }, { tree: { stories: "x" } }]
+    for (var j = 0; j < runs.length; j++) {
+      compare(Runs.cardTitle("s1", runs[j], {}), "", "garbage run " + j)
+      compare(Runs.cardTitle("t1", runs[j], { t1: "Subtask" }), "Subtask", "garbage run " + j + " with a map title")
+    }
+
+    var maps = [undefined, null, "x", 5, [], true]
+    for (var k = 0; k < maps.length; k++) {
+      compare(Runs.cardTitle("t1", run, maps[k]), "", "garbage titles " + k)
+      compare(Runs.cardTitle("s1", run, maps[k]), "Am story", "garbage titles " + k + " keep am's")
+    }
+  }
+
+  function test_card_title_prototype_ids() {
+    var names = ["constructor", "__proto__", "toString", "hasOwnProperty"]
+    var run = idRun("r1", "m1", "", "", [])
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i]
+      compare(Runs.cardTitle(n, run, {}), "", n + " with an empty map")
+      compare(Runs.cardTitle(n, run), "", n + " with no map")
+      compare(Runs.cardTitle(n, run, JSON.parse('{"' + n + '": "Own"}')), "Own", n + " as an own key")
+      compare(Runs.cardTitle(n, idRun("r1", "", "", "", [{ card_id: n, title: "Am " + n }]), {}), "Am " + n,
+              n + " as an am story id")
+    }
+  }
+
+  function test_card_title_pure() {
+    var run = idRun("r1", "m1", "", "", [{ card_id: "s1", title: "Am" }])
+    var titles = { t1: "T" }
+    var runJson = JSON.stringify(run), titlesJson = JSON.stringify(titles)
+    Runs.cardTitle("s1", run, titles)
+    Runs.cardTitle("t1", run, titles)
+    compare(JSON.stringify(run), runJson, "run unchanged")
+    compare(JSON.stringify(titles), titlesJson, "titles unchanged")
+  }
+
+  // Runs of four projects: two share a milestone id under different roots; one
+  // root is named after an Object.prototype member, one is __proto__.
+  function titledRuns() {
+    return [
+      Runs.withProject(mkRun("run-a-000001", "started", true, { milestone_id: "ms-alpha-1" }), "/p/a", "A"),
+      Runs.withProject(mkRun("run-b-000002", "escalated", null, { milestone_id: "ms-alpha-1" }), "/p/b", "B"),
+      Runs.withProject(mkRun("run-c-000003", "stopped", null, { milestone_id: "ms-gamma" }), "/p/c", "C"),
+      Runs.withProject(mkRun("run-d-000004", "stopped", null, { milestone_id: "ms-delta" }), "constructor", "D"),
+      Runs.withProject(mkRun("run-e-000005", "stopped", null, { milestone_id: "ms-eps" }), "__proto__", "E"),
+      mkRun("run-f-000006", "stopped", null, { milestone_id: "ms-zeta" })
+    ]
+  }
+
+  function test_search_runs_by_title() {
+    var list = titledRuns()
+    var byRoot = { "/p/a": { "ms-alpha-1": "Release Train" }, "/p/b": { "ms-alpha-1": "Other Title" }, "/p/c": null }
+    compare(ids(Runs.searchRuns(list, "release TRAIN", byRoot)), "run-a-000001", "a title substring, any case")
+    compare(ids(Runs.searchRuns(list, "other title", byRoot)), "run-b-000002", "another root uses its own map")
+    compare(ids(Runs.searchRuns(list, "milestone …ms-gamma", byRoot)), "run-c-000003", "a null root map gives fallbacks")
+    compare(ids(Runs.searchRuns(list, "ms-delta", byRoot)), "run-d-000004", "a root absent from titlesByRoot gives fallbacks")
+    compare(ids(Runs.searchRuns(list, "ms-zeta", byRoot)), "run-f-000006", "a run without a root gives fallbacks")
+    compare(ids(Runs.searchRuns(list, "run-b", byRoot)), "run-b-000002", "the id still matches")
+    compare(ids(Runs.searchRuns(list, "escalated", byRoot)), "run-b-000002", "the state still matches")
+    compare(Runs.searchRuns(list, "", byRoot) === list, true, "an empty query returns the input itself")
+
+    var protoRoots = JSON.parse('{"constructor": {"ms-delta": "Ctor Title"}, "__proto__": {"ms-eps": "Proto Title"}}')
+    compare(ids(Runs.searchRuns(list, "ctor title", protoRoots)), "run-d-000004", "a root named constructor")
+    compare(ids(Runs.searchRuns(list, "proto title", protoRoots)), "run-e-000005", "a root named __proto__")
+    compare(ids(Runs.searchRuns(list, "ms-eps", {})), "run-e-000005", "an inherited __proto__ root is no map")
+
+    compare(ids(Runs.searchRuns(list, "milestone")),
+            "run-a-000001,run-b-000002,run-c-000003,run-d-000004,run-e-000005,run-f-000006",
+            "titlesByRoot omitted: every untitled milestone run matches milestone")
+  }
+
+  function test_search_runs_titles_by_root_garbage() {
+    var list = titledRuns()
+    var outer = [undefined, null, "x", 5, [], true]
+    for (var i = 0; i < outer.length; i++)
+      compare(ids(Runs.searchRuns(list, "milestone …-alpha-1", outer[i])), "run-a-000001,run-b-000002", "titlesByRoot " + i)
+
+    var inner = [[], "Release", 5, true]
+    for (var j = 0; j < inner.length; j++)
+      compare(ids(Runs.searchRuns(list, "milestone …-alpha-1", { "/p/a": inner[j] })), "run-a-000001,run-b-000002",
+              "root map " + JSON.stringify(inner[j]) + " acts as {}")
+
+    var bareRoots = Object.create(null)
+    var bareMap = Object.create(null)
+    bareMap["ms-alpha-1"] = "Bare Title"
+    bareRoots["/p/a"] = bareMap
+    compare(ids(Runs.searchRuns(list, "bare title", bareRoots)), "run-a-000001", "prototype-less maps")
+
+    var emptyRoot = mkRun("run-g-000007", "stopped", null, { milestone_id: "ms-eta" })
+    emptyRoot.project = { root: "", name: "" }
+    compare(ids(Runs.searchRuns([emptyRoot], "milestone …ms-eta", { "": { "ms-eta": "Never" } })), "run-g-000007",
+            "an empty root always uses {}")
+
+    var byRoot = { "/p/a": { "ms-alpha-1": "Release Train" } }
+    var listJson = JSON.stringify(list), rootsJson = JSON.stringify(byRoot)
+    Runs.searchRuns(list, "release", byRoot)
+    compare(JSON.stringify(list), listJson, "runs unchanged")
+    compare(JSON.stringify(byRoot), rootsJson, "titlesByRoot unchanged")
+  }
+
+  function test_new_alerts_titles_by_root() {
+    var noIds = mkRun("r3", "started", false, { milestone_id: "" })
+    var prev = [Runs.withProject(alRunning("r1"), "/p/a", "A"), Runs.withProject(alRunning("r2"), "/p/b", "B"), alRunning("r3")]
+    var next = [Runs.withProject(alEscalated("r1"), "/p/a", "A"), Runs.withProject(alDead("r2"), "/p/b", "B"), noIds]
+    var byRoot = { "/p/a": { m1: "Alpha milestone" }, "/p/b": { other: "Unused" } }
+
+    var a = Runs.newAlerts(prev, next, byRoot)
+    compare(alIds(a), "r1,r2,r3")
+    checkAlert(a[0], "r1", "Alpha milestone", "escalated", "escalated at review", "mapped title")
+    checkAlert(a[1], "r2", "milestone …m1", "dead", "process died", "its root's map lacks the id")
+    checkAlert(a[2], "r3", "…r3", "dead", "process died", "no ids keep the short-id title")
+
+    var b = Runs.newAlerts(prev, next)
+    checkAlert(b[0], "r1", "milestone …m1", "escalated", "escalated at review", "titlesByRoot omitted")
+    checkAlert(b[2], "r3", "…r3", "dead", "process died", "titlesByRoot omitted, no ids")
+
+    var garbage = [null, "x", 5, [], { "/p/a": [] }, { "/p/a": "Alpha" }, { "/p/a": null }]
+    for (var i = 0; i < garbage.length; i++)
+      compare(Runs.newAlerts(prev, next, garbage[i])[0].title, "milestone …m1", "garbage titlesByRoot " + i)
+
+    var protoRoot = Runs.withProject(alEscalated("r4"), "constructor", "C")
+    compare(Runs.newAlerts([], [protoRoot], {})[0].title, "milestone …m1", "a root named constructor, empty map")
+    compare(Runs.newAlerts([], [protoRoot], JSON.parse('{"constructor": {"m1": "Ctor"}}'))[0].title, "Ctor",
+            "a root named constructor, own key")
+
+    var prevJson = JSON.stringify(prev), nextJson = JSON.stringify(next), rootsJson = JSON.stringify(byRoot)
+    Runs.newAlerts(prev, next, byRoot)
+    compare(JSON.stringify(prev), prevJson, "prevRuns unchanged")
+    compare(JSON.stringify(next), nextJson, "nextRuns unchanged")
+    compare(JSON.stringify(byRoot), rootsJson, "titlesByRoot unchanged")
+  }
+
+  function test_titles_of_run_is_the_runs_project_map() {
+    var a = Runs.withProject(mkRun("run-a-000001", "started", true, {}), "/home/u/a", "A")
+    var b = Runs.withProject(mkRun("run-b-000002", "started", true, {}), "/home/u/b", "B")
+    var byRoot = { "/home/u/a": { m: "M" }, "/home/u/b": { m: "Other" } }
+    compare(JSON.stringify(Runs.titlesOfRun(a, byRoot)), '{"m":"M"}', "the run's own project map")
+    compare(JSON.stringify(Runs.titlesOfRun(b, byRoot)), '{"m":"Other"}', "another run, its own map")
+    compare(JSON.stringify(Runs.titlesOfRun(mkRun("run-c-000003", "started", true, {}), byRoot)), "{}", "an untagged run")
+    var c = Runs.withProject(mkRun("run-c-000003", "started", true, {}), "/home/u/c", "C")
+    compare(JSON.stringify(Runs.titlesOfRun(c, byRoot)), "{}", "a root absent from titlesByRoot")
+
+    var outer = [undefined, null, "x", 5, [], true]
+    for (var i = 0; i < outer.length; i++)
+      compare(JSON.stringify(Runs.titlesOfRun(a, outer[i])), "{}", "titlesByRoot " + i)
+    var inner = [null, "M", 5, [], true]
+    for (var j = 0; j < inner.length; j++)
+      compare(JSON.stringify(Runs.titlesOfRun(a, { "/home/u/a": inner[j] })), "{}", "a non-object entry " + j)
+
+    var emptyRoot = mkRun("run-g-000007", "stopped", null, {})
+    emptyRoot.project = { root: "", name: "" }
+    compare(JSON.stringify(Runs.titlesOfRun(emptyRoot, { "": { m1: "Never" } })), "{}", "root \"\" never uses a map")
+    compare(JSON.stringify(Runs.titlesOfRun(null, byRoot)), "{}", "a null run")
+    compare(JSON.stringify(Runs.titlesOfRun("x", byRoot)), "{}", "a string run")
+    var ctor = Runs.withProject(mkRun("run-d-000004", "stopped", null, {}), "constructor", "D")
+    compare(JSON.stringify(Runs.titlesOfRun(ctor, {})), "{}", "an inherited key is no map")
+
+    var rootsJson = JSON.stringify(byRoot)
+    Runs.titlesOfRun(a, byRoot)
+    compare(JSON.stringify(byRoot), rootsJson, "titlesByRoot unchanged")
   }
 
   function dispatchRoots(rows) {

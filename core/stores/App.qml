@@ -103,8 +103,9 @@ QtObject {
   // The run store never imports the project or board store: App hands it the
   // registry's roots and names in registry order, the selected project's root
   // path (never the project object), the open project's card id -> title map
-  // (titles, from the board's cardMap) and the panel-open flag that starts
-  // and stops its watch.
+  // (titles, from the board's cardMap), the panel-open flag that starts and
+  // stops its watch, the run history's pages flattened root by root and the
+  // run titles' map.
   readonly property RunStore runs: RunStore {
     backendDir: app.backendDir
     projectRoots: app.projects.projects.map(function(p) { return { root: p.root_path, name: p.name } })
@@ -121,6 +122,17 @@ QtObject {
     }
     active: app.panelOpen
     searchQuery: app.nav.searchQuery
+    historyRuns: {
+      var byProject = app.runHistory.historyByProject
+      var roots = Object.keys(byProject)
+      var out = []
+      for (var i = 0; i < roots.length; i++) {
+        var entry = byProject[roots[i]]
+        if (entry !== null && typeof entry === "object" && Array.isArray(entry.runs)) out = out.concat(entry.runs)
+      }
+      return out
+    }
+    titlesByRoot: app.runTitles.titlesByRoot
     onRunFilterToggled: {
       app.nav.cursorIndex = 0
       app.nav.scrollOnCursor = false
@@ -155,11 +167,36 @@ QtObject {
   }
 
   // The run alerts never import the run store: App hands them the panel-open
-  // flag and the registry, and routes every project's snapshot reply
-  // (runs.snapshotReplied) here.
+  // flag, the registry and the run titles' map, and routes every project's
+  // snapshot reply (runs.snapshotReplied) here.
   readonly property RunAlertsStore runAlerts: RunAlertsStore {
     active: app.panelOpen
     projectRoots: app.runs.projectRoots
+    titlesByRoot: app.runTitles.titlesByRoot
+  }
+
+  // The run titles never import the run or board store: App hands them the
+  // backend directory, the panel-open flag, the registry, the open project's
+  // root and card map and the run list. App routes no signal from them.
+  readonly property RunTitlesStore runTitles: RunTitlesStore {
+    backendDir: app.backendDir
+    active: app.panelOpen
+    projectRoots: app.runs.projectRoots
+    openRoot: app.runs.project
+    openCardMap: app.board.cardMap
+    runs: app.runs.runs
+  }
+
+  // The run history never imports the run store: App hands it the backend
+  // directory, the panel-open flag, the run store's per-project snapshot, its
+  // chip and its finished rows. App routes no signal from it.
+  readonly property RunHistoryStore runHistory: RunHistoryStore {
+    backendDir: app.backendDir
+    active: app.panelOpen
+    snapshotByProject: app.runs.runsByProject
+    runFilter: app.runs.runFilter
+    finishedState: app.runs.finishedState
+    finishedAge: app.runs.finishedAge
   }
 
   // The dispatch never imports the run store or run control: App hands it the
