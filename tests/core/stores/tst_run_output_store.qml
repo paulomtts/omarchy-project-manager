@@ -438,4 +438,97 @@ TestCase {
     send(b, tc.chunkLine)
     compare(store.liveText, "", "neither stopped process folds")
   }
+  // T6
+  function test_leaving_run_detail_stops_and_keeps_then_returning_restarts() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    var key = JSON.stringify(store.followKey)
+    store.inRunDetail = false
+    compare(old.running, false, "SIGTERM")
+    compare(store.followProc, null)
+    compare(JSON.stringify(store.followKey), key, "the key stays")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer stays")
+    compare(store.followStatus, "following")
+    store.inRunDetail = true
+    compare(seen.length, 1, "exactly one new process")
+    verify(store.followProc !== old)
+    compare(store.followProc.running, true)
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+    compare(store.followStatus, "connecting")
+  }
+
+  // T6
+  function test_closing_the_panel_stops_and_keeps_then_reopening_restarts() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var old = store.followProc
+    send(old, streamLines("logs-follow-agent.jsonl")[0])
+    send(old, tc.chunkLine)
+    var key = JSON.stringify(store.followKey)
+    store.active = false
+    compare(old.running, false, "SIGTERM")
+    compare(store.followProc, null)
+    compare(JSON.stringify(store.followKey), key, "the key stays")
+    compare(store.liveText, "stub claude ok phase=review", "the buffer stays")
+    compare(store.followStatus, "following")
+    store.active = true
+    compare(seen.length, 1, "exactly one new process")
+    verify(store.followProc !== old)
+    compare(store.followProc.running, true)
+    compare(argv(store.followProc), tc.followCmd + tc.runId + "|" + tc.openCard + "|explore|1")
+    compare(store.followStatus, "connecting")
+  }
+
+  // T10
+  function test_at_most_one_follow_process_runs() {
+    var store = make(); if (!store) return
+    var seen = recorder(store)
+    store.run = stepRun(false)
+    store.selection = explore()
+    store.active = true
+    store.inRunDetail = true
+    compare(runningCount(seen), 1, "A")
+    store.selection = verifyStep()
+    compare(runningCount(seen), 1, "B replaces A")
+    store.inRunDetail = false
+    compare(runningCount(seen), 0, "left Run detail")
+    store.inRunDetail = true
+    compare(runningCount(seen), 1, "back on Run detail")
+    store.selection = explore()
+    compare(runningCount(seen), 1, "back to explore.1")
+    store.active = false
+    compare(runningCount(seen), 0, "panel closed")
+    store.active = true
+    compare(runningCount(seen), 1, "panel open")
+    compare(seen.length, 5)
+    for (var i = 0; i < seen.length; i++) compare(seen[i].objectName, "followProc")
+  }
+
+  // Review Focus 3
+  function test_an_ended_or_failed_follow_survives_leave_and_return() {
+    var store = following(); if (!store) return
+    var seen = recorder(store)
+    var proc = store.followProc
+    var lines = streamLines("logs-follow-agent.jsonl")
+    for (var i = 0; i < lines.length; i++) send(proc, lines[i])
+    store.active = false
+    store.active = true
+    compare(seen.length, 0, "an ended follow does not restart")
+    compare(store.followStatus, "ended")
+    compare(store.liveText, "stub claude ok phase=review")
+
+    var failed = following(); if (!failed) return
+    var seen2 = recorder(failed)
+    var p2 = failed.followProc
+    send(p2, tc.chunkLine)
+    p2.exited(0)
+    failed.inRunDetail = false
+    failed.inRunDetail = true
+    compare(seen2.length, 0, "a failed follow does not restart")
+    compare(failed.followStatus, "error")
+    compare(failed.liveText, "stub claude ok phase=review")
+  }
 }

@@ -89,12 +89,29 @@ Scope {
     store.setBuffer(LogStream.emptyBuffer())
   }
 
+  // Another key: stop, clear, and start when it can be followed. The same key
+  // off Run detail or with the panel closed: stop and keep the rest. The same
+  // key back with no process: follow it again from offset 0 while live (clear
+  // once it is not), unless it ended or failed. A running process of the same
+  // key is left alone.
   function reconcile() {
     var k = store.selectionKey(store.run, store.selection)
-    if (store.sameKey(k, store.followKey)) return
-    if (store.followProc) store.stop()
-    store.clear()
+    if (!store.sameKey(k, store.followKey)) {
+      if (store.followProc) store.stop()
+      store.clear()
+      if (store.canStart(k)) store.start(k)
+      return
+    }
+    if (k === null) return
+    if (!store.isPresent()) {
+      if (store.followProc) store.stop()
+      return
+    }
+    if (store.followProc) return
+    var s = store.followStatus
+    if (s === "ended" || s === "error" || s === "unsupported") return
     if (store.canStart(k)) store.start(k)
+    else if (!store.isLive()) store.clear()
   }
 
   // runs-logs-follow.py REPO RUN CARD PHASE ATTEMPT, from offset 0, into a fresh buffer.
