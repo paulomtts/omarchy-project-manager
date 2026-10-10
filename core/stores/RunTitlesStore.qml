@@ -181,8 +181,10 @@ Scope {
     titles.titleStatus = status
   }
 
-  // The open root moved: the previous one's mirrored map and status go, and
-  // the new one's map mirrors openCardMap.
+  // The open root moved: the previous one's mirrored map and status go (it
+  // is an ordinary root from now on); the new one leaves the queue, its
+  // fetch in flight is cancelled and its map mirrors openCardMap. Then the
+  // queue launches and the roots are checked again.
   function openRootMoved() {
     var open = titles.openKey()
     var prev = titlesState.mirrored
@@ -195,7 +197,16 @@ Scope {
       titles.titleStatus = status
     }
     titlesState.mirrored = open
-    titles.mirrorOpen()
+    if (open !== "") {
+      if (titles.titleQueue.indexOf(open) >= 0) titles.titleQueue = titles.titleQueue.filter(function(r) { return r !== open })
+      if (titles.fetchingRoot === open) {
+        titlesRunner.cancel()
+        titles.fetchingRoot = ""
+      }
+      titles.mirrorOpen()
+    }
+    titles.launchNext()
+    titles.needCheck()
   }
 
   // Bookkeeping kept apart so consumers cannot write it.

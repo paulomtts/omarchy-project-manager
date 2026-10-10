@@ -215,4 +215,51 @@ TestCase {
       compare(s.titleStatus[tc.rootA], "unreachable")
     }
   }
+
+  // ---- the open root moving
+
+  function test_becoming_the_open_root_cancels_its_fetch() {
+    var s = openTitles([tc.rootA, tc.rootB], [runOf("ra", tc.rootA), runOf("rb", tc.rootB)]); if (!s) return
+    var procA = s.titlesRunner.current
+    compare(argv(procA), tc.titlesCmd + tc.rootA)
+    compare(queueOf(s), tc.rootB)
+    s.openCardMap = { c1: { title: "One" } }
+    s.openRoot = tc.rootA
+    compare(argv(s.titlesRunner.current), tc.titlesCmd + tc.rootB, "rootA's fetch is cancelled and rootB launches")
+    compare(s.fetchingRoot, tc.rootB)
+    compare(queueOf(s), "")
+    compare(JSON.stringify(s.titlesByRoot[tc.rootA]), JSON.stringify({ c1: "One" }), "rootA's map is the card map's")
+    compare(s.titleStatus[tc.rootA], "ok")
+    reply(procA, titlesOk({ m1: "late" }), 0)
+    compare(JSON.stringify(s.titlesByRoot[tc.rootA]), JSON.stringify({ c1: "One" }), "a late reply on rootA's old fetch changes nothing")
+    compare(s.titleStatus[tc.rootA], "ok")
+    compare(s.fetchingRoot, tc.rootB)
+  }
+
+  function test_a_queued_root_that_becomes_the_open_root_leaves_the_queue() {
+    var s = openTitles([tc.rootA, tc.rootB, tc.rootC],
+                       [runOf("ra", tc.rootA), runOf("rb", tc.rootB), runOf("rc", tc.rootC)]); if (!s) return
+    compare(queueOf(s), tc.rootB + "," + tc.rootC)
+    s.openRoot = tc.rootC
+    compare(queueOf(s), tc.rootB)
+    compare(s.fetchingRoot, tc.rootA, "the fetch in flight goes on")
+    compare(s.titleStatus[tc.rootC], "ok", "rootC's status is its mirror's")
+  }
+
+  function test_the_previous_open_root_is_fetched_once_it_is_needed() {
+    var s = makeTitles(); if (!s) return
+    s.openRoot = tc.rootA
+    s.openCardMap = { m1: { title: "Milestone one" } }
+    s.projectRoots = registry([tc.rootA])
+    s.runs = [runOf("ra", tc.rootA)]
+    s.active = true
+    compare(s.titlesRunner.current, null)
+    s.openRoot = tc.rootB
+    compare(Runs.hasKey(s.titlesByRoot, tc.rootA), false, "rootA's mirrored map is gone")
+    compare(s.titleStatus[tc.rootA], "loading", "rootA is an ordinary root now")
+    compare(argv(s.titlesRunner.current), tc.titlesCmd + tc.rootA)
+    answer(s, titlesOk(plain()), 0)
+    compare(JSON.stringify(s.titlesByRoot[tc.rootA]), JSON.stringify(plain()))
+    compare(s.titleStatus[tc.rootA], "ok")
+  }
 }
