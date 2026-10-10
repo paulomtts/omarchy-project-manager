@@ -670,6 +670,18 @@ function _withState(list, state) {
   return out
 }
 
+var _FINISHED_STATES = ["done", "escalated", "cancelled"]
+
+// Whether `state`, a runState value, is finished: done, escalated or cancelled.
+function _isFinishedState(state) { return _FINISHED_STATES.indexOf(state) >= 0 }
+
+// The finished runs of the array `list`, same objects in input order.
+function _finishedOf(list) {
+  var out = []
+  for (var i = 0; i < list.length; i++) if (_isFinishedState(runState(list[i]))) out.push(list[i])
+  return out
+}
+
 // The chip counts, over every run (the search never narrows them).
 function runFilterCounts(runs) {
   var list = _arrayOr(runs)
@@ -677,17 +689,20 @@ function runFilterCounts(runs) {
     attention: attention(list).length,
     live: _withState(list, "running").length,
     parked: _withState(list, "parked").length,
+    finished: _finishedOf(list).length,
     all: list.length
   }
 }
 
-// One chip's runs, same objects in input order. `all`, "" or any unknown id is
+// One chip's runs, same objects in input order. `finished` is every done,
+// escalated or cancelled run (either spelling). `all`, "" or any unknown id is
 // every run.
 function filterRuns(runs, id) {
   var list = _arrayOr(runs)
   if (id === "attention") return attention(list)
   if (id === "live") return _withState(list, "running")
   if (id === "parked") return _withState(list, "parked")
+  if (id === "finished") return _finishedOf(list)
   return list
 }
 

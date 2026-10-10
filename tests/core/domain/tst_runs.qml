@@ -839,13 +839,13 @@ TestCase {
   }
 
   // A cancelled run in either spelling is found by its state name and sits in
-  // no chip but `all`.
+  // the `finished` and `all` chips only.
   function test_fixture_cancel_spellings_filters_and_search() {
     var spellings = cancelSpellings()
     for (var i = 0; i < spellings.length; i++) {
       var run = cancelledRun(spellings[i])
       var counts = Runs.runFilterCounts([run])
-      compare([counts.attention, counts.live, counts.parked, counts.all].join(","), "0,0,0,1",
+      compare([counts.attention, counts.live, counts.parked, counts.finished, counts.all].join(","), "0,0,0,1,1",
               spellings[i] + ": chip counts")
       compare(Runs.searchRuns([run], "cancelled").length, 1, spellings[i] + ": found by its state name")
       compare(Runs.searchRuns([run], "unknown").length, 0, spellings[i] + ": not unknown")
@@ -1702,12 +1702,12 @@ TestCase {
 
   function test_run_filter_counts() {
     var c = Runs.runFilterCounts(screenRuns())
-    compare(Object.keys(c).sort().join(","), "all,attention,live,parked")
-    compare([c.attention, c.live, c.parked, c.all].join(","), "2,1,1,5")
+    compare(Object.keys(c).sort().join(","), "all,attention,finished,live,parked")
+    compare([c.attention, c.live, c.parked, c.finished, c.all].join(","), "2,1,1,2,5")
     var bad = [undefined, null, "x", 5, {}]
     for (var i = 0; i < bad.length; i++) {
       var b = Runs.runFilterCounts(bad[i])
-      compare([b.attention, b.live, b.parked, b.all].join(","), "0,0,0,0", "garbage " + i)
+      compare([b.attention, b.live, b.parked, b.finished, b.all].join(","), "0,0,0,0,0", "garbage " + i)
     }
   }
 
@@ -1740,6 +1740,44 @@ TestCase {
     compare(ids(Runs.searchRuns([null, 5, list[1]], "beta")), "run-esc-00002", "junk entries never match")
     var bad = [undefined, null, "x", 5, {}]
     for (var i = 0; i < bad.length; i++) compare(Runs.searchRuns(bad[i], "a").length, 0, "garbage " + i)
+  }
+
+  // ---- History filters (2.2) -------------------------------------------------------------
+
+  // mkRun with started_at and a `project` of { root: root }.
+  function rootedRun(id, status, live, root, startedAt) {
+    var run = mkRun(id, status, live, { started_at: startedAt })
+    run.project = { root: root }
+    return run
+  }
+
+  // One run per state, both cancel spellings, input order mixed.
+  function finishedMix() {
+    return [
+      mkRun("c-cancelled", "cancelled", null),
+      mkRun("p-parked", "stopped", null),
+      mkRun("d-done", "done", null),
+      mkRun("x-dead", "started", false),
+      mkRun("c-canceled", "canceled", null),
+      mkRun("u-unknown", "weird", null),
+      mkRun("l-live", "started", true),
+      mkRun("e-escalated", "escalated", null)
+    ]
+  }
+
+  function test_filter_runs_finished() {
+    compare(ids(Runs.filterRuns(screenRuns(), "finished")), "run-esc-00002,run-done-0005")
+    var list = finishedMix()
+    var before = ids(list)
+    var kept = Runs.filterRuns(list, "finished")
+    compare(ids(kept), "c-cancelled,d-done,c-canceled,e-escalated", "finished states only, input order")
+    compare(kept[0] === list[0] && kept[3] === list[7], true, "the same objects")
+    compare(Runs.runFilterCounts(list).finished, 4, "the count is the list's length")
+    compare(ids(list), before, "input unchanged")
+    var junk = Runs.filterRuns([null, 5, "x", {}, [], list[2]], "finished")
+    compare(junk.length === 1 && junk[0] === list[2], true, "junk entries are not finished")
+    var bad = [undefined, null, "x", 5, [], {}]
+    for (var i = 0; i < bad.length; i++) compare(Runs.filterRuns(bad[i], "finished").length, 0, "garbage " + i)
   }
 
   // ---- Run detail (5.2)
