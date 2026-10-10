@@ -262,4 +262,48 @@ TestCase {
     compare(JSON.stringify(s.titlesByRoot[tc.rootA]), JSON.stringify(plain()))
     compare(s.titleStatus[tc.rootA], "ok")
   }
+
+  // ---- missing ids
+
+  function test_a_missing_id_is_asked_about_once() {
+    var s = openTitles([tc.rootA], [runOf("r1", tc.rootA)]); if (!s) return
+    var known = { m1: "Milestone one", st1: "Story one" }
+    answer(s, titlesOk(known), 0)
+    compare(s.fetchingRoot, "")
+    var withS9 = runOf("r2", tc.rootA, [{ card_id: "st1", subtasks: [{ card_id: "s9" }] }])
+    s.runs = [runOf("r1", tc.rootA), withS9]
+    compare(s.fetchingRoot, tc.rootA, "s9 is missing from rootA's ok map: one more fetch")
+    compare(argv(s.titlesRunner.current), tc.titlesCmd + tc.rootA)
+    compare(s.titleStatus[tc.rootA], "loading")
+    compare(JSON.stringify(s.titlesByRoot[tc.rootA]), JSON.stringify(known), "the map stays while it loads")
+    answer(s, titlesOk(known), 0)
+    compare(s.titleStatus[tc.rootA], "ok")
+    compare(s.fetchingRoot, "", "the reply still lacks s9: no third fetch")
+    s.runs = [runOf("r1", tc.rootA), withS9]
+    compare(s.fetchingRoot, "", "nor after the run list is set again")
+    var withS10 = runOf("r3", tc.rootA, [{ card_id: "st1", subtasks: [{ card_id: "s10" }] }])
+    s.runs = [runOf("r1", tc.rootA), withS9, withS10]
+    compare(s.fetchingRoot, tc.rootA, "a new missing id s10 asks once more")
+    answer(s, titlesOk(known), 0)
+    compare(s.fetchingRoot, "")
+    compare(s.titleStatus[tc.rootA], "ok")
+  }
+
+  function test_a_runs_own_card_id_counts() {
+    var s = openTitles([tc.rootA], [runOf("r1", tc.rootA)]); if (!s) return
+    answer(s, titlesOk(plain()), 0)
+    var task = runOf("r2", tc.rootA)
+    task.card_id = "t7"
+    s.runs = [runOf("r1", tc.rootA), task]
+    compare(s.fetchingRoot, tc.rootA, "t7 is missing: one more fetch")
+  }
+
+  function test_the_synthetic_stories_never_ask_for_a_refetch() {
+    var s = openTitles([tc.rootA], [runOf("r1", tc.rootA)]); if (!s) return
+    answer(s, titlesOk(plain()), 0)
+    s.runs = [runOf("r1", tc.rootA, [{ card_id: "integrate", subtasks: [{ card_id: "x1" }] },
+                                     { card_id: "bases", subtasks: [] }])]
+    compare(s.fetchingRoot, "", "integrate and bases are not ids brd knows")
+    compare(s.titleStatus[tc.rootA], "ok")
+  }
 }

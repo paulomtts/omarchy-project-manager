@@ -92,22 +92,77 @@ Scope {
     return out
   }
 
+  // The milestone, story and card ids `run` names, each a non-empty string:
+  // milestone_id, story_id, card_id, the card_id of each tree story but
+  // "integrate" and "bases", and the card_id of each tree subtask.
+  function namedIds(run) {
+    var out = []
+    function add(id) { if (typeof id === "string" && id !== "") out.push(id) }
+    if (run === null || typeof run !== "object") return out
+    add(run.milestone_id)
+    add(run.story_id)
+    add(run.card_id)
+    var tree = run.tree !== null && typeof run.tree === "object" ? run.tree : {}
+    var stories = Array.isArray(tree.stories) ? tree.stories : []
+    for (var i = 0; i < stories.length; i++) {
+      var story = stories[i]
+      if (story !== null && typeof story === "object" && story.card_id !== "integrate" && story.card_id !== "bases") add(story.card_id)
+    }
+    var subtasks = Array.isArray(tree.subtasks) ? tree.subtasks : []
+    for (var j = 0; j < subtasks.length; j++) {
+      var subtask = subtasks[j]
+      if (subtask !== null && typeof subtask === "object") add(subtask.card_id)
+    }
+    return out
+  }
+
+  // The ids the runs `rootRuns` name that `map` has no own key for and
+  // `asked` ({id: true}) does not hold, each once.
+  function missingIds(rootRuns, map, asked) {
+    var out = []
+    for (var i = 0; i < rootRuns.length; i++) {
+      var ids = titles.namedIds(rootRuns[i])
+      for (var j = 0; j < ids.length; j++) {
+        var id = ids[j]
+        if (!Runs.hasKey(map, id) && !Runs.hasKey(asked, id) && out.indexOf(id) < 0) out.push(id)
+      }
+    }
+    return out
+  }
+
   // Queues, in registry order, every registered root other than the open
   // one that has a run in `runs`, is neither queued nor in flight, and has
-  // no entry. A queued root's status becomes "loading". Then the queue
-  // launches.
+  // no entry, or an ok map that lacks an id one of its runs names and that
+  // was not asked about yet (those ids are then marked asked). A queued
+  // root's status becomes "loading"; its map stays until the reply. Then
+  // the queue launches.
   function needCheck() {
     var open = titles.openKey()
     var roots = titles.registeredRoots()
     var byRoot = titles.runsByRoot()
     var queue = titles.titleQueue.slice()
     var status = Runs.copyMap(titles.titleStatus)
+    var asked = Runs.copyMap(titlesState.asked)
     var queued = false
     for (var i = 0; i < roots.length; i++) {
       var root = roots[i]
       if (root === open || !Runs.hasKey(byRoot, root)) continue
       if (root === titles.fetchingRoot || queue.indexOf(root) >= 0) continue
-      if (Runs.hasKey(status, root)) continue
+      var want = false
+      if (!Runs.hasKey(status, root)) {
+        want = true
+      } else if (status[root] === "ok") {
+        var map = Runs.hasKey(titles.titlesByRoot, root) ? titles.titlesByRoot[root] : {}
+        var mine = Runs.hasKey(asked, root) ? asked[root] : {}
+        var missing = titles.missingIds(byRoot[root], map, mine)
+        if (missing.length > 0) {
+          want = true
+          var next = Runs.copyMap(mine)
+          for (var j = 0; j < missing.length; j++) next[missing[j]] = true
+          asked[root] = next
+        }
+      }
+      if (!want) continue
       queue.push(root)
       status[root] = "loading"
       queued = true
@@ -115,6 +170,7 @@ Scope {
     if (queued) {
       titles.titleQueue = queue
       titles.titleStatus = status
+      titlesState.asked = asked
     }
     titles.launchNext()
   }
@@ -213,6 +269,7 @@ Scope {
   QtObject {
     id: titlesState
     property string mirrored: ""   // the root whose map mirrors openCardMap; "" when none
+    property var asked: ({})       // {root: {id: true}}: missing ids already asked about
   }
 
   // The one board-titles.py runner. Guard "": the store tracks the root in
