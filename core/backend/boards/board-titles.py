@@ -73,7 +73,7 @@ def main(argv):
     if root is None:
         return failure("Usage", USAGE, 2)
     if not os.path.isdir(root):
-        return failure("RootMissing", "The project directory does not exist: " + root)
+        return failure("RootMissing", "The project root is not an existing directory: " + root)
     try:
         proc = subprocess.run(["brd", "tree"], cwd=root, stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, encoding="utf-8",
