@@ -1184,16 +1184,21 @@ def test_stream_polls_on_idle_wake(world, mod, capsys):
     tracker, clock = seeded(mod, world, runs_reply(row()), runs_reply(row(lease=None)))
     watcher = mod.Watcher(registry((world["repo"], NAME)), tracker)
     lines = queue.Queue()
+    polled = []
 
     def later():
         time.sleep(0.3)
         clock.now = 60  # due while no am line is pending
-        time.sleep(2.5)
+        end = time.monotonic() + 5
+        while len(runs_calls(world)) < 2 and time.monotonic() < end:
+            time.sleep(0.05)
+        polled.append(len(runs_calls(world)))  # before any line: only an idle wake polls
         lines.put(mod.EOF)
 
     feeder = threading.Thread(target=later, daemon=True)
     feeder.start()
     assert mod.stream(lines, watcher) is None
     feeder.join(timeout=10)
+    assert polled == [2]
     assert printed(capsys) == [dead(world["repo"])]
     assert len(runs_calls(world)) == 2
