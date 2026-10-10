@@ -6,6 +6,7 @@
 // here only the wiring is.
 import QtQuick
 import QtTest
+import "../../helpers/amFixtures.js" as F
 
 TestCase {
   id: tc
@@ -185,5 +186,118 @@ TestCase {
     compare(JSON.stringify(app.runs.titles), JSON.stringify({ c1: "One" }), "only string titles")
     app.board.cardMap = { c3: { title: "Three" } }
     compare(JSON.stringify(app.runs.titles), JSON.stringify({ c3: "Three" }), "a new board replaces the map")
+  }
+  // ---- the live output store (live output 3.2)
+
+  readonly property string startedId: "20261008T143823Z-e795ad19"
+  readonly property string openCard: "2280a6ab-9c40-434b-9729-63fd1f373754"
+
+  // The started capture as a runs-snapshot-all.py entry: runs.json's first row
+  // whose `status` is status-started.json's data. With `step`, openCard's
+  // explore is finished and a deterministic `verify` phase is started.
+  function startedEntry(step) {
+    var e = F.load("runs.json").data.runs[0]
+    e.status = F.load("status-started.json").data
+    if (step) {
+      var subtask = e.status.stories[1].subtasks[1]
+      // synthetic: a deterministic phase in flight -- no capture has one
+      subtask.phases[1].status = "done"
+      subtask.phases[1].attempts[0].status = "ok"
+      subtask.phases.push({ name: "verify", kind: "deterministic", status: "started", started_at: "",
+                            ended_at: null, detail: null, attempts: [] })
+    }
+    return e
+  }
+
+  // runs-snapshot-all.py's reply: pA's entry lists `entries` as given.
+  function entriesReply(entries) {
+    return JSON.stringify({ ok: true, projects: [{ root: tc.pA.root_path, ok: true, runs: entries }],
+                            data_dir: "/home/u/.local/share" }) + "\n"
+  }
+
+  // App with pA selected and its snapshot listing the started capture (`step`
+  // as in startedEntry) applied.
+  function withStarted(step) {
+    var app = make(); if (!app) return null
+    var proc = app.runs.snapshotRunner.current
+    proc.outText = entriesReply([startedEntry(step)])
+    proc.exited(0)
+    return app
+  }
+
+  // A1
+  function test_app_composes_a_run_output_store() {
+    var app = makeBare(); if (!app) return
+    verify(app.runOutput, "App composes it as app.runOutput")
+    compare(app.runOutput.followStatus, "idle")
+    compare(app.runOutput.backendDir, "/plugin/core/backend/")
+    app.backendDir = "/other/core/backend/"
+    compare(app.runOutput.backendDir, "/other/core/backend/")
+    compare(app.runOutput.active, false)
+    app.panelOpen = true
+    compare(app.runOutput.active, true)
+    app.panelOpen = false
+    compare(app.runOutput.active, false)
+    compare(app.runOutput.inRunDetail, false, "board")
+    app.nav.viewMode = "run"
+    compare(app.runOutput.inRunDetail, true)
+    app.nav.viewMode = "runs"
+    compare(app.runOutput.inRunDetail, false, "the Runs list is not Run detail")
+  }
+
+  // A2
+  function test_run_and_selection_follow_the_run_store() {
+    var app = withStarted(false); if (!app) return
+    compare(app.runOutput.run, null, "no run selected")
+    compare(app.runOutput.selection, null)
+    app.runs.selectedRunId = tc.startedId
+    verify(app.runOutput.run === app.runs.runById(tc.startedId), "the selected run")
+    compare(JSON.stringify(app.runOutput.selection), JSON.stringify(app.runs.selectedAttempt))
+    compare(JSON.stringify(app.runOutput.selection), JSON.stringify({ card_id: tc.openCard, phase: "explore", attempt: 1 }))
+    var before = app.runOutput.run
+    app.runs.refresh()
+    var proc = app.runs.snapshotRunner.current
+    proc.outText = entriesReply([startedEntry(false)])
+    proc.exited(0)
+    verify(app.runOutput.run !== before, "a snapshot hands a new run object")
+    verify(app.runOutput.run === app.runs.runById(tc.startedId))
+    app.runs.selectAttempt("5560d0fe-2b8e-4ef9-ad71-96b50ee89daa", "spec", 1)
+    compare(JSON.stringify(app.runOutput.selection), JSON.stringify(app.runs.selectedAttempt))
+    app.runs.selectedRunId = ""
+    compare(app.runOutput.run, null)
+  }
+
+  // A3
+  function test_snapshot_wanted_refreshes_the_logs() {
+    var app = withStarted(true); if (!app) return
+    app.runs.selectedRunId = tc.startedId
+    compare(JSON.stringify(app.runs.selectedAttempt),
+            JSON.stringify({ card_id: tc.openCard, phase: "verify", attempt: 0, step: true }))
+    var first = app.runs.logsRunner.current
+    verify(first, "the step's logs were asked for")
+    first.outText = ""
+    first.exited(1)
+    compare(app.runs.logsRunner.busy, false)
+    app.runOutput.snapshotWanted()
+    var fetch = app.runs.logsRunner.current
+    verify(fetch !== first, "one new runs-logs.py fetch")
+    compare(fetch.command.join("|"), "python3|/plugin/core/backend/runs/runs-logs.py|/home/user/Code/omarchy-project-manager|"
+            + tc.startedId + "|" + tc.openCard + "|verify|0")
+  }
+
+  // A4
+  function test_the_selected_live_attempt_is_followed_until_the_panel_closes() {
+    var app = withStarted(false); if (!app) return
+    app.panelOpen = true
+    app.nav.viewMode = "run"
+    app.runs.selectedRunId = tc.startedId
+    var proc = app.runOutput.followProc
+    verify(proc, "the default attempt, explore.1, is followed")
+    compare(proc.running, true)
+    compare(proc.command.join("|"), "python3|/plugin/core/backend/runs/runs-logs-follow.py|/home/user/Code/omarchy-project-manager|"
+            + tc.startedId + "|" + tc.openCard + "|explore|1")
+    app.panelOpen = false
+    compare(proc.running, false, "closing the panel stops it")
+    compare(app.runOutput.followProc, null)
   }
 }

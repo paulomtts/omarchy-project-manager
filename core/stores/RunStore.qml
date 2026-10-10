@@ -13,8 +13,8 @@ import "../domain/runEvents.js" as RunEvents
 // switch leaves the run list alone: `project`, the open project, decides only
 // the run settings and the dispatch; the run controls and the attempt logs
 // act on each run's own repo_dir and project root. Plus the selected run, the
-// attempt the Run detail pane shows and that
-// attempt's `am logs` snapshot (runs-logs.py), and whether `am` could be
+// attempt or step the Run detail pane shows and its `am logs` snapshot
+// (runs-logs.py; a step is fetched with attempt "0"), and whether `am` could be
 // asked at all. One list snapshot is in flight at a time, plus at most one
 // pending request (requestSnapshot): a request never stops the snapshot in
 // flight, and when that one ends its reply is applied and the pending
@@ -111,15 +111,16 @@ Scope {
   property int watchSeq: 0            // bumped on every watch start and stop: the launch guard
   property string watchSchemaError: "" // the schema banner text while its fallback poll runs
 
-  // The Run detail pane (5.2): which attempt of the selected run it shows and
-  // that attempt's last `am logs` snapshot. Never a live tail.
-  property var selectedAttempt: null  // { card_id, phase, attempt } or null
+  // The Run detail pane (5.2): which attempt or step of the selected run it
+  // shows and its last `am logs` snapshot. Never a live tail.
+  property var selectedAttempt: null  // { card_id, phase, attempt }, a step { card_id, phase, attempt: 0, step: true }, or null
   property string logsText: ""        // Runs.logTail of the last good reply
   property bool logsTruncated: false  // lines were cut from it
   property real logsFetchedMs: 0      // Date.now() when that reply landed; 0 before any
   property bool logsLoading: false    // a fetch is in flight
   property string logsError: ""       // why the last fetch failed; "" after a good one
   property string logsStatus: ""      // the attempt's status when its fetch was launched
+  property string logsNote: ""        // a neutral sentence about the selection's output, not an error; "" when none
 
   // The selected run's event timeline (3.1). `titles` is the open project's
   // card id -> title map, handed in by App. `events` is RunEvents.eventRow
@@ -790,22 +791,31 @@ Scope {
     return p.root
   }
 
-  // Shows (and fetches) one attempt of the selected run. Another attempt than
-  // the one shown starts from an empty pane -- its predecessor's text is never
-  // shown under its heading. Nothing happens without a selected run or a real
-  // attempt (a non-empty card and phase, a number above 0).
-  function selectAttempt(cardId, phase, attempt) {
+  // Shows (and fetches) one attempt or one step of the selected run. A step is
+  // (cardId, phase, 0, true) -- `step` exactly true, attempt exactly 0 -- and
+  // is stored as { card_id, phase, attempt: 0, step: true }; an attempt has
+  // `step` anything else and a number above 0, and is stored as
+  // { card_id, phase, attempt }. Another selection than the one shown (a step
+  // and an attempt of one phase differ) starts from an empty pane -- its
+  // predecessor's text is never shown under its heading. Nothing happens
+  // without a selected run, a non-empty card and phase, and one of those forms.
+  function selectAttempt(cardId, phase, attempt, step) {
     if (store.selectedRunId === "") return
     if (typeof cardId !== "string" || cardId === "" || typeof phase !== "string" || phase === "") return
-    if (typeof attempt !== "number" || !isFinite(attempt) || attempt <= 0) return
+    var isStep = step === true
+    if (isStep && attempt !== 0) return
+    if (!isStep && (typeof attempt !== "number" || !isFinite(attempt) || attempt <= 0)) return
     var old = store.selectedAttempt
-    if (!old || old.card_id !== cardId || old.phase !== phase || old.attempt !== attempt) {
+    if (!old || old.card_id !== cardId || old.phase !== phase || old.attempt !== attempt
+        || (old.step === true) !== isStep) {
       store.logsText = ""
       store.logsTruncated = false
       store.logsFetchedMs = 0
       store.logsError = ""
+      store.logsNote = ""
     }
-    store.selectedAttempt = { card_id: cardId, phase: phase, attempt: attempt }
+    store.selectedAttempt = isStep ? { card_id: cardId, phase: phase, attempt: 0, step: true }
+                                   : { card_id: cardId, phase: phase, attempt: attempt }
     store.fetchLogs()
   }
 
@@ -814,16 +824,22 @@ Scope {
     store.fetchLogs()
   }
 
-  // One runs-logs.py launch for the selected attempt, the selected run's
-  // repo_dir first, remembering the status it was launched for (a snapshot
-  // that changes it fetches again). Nothing launches for a run not in the
-  // snapshot or one with no repo_dir.
+  // The selection's status in `run`: its phase's for a step, its attempt's otherwise.
+  function selectionStatus(run, sel) {
+    return sel.step === true ? Runs.phaseStatus(run, sel.card_id, sel.phase)
+                             : Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
+  }
+
+  // One runs-logs.py launch for the selection, the selected run's repo_dir
+  // first, remembering the status it was launched for (a snapshot that changes
+  // it fetches again). Nothing launches for a run not in the snapshot or one
+  // with no repo_dir.
   function fetchLogs() {
     var sel = store.selectedAttempt
     if (store.selectedRunId === "" || !sel) return
     var run = store.runById(store.selectedRunId)
     if (run === null || typeof run.repo_dir !== "string" || run.repo_dir === "") return
-    store.logsStatus = Runs.attemptStatus(run, sel.card_id, sel.phase, sel.attempt)
+    store.logsStatus = store.selectionStatus(run, sel)
     store.logsLoading = true
     logsRunner.run([run.repo_dir, store.selectedRunId, sel.card_id, sel.phase, String(sel.attempt)])
   }
@@ -837,19 +853,20 @@ Scope {
     store.logsFetchedMs = 0
     store.logsLoading = false
     store.logsError = ""
+    store.logsNote = ""
     store.logsStatus = ""
   }
 
-  // The selected run's default attempt, when it has one.
+  // The selected run's default attempt or step, when it has one.
   function openDefaultAttempt() {
     var d = Runs.defaultAttempt(store.runById(store.selectedRunId))
-    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt)
+    if (d) store.selectAttempt(d.card_id, d.phase, d.attempt, d.step === true)
   }
 
-  // After every applied snapshot: a selected run with no attempt yet gets its
-  // default once one exists; otherwise the selected attempt is fetched again
-  // only when its status moved since its fetch was launched. Nothing else
-  // fetches logs on its own.
+  // After every applied snapshot: a selected run with no selection yet gets
+  // its default once one exists; otherwise the selection is fetched again
+  // only when its status (a step's phase status, an attempt's own) moved since
+  // its fetch was launched. Nothing else fetches logs on its own.
   function logsAfterSnapshot() {
     if (store.selectedRunId === "") return
     var sel = store.selectedAttempt
@@ -857,7 +874,7 @@ Scope {
       store.openDefaultAttempt()
       return
     }
-    var status = Runs.attemptStatus(store.runById(store.selectedRunId), sel.card_id, sel.phase, sel.attempt)
+    var status = store.selectionStatus(store.runById(store.selectedRunId), sel)
     if (status !== store.logsStatus) store.fetchLogs()
   }
 
@@ -1046,12 +1063,16 @@ Scope {
     store.eventsError = ""
   }
 
-  // One logs reply. ok:true replaces the text with its last 200 lines; any
-  // failure keeps the text and only says why. Never touches amStatus, runs or
+  // One logs reply. ok:true replaces the text with its last 200 lines; a
+  // step's UnknownAttemptError (am has no log for it) empties the text and
+  // sets logsNote "This step records no output", with no error; any other
+  // failure keeps the text and only says why. Every reply but the step's
+  // UnknownAttemptError leaves logsNote "". Never touches amStatus, runs or
   // lastError: those belong to the snapshot. A reply for an older fetch never
   // gets here (the runner's latest-wins).
   function applyLogs(stdout, exitCode) {
     store.logsLoading = false
+    store.logsNote = ""
     var envelope = store.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
       var tail = Runs.logTail(envelope.data, 200)
@@ -1059,6 +1080,17 @@ Scope {
       store.logsTruncated = tail.truncated
       store.logsFetchedMs = Date.now()
       store.logsError = ""
+      return
+    }
+    var sel = store.selectedAttempt
+    if (envelope !== null && envelope.ok === false && sel && sel.step === true
+        && envelope.error !== null && typeof envelope.error === "object"
+        && envelope.error.type === "UnknownAttemptError") {
+      store.logsText = ""
+      store.logsTruncated = false
+      store.logsError = ""
+      store.logsNote = "This step records no output"
+      store.logsFetchedMs = Date.now()
       return
     }
     if (envelope !== null && envelope.ok === false) {
