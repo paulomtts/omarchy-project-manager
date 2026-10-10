@@ -39,7 +39,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.am_runs import (  # noqa: E402
-    AM_TIMEOUT, TERMINAL, AmFailure, bad_output, call_am, parse_time, run_list)
+    AM_TIMEOUT, TERMINAL, AmFailure, bad_output, call_am, parse_time, run_list, run_status)
 from common.json_line import emit  # noqa: E402
 
 USAGE = "usage: runs-history.py ROOT --before ISO [--limit K] [--status S,...] [--since ISO]"
@@ -91,7 +91,8 @@ def parse_args(argv):
 
 def history(am, args):
     """The success line for `args` (from parse_args): one `am runs --repo-dir ROOT`,
-    every row's started_at checked, then the kept rows in am's order, paged."""
+    every row's started_at checked, then the kept rows in am's order, paged, each
+    paged row's status replaced by its `am status` data."""
     runs = run_list(call_am(am, ["runs", "--repo-dir", args["root"]], AM_TIMEOUT))
     kept = []
     for run in runs:
@@ -101,7 +102,8 @@ def history(am, args):
         if (run["status"] in args["statuses"] and when < args["before"]
                 and (args["since"] is None or when >= args["since"])):
             kept.append(run)
-    page = kept[:args["limit"]]
+    page = [dict(run, status=run_status(am, run["id"], AM_TIMEOUT))
+            for run in kept[:args["limit"]]]
     return {"ok": True, "runs": page, "more": len(kept) > args["limit"]}
 
 

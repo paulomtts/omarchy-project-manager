@@ -455,3 +455,72 @@ def test_empty_page(world):
     assert code == 0
     assert out == {"ok": True, "runs": [], "more": False}
     assert calls(world) == [LIST(str(world["proj"]))]
+
+# --- am status fan-out -------------------------------------------------------------
+
+def expected(run, data):
+    out = dict(run)
+    out["status"] = data
+    return out
+
+
+def test_one_am_status_per_paged_row(world):
+    root = str(world["proj"])
+    seed(world, [row("s0", "started", stamp(0))]
+         + [row("d%d" % i, "done", stamp(i + 1)) for i in range(4)])
+    code, out = run(world, args_for(world, "--limit", "2"))
+    assert code == 0
+    made = calls(world)
+    assert made == [LIST(root), STATUS("d0"), STATUS("d1")]
+    assert not any("--repo-dir" in argv for argv in made[1:])
+
+
+def test_output_shape(world):
+    runs = rows(3)
+    seed(world, runs)
+    code, out = run(world, args_for(world))
+    assert code == 0
+    assert set(out) == {"ok", "runs", "more"}
+    assert out == {"ok": True, "runs": [expected(r, status_data(r["id"])) for r in runs],
+                   "more": False}
+
+
+def test_am_status_envelope_passthrough_stops(world):
+    # d1 has no status reply: the fake answers UnknownRunError, like real am.
+    root = str(world["proj"])
+    set_runs(world, rows(3))
+    set_status(world, "d0", status_data("d0"))
+    set_status(world, "d2", status_data("d2"))
+    code, out = run(world, args_for(world))
+    assert code == 1
+    assert out == UNKNOWN_RUN
+    assert calls(world) == [LIST(root), STATUS("d0"), STATUS("d1")]
+
+
+def test_status_without_as_of_seq_is_schema_mismatch(world):
+    root = str(world["proj"])
+    set_runs(world, rows(2))
+    # synthetic: the captured status data without its as_of_seq.
+    data = status_data("d0")
+    del data["as_of_seq"]
+    set_status(world, "d0", data)
+    set_status(world, "d1", status_data("d1"))
+    code, out = run(world, args_for(world))
+    assert code == 1
+    assert out == {"ok": False, "error": {
+        "type": "SchemaMismatch",
+        "message": "am status d0 sent no non-negative integer as_of_seq; "
+                   "the plugin needs the newer am."}}
+    assert calls(world) == [LIST(root), STATUS("d0")]
+
+
+def test_status_data_not_an_object_is_bad_output(world):
+    root = str(world["proj"])
+    set_runs(world, rows(2))
+    # synthetic: an ok envelope whose data is null.
+    set_status(world, "d0", None)
+    code, out = run(world, args_for(world))
+    assert code == 1
+    assert out == {"ok": False, "error": {"type": "AmBadOutput",
+                                          "message": "am status d0 data is not an object."}}
+    assert calls(world) == [LIST(root), STATUS("d0")]
