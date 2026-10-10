@@ -472,7 +472,7 @@ TestCase {
     snapshot(app, listReply([escalatedIn("r1"), escalatedIn("r2")], []))
     compare(app.runAlerts.toasts.length, 2)
     compare(app.runAlerts.notifyRunners.length, 1, "one notification, for r2")
-    compare(argv(app.runAlerts.notifyRunners[0].current), tc.notifyCmd + "m-r2|escalated")
+    compare(argv(app.runAlerts.notifyRunners[0].current), tc.notifyCmd + "milestone …m-r2|escalated")
   }
 
   function test_a_project_leaving_the_registry_through_app_loses_its_arming() {
@@ -716,7 +716,7 @@ TestCase {
     snapshot(app, listReply([escalatedIn("r1")], []))
     compare(app.runAlerts.toasts.length, 1)
     compare(app.runAlerts.notifyRunners.length, 1, "the switch is on: a notification")
-    compare(argv(app.runAlerts.notifyRunners[0].current), tc.notifyCmd + "m-r1|escalated")
+    compare(argv(app.runAlerts.notifyRunners[0].current), tc.notifyCmd + "milestone …m-r1|escalated")
     reply(app.runAlerts.notifyRunners[0].current, JSON.stringify({ ok: true, sent: true }) + "\n", 0)
     compare(app.runAlerts.notifyRunners.length, 0)
     compare(app.runControl.setNotifyOnEscalation(false), true)

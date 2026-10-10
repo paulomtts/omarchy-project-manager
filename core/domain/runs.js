@@ -8,10 +8,11 @@
 //   raw = {
 //     row:    one `am runs` entry without its `status`:
 //             { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
-//               milestone_id, card_id, lease, progress, project: { id, repo_dir } }
+//               milestone_id, story_id, card_id, lease, progress, project: { id, repo_dir } }
 //     status: `am status` data, may be absent:
 //             { as_of_seq, store_id,
-//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at },
+//               run: { id, workflow, repo_dir, base_branch, branch_prefix, status, started_at,
+//                      milestone_id, story_id, card_id },
 //               stories: [{ card_id, title, level, status, tip_branch,
 //                           subtasks: [{ card_id, branch, base_branch, status, worktree_path,
 //                                        phases: [{ name, kind, status, started_at, ended_at, detail,
@@ -23,7 +24,9 @@
 //   }
 // Output scalars: id, repo_dir, started_at, base_branch, branch_prefix and
 // workflow are the row's, else the am status run's; status and milestone_id are
-// the am status run's, else the row's. `lease` keeps pid, host, heartbeat_at,
+// the am status run's, else the row's. story_id and card_id are the am status
+// run's when a non-empty string, else the row's when a string, else "".
+// `lease` keeps pid, host, heartbeat_at,
 // accepting and live. `requests` are am's control requests in the order made;
 // handled_at "" means the run has not acted on it yet.
 // `project` is the row's { id, repo_dir }: id a finite number else null,
@@ -50,6 +53,7 @@ function normalizeRun(raw) {
   function firstText(a, b) { var s = text(a); return s !== "" ? s : text(b) }
   function asGiven(v) { return v === undefined || v === null ? "" : v }
   function stringOr(v) { return typeof v === "string" ? v : "" }
+  function firstId(a, b) { return typeof a === "string" && a !== "" ? a : stringOr(b) }
   function isSyntheticStory(id) { return id === "integrate" || id === "bases" }
 
   var r = objectOr(raw)
@@ -128,6 +132,8 @@ function normalizeRun(raw) {
     id: firstText(row.id, run.id),
     repo_dir: firstText(row.repo_dir, run.repo_dir),
     milestone_id: firstText(run.milestone_id, row.milestone_id),
+    story_id: firstId(run.story_id, row.story_id),
+    card_id: firstId(run.card_id, row.card_id),
     status: firstText(run.status, row.status),
     started_at: firstText(row.started_at, run.started_at),
     base_branch: firstText(row.base_branch, run.base_branch),
@@ -523,6 +529,26 @@ function errorText(error) {
 
 function _subtasksOf(run) { return _arrayOr(_treeOf(run).subtasks) }
 
+// v trimmed when it is a string that is not blank, else "".
+function _usableTitle(v) { return _trimmedOr(v) }
+
+// A new plain object mapping each own enumerable key of cardMap whose card is
+// an object with a usable title to that title, trimmed (a Board.indexTree card
+// map gives every card of the forest). Keys such as __proto__ become ordinary
+// own keys; the result's prototype is Object.prototype. {} when cardMap is not
+// a plain object. Never mutates, never throws.
+function titlesFromCards(cardMap) {
+  var out = {}
+  if (!_isObject(cardMap)) return out
+  var keys = Object.keys(cardMap)
+  for (var i = 0; i < keys.length; i++) {
+    var card = cardMap[keys[i]]
+    var title = _isObject(card) ? _usableTitle(card.title) : ""
+    if (title !== "") Object.defineProperty(out, keys[i], { value: title, enumerable: true, writable: true, configurable: true })
+  }
+  return out
+}
+
 // "…" and the last 8 characters of the id (all of a shorter one); "…" alone
 // when the id is not a string.
 function shortId(run) {
@@ -530,10 +556,62 @@ function shortId(run) {
   return typeof id === "string" ? "…" + id.slice(-8) : "…"
 }
 
-// The run's milestone, else its short id.
-function runTitle(run) {
-  var milestone = _isObject(run) ? _stringOr(run.milestone_id) : ""
-  return milestone !== "" ? milestone : shortId(run)
+// A milestone, story or card id: a non-empty string.
+function _isTitleId(v) { return typeof v === "string" && v !== "" }
+
+// v when it is a plain object (a titles map), else {}.
+function _titlesOr(v) { return _isObject(v) ? v : {} }
+
+// The usable title titles holds for id as an own key, else "".
+function _mappedTitle(titles, id) {
+  var map = _titlesOr(titles)
+  return hasKey(map, id) ? _usableTitle(map[id]) : ""
+}
+
+// The usable title of the first object in run.tree.stories whose card_id is id, else "".
+function _amStoryTitle(run, id) {
+  var story = _findByCardId(_treeOf(run).stories, id)
+  return story === null ? "" : _usableTitle(story.title)
+}
+
+// "<kind> …" and the last 8 characters of id (all of a shorter one).
+function _fallbackTitle(kind, id) { return kind + " …" + id.slice(-8) }
+
+// The run's title from titles, its {id: title} map (any non-plain-object is {}):
+// a card run (card_id an id) is the card's title, else "card …<8>"; else a
+// story run is the story's title, else am's own story title, else "story …<8>";
+// else a milestone run is the milestone's title, else "milestone …<8>"; else
+// shortId(run). No kind falls back to another kind's title.
+function runTitle(run, titles) {
+  var r = _isObject(run) ? run : {}
+  var title
+  if (_isTitleId(r.card_id)) {
+    title = _mappedTitle(titles, r.card_id)
+    return title !== "" ? title : _fallbackTitle("card", r.card_id)
+  }
+  if (_isTitleId(r.story_id)) {
+    title = _mappedTitle(titles, r.story_id)
+    if (title === "") title = _amStoryTitle(run, r.story_id)
+    return title !== "" ? title : _fallbackTitle("story", r.story_id)
+  }
+  if (_isTitleId(r.milestone_id)) {
+    title = _mappedTitle(titles, r.milestone_id)
+    return title !== "" ? title : _fallbackTitle("milestone", r.milestone_id)
+  }
+  return shortId(run)
+}
+
+// The run's secondary text: exactly shortId(run).
+function runSubtitle(run) { return shortId(run) }
+
+// The title of card id within run: titles' own usable title for id, else the
+// usable title of the first object in run.tree.stories whose card_id is id,
+// else "". "" when id is not a non-empty string. am has no subtask titles, so
+// a subtask's title comes only from titles.
+function cardTitle(id, run, titles) {
+  if (!_isTitleId(id)) return ""
+  var title = _mappedTitle(titles, id)
+  return title !== "" ? title : _amStoryTitle(run, id)
 }
 
 // Counts of the run's real subtasks (an object with a real card id) and of those whose own
@@ -592,6 +670,18 @@ function _withState(list, state) {
   return out
 }
 
+var _FINISHED_STATES = ["done", "escalated", "cancelled"]
+
+// Whether `state`, a runState value, is finished: done, escalated or cancelled.
+function _isFinishedState(state) { return _FINISHED_STATES.indexOf(state) >= 0 }
+
+// The finished runs of the array `list`, same objects in input order.
+function _finishedOf(list) {
+  var out = []
+  for (var i = 0; i < list.length; i++) if (_isFinishedState(runState(list[i]))) out.push(list[i])
+  return out
+}
+
 // The chip counts, over every run (the search never narrows them).
 function runFilterCounts(runs) {
   var list = _arrayOr(runs)
@@ -599,23 +689,118 @@ function runFilterCounts(runs) {
     attention: attention(list).length,
     live: _withState(list, "running").length,
     parked: _withState(list, "parked").length,
+    finished: _finishedOf(list).length,
     all: list.length
   }
 }
 
-// One chip's runs, same objects in input order. `all`, "" or any unknown id is
+// One chip's runs, same objects in input order. `finished` is every done,
+// escalated or cancelled run (either spelling). `all`, "" or any unknown id is
 // every run.
 function filterRuns(runs, id) {
   var list = _arrayOr(runs)
   if (id === "attention") return attention(list)
   if (id === "live") return _withState(list, "running")
   if (id === "parked") return _withState(list, "parked")
+  if (id === "finished") return _finishedOf(list)
   return list
 }
 
-// Case-insensitive substring match on the id, title, current phase and state
-// name. An empty (or all-space) query returns the input itself.
-function searchRuns(runs, q) {
+var _DAY_MS = 86400000
+
+// Date.parse(run.started_at) when `run` is an object whose `started_at` is a
+// non-empty string that parses to a finite number; NaN otherwise.
+function _startMs(run) {
+  if (!_isObject(run) || typeof run.started_at !== "string" || run.started_at === "") return NaN
+  var t = Date.parse(run.started_at)
+  return isFinite(t) ? t : NaN
+}
+
+// Whether `run` started within `age` of `nowMs`. "today": at or after local
+// midnight, for a local offset of `utcOffsetMinutes` east of UTC (0 when not a
+// finite number). "week": at or after nowMs - 7 days. No upper bound. Any other
+// age, or a `nowMs` that is not a finite number, is true. A run with no start
+// instant (see _startMs) is false under "today" and "week". The run's state is
+// not consulted. Never mutates, never throws.
+function withinAge(run, age, nowMs, utcOffsetMinutes) {
+  if (age !== "today" && age !== "week") return true
+  if (!_isFiniteNumber(nowMs)) return true
+  var start = _startMs(run)
+  if (!isFinite(start)) return false
+  if (age === "week") return start >= nowMs - 7 * _DAY_MS
+  var off = (_isFiniteNumber(utcOffsetMinutes) ? utcOffsetMinutes : 0) * 60000
+  return start >= Math.floor((nowMs + off) / _DAY_MS) * _DAY_MS - off
+}
+
+// The runs to list under the Finished chip's state and age rows, same objects
+// in input order; [] when `runs` is not an array. A run that is not finished
+// (running, dead, parked or unknown) is always kept. A finished run is kept
+// when its state equals `finishedState` ("done", "escalated" or "cancelled",
+// which covers both spellings; any other value matches every finished run) and
+// withinAge(run, finishedAge, nowMs, utcOffsetMinutes) is true. Never mutates,
+// never throws.
+function filterFinished(runs, finishedState, finishedAge, nowMs, utcOffsetMinutes) {
+  var list = _arrayOr(runs)
+  var anyState = finishedState !== "done" && finishedState !== "escalated" && finishedState !== "cancelled"
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var state = runState(list[i])
+    if (!_isFinishedState(state)) out.push(list[i])
+    else if ((anyState || state === finishedState) && withinAge(list[i], finishedAge, nowMs, utcOffsetMinutes)) out.push(list[i])
+  }
+  return out
+}
+
+// The `--status` list for one history page of a chip, a new array per call.
+// "live" is [] (a live run is never terminal); "parked" is ["stopped"];
+// "attention" is ["escalated"]; "finished" is the statuses of `finishedState`
+// ("done", "escalated", or "cancelled" with both spellings; any other value is
+// all four finished statuses). "all" and any other `filter` is all five
+// terminal statuses.
+function historyStatuses(filter, finishedState) {
+  if (filter === "live") return []
+  if (filter === "parked") return ["stopped"]
+  if (filter === "attention") return ["escalated"]
+  if (filter !== "finished") return ["done", "escalated", "stopped", "cancelled", "canceled"]
+  if (finishedState === "done") return ["done"]
+  if (finishedState === "escalated") return ["escalated"]
+  if (finishedState === "cancelled") return ["cancelled", "canceled"]
+  return ["done", "escalated", "cancelled", "canceled"]
+}
+
+// The `--before` time for the next history page of the project at `root`: the
+// `started_at` string, exactly as given, of the run with the smallest start
+// instant (see _startMs) among the terminal runs (finished or parked) whose
+// runRoot(run) === root; the first in input order on a tie. "" when there is
+// no such run, `root` is not a non-empty string or `runs` is not an array.
+// Never mutates, never throws.
+function historyCursor(runs, root) {
+  if (typeof root !== "string" || root === "" || !Array.isArray(runs)) return ""
+  var best = "", bestMs = NaN
+  for (var i = 0; i < runs.length; i++) {
+    var run = runs[i]
+    if (runRoot(run) !== root) continue
+    var state = runState(run)
+    if (state !== "parked" && !_isFinishedState(state)) continue
+    var t = _startMs(run)
+    if (isFinite(t) && (isNaN(bestMs) || t < bestMs)) { best = run.started_at; bestMs = t }
+  }
+  return best
+}
+
+// The titles map of run's project: titlesByRoot's own entry for runRoot(run)
+// when titlesByRoot is a plain object and that entry a plain object; {} for
+// anything else, and always for a run whose root is "".
+function _titlesFor(run, titlesByRoot) {
+  var root = runRoot(run)
+  if (root === "" || !_isObject(titlesByRoot) || !hasKey(titlesByRoot, root)) return {}
+  return _titlesOr(titlesByRoot[root])
+}
+
+// Case-insensitive substring match on the id, title (runTitle with the run's
+// map in titlesByRoot, see _titlesFor), current phase and state name. An empty
+// (or all-space) query returns the input itself.
+function searchRuns(runs, q, titlesByRoot) {
   var list = _arrayOr(runs)
   if (typeof q !== "string" || q.trim() === "") return list
   var needle = q.trim().toLowerCase()
@@ -623,7 +808,7 @@ function searchRuns(runs, q) {
   for (var i = 0; i < list.length; i++) {
     var run = list[i]
     if (!_isObject(run)) continue
-    var hay = [_stringOr(run.id), runTitle(run), currentPhase(run), runState(run)].join("\n").toLowerCase()
+    var hay = [_stringOr(run.id), runTitle(run, _titlesFor(run, titlesByRoot)), currentPhase(run), runState(run)].join("\n").toLowerCase()
     if (hay.indexOf(needle) >= 0) out.push(run)
   }
   return out
@@ -973,8 +1158,9 @@ function _hasAlert(alerts, id) {
 // run absent from prevRuns was neither). A non-array prevRuns -- null is the
 // store's "no previous snapshot" -- or nextRuns gives []. At most one alert per
 // id; the first prevRuns occurrence of an id is its previous state. A dead
-// run's reason is always "process died".
-function newAlerts(prevRuns, nextRuns) {
+// run's reason is always "process died". title is runTitle with the run's map
+// in titlesByRoot (see _titlesFor); without one it is the fallback title.
+function newAlerts(prevRuns, nextRuns, titlesByRoot) {
   if (!Array.isArray(prevRuns) || !Array.isArray(nextRuns)) return []
   var out = []
   for (var i = 0; i < nextRuns.length; i++) {
@@ -986,7 +1172,7 @@ function newAlerts(prevRuns, nextRuns) {
     if (_hasAlert(out, run.id)) continue
     out.push({
       id: run.id,
-      title: runTitle(run),
+      title: runTitle(run, _titlesFor(run, titlesByRoot)),
       state: state,
       reason: state === "dead" ? _REASON_DEAD : escalationReason(run)
     })
