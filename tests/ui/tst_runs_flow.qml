@@ -141,6 +141,23 @@ TestCase {
     compare(H.find(p, "runAgeChipweek").active, true)
   }
 
+  function test_show_older_reads_the_real_run_history_and_a_chip_change_drops_its_page() {
+    var p = make(); if (!p) return
+    p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_6 })
+    wait(50)
+    p.app.runs.runsByProject = { "/home/u/a": [] }
+    p.app.runHistory.historyByProject = { "/home/u/a": { runs: [], more: false, loading: true, error: "" } }
+    wait(20)
+    var button = H.find(p, "runsShowOlder0")
+    verify(button, "the real store's entry is read")
+    compare(button.text, "Loading older runs…")
+    compare(button.enabled, false)
+    H.find(p, "runChipattention").clicked()
+    wait(20)
+    compare(Object.keys(p.app.runHistory.historyByProject).length, 0, "the real store dropped the page")
+    compare(H.find(p, "runsShowOlder0"), null, "back to the snapshot rule: no terminal runs")
+  }
+
   // A different chip is a different list: the panel scrolls back to its top.
   // The list stays taller than the panel either way, so nothing but that
   // scroll can bring the content back up.

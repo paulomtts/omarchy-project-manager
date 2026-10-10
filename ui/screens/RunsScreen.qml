@@ -626,12 +626,18 @@ Column {
   }
 
   // A project's Show older: asks the run history for the next older page of
-  // the project under `root`, its runsByProject key. Not a row: no cursor,
-  // no hover, no index.
+  // the project under `root`, its runsByProject key. While that page is in
+  // flight it reads `Loading older runs…` and takes no click; when the last
+  // page failed, its sentence shows under it in urgent and it stays
+  // clickable. Not a row: no cursor, no hover, no index.
   component OlderRuns: Column {
     id: older
     property int k: 0
     property string root: ""
+    // The project's history entry, read live; null when it has none.
+    readonly property var page: screen.historyEntryOf(screen.runHistory !== null ? screen.runHistory.historyByProject : null, older.root)
+    readonly property bool loading: older.page !== null && older.page.loading === true
+    readonly property string error: older.page !== null && typeof older.page.error === "string" ? older.page.error : ""
 
     width: screen.width
     leftPadding: Style.space(10)
@@ -641,8 +647,20 @@ Column {
     UI.ActionButton {
       objectName: "runsShowOlder" + older.k
       theme: screen.theme
-      text: "Show older"
-      onClicked: if (screen.runHistory !== null) screen.runHistory.showOlder(older.root)
+      enabled: !older.loading
+      text: older.loading ? "Loading older runs…" : "Show older"
+      onClicked: if (!older.loading && screen.runHistory !== null) screen.runHistory.showOlder(older.root)
+    }
+
+    UI.ThemedText {
+      objectName: "runsShowOlderError" + older.k
+      variant: "caption"
+      theme: screen.theme
+      width: Math.max(0, older.width - older.leftPadding - older.rightPadding)
+      visible: text !== ""
+      text: older.error
+      color: screen.theme.urgent
+      wrapMode: Text.WordWrap
     }
   }
 

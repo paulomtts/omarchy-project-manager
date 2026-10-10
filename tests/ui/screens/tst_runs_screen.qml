@@ -867,6 +867,50 @@ TestCase {
     verify(H.find(s.screen, "runRow0"), "the rows stay")
   }
 
+  // Review Focus 5.
+  function test_a_page_in_flight_reads_loading_and_takes_no_click() {
+    var a = [tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha")]
+    var s = make(a); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a }
+    s.history.historyByProject = { "/home/u/a": page({ loading: true }) }
+    wait(20)
+    var button = H.find(s.screen, "runsShowOlder0")
+    compare(button.text, "Loading older runs…")
+    compare(button.enabled, false)
+    compare(H.find(s.screen, "runsShowOlderError0").visible, false)
+    tap(button)
+    compare(s.history.showOlderCalls.length, 0, "a click while loading calls nothing")
+    s.history.historyByProject = { "/home/u/a": page({ more: true }) }
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0").text, "Show older", "the page landed with more")
+    compare(H.find(s.screen, "runsShowOlder0").enabled, true)
+    s.history.historyByProject = { "/home/u/a": page({ more: false }) }
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "exhausted")
+  }
+
+  // Review Focus 1.
+  function test_a_failed_page_shows_its_sentence_in_urgent_and_stays_clickable() {
+    var a = [tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha")]
+    var s = make(a); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a }
+    s.history.historyByProject = { "/home/u/a": page({ more: false, error: "am failed" }) }
+    wait(20)
+    var button = H.find(s.screen, "runsShowOlder0")
+    verify(button, "a failed page keeps the button even with more false")
+    compare(button.text, "Show older")
+    compare(button.enabled, true)
+    var line = H.find(s.screen, "runsShowOlderError0")
+    compare(line.visible, true)
+    compare(line.text, "am failed")
+    verify(Qt.colorEqual(line.color, s.screen.theme.urgent), "drawn urgent")
+    compare(line.wrapMode, Text.WordWrap)
+    verify(topOf(s, "runsShowOlder0") < topOf(s, "runsShowOlderError0"), "under the button")
+    verify(H.find(s.screen, "runRow0"), "the listed rows stay")
+    tap(button)
+    compare(s.history.showOlderCalls.join(","), "/home/u/a", "retry")
+  }
+
   function test_each_chip_filters_its_rows_and_the_active_one_returns_to_all() {
     var s = make(sample()); if (!s) return
     tap(H.find(s.screen, "runChipattention"))
