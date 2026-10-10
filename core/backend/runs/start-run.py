@@ -59,6 +59,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from common.am_runs import parse_time  # noqa: E402
 from common.json_line import emit  # noqa: E402
 
 USAGE = ("usage: start-run.py ROOT (milestone ID | story ID | card ID | board)"
@@ -177,20 +178,6 @@ def list_runs(am, root):
     data = envelope.get("data")
     runs = data.get("runs") if isinstance(data, dict) else None
     return runs if isinstance(runs, list) else []
-
-
-def parse_time(value):
-    """An ISO-8601 time (`Z` or an offset) as an aware datetime; no offset means UTC.
-    None when it does not parse."""
-    if not isinstance(value, str):
-        return None
-    try:
-        when = datetime.datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=datetime.timezone.utc)
-    return when
 
 
 def matches(row, target, prefix, since, ident=None):
