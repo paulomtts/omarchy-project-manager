@@ -67,3 +67,31 @@ def test_backend_paragraph_exit_contract():
     for needle in ["`Usage`", "exit 2", "`SchemaMismatch`", "`CorruptJournal`", "`HelperError`",
                    "`AmMissing`", "SIGTERM", "60 s", "nothing is replayed"]:
         assert needle in alerts, needle
+
+
+# The parent spec's cursor and catch-up were never built: no alert text may name them.
+STALE_RE = re.compile(r"--since-seq|am events|store_id|gseq")
+CURSOR_RE = re.compile(r"\bcursor\b(?!-)")
+# README's legitimate uses of the word: the cursor-agent CLI and the list's keyboard cursor.
+README_CURSOR_OK = ["cursor-agent", "the row under the cursor", "the board list's cursor card"]
+
+
+def test_readme_background_alerts():
+    text = README.read_text()
+    for needle in ["Desktop notifications", "From the background, panel open or closed",
+                   "journalctl --user -t omarchy-shell", "runs-alerts.py",
+                   "am watch --all --follow --from-now", "300 s", "not replayed"]:
+        assert needle in text, needle
+    for banned in ["Nothing polls while the panel is closed", "also raises a desktop notification",
+                   "--since-seq", "gseq", "am events"]:
+        assert banned not in text, banned
+
+
+def test_alert_docs_name_no_cursor():
+    _, service = bullet("RunAlertsService.qml")
+    readme = README.read_text()
+    for ok in README_CURSOR_OK:
+        readme = readme.replace(ok, "")
+    hits = {name: STALE_RE.findall(text) + CURSOR_RE.findall(text)
+            for name, text in [("RunAlertsService.qml bullet", service), ("README.md", readme)]}
+    assert hits == {"RunAlertsService.qml bullet": [], "README.md": []}
