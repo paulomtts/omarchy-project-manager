@@ -18,14 +18,26 @@ import "../theme" as T
 // projects, This project when one is open, one chip per project with runs,
 // with run counts) sits above the status chips, hidden when only one project
 // has runs and none is open; clicking one asks the store to toggle its
-// project filter. Needs attention / Live / Parked / All chips apply across
-// groups and count within the project filter -- clicking the active chip
-// means All again -- and a footer says whether the runs are watched. The row
-// with the cursor shows Open project for a run of a registered project other
-// than the open one; the button asks the navigator to choose that project. It
-// reads the run store, the run titles and the project registry and asks the
-// navigator to open a run, choose a project or move the cursor, and the run
-// titles to read every project's titles again; it owns no state of its own.
+// project filter. Needs attention / Live / Parked / Finished / All chips
+// apply across groups and carry the store's runFilterCounts -- clicking the
+// active chip means All again. Under them, while am is present, a state row
+// (All finished / Done / Escalated / Cancelled) under Finished and an age
+// row (Today / 7 days / All time) under Finished and All ask the store to
+// toggle its finished state and age. After each project's last run (after
+// the last run under a project filter) a Show older button -- not a row,
+// never a cursor target -- asks app.runHistory for that project's next older
+// page; it shows while am is present, the chip has statuses to page and the
+// project's history entry is loading, failed or has more, or, with no entry,
+// its snapshot lists terminalLimit terminal runs; it reads `Loading older
+// runs…` and takes no click while its page is in flight, and a failed
+// page's sentence shows under it in urgent. A footer says whether the runs
+// are watched. The row with the cursor shows Open project for a run of a
+// registered project other than the open one; the button asks the navigator
+// to choose that project. It reads the run store, the run history, the run
+// titles and the project registry and asks the navigator to open a run,
+// choose a project or move the cursor, the run titles to read every
+// project's titles again and the run history for older runs; it owns no
+// state of its own.
 // Ages are read against the clock once per snapshot: there is no timer.
 Column {
   id: screen
