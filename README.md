@@ -139,7 +139,7 @@ until it is next saved, and existing snapshots and backups are left in their
   (closed ones dimmed) and opens in the Issues section. A blocked card also
   carries an "N open issues" badge next to Blocked. Below everything, the card's
   brd comments (author, relative time, body, oldest first), or "No comments."
-  They are read-only: the panel never writes a comment. When am runs touch the card, a **RUNS** section lists them (newest first: state glyph, short id, title, phase, age); a click opens Run detail, and Back returns to the card.
+  They are read-only: the panel never writes a comment. When am runs touch the card, a **RUNS** section lists them (newest first: state glyph, title from the run's own project's board, short id dimmed after it, phase, age); a click opens Run detail, and Back returns to the card.
 - **Issues** (Ctrl+5) - brd's issues, open first and then closed, each group
   newest-updated first. A row shows a status badge, the title, how many cards
   the issue blocks and how many comments it has. **Open**/**Closed** filter

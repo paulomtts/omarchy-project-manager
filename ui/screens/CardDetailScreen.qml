@@ -218,8 +218,9 @@ Column {
     }
   }
 
-  // One run that touches the card: its state glyph, short id, title, current
-  // phase and age, and its RunControls under them. Mouse-activated only
+  // One run that touches the card: its state glyph; its title, from the run's
+  // own project's map in app.runTitles; its short id in dim; current phase and
+  // age; and its RunControls under them. Mouse-activated only
   // (`index` stays -1): the keyboard's link list is the card's brd links. A
   // click opens Run detail, whose Back comes back here; a run that vanished
   // meanwhile opens nothing. A click on a control button never opens the run.
@@ -248,17 +249,18 @@ Column {
       }
 
       UI.ThemedText {
-        objectName: "cardRunId" + runRow.modelData
-        variant: "caption"
-        theme: detailCard.theme
-        text: Runs.shortId(runRow.run)
-      }
-
-      UI.ThemedText {
         objectName: "cardRunTitle" + runRow.modelData
         variant: "small"
         theme: detailCard.theme
-        text: Runs.runTitle(runRow.run)
+        text: Runs.runTitle(runRow.run, Runs.titlesOfRun(runRow.run, detailCard.app.runTitles.titlesByRoot))
+      }
+
+      UI.ThemedText {
+        objectName: "cardRunId" + runRow.modelData
+        variant: "caption"
+        theme: detailCard.theme
+        text: Runs.runSubtitle(runRow.run)
+        color: detailCard.theme.dim
       }
 
       UI.ThemedText {
