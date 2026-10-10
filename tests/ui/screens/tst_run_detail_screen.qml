@@ -529,6 +529,17 @@ TestCase {
     compare(s.runs.refreshed, 1, "Refresh works")
   }
 
+  function test_a_long_label_wraps_and_keeps_refresh_on_screen() {
+    var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
+    s.runs.logsFetchedMs = Date.now() - 14000
+    setLive(s, { followStatus: "unsupported", followError: "This am cannot stream output (am logs --follow is missing)" })
+    var age = H.find(s.screen, "runOutputAge")
+    var refresh = H.find(s.screen, "runOutputRefresh")
+    var pane = H.find(s.screen, "runOutputPane")
+    verify(age.lineCount > 1, "the label wraps")
+    verify(refresh.mapToItem(pane, 0, 0).x + refresh.width <= pane.width + 1, "Refresh stays inside the pane")
+  }
+
   function test_a_follow_error_is_urgent() {
     var s = make(detail(), undefined, sel("t1", "implement", 2)); if (!s) return
     s.runs.logsError = "an older snapshot error"
