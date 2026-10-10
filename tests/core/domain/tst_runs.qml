@@ -690,7 +690,7 @@ TestCase {
         var node = done.stories[i].subtasks[j]
         compare(node.status, "done", node.card_id)
         compare(node.phases.length, 14, node.card_id + " phases")
-        compare(node.attempts.length, 7, node.card_id + " attempts")
+        compare(node.attempts.length, 14, node.card_id + " attempts")
         compare(opensOn(node), "review/1", node.card_id + ": the last phase with a numbered attempt, past verify and mark_done")
         count++
       }
@@ -742,6 +742,179 @@ TestCase {
 
     var node = treeNode(Runs.runTree(Runs.normalizeRun(raw)), "2280a6ab-9c40-434b-9729-63fd1f373754")
     compare(opensOn(node), "mark_in_progress/0", "a started phase wins over an earlier numbered one, attempt 0 without attempts")
+  }
+
+  // ---- Live output 2.2: step entries, a started step, live selections ------------------------
+
+  // The am subtask with this card id in a raw amRun's stories, else null.
+  function rawSubtask(raw, cardId) {
+    var stories = raw.status.stories
+    for (var i = 0; i < stories.length; i++) {
+      for (var j = 0; j < stories[i].subtasks.length; j++) {
+        if (stories[i].subtasks[j].card_id === cardId) return stories[i].subtasks[j]
+      }
+    }
+    return null
+  }
+
+  // status-started.json, raw, with 2280a6ab's explore finished and a
+  // deterministic phase `name` started after it.
+  function startedStepRaw(name) {
+    var raw = amRun("status-started.json")
+    var subtask = rawSubtask(raw, "2280a6ab-9c40-434b-9729-63fd1f373754")
+    // synthetic: explore finished (phase done, attempt 1 ok) and a deterministic phase in flight -- no capture has one
+    subtask.phases[1].status = "done"
+    subtask.phases[1].attempts[0].status = "ok"
+    subtask.phases.push({ name: name, kind: "deterministic", status: "started", started_at: "", ended_at: null, detail: null, attempts: [] })
+    return raw
+  }
+
+  // "phase.attempt[:step]:status" for each attempts entry of a tree node, comma-joined.
+  function entries(node) {
+    return node.attempts.map(function(a) {
+      return a.phase + "." + a.attempt + (a.step === true ? ":step" : "") + ":" + a.status
+    }).join(",")
+  }
+
+  function test_fixture_normalized_phases_keep_kind() {
+    var names = ["status-started.json", "status-done.json", "status-escalated.json", "status-done-integrate.json"]
+    var runs = fixtureRuns()
+    for (var i = 0; i < runs.length; i++) {
+      var raw = amRun(names[i])
+      var subtasks = runs[i].tree.subtasks
+      var checked = 0
+      for (var j = 0; j < subtasks.length; j++) {
+        var am = rawSubtask(raw, subtasks[j].card_id)
+        verify(am !== null, names[i] + " " + subtasks[j].card_id + " is in the capture")
+        var phases = subtasks[j].phases
+        for (var k = 0; k < phases.length; k++) {
+          var label = names[i] + " " + subtasks[j].card_id + " " + phases[k].name
+          verify(phases[k].kind === "agent" || phases[k].kind === "deterministic", label + " kind " + phases[k].kind)
+          compare(phases[k].kind, am.phases[k].kind, label + " matches the capture")
+          checked++
+        }
+      }
+      verify(checked > 0, names[i] + " has phases")
+    }
+  }
+
+  function test_fixture_run_tree_step_entries() {
+    var done = amRun("status-done.json")
+    var tree = Runs.runTree(Runs.normalizeRun(done))
+    var nodes = 0
+    for (var i = 0; i < tree.stories.length; i++) {
+      for (var j = 0; j < tree.stories[i].subtasks.length; j++) {
+        var node = tree.stories[i].subtasks[j]
+        var am = rawSubtask(done, node.card_id)
+        var stepNames = am.phases.filter(function(p) { return p.kind === "deterministic" })
+                                 .map(function(p) { return p.name }).join(",")
+        compare(stepNames, "worktree,mark_in_progress,plan_check,mark_validated,docs_commit,verify,mark_done", node.card_id + " capture")
+        compare(node.attempts.length, 14, node.card_id + " attempts")
+        var steps = node.attempts.filter(function(a) { return a.step === true })
+        compare(steps.length, 7, node.card_id + " steps")
+        compare(steps.map(function(a) { return a.phase }).join(","), stepNames, node.card_id + " steps in phase order")
+        for (var s = 0; s < steps.length; s++) {
+          compare(Object.keys(steps[s]).join(","), "phase,attempt,step,status", node.card_id + " step shape")
+          compare(steps[s].attempt, 0, node.card_id + " " + steps[s].phase)
+          compare(steps[s].status, "done", node.card_id + " " + steps[s].phase)
+        }
+        var agents = node.attempts.filter(function(a) { return !("step" in a) })
+        compare(agents.length, 7, node.card_id + " agent attempts")
+        for (var g = 0; g < agents.length; g++)
+          compare(Object.keys(agents[g]).join(","), "phase,attempt,status", node.card_id + " agent shape")
+        nodes++
+      }
+    }
+    compare(nodes, 10, "every done subtask is a node")
+
+    var escalated = Runs.runTree(Runs.normalizeRun(amRun("status-escalated.json")))
+    var node10 = treeNode(escalated, "10e26d57-374c-48d3-bc45-09389b42cfac")
+    compare(entries(node10),
+            "worktree.0:step:done,explore.1:ok,mark_in_progress.0:step:done,plan_check.0:step:done," +
+            "spec.1:ok,validate_spec.1:ok,plan.1:ok,validate_plan.1:ok," +
+            "mark_validated.0:step:done,docs_commit.0:step:done,implement.1:ok,review.1:gate_failed")
+    compare(node10.attempts[11].phase + "." + node10.attempts[11].attempt, "review.1")
+    compare(node10.attempts[1].phase + "." + node10.attempts[1].attempt, "explore.1")
+  }
+
+  function test_fixture_run_tree_started_step_entry() {
+    var node = treeNode(Runs.runTree(Runs.normalizeRun(startedStepRaw("verify"))), "2280a6ab-9c40-434b-9729-63fd1f373754")
+    compare(entries(node), "worktree.0:step:done,explore.1:ok,verify.0:step:started")
+    compare(opensOn(node), "verify/0")
+  }
+
+  function test_fixture_default_attempt_on_a_started_step() {
+    compare(JSON.stringify(Runs.defaultAttempt(Runs.normalizeRun(startedStepRaw("verify")))),
+            JSON.stringify({ card_id: "2280a6ab-9c40-434b-9729-63fd1f373754", phase: "verify", attempt: 0, step: true }))
+    var runs = fixtureRuns()
+    for (var i = 0; i < runs.length; i++) {
+      var d = Runs.defaultAttempt(runs[i])
+      verify(d !== null, "a default for " + runs[i].id)
+      verify(!("step" in d), "an agent attempt carries no step key: " + runs[i].id)
+    }
+  }
+
+  function test_fixture_is_live_selection_by_run_state() {
+    var card = "2280a6ab-9c40-434b-9729-63fd1f373754"
+    var explore = { card_id: card, phase: "explore", attempt: 1 }
+    var verifyStep = { card_id: card, phase: "verify", attempt: 0, step: true }
+    // [label, synthetic edit of the capture copy, runState, live]
+    var cases = [
+      ["running", function(raw) {}, "running", true],
+      // synthetic: the lease edited to not live
+      ["lease not live", function(raw) { raw.status.control.lease.live = false }, "dead", false],
+      // synthetic: am's control removed, so no lease
+      ["no control", function(raw) { delete raw.status.control }, "dead", false],
+      // synthetic: the run status edited to stopped
+      ["stopped", function(raw) { raw.status.run.status = "stopped" }, "parked", false],
+      // synthetic: the run status edited to escalated
+      ["escalated", function(raw) { raw.status.run.status = "escalated" }, "escalated", false],
+      // synthetic: the run status edited to done
+      ["done", function(raw) { raw.status.run.status = "done" }, "done", false],
+      // synthetic: the run status edited to a status am does not give
+      ["unknown", function(raw) { raw.status.run.status = "weird" }, "unknown", false]
+    ]
+    var spellings = cancelSpellings()
+    for (var c = 0; c < spellings.length; c++) {
+      // synthetic: the run status edited to a cancelled spelling
+      cases.push([spellings[c], (function(s) { return function(raw) { raw.status.run.status = s } })(spellings[c]), "cancelled", false])
+    }
+    for (var i = 0; i < cases.length; i++) {
+      var agentRaw = amRun("status-started.json")
+      cases[i][1](agentRaw)
+      var agentRun = Runs.normalizeRun(agentRaw)
+      compare(Runs.runState(agentRun), cases[i][2], cases[i][0] + ": the edit gives the state")
+      compare(Runs.isLiveSelection(agentRun, explore), cases[i][3], cases[i][0] + ": explore.1, attempt started")
+
+      var stepRaw = startedStepRaw("verify")
+      cases[i][1](stepRaw)
+      var stepRun = Runs.normalizeRun(stepRaw)
+      compare(Runs.runState(stepRun), cases[i][2], cases[i][0] + ": the edit gives the state (step)")
+      compare(Runs.isLiveSelection(stepRun, verifyStep), cases[i][3], cases[i][0] + ": the verify step, phase started")
+    }
+  }
+
+  function test_fixture_is_live_selection_by_attempt_status() {
+    var card = "2280a6ab-9c40-434b-9729-63fd1f373754"
+    var explore = { card_id: card, phase: "explore", attempt: 1 }
+    var statuses = [["started", true], ["ok", false], ["gate_failed", false], ["schema_invalid", false],
+                    ["harness_error", false], ["", false]]
+    for (var i = 0; i < statuses.length; i++) {
+      var raw = amRun("status-started.json")
+      var attempt = rawSubtask(raw, card).phases[1].attempts[0]
+      compare(rawSubtask(raw, card).phases[1].name + "." + attempt.n, "explore.1", "the capture's explore.1")
+      // synthetic: explore.1's status edited
+      attempt.status = statuses[i][0]
+      compare(Runs.isLiveSelection(Runs.normalizeRun(raw), explore), statuses[i][1], "attempt status '" + statuses[i][0] + "'")
+    }
+    var started = Runs.normalizeRun(amRun("status-started.json"))
+    compare(Runs.isLiveSelection(started, { card_id: "5560d0fe-2b8e-4ef9-ad71-96b50ee89daa", phase: "review", attempt: 1 }), false,
+            "a finished attempt of a running run")
+    compare(Runs.isLiveSelection(started, { card_id: card, phase: "worktree", attempt: 0, step: true }), false,
+            "a done step of a running run")
+    var escalated = Runs.normalizeRun(amRun("status-escalated.json"))
+    compare(Runs.isLiveSelection(escalated, { card_id: "10e26d57-374c-48d3-bc45-09389b42cfac", phase: "review", attempt: 1 }), false,
+            "the escalated capture's gate_failed review.1")
   }
 
   function test_state_running() {
@@ -2074,6 +2247,36 @@ TestCase {
     compare(opensOn(treeNode(t, "i")), "spec/2", "a legacy attempt number counts")
   }
 
+  function test_run_tree_step_entries_rule() {
+    function det(name, status) { return { name: name, kind: "deterministic", status: status, attempts: [] } }
+    function other(name, kind) { return { name: name, kind: kind, status: "done", attempts: [] } }
+    // synthetic: hand-built normalized subtasks, one per case of the step-entry rule
+    var run = mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "a", phases: [
+        det("s1", "started"), det("s2", "done"), det("s3", "failed"), det("s4", "escalated"),
+        det("s5", "stopped"), det("s6", "cancelled"), det("s7", "canceled"),
+        det("p1", "pending"), det("p2", ""), det("p3", "running"), det("p4", null), det("p5", 5),
+        det("p6", "Started"), det("p7", "constructor"), { name: "p8", kind: "deterministic", attempts: [] },
+        other("k1", "agent"), { name: "k2", status: "done", attempts: [] }, other("k3", "Deterministic"), other("k4", 5),
+        { name: "x", kind: "deterministic", status: "done", attempts: [{ n: 1, status: "ok" }] },
+        det("", "done"), { kind: "deterministic", status: "done", attempts: [] }, { name: 7, kind: "deterministic", status: "done" }
+      ] },
+      { card_id: "b", phases: [det("verify", "done"), det("verify", "started")] }
+    ] } })
+    var before = JSON.stringify(run)
+    var t = Runs.runTree(run)
+    compare(JSON.stringify(run), before, "the run is not mutated")
+    var a = treeNode(t, "a")
+    compare(entries(a),
+            "s1.0:step:started,s2.0:step:done,s3.0:step:failed,s4.0:step:escalated," +
+            "s5.0:step:stopped,s6.0:step:cancelled,s7.0:step:canceled,x.0:step:done,x.1:ok")
+    compare(Object.keys(a.attempts[0]).join(","), "phase,attempt,step,status", "step entry key order")
+    compare(Object.keys(a.attempts[8]).join(","), "phase,attempt,status", "a step phase's own attempt has no step key")
+    compare(Object.keys(a.phases[0]).join(","), "name,status", "phases entries carry no kind")
+    compare(opensOn(a), "s1/0", "the current-phase rule is unchanged")
+    compare(entries(treeNode(t, "b")), "verify.0:step:done,verify.0:step:started", "one step entry per phase object")
+  }
+
   function at(d) { return d === null ? "null" : d.card_id + "/" + d.phase + "/" + d.attempt }
 
   function test_default_attempt() {
@@ -2101,6 +2304,34 @@ TestCase {
     for (var i = 0; i < bad.length; i++) compare(Runs.defaultAttempt(bad[i]), null, "garbage " + i)
   }
 
+  function test_default_attempt_prefers_the_first_started_phase() {
+    function step(name, status) { return { name: name, kind: "deterministic", status: status, attempts: [] } }
+    function agent(name, status, attempts) { return { name: name, kind: "agent", status: status, attempts: attempts } }
+    function dflt(subtasks, rows) {
+      // synthetic: hand-built normalized subtasks for the default-attempt rule
+      var run = mkRun("r", "started", true, { rows: rows || [], tree: { stories: [], subtasks: subtasks } })
+      var before = JSON.stringify(run)
+      var d = Runs.defaultAttempt(run)
+      compare(JSON.stringify(run), before, "the run is not mutated")
+      return JSON.stringify(d)
+    }
+    compare(dflt([{ card_id: "a", phases: [step("worktree", "done"), step("verify", "started")] },
+                  { card_id: "b", phases: [agent("implement", "started", [{ n: 1, status: "started" }])] }]),
+            JSON.stringify({ card_id: "a", phase: "verify", attempt: 0, step: true }),
+            "a started step of an earlier subtask wins over a later numbered attempt")
+    compare(dflt([{ card_id: "a", phases: [agent("plan", "started", []), step("verify", "started")] }]),
+            JSON.stringify({ card_id: "a", phase: "verify", attempt: 0, step: true }),
+            "a started agent phase without numbers is passed over for a later started step")
+    compare(dflt([{ card_id: "a", phases: [agent("implement", "started", [{ n: 2, status: "started" }]), step("verify", "started")] }]),
+            JSON.stringify({ card_id: "a", phase: "implement", attempt: 2 }),
+            "a started agent attempt before a started step wins, with no step key")
+    compare(dflt([{ card_id: "integrate", phases: [step("integrate", "started")] }]), "null",
+            "a bookkeeping id with a started step is never a card")
+    compare(dflt([{ card_id: "a", phases: [step("", "started"), step("verify", "running"), step("verify", "done")] }],
+                 [{ card_id: "a", phase: "verify", attempt: null, status: "done" }]), "null",
+            "an unnamed or not-started step is not chosen, and the row fallback never yields a step")
+  }
+
   function test_attempt_status() {
     var run = detailRun()
     compare(Runs.attemptStatus(run, "t1", "implement", 2), "started")
@@ -2115,6 +2346,82 @@ TestCase {
     compare(Runs.attemptStatus(run, null, "spec", 1), "")
     compare(Runs.attemptStatus(run, "t1", null, 1), "")
     compare(Runs.attemptStatus(run, "t1", "spec", "1"), "", "a string attempt is not a number")
+  }
+
+  function test_is_live_selection_garbage() {
+    var results = []
+    function live(run, sel, label) {
+      var r = Runs.isLiveSelection(run, sel)
+      results.push([r, label])
+      return r
+    }
+    var run = detailRun()
+    var good = { card_id: "t1", phase: "implement", attempt: 2 }
+    compare(live(run, good, "baseline"), true, "the baseline selection is live")
+
+    var badRuns = [undefined, null, "x", 5, [], {}, { tree: "x" }]
+    for (var i = 0; i < badRuns.length; i++) compare(live(badRuns[i], good, "run " + i), false, "garbage run " + i)
+
+    var badSels = [undefined, null, "x", 5, [], {},
+      { card_id: "", phase: "implement", attempt: 2 }, { card_id: 7, phase: "implement", attempt: 2 },
+      { card_id: null, phase: "implement", attempt: 2 }, { phase: "implement", attempt: 2 },
+      { card_id: "t1", attempt: 2 }, { card_id: "t1", phase: "", attempt: 2 }, { card_id: "t1", phase: 5, attempt: 2 },
+      { card_id: "t1", phase: null, attempt: 2, step: true },
+      { card_id: "zz", phase: "implement", attempt: 2 }, { card_id: "zz", phase: "implement", attempt: 0, step: true },
+      { card_id: "t1", phase: "verify", attempt: 2 }, { card_id: "t1", phase: "verify", attempt: 0, step: true },
+      { card_id: "t1", phase: "implement", attempt: "2" }, { card_id: "t1", phase: "implement", attempt: 0 },
+      { card_id: "t1", phase: "implement", attempt: -2 }, { card_id: "t1", phase: "implement", attempt: NaN },
+      { card_id: "t1", phase: "implement", attempt: Infinity }, { card_id: "t1", phase: "implement" }]
+    for (var j = 0; j < badSels.length; j++) compare(live(run, badSels[j], "sel " + j), false, "garbage selection " + j)
+
+    // synthetic: bookkeeping ids carrying a started attempt and a started step
+    var books = mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "integrate", phases: [{ name: "integrate", status: "started", attempts: [{ n: 1, status: "started" }] }] },
+      { card_id: "bases", phases: [{ name: "bases", kind: "deterministic", status: "started", attempts: [{ n: 1, status: "started" }] }] },
+      { card_id: "base-s1", phases: [{ name: "base", status: "started", attempts: [{ n: 1, status: "started" }] }] }] } })
+    var ids = [["integrate", "integrate"], ["bases", "bases"], ["base-s1", "base"]]
+    for (var k = 0; k < ids.length; k++) {
+      compare(live(books, { card_id: ids[k][0], phase: ids[k][1], attempt: 1 }, ids[k][0]), false, ids[k][0] + " attempt")
+      compare(live(books, { card_id: ids[k][0], phase: ids[k][1], attempt: 0, step: true }, ids[k][0] + " step"), false, ids[k][0] + " step")
+    }
+
+    var before = JSON.stringify(run) + JSON.stringify(good)
+    live(run, good, "again")
+    compare(JSON.stringify(run) + JSON.stringify(good), before, "neither argument is mutated")
+    for (var r = 0; r < results.length; r++) compare(typeof results[r][0], "boolean", "a boolean: " + results[r][1])
+  }
+
+  function test_is_live_selection_step_flag() {
+    // synthetic: a running run with a started agent phase, a started step and a re-run step
+    var run = mkRun("r", "started", true, { tree: { stories: [], subtasks: [
+      { card_id: "t1", phases: [
+        { name: "spec", kind: "agent", status: "done", attempts: [{ n: 1, status: "ok" }] },
+        { name: "implement", kind: "agent", status: "started", attempts: [{ n: 1, status: "gate_failed" }, { n: 2, status: "started" }] }] },
+      { card_id: "t2", phases: [
+        { name: "worktree", kind: "deterministic", status: "done", attempts: [] },
+        { name: "verify", kind: "deterministic", status: "started", attempts: [] }] },
+      { card_id: "t3", phases: [
+        { name: "verify", kind: "deterministic", status: "done", attempts: [] },
+        { name: "verify", kind: "deterministic", status: "started", attempts: [] }] }] } })
+    var cases = [
+      [{ card_id: "t1", phase: "implement", attempt: 2 }, true, "a started attempt"],
+      [{ card_id: "t1", phase: "implement", attempt: 0, step: true }, true, "step: true reads the phase, which is started"],
+      [{ card_id: "t1", phase: "implement", attempt: 0 }, false, "attempt 0 without step"],
+      [{ card_id: "t1", phase: "implement", attempt: 2, step: "true" }, true, "step \"true\" is the agent branch"],
+      [{ card_id: "t1", phase: "implement", attempt: 0, step: "true" }, false, "step \"true\" with attempt 0"],
+      [{ card_id: "t1", phase: "implement", attempt: 0, step: 1 }, false, "step 1 with attempt 0"],
+      [{ card_id: "t1", phase: "implement", attempt: 2, step: false, extra: "x" }, true, "step false and extra keys: the agent branch"],
+      [{ card_id: "t1", phase: "implement", attempt: 1 }, false, "a gate_failed attempt of a started phase"],
+      [{ card_id: "t1", phase: "spec", attempt: 0, step: true }, false, "a done phase as a step"],
+      [{ card_id: "t2", phase: "verify", attempt: 0, step: true }, true, "a started step"],
+      [{ card_id: "t2", phase: "verify", attempt: 5, step: true }, true, "a step selection's attempt is not read"],
+      [{ card_id: "t2", phase: "verify", attempt: "x", step: true }, true, "not even a non-number"],
+      [{ card_id: "t2", phase: "verify", attempt: 0 }, false, "a started step without step: true"],
+      [{ card_id: "t2", phase: "worktree", attempt: 0, step: true }, false, "a done step"],
+      [{ card_id: "t3", phase: "verify", attempt: 0, step: true }, false, "a repeated name reads the first phase, which is done"]
+    ]
+    for (var i = 0; i < cases.length; i++)
+      compare(Runs.isLiveSelection(run, cases[i][0]), cases[i][1], cases[i][2])
   }
 
   // ---- 5.3: the runs that touch one card (card detail's RUNS list) --------------------------

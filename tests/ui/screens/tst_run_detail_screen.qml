@@ -283,12 +283,12 @@ TestCase {
         }
       }
     }
-    compare(key, "1_0_6", "where the capture puts review.1 of " + card)
+    compare(key, "1_0_11", "where the capture puts review.1 of " + card)
     var s = make([run], run.id, sel(card, "review", 1)); if (!s) return
     var failed = H.find(s.screen, "runAttemptLabel" + key)
     compare(failed.text, "› " + RG.glyphOf("dead") + " review.1 gate_failed")
     verify(Qt.colorEqual(failed.color, s.screen.theme.urgent), "a gate_failed attempt is urgent")
-    var ok = H.find(s.screen, "runAttemptLabel1_0_0")
+    var ok = H.find(s.screen, "runAttemptLabel1_0_1")
     compare(ok.text, "  " + RG.glyphOf("done") + " explore.1 ok")
     verify(Qt.colorEqual(ok.color, s.screen.theme.foreground), "an ok attempt is not urgent")
   }

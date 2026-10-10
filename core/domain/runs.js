@@ -731,11 +731,20 @@ function _syntheticLabel(id) {
   return id.length > 5 ? "Base " + id.slice(5) : "Base"
 }
 
+// am's phase statuses other than pending: the phase has started or finished.
+var _STARTED_OR_FINISHED = ["started", "done", "failed", "escalated", "stopped", "cancelled", "canceled"]
+
+// A phase am runs itself: kind exactly "deterministic".
+function _isStepPhase(p) { return _isObject(p) && p.kind === "deterministic" }
+
 // One subtask as the detail tree shows it. Its own status, else its last am
-// row's; phases with a name only; every attempt object (attempt 0 when it has
-// no number). The current phase is the first started one, else the last one
-// with a numbered attempt, else the last; the current attempt is that phase's
-// newest number, 0 when it has none.
+// row's; phases with a name only. Attempts in phase order: for a step phase
+// (kind "deterministic") that has started or finished, one step entry
+// {phase, attempt: 0, step: true, status}; then every attempt object of the
+// phase as {phase, attempt, status} (attempt 0 when it has no number). The
+// current phase is the first started one, else the last one with a numbered
+// attempt, else the last; the current attempt is that phase's newest number,
+// 0 when it has none.
 function _subtaskNode(run, subtask) {
   var phases = [], attempts = []
   var started = null, numbered = null, last = null
@@ -747,6 +756,8 @@ function _subtaskNode(run, subtask) {
     if (started === null && p.status === "started") started = p
     if (_newestAttempt(p) > 0) numbered = p
     last = p
+    if (_isStepPhase(p) && _STARTED_OR_FINISHED.indexOf(p.status) >= 0)
+      attempts.push({ phase: p.name, attempt: 0, step: true, status: p.status })
     var tries = _arrayOr(p.attempts)
     for (var k = 0; k < tries.length; k++) {
       if (_isObject(tries[k])) attempts.push({ phase: p.name, attempt: _attemptNumber(tries[k]), status: _stringOr(tries[k].status) })
@@ -817,10 +828,12 @@ function runTree(run) {
   return { stories: out, synthetic: synthetic }
 }
 
-// The attempt the output pane opens on: the newest numbered attempt of the
-// first started phase (in subtask order) that has one; else, walking the flat
-// rows from the last, the newest attempt of a real card's row phase (the row's
-// own number or the tree's, whichever is higher); else null.
+// The selection the output pane opens on: the first started phase, in subtask
+// and phase order, that is a step ({card_id, phase, attempt: 0, step: true})
+// or an agent phase with a numbered attempt ({card_id, phase, attempt}, its
+// newest number); else, walking the flat rows from the last, the newest
+// attempt of a real card's row phase (the row's own number or the tree's,
+// whichever is higher); else null.
 function defaultAttempt(run) {
   var subtasks = _subtasksOf(run)
   for (var i = 0; i < subtasks.length; i++) {
@@ -830,6 +843,7 @@ function defaultAttempt(run) {
     for (var j = 0; j < phases.length; j++) {
       var p = phases[j]
       if (!_isObject(p) || p.status !== "started" || typeof p.name !== "string" || p.name === "") continue
+      if (_isStepPhase(p)) return { card_id: t.card_id, phase: p.name, attempt: 0, step: true }
       var n = _newestAttempt(p)
       if (n > 0) return { card_id: t.card_id, phase: p.name, attempt: n }
     }
@@ -855,6 +869,20 @@ function attemptStatus(run, cardId, phase, attempt) {
     if (_attemptNumber(tries[i]) === attempt) return _stringOr(tries[i].status)
   }
   return ""
+}
+
+// Whether a selection is in flight: the run is running and the selection names
+// a real card and a phase, and, with `step: true`, the card's first phase of
+// that name is started (`attempt` is not read), else the attempt
+// {card_id, phase, attempt} is started. Always a boolean.
+function isLiveSelection(run, sel) {
+  if (runState(run) !== "running" || !_isObject(sel)) return false
+  if (!_isCardId(sel.card_id) || typeof sel.phase !== "string" || sel.phase === "") return false
+  if (sel.step === true) {
+    var p = _findPhase(_findByCardId(_subtasksOf(run), sel.card_id), sel.phase)
+    return p !== null && p.status === "started"
+  }
+  return attemptStatus(run, sel.card_id, sel.phase, sel.attempt) === "started"
 }
 
 // ---- Run controls (S2 1.1) ---------------------------------------------------------------
