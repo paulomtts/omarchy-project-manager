@@ -82,15 +82,13 @@ TestCase {
   property var alertsPairs: []
 
   // A RunAlertsStore wired to `store` the way App wires app.runAlerts:
-  // backendDir copied; active and projectRoots bound to the run store's own,
-  // notifyOnEscalation bound to the paired control store's; snapshotReplied
+  // active and projectRoots bound to the run store's own; snapshotReplied
   // routed to it.
   function wireAlerts(store) {
     var comp = Qt.createComponent("../../../core/stores/RunAlertsStore.qml")
     if (comp.status !== Component.Ready) { fail(comp.errorString()); return null }
-    var a = comp.createObject(tc, { backendDir: store.backendDir })
+    var a = comp.createObject(tc)
     a.active = Qt.binding(function() { return store.active })
-    a.notifyOnEscalation = Qt.binding(function() { var c = controlOf(store); return c ? c.notifyOnEscalation : false })
     a.projectRoots = Qt.binding(function() { return store.projectRoots })
     store.snapshotReplied.connect(a.snapshotReplied)
     tc.alertsPairs = tc.alertsPairs.concat([{ store: store, alerts: a }])
