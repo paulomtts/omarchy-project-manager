@@ -75,10 +75,23 @@ Column {
   readonly property bool ageRowShown: !screen.amMissing
     && (screen.app.runs.runFilter === "finished" || screen.app.runs.runFilter === "")
 
+  // The snapshot keeps at most this many terminal runs per project
+  // (TERMINAL_LIMIT in core/backend/common/am_runs.py): a project listing
+  // this many may have older ones.
+  readonly property int terminalLimit: 10
+  // The run history; null when the app has none.
+  readonly property var runHistory: screen.app.runHistory !== undefined && screen.app.runHistory !== null
+    ? screen.app.runHistory : null
+  // Show older may show at all: am is present, there is a run history and
+  // the chip has statuses to page (Runs.historyStatuses; none under Live).
+  readonly property bool canShowOlder: !screen.amMissing && screen.runHistory !== null
+    && Runs.historyStatuses(screen.app.runs.runFilter, screen.app.runs.finishedState).length > 0
+
   // What the list draws, in order (entriesOf).
   readonly property var entries: screen.entriesOf(screen.app.runs.groups, screen.app.runs.filteredRuns,
     screen.app.runs.projectRoots, screen.app.runs.projectErrors, screen.app.runs.projectFilter,
-    screen.app.runTitles.titleStatus)
+    screen.app.runTitles.titleStatus, screen.app.runs.runsByProject,
+    screen.runHistory !== null ? screen.runHistory.historyByProject : null, screen.canShowOlder)
 
   visible: screen.app.nav.viewMode === "runs"
   spacing: Style.space(6)
@@ -219,23 +232,76 @@ Column {
     return root === "" || root === open ? null : screen.registryEntryOf(list, root)
   }
 
+  // The own key of `byProject` ({root: runs}) whose rootKey is `root`'s, the
+  // first in key order; "" when `root` is "", `byProject` is not an object or
+  // no key matches.
+  function historyKeyOf(byProject, root) {
+    var want = screen.rootKey(root)
+    if (want === "" || byProject === null || typeof byProject !== "object") return ""
+    var keys = Object.keys(byProject)
+    for (var k = 0; k < keys.length; k++) {
+      if (screen.rootKey(keys[k]) === want) return keys[k]
+    }
+    return ""
+  }
+
+  // The entry `history` ({root: {runs, more, loading, error}}) holds under
+  // its own key `key`; null when there is none or it is not an object.
+  function historyEntryOf(history, key) {
+    if (key === "" || history === null || typeof history !== "object" || !Runs.hasKey(history, key)) return null
+    var entry = history[key]
+    return entry !== null && typeof entry === "object" ? entry : null
+  }
+
+  // How many runs of `list` are terminal: done, escalated, cancelled or
+  // parked; 0 when `list` is not array-like.
+  function terminalCountOf(list) {
+    var n = 0
+    for (var i = 0; i < screen.sizeOf(list); i++) {
+      var state = Runs.runState(list[i])
+      if (state === "done" || state === "escalated" || state === "cancelled" || state === "parked") n++
+    }
+    return n
+  }
+
+  // Whether the project under the own key `key` of `byProject` offers Show
+  // older: its `history` entry is loading, carries an error sentence or says
+  // more; with no entry, its snapshot list holds terminalLimit terminal runs
+  // or more. False for key "".
+  function offersOlder(byProject, history, key) {
+    if (key === "") return false
+    var entry = screen.historyEntryOf(history, key)
+    if (entry !== null)
+      return entry.loading === true || (typeof entry.error === "string" && entry.error !== "") || entry.more === true
+    return screen.terminalCountOf(byProject[key]) >= screen.terminalLimit
+  }
+
   // The list's entries, scalar values only (a Repeater converts nested ones):
   // { kind: "header", g, name, counts, error, titlesUnavailable },
   // { kind: "run", i } with i the run's index in `runs` (filteredRuns, which
-  // is displayOrder of `groups`), and { kind: "projectError", text }.
+  // is displayOrder of `groups`), { kind: "projectError", text } and
+  // { kind: "showOlder", k, root }.
   // Under a project filter: the filtered project's error when it has one,
-  // then every run, flat. Otherwise each group of `groups` in turn: a header
-  // unless its root is "", then its runs; then, for each root of the registry
+  // then every run, flat, then its Show older. Otherwise each group of
+  // `groups` in turn: a header unless its root is "", then its runs, then its
+  // Show older unless its root is ""; then, for each root of the registry
   // `roots` (in order, once) with an error and no group, a header with no
-  // counts and no runs. g counts the headers from 0; name is the project's
-  // name, else its root; error is projectError's; titlesUnavailable is
-  // titlesUnavailableOf `status` ({root: title status}) for its root.
-  function entriesOf(groups, runs, roots, errors, filter, status) {
+  // counts, no runs and no Show older. g counts the headers from 0; name is
+  // the project's name, else its root; error is projectError's;
+  // titlesUnavailable is titlesUnavailableOf `status` ({root: title status})
+  // for its root. A Show older is there only while `older` is true and
+  // offersOlder(byProject, history, key) holds for key, historyKeyOf
+  // `byProject` for the project's root; root is that key and k counts the
+  // Show older entries from 0. No Show older takes a run index.
+  function entriesOf(groups, runs, roots, errors, filter, status, byProject, history, older) {
     var out = []
+    var k = 0
     if (typeof filter === "string" && filter !== "") {
       var flatError = screen.projectError(errors, filter)
       if (flatError !== "") out.push({ kind: "projectError", text: flatError })
       for (var r = 0; r < screen.sizeOf(runs); r++) out.push({ kind: "run", i: r })
+      var flatKey = older === true ? screen.historyKeyOf(byProject, filter) : ""
+      if (screen.offersOlder(byProject, history, flatKey)) out.push({ kind: "showOlder", k: k++, root: flatKey })
       return out
     }
     var listed = Object.create(null)
@@ -251,6 +317,8 @@ Column {
                    titlesUnavailable: screen.titlesUnavailableOf(status, root) })
       }
       for (var j = 0; j < screen.sizeOf(group.runs); j++) out.push({ kind: "run", i: i++ })
+      var olderKey = older === true ? screen.historyKeyOf(byProject, root) : ""
+      if (screen.offersOlder(byProject, history, olderKey)) out.push({ kind: "showOlder", k: k++, root: olderKey })
     }
     for (var e = 0; e < screen.sizeOf(roots); e++) {
       var project = roots[e]
@@ -438,8 +506,8 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  // One entry of `entries`: a project's header, a run's row or the filtered
-  // project's error line.
+  // One entry of `entries`: a project's header, a run's row, the filtered
+  // project's error line or a project's Show older.
   component RunEntry: Loader {
     id: entry
     required property var modelData
@@ -449,6 +517,7 @@ Column {
     sourceComponent: entry.fact.kind === "header" ? headerC
       : entry.fact.kind === "run" ? rowC
       : entry.fact.kind === "projectError" ? projectErrorC
+      : entry.fact.kind === "showOlder" ? olderC
       : null
 
     Component {
@@ -478,6 +547,14 @@ Column {
         text: typeof entry.fact.text === "string" ? entry.fact.text : ""
         color: screen.theme.urgent
         wrapMode: Text.WordWrap
+      }
+    }
+
+    Component {
+      id: olderC
+      OlderRuns {
+        k: typeof entry.fact.k === "number" ? entry.fact.k : 0
+        root: typeof entry.fact.root === "string" ? entry.fact.root : ""
       }
     }
   }
@@ -545,6 +622,27 @@ Column {
       text: header.error
       color: screen.theme.urgent
       wrapMode: Text.WordWrap
+    }
+  }
+
+  // A project's Show older: asks the run history for the next older page of
+  // the project under `root`, its runsByProject key. Not a row: no cursor,
+  // no hover, no index.
+  component OlderRuns: Column {
+    id: older
+    property int k: 0
+    property string root: ""
+
+    width: screen.width
+    leftPadding: Style.space(10)
+    rightPadding: Style.space(10)
+    spacing: Style.space(2)
+
+    UI.ActionButton {
+      objectName: "runsShowOlder" + older.k
+      theme: screen.theme
+      text: "Show older"
+      onClicked: if (screen.runHistory !== null) screen.runHistory.showOlder(older.root)
     }
   }
 

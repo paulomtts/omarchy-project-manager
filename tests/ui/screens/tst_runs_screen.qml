@@ -660,6 +660,213 @@ TestCase {
     verify(topOf(s, "runAgeChips") < topOf(s, "runRow0"), "above the first row")
   }
 
+  // ---- Show older (4.3)
+
+  function test_entries_place_show_older_after_each_eligible_projects_last_run() {
+    var s = make([]); if (!s) return
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(2, "/home/u/b", "beta", "b")
+    var c = doneRuns(10, "/home/u/c", "gamma", "c")
+    var loose = [run("run-x-done9999", "done", null, {})]
+    var groups = Runs.groupByProject(a.concat(b, loose))
+    var runs = Runs.displayOrder(groups)
+    var roots = [{ root: "/home/u/a", name: "alpha" }, { root: "/home/u/b", name: "beta" }, { root: "/home/u/c", name: "gamma" }]
+    var errors = { "/home/u/c": "AmFailed: c" }
+    var byProject = { "/home/u/a": a, "/home/u/b/": b, "/home/u/c": c, "": doneRuns(10, "", "", "x") }
+    var history = { "/home/u/b/": page({ more: true }) }
+    compare(shape(s.screen.entriesOf(groups, runs, roots, errors, "", {}, byProject, history, true)),
+            "h0," + runIds(0, 10) + ",o0:/home/u/a,h1," + runIds(10, 2) + ",o1:/home/u/b/,r12,h2",
+            "grouped: after a group's last run, the registry's spelling; none for the \"\" group or an error-only header")
+    compare(shape(s.screen.entriesOf(groups, runs, roots, errors, "", {}, byProject, history, false)),
+            "h0," + runIds(0, 10) + ",h1," + runIds(10, 2) + ",r12,h2", "none when it may not show")
+    compare(shape(s.screen.entriesOf(groups, runs, roots, errors, "", {}, null, null, true)),
+            "h0," + runIds(0, 10) + ",h1," + runIds(10, 2) + ",r12,h2", "none without maps")
+    var flatGroups = Runs.groupByProject(b)
+    compare(shape(s.screen.entriesOf(flatGroups, Runs.displayOrder(flatGroups), roots, errors, "/home/u/b", {}, byProject, history, true)),
+            "r0,r1,o0:/home/u/b/", "flat: after the last run")
+    compare(shape(s.screen.entriesOf([], [], roots, errors, "/home/u/c", {}, byProject, history, true)),
+            "e,o0:/home/u/c", "flat with no run passing the chips: the error line, then the button")
+  }
+
+  function test_ten_terminal_snapshot_runs_offer_show_older_and_nine_do_not() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(9, "/home/u/b", "beta", "b")
+    var bLive = [tagged(run("run-b-live0001", "started", true, {}), "/home/u/b", "beta"),
+                 tagged(run("run-b-live0002", "started", true, {}), "/home/u/b", "beta"),
+                 tagged(run("run-b-live0003", "started", true, {}), "/home/u/b", "beta")]
+    var s = make(a.concat(b, bLive)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b.concat(bLive) }
+    wait(20)
+    var button = H.find(s.screen, "runsShowOlder0")
+    verify(button, "alpha's button")
+    compare(button.visible, true)
+    compare(button.text, "Show older")
+    compare(H.find(s.screen, "runsShowOlder1"), null, "beta: 9 terminal runs plus live ones")
+    var parked = tagged(run("run-b-park0004", "stopped", null, {}), "/home/u/b", "beta")
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b.concat(bLive, [parked]) }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder1"), "a parked run is terminal: beta now has 10")
+  }
+
+  function test_a_history_entry_decides_over_the_snapshot_rule() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(2, "/home/u/b", "beta", "b")
+    var s = make(a.concat(b)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b }
+    s.history.historyByProject = { "/home/u/b": page({ more: true }) }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"), "alpha by its snapshot")
+    verify(H.find(s.screen, "runsShowOlder1"), "beta by its entry's more")
+    verify(topOf(s, "runRow11") < topOf(s, "runsShowOlder1"), "beta's after beta's last run")
+    s.history.historyByProject = { "/home/u/a": page({ more: false }), "/home/u/b": page({ more: true }) }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"), "only beta's now")
+    compare(H.find(s.screen, "runsShowOlder1"), null, "alpha is exhausted despite 10 terminal runs")
+    verify(topOf(s, "runRow11") < topOf(s, "runsShowOlder0"), "the one left is beta's")
+  }
+
+  function test_grouped_buttons_sit_between_a_groups_last_run_and_the_next_header() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(10, "/home/u/b", "beta", "b")
+    var c = doneRuns(1, "/home/u/c", "gamma", "c")
+    var s = make(a.concat(b, c)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b, "/home/u/c": c }
+    wait(20)
+    verify(topOf(s, "runRow9") < topOf(s, "runsShowOlder0"), "after alpha's last run")
+    verify(topOf(s, "runsShowOlder0") < topOf(s, "runGroup1"), "before beta's header")
+    verify(topOf(s, "runRow19") < topOf(s, "runsShowOlder1"), "after beta's last run")
+    verify(topOf(s, "runsShowOlder1") < topOf(s, "runGroup2"), "before gamma's header")
+    compare(H.find(s.screen, "runsShowOlder2"), null, "gamma is not eligible")
+  }
+
+  function test_flat_under_a_project_filter_one_button_also_with_no_row() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(2, "/home/u/b", "beta", "b")
+    var s = make(a.concat(b)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b }
+    s.history.historyByProject = { "/home/u/b": page({ more: true }) }
+    s.runs.projectFilter = "/home/u/b"
+    wait(20)
+    compare(H.find(s.screen, "runGroup0"), null, "flat")
+    verify(H.find(s.screen, "runsShowOlder0"))
+    compare(H.find(s.screen, "runsShowOlder1"), null, "one button, the filtered project's")
+    verify(topOf(s, "runRow1") < topOf(s, "runsShowOlder0"), "after the last row")
+    tap(H.find(s.screen, "runsShowOlder0"))
+    compare(s.history.showOlderCalls.join(","), "/home/u/b")
+    s.runs.toggleRunFilter("parked")
+    wait(20)
+    compare(H.find(s.screen, "runRow0"), null)
+    compare(H.find(s.screen, "runsMessage").text, "No Parked runs.")
+    verify(H.find(s.screen, "runsShowOlder0"), "still offered with no row")
+    verify(topOf(s, "runsMessage") < topOf(s, "runsShowOlder0"), "under the status line")
+  }
+
+  function test_show_older_passes_the_registry_spelling_and_a_doubled_root_gets_one_button() {
+    var r = tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha")
+    var s = make([r]); if (!s) return
+    s.runs.runsByProject = { "/home/u/a/": [r] }
+    s.history.historyByProject = { "/home/u/a/": page({ more: true }) }
+    wait(20)
+    tap(H.find(s.screen, "runsShowOlder0"))
+    compare(s.history.showOlderCalls.join(","), "/home/u/a/", "the key as the registry spells it")
+    s.runs.runsByProject = { "/home/u/a": doneRuns(10, "/home/u/a", "alpha", "a"), "/home/u/a/": [r] }
+    s.history.historyByProject = {}
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"))
+    compare(H.find(s.screen, "runsShowOlder1"), null, "one button for the project")
+    tap(H.find(s.screen, "runsShowOlder0"))
+    compare(s.history.showOlderCalls.join(","), "/home/u/a/,/home/u/a", "the first own key that matches")
+  }
+
+  function test_show_older_is_hidden_under_live_with_am_missing_and_without_a_run_history() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var live = tagged(run("run-a-live0001", "started", true, {}), "/home/u/a", "alpha")
+    var s = make(a.concat([live])); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a.concat([live]) }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"))
+    s.runs.toggleRunFilter("live")
+    wait(20)
+    verify(H.find(s.screen, "runRow0"), "alpha's live run is listed")
+    compare(H.find(s.screen, "runsShowOlder0"), null, "nothing to page under Live")
+    s.runs.toggleRunFilter("all")
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"), "back under All, with no new snapshot")
+    s.runs.amStatus = "missing"
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "am missing")
+    s.runs.amStatus = "ok"
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"))
+    s.app.runHistory = null
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "no run history")
+    verify(H.find(s.screen, "runRow0"), "the rows stay")
+  }
+
+  function test_show_older_takes_no_index_and_the_cursor_walks_runs_only() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var b = doneRuns(10, "/home/u/b", "beta", "b")
+    var s = make(a.concat(b)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b }
+    wait(20)
+    verify(H.find(s.screen, "runsShowOlder0"), "a button between the groups")
+    for (var i = 0; i < 20; i++)
+      compare(H.find(s.screen, "runRowId" + i).text, Runs.runSubtitle(s.runs.filteredRuns[i]), "row " + i)
+    compare(H.find(s.screen, "runRow20"), null)
+    s.nav.cursorIndex = 19
+    for (var j = 0; j < 20; j++) compare(H.find(s.screen, "runRow" + j).hasCursor, j === 19, "row " + j)
+    var runsOnly = shape(s.screen.entries).split(",").filter(function(x) { return x.charAt(0) === "r" }).join(",")
+    compare(runsOnly, runIds(0, 20), "the same run indexes as without the buttons")
+  }
+
+  function test_show_older_is_not_a_row() {
+    var a = [tagged(run("run-a-done0001", "done", null, {}), "/home/u/a", "alpha")]
+    var b = [tagged(run("run-b-done0002", "done", null, {}), "/home/u/b", "beta")]
+    var s = make(a.concat(b)); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a, "/home/u/b": b }
+    s.history.historyByProject = { "/home/u/a": page({ more: true }), "/home/u/b": page({ more: true }) }
+    wait(20)
+    var button = H.find(s.screen, "runsShowOlder0")
+    verify(button)
+    compare(button.hasCursor, undefined, "not a ListRow")
+    mouseMove(H.find(s.screen, "runChips"), 1, 1)
+    s.navi.hovered = -1
+    mouseMove(button, button.width / 2, button.height / 2)
+    compare(s.navi.hovered, -1, "hovering it moves no cursor")
+    tap(button)
+    compare(s.navi.opened, "", "it opens no run")
+    compare(s.history.showOlderCalls.join(","), "/home/u/a", "it asks the history once")
+  }
+
+  // Review Focus 2.
+  function test_garbage_history_and_snapshot_maps_fall_back_and_do_not_throw() {
+    var a = doneRuns(10, "/home/u/a", "alpha", "a")
+    var s = make(a); if (!s) return
+    s.runs.runsByProject = { "/home/u/a": a }
+    var cases = [[{ "/home/u/a": null }, true, "a null entry is no entry"],
+                 [{ "/home/u/a": "x" }, true, "a string entry is no entry"],
+                 [{ "/home/u/a": { loading: "yes", more: 1, error: 7 } }, false, "an entry with no true flag and no error"],
+                 [null, true, "no history map"],
+                 ["x", true, "a history map that is not an object"]]
+    for (var c = 0; c < cases.length; c++) {
+      s.history.historyByProject = cases[c][0]
+      wait(20)
+      compare(!!H.find(s.screen, "runsShowOlder0"), cases[c][1], cases[c][2])
+    }
+    s.history.historyByProject = {}
+    s.runs.runsByProject = { "/home/u/a": "nope" }
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "a list that is not an array counts 0")
+    s.runs.runsByProject = { "/home/u/a": [null, 3, "x", []].concat(a.slice(0, 9)) }
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "non-runs are not terminal: 9")
+    s.runs.runsByProject = null
+    wait(20)
+    compare(H.find(s.screen, "runsShowOlder0"), null, "no snapshot map")
+    verify(H.find(s.screen, "runRow0"), "the rows stay")
+  }
+
   function test_each_chip_filters_its_rows_and_the_active_one_returns_to_all() {
     var s = make(sample()); if (!s) return
     tap(H.find(s.screen, "runChipattention"))
