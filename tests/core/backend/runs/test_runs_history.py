@@ -451,6 +451,16 @@ def test_kept_rows_only_count_toward_more(world):
     assert out["more"] is False
 
 
+def test_am_order_is_kept(world):
+    # synthetic: am lists these out of time order; the page follows am, never re-sorted.
+    seed(world, [row("d2", "done", stamp(2)), row("d0", "done", stamp(0)),
+                 row("d1", "done", stamp(1))])
+    code, out = run(world, args_for(world, "--limit", "2"))
+    assert code == 0
+    assert ids(out) == ["d2", "d0"]
+    assert out["more"] is True
+
+
 def test_empty_page(world):
     seed(world, rows(3, status="started"))
     code, out = run(world, args_for(world))
