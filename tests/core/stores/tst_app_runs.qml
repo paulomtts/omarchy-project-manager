@@ -12,10 +12,10 @@
 // as it routes run control's runSettingsSaveFailed back to the dispatch, and
 // `app.runTitles`, which App feeds with the registry, the open project's root
 // and card map, the run list and the panel-open flag, and whose titles map
-// App hands the run store, and `app.runHistory`, which App feeds with the
-// backend dir, the panel-open flag, the run store's per-project snapshot, its
-// chip and its finished rows, and whose pages App hands the run store
-// flattened. The stores' own behaviour is tested in
+// App hands the run store and the run alerts, and `app.runHistory`, which App
+// feeds with the backend dir, the panel-open flag, the run store's
+// per-project snapshot, its chip and its finished rows, and whose pages App
+// hands the run store flattened. The stores' own behaviour is tested in
 // tst_run_store.qml, tst_run_alerts_store.qml, tst_run_control_store.qml,
 // tst_run_dispatch_store.qml, tst_run_titles_store.qml and
 // tst_run_history_store.qml.
@@ -963,6 +963,13 @@ TestCase {
     compare(JSON.stringify(app.runs.titlesByRoot), JSON.stringify(app.runTitles.titlesByRoot))
     app.board.applyTreeData([{ id: "c1", title: "One", status: "todo", children: [] }])
     compare(app.runs.titlesByRoot[tc.pA.root_path].c1, "One", "titlesByRoot follows app.runTitles.titlesByRoot")
+  }
+
+  function test_app_hands_the_run_alerts_the_run_titles() {
+    var app = make(); if (!app) return
+    compare(JSON.stringify(app.runAlerts.titlesByRoot), JSON.stringify(app.runTitles.titlesByRoot))
+    app.board.applyTreeData([{ id: "c1", title: "One", status: "todo", children: [] }])
+    compare(app.runAlerts.titlesByRoot[tc.pA.root_path].c1, "One", "titlesByRoot follows app.runTitles.titlesByRoot")
   }
 
   function test_a_finished_row_toggle_puts_the_cursor_home() {
