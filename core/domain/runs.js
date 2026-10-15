@@ -1238,14 +1238,33 @@ function runLevel(run) {
   return "milestone"
 }
 
+// [state, UI actions] for the Runs row, left to right as rendered. A state not
+// listed shows no actions.
+var _ACTIONS_BY_STATE = [
+  ["running", ["cancel", "pause"]],
+  ["parked", ["close", "resume"]],
+  ["escalated", ["close", "relaunch"]],
+  ["dead", ["close", "relaunch"]]
+]
+
 // The UI actions the Runs row shows for a run, a fresh array, left to right as
 // rendered: the state's buttons (running: cancel, pause; parked: close, resume;
 // escalated and dead: close, relaunch; anything else: none) minus every one
 // whose controls(run) entry is disabled. relaunch has no controls() entry and
-// is never dropped. Stub until story B (042b0d8e): always a fresh []. Never
-// throws.
+// is never dropped, and resume is never shown on an escalated or dead run.
+// controls(run) is computed once per call. Never throws.
 function visibleActions(run) {
-  return []
+  var state = runState(run)
+  var allowed = controls(run)
+  var out = []
+  for (var i = 0; i < _ACTIONS_BY_STATE.length; i++) {
+    if (_ACTIONS_BY_STATE[i][0] !== state) continue
+    var names = _ACTIONS_BY_STATE[i][1]
+    for (var j = 0; j < names.length; j++) {
+      if (names[j] === "relaunch" || allowed[names[j]].enabled) out.push(names[j])
+    }
+  }
+  return out
 }
 
 // [type, sentence] for each am control error, matched with === by linear scan so

@@ -3050,6 +3050,25 @@ TestCase {
     checkAction(card.close, "", "escalated card run close")
   }
 
+  function test_visible_actions_fresh() {
+    var run = ctlRun("stopped", false, true)
+    var a = Runs.visibleActions(run)
+    var b = Runs.visibleActions(run)
+    compare(a.join(","), "close,resume", "parked")
+    verify(a !== b, "a fresh array per call")
+    a.push("pause")
+    a[0] = "bogus"
+    compare(b.join(","), "close,resume", "the second result after mutating the first")
+    compare(Runs.visibleActions(run).join(","), "close,resume", "a third call after mutating the first")
+    var c = Runs.controls(run)
+    c.close.enabled = false
+    c.close.reason = "changed"
+    c.resume.enabled = false
+    delete c.pause
+    compare(Runs.visibleActions(run).join(","), "close,resume", "after mutating a controls() result")
+    checkAction(Runs.controls(run).close, "", "controls() close after mutating an earlier result")
+  }
+
   // [type, sentence] for every am control error controlError knows.
   function controlErrorTable() {
     return [
