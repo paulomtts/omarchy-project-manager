@@ -2,7 +2,6 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 import "../../core/domain/runs.js" as Runs
-import "../components/runGlyphs.js" as RunGlyphs
 import "../components/runControlFacts.js" as ControlFacts
 import "../components" as UI
 import "../theme" as T
@@ -11,11 +10,15 @@ import "../../core/domain/compat.js" as Compat
 // The Runs section: every registered project's am runs, grouped by project
 // with a header each (name; live, parked and needs-attention counts; the
 // project's snapshot error; a dim `titles unavailable` while its titles
-// cannot be read), flat with no header under a project filter. Each
-// run is one row (state glyph; title, from the run's own project's map in
-// app.runTitles; short id in dim; done/total, current phase, age) whose index
-// is its position in the store's filteredRuns, the one list
-// the cursor walks; headers are not cursor targets. A project chip row (All
+// cannot be read), flat with no header under a project filter. Each run is
+// one row whose index is its position in the store's filteredRuns, the one
+// list the cursor walks; headers are not cursor targets. A row's first line
+// reads, left to right, its id in dim (rowIdOf), its title (from the run's
+// own project's map in app.runTitles; it takes the width the others leave
+// and elides), a RunLevelBadge, a RunStateBadge for a running or escalated
+// run, and on the right its meta (metaText: done/total, phase, age; a dead
+// run's lease line in urgent); an escalated run's reason follows flush left
+// in warn. A project chip row (All
 // projects, This project when one is open, one chip per project with runs,
 // with run counts) sits above the status chips, hidden when only one project
 // has runs and none is open; clicking one asks the store to toggle its
@@ -32,13 +35,11 @@ import "../../core/domain/compat.js" as Compat
 // its snapshot lists terminalLimit terminal runs; it reads `Loading older
 // runs…` and takes no click while its page is in flight, and a failed
 // page's sentence shows under it in urgent. A footer says whether the runs
-// are watched. The row with the cursor shows Open project for a run of a
-// registered project other than the open one; the button asks the navigator
-// to choose that project. It reads the run store, the run history, the run
-// titles and the project registry and asks the navigator to open a run,
-// choose a project or move the cursor, the run titles to read every
-// project's titles again and the run history for older runs; it owns no
-// state of its own.
+// are watched. The row with the cursor shows RunControls' buttons
+// (Runs.visibleActions). It reads the run store, the run history and the
+// run titles and asks the navigator to open a run or move the cursor, the
+// run titles to read every project's titles again and the run history for
+// older runs; it owns no state of its own.
 // Ages are read against the clock once per snapshot: there is no timer.
 Column {
   id: screen
@@ -222,29 +223,6 @@ Column {
     return age === "today" || age === "week" ? age : "all"
   }
 
-  // The first entry of the registry `list` ({root_path, name} objects, in
-  // list order) whose root_path is `root`, both compared by rootKey; null
-  // when `root` is "", `list` is not array-like or no entry matches. Entries
-  // that are not objects are skipped.
-  function registryEntryOf(list, root) {
-    var want = screen.rootKey(root)
-    if (want === "") return null
-    for (var i = 0; i < screen.sizeOf(list); i++) {
-      var entry = list[i]
-      if (entry !== null && typeof entry === "object" && screen.rootKey(entry.root_path) === want) return entry
-    }
-    return null
-  }
-
-  // The registry entry Open project chooses for `run`: registryEntryOf
-  // `list` for the run's project.root; null when the run has no project or
-  // its project's root is `open` (the open project's, by rootKey).
-  function openProjectTargetOf(run, open, list) {
-    var project = run !== null && typeof run === "object" ? run.project : null
-    var root = screen.rootKey(project !== null && typeof project === "object" ? project.root : "")
-    return root === "" || root === open ? null : screen.registryEntryOf(list, root)
-  }
-
   // The own key of `byProject` ({root: runs}) whose rootKey is `root`'s, the
   // first in key order; "" when `root` is "", `byProject` is not an object or
   // no key matches.
@@ -347,13 +325,38 @@ Column {
     return out
   }
 
-  // A dead or parked run's state, spelled out with its age folded in so the
-  // age shows once; "" for every other state.
+  // A dead run's state, spelled out with its age folded in so the age shows
+  // once; "" for every other state.
   function stateText(state, age) {
     if (state === "dead")
       return age === "" ? "dead - lease lost" : age === "just now" ? "dead - lease lost just now" : "dead - lease lost " + age + " ago"
-    if (state === "parked") return age === "" ? "parked" : "parked " + age
     return ""
+  }
+
+  // A row's id: the first 8 characters of the run's milestone_id when that is
+  // a non-empty string, else the last 8 of its id when that is a string, else
+  // "". Raw, with no "…" (am's run ids end with the milestone's first 8).
+  function rowIdOf(run) {
+    if (run === null || typeof run !== "object") return ""
+    if (typeof run.milestone_id === "string" && run.milestone_id !== "") return run.milestone_id.slice(0, 8)
+    return typeof run.id === "string" ? run.id.slice(-8) : ""
+  }
+
+  // A row's meta: a dead run's stateText with its age; any other run's
+  // non-empty parts of done/total (with subtasks), its current phase (else
+  // "parked" for a parked run) and its age, joined by " · ".
+  function metaText(run, nowMs) {
+    var state = Runs.runState(run)
+    var age = Runs.runAgeText(run, nowMs)
+    if (state === "dead") return screen.stateText(state, age)
+    var progress = Runs.runProgress(run)
+    var phase = Runs.currentPhase(run)
+    if (phase === "" && state === "parked") phase = "parked"
+    var parts = []
+    if (progress.total > 0) parts.push(progress.done + "/" + progress.total)
+    if (phase !== "") parts.push(phase)
+    if (age !== "") parts.push(age)
+    return parts.join(" · ")
   }
 
   // A row's control button: pause and resume go straight to the store, a
@@ -701,13 +704,7 @@ Column {
     // the progress, phase and escalation reason would silently vanish.
     readonly property var run: screen.app.runs.filteredRuns[row.index]
 
-    // The registry entry Open project chooses (openProjectTargetOf); null
-    // hides the button.
-    readonly property var openTarget: screen.openProjectTargetOf(row.run, screen.openRoot, screen.app.projects.projects)
-
     readonly property string runState: Runs.runState(row.run)
-    readonly property var runProgress: Runs.runProgress(row.run)
-    readonly property string runAge: Runs.runAgeText(row.run, screen.nowMs)
 
     width: screen.width
     theme: screen.theme
@@ -718,72 +715,70 @@ Column {
     onActivated: screen.navigator.openRun(row.run ? row.run.id : "")
     onRevealRequested: function(item) { screen.revealRequested(item) }
 
-    Row {
+    // The first line: id, title, level and state badges, then the meta on
+    // the right. The title takes the width the others leave and elides.
+    Item {
+      id: rowLine
+      objectName: "runRowLine" + row.index
       width: parent.width
-      spacing: Style.space(8)
+      height: Math.max(rowLeft.height, rowMeta.visible ? rowMeta.height : 0)
 
-      UI.ThemedText {
-        id: rowGlyph
-        objectName: "runRowGlyph" + row.index
-        theme: screen.theme
-        visible: text !== ""
-        text: RunGlyphs.glyphOf(row.runState)
-        color: row.runState === "escalated" || row.runState === "dead" ? screen.theme.urgent : screen.theme.foreground
+      Row {
+        id: rowLeft
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(8)
+
+        UI.ThemedText {
+          id: rowId
+          objectName: "runRowId" + row.index
+          anchors.verticalCenter: parent.verticalCenter
+          variant: "caption"
+          theme: screen.theme
+          visible: text !== ""
+          text: screen.rowIdOf(row.run)
+          color: screen.theme.dim
+        }
+
+        UI.ThemedText {
+          objectName: "runRowTitle" + row.index
+          anchors.verticalCenter: parent.verticalCenter
+          theme: screen.theme
+          width: Math.max(0, Math.min(implicitWidth, rowLine.width
+            - (rowId.visible ? rowId.width + rowLeft.spacing : 0)
+            - rowLevel.width - rowLeft.spacing
+            - (rowStateBadge.visible ? rowStateBadge.width + rowLeft.spacing : 0)
+            - (rowMeta.visible ? rowMeta.width + rowLeft.spacing : 0)))
+          text: Runs.runTitle(row.run, Runs.titlesOfRun(row.run, screen.app.runTitles.titlesByRoot))
+          elide: Text.ElideRight
+        }
+
+        UI.RunLevelBadge {
+          id: rowLevel
+          objectName: "runRowLevel" + row.index
+          anchors.verticalCenter: parent.verticalCenter
+          theme: screen.theme
+          level: Runs.runLevel(row.run)
+        }
+
+        UI.RunStateBadge {
+          id: rowStateBadge
+          objectName: "runRowStateBadge" + row.index
+          anchors.verticalCenter: parent.verticalCenter
+          theme: screen.theme
+          state: row.runState
+        }
       }
 
       UI.ThemedText {
-        objectName: "runRowTitle" + row.index
-        theme: screen.theme
-        width: Math.max(0, parent.width - (rowGlyph.visible ? rowGlyph.width + parent.spacing : 0)
-          - rowId.width - parent.spacing)
-        text: Runs.runTitle(row.run, Runs.titlesOfRun(row.run, screen.app.runTitles.titlesByRoot))
-        elide: Text.ElideRight
-      }
-
-      UI.ThemedText {
-        id: rowId
-        objectName: "runRowId" + row.index
-        variant: "caption"
-        theme: screen.theme
-        text: Runs.runSubtitle(row.run)
-        color: screen.theme.dim
-      }
-    }
-
-    Row {
-      width: parent.width
-      spacing: Style.space(10)
-
-      UI.ThemedText {
-        objectName: "runRowProgress" + row.index
-        variant: "caption"
-        theme: screen.theme
-        visible: text !== ""
-        text: row.runProgress.total > 0 ? row.runProgress.done + "/" + row.runProgress.total : ""
-      }
-
-      UI.ThemedText {
-        objectName: "runRowPhase" + row.index
-        variant: "caption"
-        theme: screen.theme
-        visible: text !== ""
-        text: Runs.currentPhase(row.run)
-      }
-
-      UI.ThemedText {
-        objectName: "runRowAge" + row.index
-        variant: "caption"
-        theme: screen.theme
-        visible: text !== ""
-        text: row.runState === "dead" || row.runState === "parked" ? "" : row.runAge
-      }
-
-      UI.ThemedText {
-        objectName: "runRowState" + row.index
+        id: rowMeta
+        objectName: "runRowMeta" + row.index
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
         variant: "caption"
         theme: screen.theme
         visible: text !== ""
-        text: screen.stateText(row.runState, row.runAge)
+        text: screen.metaText(row.run, screen.nowMs)
         color: row.runState === "dead" ? screen.theme.urgent : screen.theme.dim
       }
     }
@@ -795,14 +790,13 @@ Column {
       width: parent.width
       visible: row.runState === "escalated"
       text: Runs.escalationReason(row.run)
-      color: screen.theme.urgent
+      color: screen.theme.warn
       wrapMode: Text.WordWrap
     }
 
     // Under the row: the buttons while it has the cursor (hover moves the
     // cursor, so that is hover or selected) or a request is pending, and the
-    // waiting and error lines whenever they apply; then Open project while it
-    // has the cursor and openTarget is not null.
+    // waiting and error lines whenever they apply.
     actions: [
       UI.RunControls {
         objectName: "runRowControls" + row.index
@@ -815,14 +809,8 @@ Column {
         errorText: ControlFacts.errorOf(screen.app.runControl.lastControlError, screen.app.runControl.lastControlErrorRunId, row.run)
         wholeRun: false
         showButtons: row.hasCursor
+        relaunchShown: true
         onActionRequested: function(action) { screen.requestControl(action, row.run) }
-      },
-      UI.ActionButton {
-        objectName: "runRowOpenProject" + row.index
-        theme: screen.theme
-        text: "Open project"
-        visible: row.hasCursor && row.openTarget !== null
-        onClicked: screen.navigator.chooseProject(row.openTarget)
       }
     ]
   }
