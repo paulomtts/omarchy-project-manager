@@ -1223,6 +1223,24 @@ function controls(run) {
   return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel), close: _action(_REASON_UNKNOWN) }
 }
 
+// The run's level in the milestone tree: "subtask" for a card run (workflow
+// "task", trimmed, case-sensitive), else "story" when story_id is a string that
+// is non-empty after trimming, else "milestone". Stub until story B (042b0d8e):
+// always "milestone". Never throws.
+function runLevel(run) {
+  return "milestone"
+}
+
+// The UI actions the Runs row shows for a run, a fresh array, left to right as
+// rendered: the state's buttons (running: cancel, pause; parked: close, resume;
+// escalated and dead: close, relaunch; anything else: none) minus every one
+// whose controls(run) entry is disabled. relaunch has no controls() entry and
+// is never dropped. Stub until story B (042b0d8e): always a fresh []. Never
+// throws.
+function visibleActions(run) {
+  return []
+}
+
 // [type, sentence] for each am control error, matched with === by linear scan so
 // a type such as `constructor` or `__proto__` is just an unknown type.
 var _CONTROL_ERRORS = [
@@ -1245,9 +1263,12 @@ function _controlErrorType(error) {
   return _textOf(e.type)
 }
 
-// The sentence for a failed pause / resume / cancel. A known type gives its
-// sentence without am's message; anything else gives errorText(error).
-function controlError(error) {
+// The sentence for a failed pause / resume / cancel / reset. A known type gives
+// its sentence without am's message; anything else gives errorText(error).
+// `action` is the store's action name (pause, resume, cancel, reset) and is
+// optional; it is accepted and ignored until story B (042b0d8e) gives reset its
+// own sentences.
+function controlError(error, action) {
   var type = _controlErrorType(error)
   for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
     if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
