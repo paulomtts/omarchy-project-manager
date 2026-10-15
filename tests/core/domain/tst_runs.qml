@@ -2789,12 +2789,23 @@ TestCase {
     compare(a.reason, reason, label + " reason")
   }
 
-  // A whole controls() result; "" means that action is enabled.
+  // An action whose value is not fixed here: exactly {enabled, reason}, reason a
+  // string, enabled iff reason is "".
+  function checkWellFormed(a, label) {
+    compare(Object.keys(a).sort().join(","), "enabled,reason", label + " keys")
+    compare(typeof a.reason, "string", label + " reason is a string")
+    compare(a.enabled, a.reason === "", label + " enabled")
+  }
+
+  // A whole controls() result; "" means that action is enabled. `close` must be
+  // present and well formed; its value belongs to the Runs row redesign's own
+  // tests (tst_run_row_contract.qml).
   function checkControls(c, pause, resume, cancel, label) {
-    compare(Object.keys(c).sort().join(","), "cancel,pause,resume", label + " keys")
+    compare(Object.keys(c).sort().join(","), "cancel,close,pause,resume", label + " keys")
     checkAction(c.pause, pause, label + " pause")
     checkAction(c.resume, resume, label + " resume")
     checkAction(c.cancel, cancel, label + " cancel")
+    checkWellFormed(c.close, label + " close")
   }
 
   function test_controls_shape() {
@@ -2804,18 +2815,31 @@ TestCase {
     var b = Runs.controls(run)
     verify(a !== b, "a fresh result per call")
     verify(a.pause !== b.pause && a.resume !== b.resume && a.cancel !== b.cancel, "fresh actions per call")
+    verify(a.close !== b.close, "a fresh close per call")
     verify(a.pause !== a.resume && a.resume !== a.cancel && a.pause !== a.cancel, "no action shared within a result")
+    verify(a.close !== a.pause && a.close !== a.resume && a.close !== a.cancel, "close shared with no other action")
+    var closeBefore = b.close.reason
     a.pause.enabled = false
     a.pause.reason = "changed"
     a.resume.reason = "changed"
+    a.close.enabled = !a.close.enabled
+    a.close.reason = "changed"
     delete a.cancel
-    checkControls(Runs.controls(run), "", ctlResumeRunning, "", "after mutating an earlier result")
+    var after = Runs.controls(run)
+    checkControls(after, "", ctlResumeRunning, "", "after mutating an earlier result")
+    compare(after.close.reason, closeBefore, "close unchanged after mutating an earlier result")
 
     var u = Runs.controls(undefined)
     verify(u.pause !== u.resume && u.resume !== u.cancel && u.pause !== u.cancel, "no action shared in an unknown result")
+    verify(u.close !== u.pause && u.close !== u.resume && u.close !== u.cancel, "close shared with no other unknown action")
+    var unknownClose = Runs.controls(null).close.reason
     u.pause.reason = "changed"
     u.resume.enabled = true
-    checkControls(Runs.controls(null), ctlUnknown, ctlUnknown, ctlUnknown, "after mutating an unknown result")
+    u.close.reason = "changed"
+    u.close.enabled = !u.close.enabled
+    var u2 = Runs.controls(null)
+    checkControls(u2, ctlUnknown, ctlUnknown, ctlUnknown, "after mutating an unknown result")
+    compare(u2.close.reason, unknownClose, "unknown close unchanged after mutating an earlier result")
 
     var d = Runs.controls(ctlRun("done", null, true))
     d.cancel.reason = ""

@@ -1180,11 +1180,21 @@ function _inIntegrate(run) {
   return _isObject(run) && _isObject(run.lease) && run.lease.accepting !== true
 }
 
-// {pause, resume, cancel}, each a fresh {enabled, reason}; reason is "" when
-// enabled. Pause needs a running run outside Integrate; resume needs dead,
+// {pause, resume, cancel, close}, each a fresh {enabled, reason}; reason is ""
+// when enabled. Pause needs a running run outside Integrate; resume needs dead,
 // parked or escalated, except an escalated card run (workflow "task", trimmed),
 // and never looks at accepting; cancel needs a run that has not finished and is
-// not in Integrate. The state's reason wins over Integrate's.
+// not in Integrate. The state's reason wins over Integrate's. Close is a stub
+// until story B (042b0d8e): always disabled with the unknown-state reason.
+//
+// Action names come in two vocabularies, never mixed. The UI (visibleActions,
+// RunControls.actionRequested, RunsScreen.requestControl) says pause, resume,
+// cancel, close and relaunch; controls() has keys pause, resume, cancel and
+// close. The store (RunControlStore.control, refusalOf) and the backend
+// (run-control.py ACTIONS) say pause, resume, cancel and reset, and so does the
+// `action` argument of controlError(error, action). UI `close` is store, backend
+// and am `reset`. `relaunch` is UI only: it starts a fresh run, so it has no
+// controls() entry and no store control action.
 function controls(run) {
   var state = runState(run)
   var integrate = _inIntegrate(run)
@@ -1210,7 +1220,7 @@ function controls(run) {
     resume = _REASON_UNKNOWN
     cancel = _REASON_UNKNOWN
   }
-  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel) }
+  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel), close: _action(_REASON_UNKNOWN) }
 }
 
 // [type, sentence] for each am control error, matched with === by linear scan so
