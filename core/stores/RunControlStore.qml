@@ -5,9 +5,10 @@ import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
 import "../domain/compat.js" as Compat
 
-// The run controls (S2 4.1), the cancel confirmation (S2 4.3) and the footer
-// flash, for a run of any registered project. control(action, runId) starts a
-// pause, resume or cancel of a run in `runs`, each on a HelperRunner of its
+// The run controls (S2 4.1), the cancel confirmation (S2 4.3), the Close
+// dialog and the footer flash, for a run of any registered project.
+// control(action, runId) starts a pause, resume, cancel or reset (the UI's
+// Close) of a run in `runs`, each on a HelperRunner of its
 // own; `pending` ({runId: action}) holds a request until settleAfterSnapshot()
 // sees it settled, `stillWaiting` ({runId: true}) the pending ones 30 s or
 // more old. Both are replaced, never changed in place. The control error is
@@ -99,10 +100,12 @@ Scope {
     return runner
   }
 
-  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
-  // returns whether it started: only when refusalOf(action, runId) is "".
-  // The request acts on the run's repo_dir; a milestone resume reads the run
-  // settings of the run's project.root. Confirming a cancel is the caller's job.
+  // Starts a pause, resume, cancel or reset of one run in `runs`, of any
+  // project, and returns whether it started: only when refusalOf(action,
+  // runId) is "". The request acts on the run's repo_dir; a milestone resume
+  // reads the run settings of the run's project.root, and every other action
+  // launches run-control at once with no extra argument. Confirming a cancel
+  // or a reset is the caller's job.
   function control(action, runId) {
     if (control.refusalOf(action, runId) !== "") return false
     var run = Runs.runById(control.runs, runId)
@@ -180,8 +183,9 @@ Scope {
   // One run-control.py reply, whatever project is open. ok:true
   // means am has the request: pending stays until a snapshot settles it, and
   // the requested_at am gave it is remembered. Anything else ends it with a
-  // sentence. Either way the runner goes, then refreshRequested("all"). A
-  // reply for a request that is no longer the pending one changes nothing.
+  // sentence (am's error through Runs.controlError with the request's action).
+  // Either way the runner goes, then refreshRequested("all"). A reply for a
+  // request that is no longer the pending one changes nothing.
   function controlReplied(runner, stdout, exitCode) {
     var req = control.requestOf(runner)
     if (req === null) {
@@ -204,7 +208,7 @@ Scope {
     } else if (envelope !== null && envelope.ok === false) {
       var err = envelope.error
       var type = err !== null && typeof err === "object" && typeof err.type === "string" ? err.type : ""
-      control.failControl(runner.runId, Runs.controlError(envelope), type)
+      control.failControl(runner.runId, Runs.controlError(envelope, req.action), type)
     } else {
       control.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").", "")
     }
@@ -246,8 +250,9 @@ Scope {
 
   // After every good snapshot: an acknowledged request is settled when its run
   // is gone from `runs`, when the run's state moved since the request started,
-  // or (pause, cancel) when am marks its request handled. A request still in
-  // flight is never settled by a snapshot: its buttons stay off until the reply.
+  // or (pause, cancel, reset) when am marks its request handled. A request
+  // still in flight is never settled by a snapshot: its buttons stay off until
+  // the reply.
   function settleAfterSnapshot() {
     var ids = Object.keys(control.pending)
     for (var i = 0; i < ids.length; i++) {
@@ -288,15 +293,17 @@ Scope {
   // "" when control(action, runId) would start a request; otherwise why not:
   // a run that is not in `runs`, then a run with no repo_dir, then a resume
   // (not of a task run) of a run with no project root, then a request already
-  // pending for it, then the reason Runs.controls gives. Changes nothing.
+  // pending for it, then the reason Runs.controls gives -- for a reset, its
+  // `close` entry. Actions are pause, resume, cancel and reset; "close" is
+  // the UI's word for reset and is an unknown control here. Changes nothing.
   function refusalOf(action, runId) {
-    if (action !== "pause" && action !== "resume" && action !== "cancel") return "Unknown control"
+    if (action !== "pause" && action !== "resume" && action !== "cancel" && action !== "reset") return "Unknown control"
     var run = typeof runId !== "string" || runId === "" ? null : Runs.runById(control.runs, runId)
     if (run === null) return "This run is no longer in the snapshot"
     if (typeof run.repo_dir !== "string" || run.repo_dir === "") return "This run has no repository"
     if (action === "resume" && run.workflow !== "task" && Runs.runRoot(run) === "") return "This run's project is not known"
     if (Runs.hasKey(control.pending, runId)) return "A request for this run is pending"
-    return Runs.controls(run)[action].reason
+    return Runs.controls(run)[action === "reset" ? "close" : action].reason
   }
 
   // Shows text in the footers for 3 s; a new flash replaces it and restarts

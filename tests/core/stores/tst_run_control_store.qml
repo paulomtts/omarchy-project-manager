@@ -1879,4 +1879,135 @@ TestCase {
     compare(controlOf(store).pending.r1, undefined, "the request is settled")
     compare(controlOf(store).controlRunners.length, 0)
   }
+
+  // ---- reset and the Close dialog (store-reset-and-close-63efef4f)
+
+  // Story B (042b0d8e) enables controls().close for a parked run; until then
+  // the tests that need a reset to start skip themselves.
+  readonly property bool closeImplemented: Runs.controls(held(ctlEntry("probe", "stopped", false))).close.enabled === true
+
+  // A parked run of project A: stopped, its process gone.
+  function parked(id) { return ctlEntry(id, "stopped", false) }
+
+  // The reason Runs.controls gives for closing the run built from entry `e`.
+  function closeReason(e) { return Runs.controls(held(e)).close.reason }
+
+  // A reset of `id` that am acknowledged; requestedAt "" leaves it out of the reply.
+  function resetAcked(store, id, requestedAt) {
+    compare(controlOf(store).control("reset", id), true)
+    var data = { run_id: id, command: "reset" }
+    if (requestedAt !== "") data.requested_at = requestedAt
+    reply(controlOf(store).controlRunners[controlOf(store).controlRunners.length - 1].current, ctlOk(data), 0)
+  }
+
+  // 2 (and Review Focus 3)
+  function test_refusal_of_reset_keeps_the_order_and_reads_controls_close() {
+    var store = make(); if (!store) return
+    compare(controlOf(store).refusalOf("reset", "r1"), "This run is no longer in the snapshot", "an empty snapshot")
+    var noRepo = held(parked("r0"), tc.rootA)
+    noRepo.repo_dir = ""
+    var e1 = running("r1"), e2 = parked("r2"), e3 = integrate("r3"), e4 = ctlEntry("r4", "done", false)
+    var e5 = running("r5"), e6 = parked("constructor")
+    store.runs = [noRepo, held(e1, tc.rootA), held(e2), held(e3, tc.rootA), held(e4, tc.rootA),
+                  held(e5, tc.rootA), held(e6, tc.rootA)]
+    compare(controlOf(store).refusalOf("reset", "nope"), "This run is no longer in the snapshot")
+    compare(controlOf(store).refusalOf("reset", ""), "This run is no longer in the snapshot", "an empty id")
+    compare(controlOf(store).refusalOf("reset", 7), "This run is no longer in the snapshot", "an id that is not a string")
+    compare(controlOf(store).refusalOf("reset", "r0"), "This run has no repository")
+    compare(controlOf(store).refusalOf("reset", "r2"), tc.closeReason(e2), "a run with no project root is not refused for that")
+    verify(controlOf(store).refusalOf("reset", "r2") !== "This run's project is not known")
+    compare(controlOf(store).refusalOf("reset", "r1"), tc.closeReason(e1), "running")
+    compare(controlOf(store).refusalOf("reset", "r3"), tc.closeReason(e3), "integrate")
+    compare(controlOf(store).refusalOf("reset", "r4"), tc.closeReason(e4), "done")
+    compare(controlOf(store).refusalOf("reset", "constructor"), tc.closeReason(e6), "an id like constructor is not pending")
+    compare(controlOf(store).refusalOf("close", "r2"), "Unknown control", "close is the UI's word, never the store's")
+    compare(controlOf(store).refusalOf("bogus", "r2"), "Unknown control")
+    compare(controlOf(store).refusalOf("Reset", "r2"), "Unknown control", "actions are exact")
+    compare(controlOf(store).control("close", "r2"), false)
+    compare(controlOf(store).control("close", "r1"), false)
+    compare(controlOf(store).controlRunners.length, 0, "refusalOf and a refused control start nothing")
+    compare(Object.keys(controlOf(store).pending).length, 0)
+    compare(controlOf(store).control("pause", "r5"), true)
+    compare(controlOf(store).refusalOf("reset", "r5"), "A request for this run is pending", "pending wins over the state's reason")
+    compare(controlOf(store).controlRunners.length, 1)
+  }
+
+  // 13
+  function test_a_reset_launches_the_exact_argv() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = make(); if (!store) return
+    store.runs = [held(parked("r1"), tc.rootA), held(parked("r2"))]
+    compare(controlOf(store).control("reset", "r1"), true)
+    compare(controlOf(store).pending.r1, "reset")
+    var runner = controlOf(store).controlRunners[0]
+    compare(runner.action, "reset")
+    compare(runner.seq, 1, "one launch: no settings step")
+    compare(argv(runner.current), tc.ctlCmd + "reset|r1|" + tc.rootA)
+    compare(runner.current.command.length, 5, "no --verify, no --allow-no-verification")
+    compare(controlOf(store).refusalOf("reset", "r2"), "", "a reset needs no project root")
+    compare(controlOf(store).control("reset", "r2"), true)
+    compare(argv(controlOf(store).controlRunners[1].current), tc.ctlCmd + "reset|r2|" + tc.rootA)
+    compare(controlOf(store).controlRunners[1].seq, 1)
+    compare(controlOf(store).controlRunners.length, 2)
+  }
+
+  // 14
+  function test_a_reset_settles_like_a_cancel() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = ctlStore([parked("r1")]); if (!store) return
+    resetAcked(store, "r1", "t1")
+    compare(controlOf(store).pending.r1, "reset", "acknowledged, not settled")
+    snapshot(store, [parked("r1")])
+    compare(controlOf(store).pending.r1, "reset", "same state and no request row")
+    snapshot(store, [running("r1")])
+    compare(controlOf(store).pending.r1, undefined, "the state changed")
+
+    var rows = ctlStore([parked("r1")]); if (!rows) return
+    resetAcked(rows, "r1", "t1")
+    snapshot(rows, [ctlEntry("r1", "stopped", false, "milestone", [amRequest("reset", "t1", "")])])
+    compare(controlOf(rows).pending.r1, "reset", "not handled yet")
+    snapshot(rows, [ctlEntry("r1", "stopped", false, "milestone", [amRequest("reset", "t1", "t1h")])])
+    compare(controlOf(rows).pending.r1, undefined, "am handled the reset row")
+
+    var last = ctlStore([parked("r1")]); if (!last) return
+    resetAcked(last, "r1", "")
+    snapshot(last, [ctlEntry("r1", "stopped", false, "milestone",
+      [amRequest("reset", "t0", "t0h"), amRequest("pause", "t1", "t1h"), amRequest("reset", "t2", "")])])
+    compare(controlOf(last).pending.r1, "reset", "the last reset row is not handled; a handled pause is another request")
+    snapshot(last, [ctlEntry("r1", "stopped", false, "milestone", [amRequest("reset", "t2", "t2h")])])
+    compare(controlOf(last).pending.r1, undefined)
+
+    var gone = ctlStore([parked("r1"), running("r2")]); if (!gone) return
+    resetAcked(gone, "r1", "t1")
+    snapshot(gone, [running("r2")])
+    compare(controlOf(gone).pending.r1, undefined, "the run left the snapshot")
+  }
+
+  // 15 (and Review Focus 5)
+  function test_a_failed_reset_says_why_with_the_reset_sentence() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = ctlStore([parked("r1"), parked("r2"), parked("r3")]); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: controlOf(store), signalName: "refreshRequested" })
+    var types = ["RunIsLiveError", "NotResettableError"]
+    for (var i = 0; i < types.length; i++) {
+      var id = "r" + (i + 1)
+      compare(controlOf(store).control("reset", id), true)
+      var text = ctlFail(types[i], "x")
+      reply(controlOf(store).controlRunners[0].current, text, 0)
+      compare(controlOf(store).pending[id], undefined, types[i] + ": the buttons come back")
+      compare(controlOf(store).lastControlError, Runs.controlError(JSON.parse(text), "reset"), types[i])
+      compare(controlOf(store).lastControlErrorRunId, id)
+      compare(controlOf(store).lastControlErrorType, types[i])
+      compare(spy.count, i + 1, "one refresh per applied reply")
+      compare(spy.signalArguments[i][0], "all")
+    }
+    compare(controlOf(store).control("reset", "r3"), true)
+    reply(controlOf(store).controlRunners[0].current, "Traceback (most recent call last):\nboom\n", 3)
+    compare(controlOf(store).pending.r3, undefined)
+    compare(controlOf(store).lastControlError, "The run control gave no usable result (exit 3).")
+    compare(controlOf(store).lastControlErrorRunId, "r3")
+    compare(controlOf(store).lastControlErrorType, "")
+    compare(spy.count, 3)
+    compare(controlOf(store).controlRunners.length, 0)
+  }
 }
