@@ -522,7 +522,7 @@ TestCase {
   }
 
   // 18
-  function test_integrate_disables_pause_and_cancel_and_a_key_says_why() {
+  function test_integrate_hides_pause_and_cancel_and_a_key_says_why() {
     var p = make(); if (!p) return
     var r = run("run-0000000000a1", "started", true, "alpha")
     r.lease.accepting = false
@@ -532,8 +532,9 @@ TestCase {
     var row = H.find(p, "runRow0")
     mouseMove(row, row.width / 2, row.height / 2)
     wait(50)
-    compare(controlOf(p, "Pause").enabled, false)
-    compare(controlOf(p, "Cancel").enabled, false)
+    compare(controlOf(p, "Pause").visible, false)
+    compare(controlOf(p, "Cancel").visible, false)
+    compare(H.find(p, "runRowControls0").height, 0, "Integrate shows no button")
     var reason = "Integrate is running; it cannot be paused or cancelled"
     compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), true)
     compare(H.find(p, "runsFooter").text, reason)
@@ -547,8 +548,8 @@ TestCase {
     p.navigator.openRun("run-0000000000a1")
     wait(50)
     var detail = H.find(p, "runDetailControls")
-    compare(H.find(detail, "runControlPause").enabled, false)
-    compare(H.find(detail, "runControlCancel").enabled, false)
+    compare(H.find(detail, "runControlPause").visible, false)
+    compare(H.find(detail, "runControlCancel").visible, false)
     p.app.runControl.flash("")
     compare(H.find(p, "runDetailFlash").visible, false)
     compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), true)
