@@ -517,6 +517,62 @@ TestCase {
     compare(s.app.nav.viewMode, "entry")
   }
 
+  SignalSpy { id: closeSpy; signalName: "closeRequested" }
+
+  // …e5 escalated and …f6 parked, both of milestone m1 and touching story s1.
+  function withStoppedRuns(s) {
+    s.app.runs.snapshotRunner.cancel()
+    var tree = { stories: [{ card_id: "s1", subtasks: [] }], subtasks: [] }
+    s.app.runs.runs = [mkRun("run-0000000000e5", "escalated", null, "m1", tree, hoursAgo(1)),
+                       mkRun("run-0000000000f6", "stopped", null, "m1", tree, hoursAgo(3))]
+    return s
+  }
+
+  // Row i's visible control buttons, left to right, by label.
+  function cardButtons(s, i) {
+    wait(20)
+    var row = H.find(H.find(s, "cardRunControls" + i), "runControlButtons")
+    var kids = []
+    for (var k = 0; k < row.children.length; k++) {
+      if (row.children[k].visible) kids.push(row.children[k])
+    }
+    kids.sort(function(a, b) { return a.x - b.x })
+    return kids.map(function(b) { return b.text }).join(",")
+  }
+
+  // Card 1.
+  function test_a_stopped_runs_row_offers_close_and_never_relaunch() {
+    var s = make(); if (!s) return
+    withStoppedRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    compare(cardButtons(s, 0), "Close run", "escalated: Close only, as a whole-run control")
+    compare(cardButtons(s, 1), "Close run,Resume run", "parked")
+    compare(rc(s, 0, "Relaunch").visible, false)
+    compare(rc(s, 0, "Resume").visible, false)
+    s.navigator.openCard("m1")
+    wait(50)
+    compare(cardButtons(s, 0), "Close", "a milestone card's labels are plain")
+  }
+
+  // Card 2.
+  function test_close_run_asks_the_owner_and_starts_nothing() {
+    var s = make(); if (!s) return
+    withStoppedRuns(s)
+    s.navigator.openCard("s1")
+    wait(50)
+    closeSpy.target = s
+    closeSpy.clear()
+    mouseClick(rc(s, 1, "Close"))
+    compare(closeSpy.count, 1)
+    compare(closeSpy.signalArguments[0][0], "run-0000000000f6")
+    compare(s.app.runControl.controlRunners.length, 0)
+    compare(Object.keys(s.app.runControl.pending).length, 0)
+    compare(s.app.nav.viewMode, "entry", "the button is not the row")
+    s.requestControl("relaunch", s.app.runs.runs[0])
+    compare(s.app.runControl.controlRunners.length, 0, "relaunch does nothing here")
+  }
+
   // ---- Dispatch (S3 4.2)
 
   // 16

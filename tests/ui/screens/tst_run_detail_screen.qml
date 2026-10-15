@@ -1309,6 +1309,69 @@ TestCase {
     compare(H.find(s.screen, "runDetailControls").height, 0)
   }
 
+  SignalSpy { id: closeSpy; signalName: "closeRequested" }
+
+  // runDetailControls' visible buttons, left to right, by label.
+  function detailButtons(s) {
+    wait(20)
+    var row = H.find(H.find(s.screen, "runDetailControls"), "runControlButtons")
+    var kids = []
+    for (var k = 0; k < row.children.length; k++) {
+      if (row.children[k].visible) kids.push(row.children[k])
+    }
+    kids.sort(function(a, b) { return a.x - b.x })
+    return kids.map(function(b) { return b.text }).join(",")
+  }
+
+  // Detail 1: escalated and dead runs show Close only; the stop block keeps its Relaunch.
+  function test_escalated_and_dead_runs_offer_close_only() {
+    var s = make([escalatedRun()], "run-x-escl0002"); if (!s) return
+    compare(detailButtons(s), "Close")
+    compare(ctl(s, "Resume").visible, false)
+    compare(ctl(s, "Relaunch").visible, false)
+    s.runs.runs = [run("run-x-dead0005", "started", false, {})]
+    s.runs.selectedRunId = "run-x-dead0005"
+    compare(detailButtons(s), "Close")
+    s.runs.runs = [escalatedRun({ workflow: "task", card: "t1" })]
+    s.runs.selectedRunId = "run-x-escl0002"
+    compare(detailButtons(s), "Close")
+    compare(part(s, "stopRelaunch").visible, true, "the stop block's Relaunch is unchanged")
+    compare(part(s, "stopRelaunch").enabled, true)
+  }
+
+  // Detail 2 + 3.
+  function test_parked_and_running_runs_show_the_table_all_enabled() {
+    var s = make([run("run-x-park0002", "stopped", null, {})], "run-x-park0002"); if (!s) return
+    compare(detailButtons(s), "Close,Resume")
+    compare(ctl(s, "Close").enabled, true)
+    compare(ctl(s, "Resume").enabled, true)
+    compare(H.find(s.screen, "runControlReason"), null)
+    var r = make(detail()); if (!r) return
+    compare(detailButtons(r), "Cancel,Pause")
+    compare(ctl(r, "Cancel").enabled, true)
+    compare(ctl(r, "Pause").enabled, true)
+  }
+
+  // Detail 4.
+  function test_close_only_asks_the_owner() {
+    var s = make([run("run-x-park0002", "stopped", null, {})], "run-x-park0002"); if (!s) return
+    closeSpy.target = s.screen
+    closeSpy.clear()
+    tap(ctl(s, "Close"))
+    compare(closeSpy.count, 1)
+    compare(closeSpy.signalArguments[0][0], "run-x-park0002")
+    compare(s.control.controlCalls.length, 0, "no control(close) and no control(reset)")
+  }
+
+  // requestControl("relaunch") is defensive (RunControls hides Relaunch here):
+  // it takes the stop block's path, never control().
+  function test_a_relaunch_request_takes_the_stop_blocks_path() {
+    var s = make([run("run-x-canc0004", "cancelled", null, {})], "run-x-canc0004"); if (!s) return
+    s.screen.requestControl("relaunch")
+    compare(s.dispatch.relaunchCalls.length, 1)
+    compare(s.control.controlCalls.length, 0)
+  }
+
   // ---- the flash line (S2 4.3)
 
   // 15
