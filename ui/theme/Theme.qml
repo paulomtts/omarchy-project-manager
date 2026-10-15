@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 
 // The colours and font sizes every view and component draws with. Not a
 // singleton: Panel.qml creates one bound to the bar's palette and passes it
@@ -7,9 +8,9 @@ import qs.Commons
 QtObject {
   id: theme
 
-  property color foreground: Color.foreground
+  property color foreground: Cm.Color.foreground
   property color dim: Qt.darker(theme.foreground, 1.55)
-  property color urgent: Color.urgent
+  property color urgent: Cm.Color.urgent
   property string fontFamily: Style.font.family
 
   property real bodySize: Style.font.body

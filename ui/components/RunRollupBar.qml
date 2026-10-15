@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "runGlyphs.js" as RunGlyphs
 import "../theme" as T
 
@@ -46,7 +47,7 @@ Row {
       text: segment.modelData.key === "pending"
         ? segment.amount + " pending"
         : RunGlyphs.glyphOf(segment.modelData.key) + " " + segment.amount
-      color: !bar.palette ? Color.foreground
+      color: !bar.palette ? Cm.Color.foreground
         : segment.modelData.key === "escalated" ? bar.palette.urgent
         : (segment.modelData.key === "running" || segment.modelData.key === "parked") ? bar.palette.foreground
         : bar.palette.dim

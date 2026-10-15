@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "runGlyphs.js" as RunGlyphs
 import "../../core/domain/runEvents.js" as RunEvents
 import "../theme" as T
@@ -63,7 +64,7 @@ Item {
 
   // urgent on a failure row, else the palette's `token` colour.
   function _tint(failure, token) {
-    if (!pane.palette) return Color.foreground
+    if (!pane.palette) return Cm.Color.foreground
     return failure ? pane.palette.urgent : pane.palette[token]
   }
 

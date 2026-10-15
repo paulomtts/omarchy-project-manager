@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "runGlyphs.js" as RunGlyphs
 import "../components" as UI
 import "../theme" as T
@@ -109,7 +110,7 @@ Column {
   }
 
   function colorOf(isUrgent) {
-    if (!block.theme) return isUrgent ? Color.urgent : Color.foreground
+    if (!block.theme) return isUrgent ? Cm.Color.urgent : Cm.Color.foreground
     return isUrgent ? block.theme.urgent : block.theme.foreground
   }
 

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "../../core/domain/runs.js" as Runs
 import "runGlyphs.js" as RunGlyphs
 import "../components" as UI
@@ -167,7 +168,7 @@ Column {
     width: parent.width
     visible: controls.errorText !== ""
     text: controls.errorText
-    color: controls.theme ? controls.theme.urgent : Color.urgent
+    color: controls.theme ? controls.theme.urgent : Cm.Color.urgent
     wrapMode: Text.WordWrap
   }
 }

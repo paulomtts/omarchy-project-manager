@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "../theme" as T
 
 // A small coloured pill: the tint at 18% behind the tint-coloured caption.
@@ -12,7 +13,7 @@ Rectangle {
   // value is never painted.
   property var theme: null
   property string text: ""
-  property color tint: badge.palette ? badge.palette.dim : Color.foreground
+  property color tint: badge.palette ? badge.palette.dim : Cm.Color.foreground
   // The badges in the lists are tighter than the one in a memory's header.
   property real paddingY: Style.space(2)
   property alias textObjectName: label.objectName

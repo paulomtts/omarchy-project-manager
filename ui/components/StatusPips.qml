@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "../../core/domain/board.js" as Board
 import "../theme" as T
 
@@ -65,10 +66,10 @@ Row {
       height: width
       radius: height / 2
       border.width: pip.ringed ? 2 : 0
-      border.color: pips.palette ? pips.palette.foreground : Color.foreground
+      border.color: pips.palette ? pips.palette.foreground : Cm.Color.foreground
       anchors.verticalCenter: parent ? parent.verticalCenter : undefined
       color: Board.statusColor(pip.modelData ? pip.modelData.status : "",
-                               pips.palette ? pips.palette.dim : Color.foreground)
+                               pips.palette ? pips.palette.dim : Cm.Color.foreground)
       opacity: (pip.modelData && pip.modelData.status === "in_progress") ? pips.pulseOpacity : 1
     }
   }

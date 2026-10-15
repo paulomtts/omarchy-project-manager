@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "runGlyphs.js" as RunGlyphs
 import "../components" as UI
 import "../theme" as T
@@ -62,7 +63,7 @@ Column {
       width: stack.width
       height: body.implicitHeight + Style.space(20)
       radius: Style.space(8)
-      color: Color.popups.background
+      color: Cm.Color.popups.background
       border.width: 1
       border.color: stack.theme.urgent
 

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import qs.Ui
 import "../theme" as T
 
@@ -37,7 +38,7 @@ CursorSurface {
 
   implicitHeight: contentColumn.implicitHeight + row.actionsExtent + Style.spacing.rowPaddingX
   hasCursor: row.index >= 0 && row.cursorIndex === row.index
-  foreground: row.palette ? row.palette.foreground : Color.foreground
+  foreground: row.palette ? row.palette.foreground : Cm.Color.foreground
   onHasCursorChanged: if (hasCursor && row.scrollOnCursor) row.revealRequested(row)
 
   Column {

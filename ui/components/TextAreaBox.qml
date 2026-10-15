@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as Controls
 import qs.Commons
+import qs.Commons as Cm
 import "../theme" as T
 
 // The bordered multi-line editor the panel uses for raw note text: a tinted
@@ -27,7 +28,7 @@ Rectangle {
 
   readonly property var palette: box.theme || boxTheme
   readonly property Item editorItem: editor
-  readonly property color tint: box.palette ? box.palette.foreground : Color.foreground
+  readonly property color tint: box.palette ? box.palette.foreground : Cm.Color.foreground
 
   signal edited(string text)
   signal escapePressed()

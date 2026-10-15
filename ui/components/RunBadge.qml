@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "runGlyphs.js" as RunGlyphs
 
 // An am run's state as a glyph inside a ring: the Badge pill, so the ring,
@@ -30,7 +31,7 @@ Badge {
     : runBadge.glyph === "" ? ""
     : runBadge.phase !== "" ? runBadge.glyph + " " + runBadge.phase
     : runBadge.glyph
-  tint: !runBadge.palette ? Color.foreground
+  tint: !runBadge.palette ? Cm.Color.foreground
     : runBadge.hasCounts ? runBadge.palette.foreground
     : runBadge.state === "escalated" ? runBadge.palette.urgent
     : (runBadge.state === "done" || runBadge.state === "cancelled") ? runBadge.palette.dim

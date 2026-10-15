@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import qs.Ui
 import "../components" as UI
 import "../theme" as T
@@ -31,9 +32,9 @@ Column {
   // row (its focus, its cursor).
   readonly property int rows: Math.max(1, field.stored().length)
 
-  readonly property color foregroundColor: field.theme ? field.theme.foreground : Color.foreground
-  readonly property color urgentColor: field.theme ? field.theme.urgent : Color.urgent
-  readonly property color dimColor: field.theme ? field.theme.dim : Color.foreground
+  readonly property color foregroundColor: field.theme ? field.theme.foreground : Cm.Color.foreground
+  readonly property color urgentColor: field.theme ? field.theme.urgent : Cm.Color.urgent
+  readonly property color dimColor: field.theme ? field.theme.dim : Cm.Color.foreground
 
   signal commandsEdited(var commands)
   signal allowNoVerificationEdited(bool on)

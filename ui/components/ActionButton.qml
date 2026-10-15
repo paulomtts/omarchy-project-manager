@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import qs.Ui
 import "../theme" as T
 
@@ -19,7 +20,7 @@ Button {
   readonly property var palette: button.theme || buttonTheme
 
   bordered: true
-  foreground: !button.palette ? Color.foreground
+  foreground: !button.palette ? Cm.Color.foreground
     : button.tone === "danger" ? button.palette.urgent : button.palette.foreground
   fontFamily: button.palette ? button.palette.fontFamily : Style.font.family
   fontSize: Style.font.bodySmall

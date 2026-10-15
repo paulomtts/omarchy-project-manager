@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import qs.Ui
 import "../../core/domain/text.js" as TextQuery
 import "../components" as UI
@@ -111,9 +112,9 @@ Item {
   // tearing a view down nulls them while these bindings still run once.
   readonly property string targetLevel: dialog.target && typeof dialog.target.level === "string"
     ? dialog.target.level : ""
-  readonly property color foregroundColor: dialog.theme ? dialog.theme.foreground : Color.foreground
-  readonly property color urgentColor: dialog.theme ? dialog.theme.urgent : Color.urgent
-  readonly property color dimColor: dialog.theme ? dialog.theme.dim : Color.foreground
+  readonly property color foregroundColor: dialog.theme ? dialog.theme.foreground : Cm.Color.foreground
+  readonly property color urgentColor: dialog.theme ? dialog.theme.urgent : Cm.Color.urgent
+  readonly property color dimColor: dialog.theme ? dialog.theme.dim : Cm.Color.foreground
   readonly property string targetText: {
     if (dialog.targetLabel !== "") return dialog.targetLabel
     var quoted = "\"" + dialog.targetTitle + "\""

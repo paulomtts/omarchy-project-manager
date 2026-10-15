@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import qs.Commons
+import qs.Commons as Cm
 import "../../../ui/theme" as T
 
 TestCase {
@@ -12,8 +13,8 @@ TestCase {
 
   function test_it_defaults_to_the_shell_colours_and_font() {
     var theme = createTemporaryObject(themeC, tc)
-    compare(theme.foreground, Color.foreground)
-    compare(theme.urgent, Color.urgent)
+    compare(theme.foreground, Cm.Color.foreground)
+    compare(theme.urgent, Cm.Color.urgent)
     compare(theme.fontFamily, Style.font.family)
   }
 

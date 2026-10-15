@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import qs.Commons
+import qs.Commons as Cm
 import "../../helpers/find.js" as H
 import "../../../ui/components" as UI
 
@@ -47,8 +48,8 @@ TestCase {
     compare(card.width, Math.min(Style.space(440), modal.width - Style.space(48)))
     compare(card.radius, Style.space(10))
     compare(card.border.width, 1)
-    compare(card.color, Color.popups.background)
-    compare(card.border.color, Color.popups.border)
+    compare(card.color, Cm.Color.popups.background)
+    compare(card.border.color, Cm.Color.popups.border)
     verify(card.width < modal.width, "the card is narrower than the modal")
   }
 

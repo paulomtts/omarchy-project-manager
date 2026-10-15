@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Cm
 import qs.Ui
 import "../core/domain/board.js" as Board
 import "../core/domain/milestones.js" as Milestones
@@ -25,8 +26,8 @@ Panel {
   ipcTarget: "paulomtts.omarchy-project-manager"
   manageIpc: false
 
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color foreground: bar ? bar.foreground : Cm.Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Cm.Color.urgent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // The one Theme in the plugin: every view and shared component draws with
   // it, so the bar's palette reaches them through a single property.
