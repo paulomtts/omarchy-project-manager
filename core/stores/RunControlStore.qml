@@ -52,6 +52,13 @@ Scope {
   readonly property bool cancelOpen: control.cancelRunId !== ""
   property string cancelText: ""
   property string cancelError: ""
+  // The Close dialog (a reset, the UI's Close, asks first): the run it asks
+  // about ("" = closed) and why the last confirm was refused. No typed word.
+  // Independent of the cancel confirmation; a project switch or a new run
+  // list changes neither.
+  property string closeRunId: ""
+  readonly property bool closeOpen: control.closeRunId !== ""
+  property string closeError: ""
   // The footer flash: why a run key was refused. flashTimer clears it.
   property string flashText: ""
   // "Notify on escalation", viewer-wide and off until read: the switch's
@@ -350,6 +357,45 @@ Scope {
       return false
     }
     control.closeCancel()
+    return true
+  }
+
+  // Opens the Close dialog for a run that can be reset now, replacing any run
+  // it was open for, and returns true; otherwise flashes why not, leaves any
+  // dialog as it is and returns false. Starts no request.
+  function closeAsk(runId) {
+    var reason = control.refusalOf("reset", runId)
+    if (reason !== "") {
+      control.flash(reason)
+      return false
+    }
+    control.closeError = ""
+    control.closeRunId = runId
+    return true
+  }
+
+  // Dismisses the Close dialog (its Keep button). Starts nothing; safe when
+  // it is already closed. Not closeCancel, which closes the cancel dialog.
+  function closeKeep() {
+    control.closeRunId = ""
+    control.closeError = ""
+  }
+
+  // The Close dialog's confirm. The run is checked again: one that changed or
+  // vanished under the open dialog, or got a request pending, keeps it open
+  // with the reason. A started reset closes it.
+  function closeConfirm() {
+    if (control.closeRunId === "") return false
+    var reason = control.refusalOf("reset", control.closeRunId)
+    if (reason !== "") {
+      control.closeError = reason
+      return false
+    }
+    if (!control.control("reset", control.closeRunId)) {
+      control.closeError = "The run could not be closed"
+      return false
+    }
+    control.closeKeep()
     return true
   }
 
