@@ -1,4 +1,5 @@
 .pragma library
+.import "compat.js" as Compat
 
 // Live log stream: folds the JSON lines runs-logs-follow.py prints (am's
 // `am logs --follow` hello, chunk and end lines, or one {"ok":false,"error"}
@@ -18,7 +19,7 @@ var _MAX_PARTIAL = 16384
 var _ELLIPSIS = "\u2026"
 var _CONTROLS_RE = /[\x00-\x08\x0b-\x1f\x7f]/g
 
-function _isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+function _isObject(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
 function _has(o, key) { return Object.prototype.hasOwnProperty.call(o, key) }
 function _inRange(c, lo, hi) { return c >= lo && c <= hi }
 function _isByteOffset(v) { return typeof v === "number" && isFinite(v) && Math.floor(v) === v && v >= 0 }
@@ -115,7 +116,7 @@ function emptyBuffer(maxLines) {
 // A new copy of buffer with every invalid field read as its emptyBuffer value;
 // emptyBuffer(buffer.maxLines) when buffer has no array lines.
 function _read(buffer) {
-  if (!_isObject(buffer) || !Array.isArray(buffer.lines)) return emptyBuffer(buffer ? buffer.maxLines : undefined)
+  if (!_isObject(buffer) || !Compat.isArray(buffer.lines)) return emptyBuffer(buffer ? buffer.maxLines : undefined)
   return { lines: buffer.lines.slice(),
            partial: typeof buffer.partial === "string" ? buffer.partial : "",
            dropped: _count(buffer.dropped), nextOffset: _count(buffer.nextOffset),
@@ -193,7 +194,7 @@ function foldLine(buffer, line) {
 // The display text: "… N earlier lines" when dropped > 0, the lines, then the
 // sanitized and cut partial when not "", joined by "\n". "" for a bad buffer.
 function bufferText(buffer) {
-  if (!_isObject(buffer) || !Array.isArray(buffer.lines)) return ""
+  if (!_isObject(buffer) || !Compat.isArray(buffer.lines)) return ""
   var dropped = _count(buffer.dropped)
   var out = dropped > 0 ? [_ELLIPSIS + " " + dropped + " earlier lines"] : []
   out = out.concat(buffer.lines)

@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "../domain/logStream.js" as LogStream
 import "../domain/runs.js" as Runs
+import "../domain/compat.js" as Compat
 
 // Run detail's live output: runs-logs-follow.py for the one attempt or step
 // the pane shows while it is in flight, its stdout folded line by line
@@ -69,7 +70,7 @@ Scope {
   // A followed step ended: RunStore should fetch its logs snapshot.
   signal snapshotWanted()
 
-  function isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+  function isObject(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
 
   // {run_id, card_id, phase, attempt} of (run, sel), attempt 0 for a step;
   // null without a run id, a card id or a phase.

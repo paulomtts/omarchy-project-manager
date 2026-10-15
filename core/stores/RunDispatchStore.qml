@@ -4,6 +4,7 @@ import Quickshell.Io
 import "../domain/board.js" as Board
 import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
+import "../domain/compat.js" as Compat
 
 // Dispatch (S3 3.1): starting an am run for dispatchRoot. The UI opens it
 // for a target (openDispatch for a card of the open project, dispatchOpenFor
@@ -239,7 +240,7 @@ Scope {
   // fresh array when it is one. The store converts nothing else.
   function withField(form, name, value) {
     var next = Runs.copyMap(form)
-    next[name] = name === "verify" && Array.isArray(value) ? value.slice() : value
+    next[name] = name === "verify" && Compat.isArray(value) ? value.slice() : value
     return next
   }
 
@@ -398,7 +399,7 @@ Scope {
     var prefix = form.prefix.trim()
     var history = [prefix]
     var source = dispatch.dispatchSettingsSource()
-    var stored = Array.isArray(source.prefixHistory) ? source.prefixHistory : []
+    var stored = Compat.isArray(source.prefixHistory) ? source.prefixHistory : []
     for (var i = 0; i < stored.length && history.length < 20; i++) {
       var p = stored[i]
       if (typeof p === "string" && p.trim() !== "" && p !== prefix) history.push(p)
@@ -411,7 +412,7 @@ Scope {
       keyed[dispatchBook.milestone.id] = prefix
       saved.prefixByMilestone = keyed
     }
-    var runner = dispatchStartC.createObject(dispatch, { madeFor: dispatch.dispatchRoot, savedJson: JSON.stringify(saved) })
+    var runner = dispatchStartC.createObject(dispatch, { madeFor: dispatch.dispatchRoot, savedJson: Compat.stringify(saved) })
     dispatchBook.runners = dispatchBook.runners.concat([runner])
     dispatchBook.startRunner = runner
     dispatch.dispatchState = "starting"
@@ -487,7 +488,7 @@ Scope {
   // once. A reset forgets that save.
   function dispatchSaveFailed(root, patch) {
     var saving = dispatchBook.savingFor
-    if (saving === null || saving.root !== root || root !== dispatch.dispatchRoot || saving.json !== JSON.stringify(patch)) return
+    if (saving === null || saving.root !== root || root !== dispatch.dispatchRoot || saving.json !== Compat.stringify(patch)) return
     dispatchBook.savingFor = null
     dispatch.noticeRequested("Dispatch settings could not be saved")
   }
@@ -585,7 +586,7 @@ Scope {
   function dispatchProjectReplied(stdout) {
     if (dispatch.dispatchStep === "") return
     var reply = Results.parseEnvelope(stdout)
-    dispatch.dispatchProjectProbe = reply !== null && reply.ok === true && Array.isArray(reply.projects) ? reply : null
+    dispatch.dispatchProjectProbe = reply !== null && reply.ok === true && Compat.isArray(reply.projects) ? reply : null
   }
 
   // Takes the project step's enabled row for `root`: dispatchRoot is the
@@ -616,7 +617,7 @@ Scope {
   function dispatchTargetReplied(stdout) {
     if (dispatch.dispatchStep !== "target") return
     var envelope = Results.parseEnvelope(stdout)
-    var data = envelope !== null && envelope.ok === true && Array.isArray(envelope.data) ? envelope.data : null
+    var data = envelope !== null && envelope.ok === true && Compat.isArray(envelope.data) ? envelope.data : null
     var cardMap = null
     if (data !== null) {
       try { cardMap = Board.indexTree(data).cardMap } catch (e) { cardMap = null }
@@ -743,7 +744,7 @@ Scope {
   // touched). Refused (false, nothing changes) when card or relaunch is not
   // an object.
   function relaunchOpenFor(card, cardMap, relaunch) {
-    var isObject = function(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+    var isObject = function(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
     if (!isObject(card) || !isObject(relaunch)) return false
     if (!dispatch.openDispatch(card, cardMap)) return false
     if (typeof relaunch.prefix === "string" && relaunch.prefix.trim() !== "")

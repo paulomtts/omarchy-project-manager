@@ -1,5 +1,6 @@
 .pragma library
 .import "board.js" as Board
+.import "compat.js" as Compat
 
 // Run domain model: one `am` orchestrator run, normalised from the CLI's
 // output.
@@ -45,9 +46,9 @@
 // copies, never am's objects. Never throws: anything missing or malformed
 // becomes its default, and a missing lease means the run is not live.
 function normalizeRun(raw) {
-  function isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+  function isObject(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
   function objectOr(v) { return isObject(v) ? v : {} }
-  function arrayOr(v) { return Array.isArray(v) ? v : [] }
+  function arrayOr(v) { return Compat.isArray(v) ? v : [] }
   function text(v) { return v === undefined || v === null ? "" : String(v) }
   function firstText(a, b) { var s = text(a); return s !== "" ? s : text(b) }
   function asGiven(v) { return v === undefined || v === null ? "" : v }
@@ -171,8 +172,8 @@ function runState(run) {
 // default. Card ids are compared with === on strings by linear scan, so ids such
 // as `__proto__` or `constructor` behave like any other id.
 
-function _isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
-function _arrayOr(v) { return Array.isArray(v) ? v : [] }
+function _isObject(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
+function _arrayOr(v) { return Compat.isArray(v) ? v : [] }
 function _stringOr(v) { return typeof v === "string" ? v : "" }
 function _isFiniteNumber(v) { return typeof v === "number" && isFinite(v) }
 function _treeOf(run) { return _isObject(run) && _isObject(run.tree) ? run.tree : {} }
@@ -181,7 +182,7 @@ function _lastOf(list) { var a = _arrayOr(list); return a.length > 0 ? a[a.lengt
 // A JSON-like deep copy of arrays and objects. An own `__proto__` key is
 // dropped, so every copied object's prototype is Object.prototype.
 function _copyOf(v) {
-  if (Array.isArray(v)) {
+  if (Compat.isArray(v)) {
     var list = []
     for (var a = 0; a < v.length; a++) list.push(_copyOf(v[a]))
     return list
@@ -466,7 +467,7 @@ function displayOrder(groups) {
   var out = []
   for (var i = 0; i < list.length; i++) {
     var group = list[i]
-    if (!_isObject(group) || !Array.isArray(group.runs)) continue
+    if (!_isObject(group) || !Compat.isArray(group.runs)) continue
     for (var j = 0; j < group.runs.length; j++) out.push(group.runs[j])
   }
   return out
@@ -476,7 +477,7 @@ function displayOrder(groups) {
 // else its `projects` when `probe` is a plain object whose `projects` is an
 // array, else [].
 function _probeEntries(probe) {
-  if (Array.isArray(probe)) return probe
+  if (Compat.isArray(probe)) return probe
   return _isObject(probe) ? _arrayOr(probe.projects) : []
 }
 
@@ -852,7 +853,7 @@ function historyStatuses(filter, finishedState) {
 // no such run, `root` is not a non-empty string or `runs` is not an array.
 // Never mutates, never throws.
 function historyCursor(runs, root) {
-  if (typeof root !== "string" || root === "" || !Array.isArray(runs)) return ""
+  if (typeof root !== "string" || root === "" || !Compat.isArray(runs)) return ""
   var best = "", bestMs = NaN
   for (var i = 0; i < runs.length; i++) {
     var run = runs[i]
@@ -1532,7 +1533,7 @@ function _noteFieldsOf(lines) {
 // runId, trimmed, is not a non-empty string. Never mutates its inputs.
 function stopComment(comments, runId) {
   var id = typeof runId === "string" ? _textOf(runId) : ""
-  if (id === "" || !Array.isArray(comments)) return null
+  if (id === "" || !Compat.isArray(comments)) return null
   for (var i = comments.length - 1; i >= 0; i--) {
     var lines = _noteLinesFor(comments[i], id)
     if (lines === null) continue
@@ -1578,7 +1579,7 @@ function _hasAlert(alerts, id) {
 // run's reason is always "process died". title is runTitle with the run's map
 // in titlesByRoot (see titlesOfRun); without one it is the fallback title.
 function newAlerts(prevRuns, nextRuns, titlesByRoot) {
-  if (!Array.isArray(prevRuns) || !Array.isArray(nextRuns)) return []
+  if (!Compat.isArray(prevRuns) || !Compat.isArray(nextRuns)) return []
   var out = []
   for (var i = 0; i < nextRuns.length; i++) {
     var run = nextRuns[i]
@@ -1953,7 +1954,7 @@ function _storyPreview(plan) {
 // non-blank string. Only subtasks listed in levels count. No array levels
 // means unreadable at every level: board false and both lines "".
 function previewSummary(dryRunData, level) {
-  if (!_isObject(dryRunData) || !Array.isArray(dryRunData.levels)) return _unreadablePreview()
+  if (!_isObject(dryRunData) || !Compat.isArray(dryRunData.levels)) return _unreadablePreview()
   if (level === "story") return _storyPreview(dryRunData)
   var levels = _objectsOf(dryRunData.levels)
   if (dryRunData.board === true) {
@@ -1989,7 +1990,7 @@ function previewSummary(dryRunData, level) {
 // `id`; null when there is none or `runs` is not an array. The entry itself,
 // not a copy.
 function runById(runs, id) {
-  if (!Array.isArray(runs)) return null
+  if (!Compat.isArray(runs)) return null
   for (var i = 0; i < runs.length; i++) {
     if (runs[i] && runs[i].id === id) return runs[i]
   }
@@ -2032,7 +2033,7 @@ function usableRoots(projectRoots) {
   var seen = {}
   for (var i = 0; i < n; i++) {
     var p = list[i]
-    if (p === null || typeof p !== "object" || Array.isArray(p)) continue
+    if (p === null || typeof p !== "object" || Compat.isArray(p)) continue
     var root = p.root
     if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || hasKey(seen, root)) continue
     seen[root] = true
@@ -2044,7 +2045,7 @@ function usableRoots(projectRoots) {
 // The form's verify commands that are non-blank strings, verbatim, in order;
 // [] when form.verify is not an array.
 function verifyCommands(form) {
-  var list = form !== null && typeof form === "object" && Array.isArray(form.verify) ? form.verify : []
+  var list = form !== null && typeof form === "object" && Compat.isArray(form.verify) ? form.verify : []
   return list.filter(function(c) { return typeof c === "string" && c.trim() !== "" })
 }
 
@@ -2052,7 +2053,7 @@ function verifyCommands(form) {
 // an object that is not an array, then entry's, which override them, as
 // set-run-settings merges prefixByMilestone.
 function mergedPrefixes(stored, entry) {
-  var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? copyMap(stored) : {}
+  var merged = stored !== null && typeof stored === "object" && !Compat.isArray(stored) ? copyMap(stored) : {}
   for (var id in entry) merged[id] = entry[id]
   return merged
 }

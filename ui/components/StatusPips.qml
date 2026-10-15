@@ -3,6 +3,7 @@ import qs.Commons
 import qs.Commons as Cm
 import "../../core/domain/board.js" as Board
 import "../theme" as T
+import "../../core/domain/compat.js" as Compat
 
 // One small circle per subtask, in the board's own status colours, with
 // whatever does not fit collapsed into a "+N". The in-progress ones fade in and
@@ -30,7 +31,7 @@ Row {
   // run never reads by colour alone and no second circle is drawn. Anything but
   // an array rings nothing.
   property var ringedIds: []
-  readonly property var ringedList: Array.isArray(pips.ringedIds) ? pips.ringedIds : []
+  readonly property var ringedList: Compat.isArray(pips.ringedIds) ? pips.ringedIds : []
 
   readonly property var palette: pips.theme || pipsTheme
 

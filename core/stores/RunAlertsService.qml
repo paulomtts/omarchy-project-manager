@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
 import "../domain/results.js" as Results
+import "../domain/compat.js" as Compat
 
 // The plugin's `service` entry point (manifest.json entryPoints.service). The
 // shell creates one per shell, with no parent, while the plugin is enabled,
@@ -76,10 +77,10 @@ Scope {
     if (text === "") return
     var value = null
     try { value = JSON.parse(text) } catch (e) { return }
-    if (value === null || typeof value !== "object" || Array.isArray(value)) return
+    if (value === null || typeof value !== "object" || Compat.isArray(value)) return
     if (value.ok === false) { proc.envelope = value; return }
     var alert = value.alert
-    if (alert === null || typeof alert !== "object" || Array.isArray(alert)) return
+    if (alert === null || typeof alert !== "object" || Compat.isArray(alert)) return
     if (typeof alert.run_id !== "string" || alert.run_id === "") return
     if (alert.state !== "escalated" && alert.state !== "dead") return
     service.alertReceived(alert)
@@ -161,11 +162,11 @@ Scope {
   function snapshotRun(stdout, exitCode, runId) {
     if (exitCode !== 0) return null
     var envelope = Results.parseEnvelope(stdout)
-    if (envelope === null || envelope.ok !== true || !Array.isArray(envelope.runs)) return null
+    if (envelope === null || envelope.ok !== true || !Compat.isArray(envelope.runs)) return null
     var runs = []
     for (var i = 0; i < envelope.runs.length; i++) {
       var entry = envelope.runs[i]
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue
+      if (entry === null || typeof entry !== "object" || Compat.isArray(entry)) continue
       runs.push(Runs.normalizeRun({ row: service.rowOf(entry), status: entry.status }))
     }
     return Runs.runById(runs, runId)

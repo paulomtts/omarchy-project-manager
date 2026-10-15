@@ -10,6 +10,7 @@
 import QtQuick
 import QtTest
 import "../../../core/domain/runs.js" as Runs
+import "../../../core/domain/compat.js" as Compat
 
 TestCase {
   id: tc
@@ -454,7 +455,7 @@ TestCase {
     compare(c.runSettingsRunners.length, 1)
     var save = c.runSettingsRunners[0]
     compare(c.runSettingsLoadRunner, null, "a save is not a load")
-    compare(argv(save.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + JSON.stringify(patch))
+    compare(argv(save.current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" + Compat.stringify(patch))
     compare(save.current.command.length, 5)
     compare(save.current.launchGuard, "")
     var failed = createTemporaryObject(spyC, tc, { target: c, signalName: "runSettingsSaveFailed" })

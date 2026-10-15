@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
+import "../domain/compat.js" as Compat
 
 // The run controls (S2 4.1), the cancel confirmation (S2 4.3) and the footer
 // flash, for a run of any registered project. control(action, runId) starts a
@@ -224,7 +225,7 @@ Scope {
       control.dropRunner(runner)
       return
     }
-    var verify = Array.isArray(settings.verify) ? settings.verify : []
+    var verify = Compat.isArray(settings.verify) ? settings.verify : []
     var usable = verify.length > 0
     for (var i = 0; i < verify.length; i++) {
       if (typeof verify[i] !== "string") usable = false
@@ -263,7 +264,7 @@ Scope {
   // The run's am request row for this request has a handled_at: the row with
   // the requested_at am's reply gave, else the last row of the same command.
   function isHandled(run, req) {
-    var list = Array.isArray(run.requests) ? run.requests : []
+    var list = Compat.isArray(run.requests) ? run.requests : []
     var match = null
     for (var i = 0; i < list.length; i++) {
       var row = list[i]
@@ -514,7 +515,7 @@ Scope {
       merged[key] = key === "prefixByMilestone" ? Runs.mergedPrefixes(merged.prefixByMilestone, patch[key]) : patch[key]
     }
     control.applyRunSettings(root, merged)
-    var json = JSON.stringify(patch)
+    var json = Compat.stringify(patch)
     control.launchRunSettings({ root: root, json: json, saving: true }, ["set-run-settings", root, json])
   }
 

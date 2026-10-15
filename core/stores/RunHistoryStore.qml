@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
+import "../domain/compat.js" as Compat
 
 // The older runs: each snapshot root's history, a page at a time.
 // `historyByProject` is {root: {runs, more, loading, error}}, keyed by the
@@ -62,7 +63,7 @@ Scope {
   // The snapshot root's run list; [] for any other root or a list that is not an array.
   function snapshotOf(root) {
     var list = history.isSnapshotRoot(root) ? history.snapshotByProject[root] : null
-    return Array.isArray(list) ? list : []
+    return Compat.isArray(list) ? list : []
   }
 
   // The root's history runs; [] when it has no entry.
@@ -159,7 +160,7 @@ Scope {
     if (!Runs.hasKey(history.historyByProject, root)) return
     var entry = history.historyByProject[root]
     var env = Results.parseEnvelope(stdout)
-    if (exitCode !== 0 || env === null || env.ok !== true || !Array.isArray(env.runs)) {
+    if (exitCode !== 0 || env === null || env.ok !== true || !Compat.isArray(env.runs)) {
       var error = env !== null && env.ok !== true ? Runs.errorText(env) : Runs.errorText(null)
       history.setEntry(root, { runs: entry.runs, more: entry.more, loading: false, error: error })
       return
@@ -169,7 +170,7 @@ Scope {
     var runs = entry.runs.slice()
     for (var i = 0; i < env.runs.length; i++) {
       var item = env.runs[i]
-      if (item === null || typeof item !== "object" || Array.isArray(item)) continue
+      if (item === null || typeof item !== "object" || Compat.isArray(item)) continue
       var run = Runs.withProject(Runs.normalizeRun({ row: history.rowOf(item), status: item.status }), root, name)
       if (seen.indexOf(run.id) >= 0) continue
       seen.push(run.id)
@@ -222,7 +223,7 @@ Scope {
       }
       var entry = map[root]
       var now = history.idsOf(history.snapshotOf(root))
-      var before = Runs.hasKey(previous, root) && Array.isArray(previous[root]) ? previous[root] : []
+      var before = Runs.hasKey(previous, root) && Compat.isArray(previous[root]) ? previous[root] : []
       var held = history.idsOf(entry.runs)
       var moved = []
       for (var i = 0; i < before.length; i++) {

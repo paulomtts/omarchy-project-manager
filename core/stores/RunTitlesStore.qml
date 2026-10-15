@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
+import "../domain/compat.js" as Compat
 
 // The run titles: each registered project's {id: title} map, for the run
 // screens to show titles in place of ids. `titlesByRoot` is
@@ -117,7 +118,7 @@ Scope {
     var out = []
     for (var i = 0; i < n; i++) {
       var p = list[i]
-      if (p === null || typeof p !== "object" || Array.isArray(p)) continue
+      if (p === null || typeof p !== "object" || Compat.isArray(p)) continue
       if (typeof p.root !== "string" || p.root === "" || p.root.charAt(0) === "-") continue
       var key = titles.rootKey(p.root)
       if (out.indexOf(key) < 0) out.push(key)
@@ -128,7 +129,7 @@ Scope {
   // {root: [run, ...]} of the runs in `runs`, keyed by run.project.root as a
   // key; a run with no root belongs to none.
   function runsByRoot() {
-    var list = Array.isArray(titles.runs) ? titles.runs : []
+    var list = Compat.isArray(titles.runs) ? titles.runs : []
     var out = {}
     for (var i = 0; i < list.length; i++) {
       var key = titles.rootKey(Runs.runRoot(list[i]))
@@ -150,12 +151,12 @@ Scope {
     add(run.story_id)
     add(run.card_id)
     var tree = run.tree !== null && typeof run.tree === "object" ? run.tree : {}
-    var stories = Array.isArray(tree.stories) ? tree.stories : []
+    var stories = Compat.isArray(tree.stories) ? tree.stories : []
     for (var i = 0; i < stories.length; i++) {
       var story = stories[i]
       if (story !== null && typeof story === "object" && story.card_id !== "integrate" && story.card_id !== "bases") add(story.card_id)
     }
-    var subtasks = Array.isArray(tree.subtasks) ? tree.subtasks : []
+    var subtasks = Compat.isArray(tree.subtasks) ? tree.subtasks : []
     for (var j = 0; j < subtasks.length; j++) {
       var subtask = subtasks[j]
       if (subtask !== null && typeof subtask === "object") add(subtask.card_id)
@@ -247,7 +248,7 @@ Scope {
       var got = env !== null && env.ok === true ? env.titles : null
       var maps = Runs.copyMap(titles.titlesByRoot)
       var status = Runs.copyMap(titles.titleStatus)
-      if (got !== null && typeof got === "object" && !Array.isArray(got)) {
+      if (got !== null && typeof got === "object" && !Compat.isArray(got)) {
         maps[root] = titles.stringTitles(got)
         status[root] = "ok"
         if (Runs.hasKey(titlesState.stale, root)) titlesState.stale = titles.keptOf(titlesState.stale, function(key) { return key !== root })

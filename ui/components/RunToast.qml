@@ -4,6 +4,7 @@ import qs.Commons as Cm
 import "runGlyphs.js" as RunGlyphs
 import "../components" as UI
 import "../theme" as T
+import "../../core/domain/compat.js" as Compat
 
 // The run toasts: one card per run that newly needs a human, oldest at the
 // top and newest at the bottom, closest to the corner the owner puts it in.

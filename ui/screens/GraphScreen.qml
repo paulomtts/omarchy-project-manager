@@ -4,6 +4,7 @@ import "../../core/domain/board.js" as Board
 import "../../core/domain/runs.js" as Runs
 import "../components" as UI
 import "../theme" as T
+import "../../core/domain/compat.js" as Compat
 
 // The Graph section: the shared GraphView, fed from the graph store. The
 // wrapper exists so the panel can keep reaching the view (it centres the
@@ -45,13 +46,13 @@ Item {
     var rollups = Object.create(null)
     var ringed = []
     var out = { marks: marks, rollups: rollups, ringed: ringed }
-    if (amStatus === "missing" || !Array.isArray(nodes)) return out
+    if (amStatus === "missing" || !Compat.isArray(nodes)) return out
     for (var i = 0; i < nodes.length; i++) {
       var node = nodes[i]
       if (!node || typeof node.id !== "string" || graphScreen.hidesRunMarks(node.status)) continue
       marks[node.id] = Runs.cardRunState(runs, node.id)
       rollups[node.id] = Runs.rollup(runs, { id: node.id })
-      var pips = Array.isArray(node.pips) ? node.pips : []
+      var pips = Compat.isArray(node.pips) ? node.pips : []
       for (var j = 0; j < pips.length; j++) {
         var pip = pips[j]
         if (!pip || typeof pip.id !== "string" || graphScreen.hidesRunMarks(pip.status)) continue

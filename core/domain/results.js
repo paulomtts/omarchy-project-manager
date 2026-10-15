@@ -1,4 +1,5 @@
 .pragma library
+.import "compat.js" as Compat
 
 // Every helper script answers on stdout with a single JSON object on its last
 // non-empty line. This is the one place that turns (stdout, exitCode) into a
@@ -17,7 +18,7 @@ function parseJsonLine(stdout, exitCode, generic, requireOk) {
   if (lines.length > 0) {
     try { payload = JSON.parse(lines[lines.length - 1]) } catch (e) { payload = null }
   }
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) payload = null
+  if (payload === null || typeof payload !== "object" || Compat.isArray(payload)) payload = null
 
   var ok = exitCode === 0 && payload !== null && (!needOk || payload.ok === true)
   if (ok) return { ok: true, data: payload, error: "" }
@@ -46,5 +47,5 @@ function parseEnvelope(text) {
   if (line === "") return null
   var value = null
   try { value = JSON.parse(line) } catch (e) { return null }
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
+  return value !== null && typeof value === "object" && !Compat.isArray(value) ? value : null
 }

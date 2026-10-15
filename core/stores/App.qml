@@ -1,4 +1,5 @@
 import QtQml
+import "../domain/compat.js" as Compat
 
 // The panel's non-visual state, in one place, plus the wiring between stores:
 // a store never reaches for another one, App composes them and hands each
@@ -128,7 +129,7 @@ QtObject {
       var out = []
       for (var i = 0; i < roots.length; i++) {
         var entry = byProject[roots[i]]
-        if (entry !== null && typeof entry === "object" && Array.isArray(entry.runs)) out = out.concat(entry.runs)
+        if (entry !== null && typeof entry === "object" && Compat.isArray(entry.runs)) out = out.concat(entry.runs)
       }
       return out
     }

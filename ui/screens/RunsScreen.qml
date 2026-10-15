@@ -6,6 +6,7 @@ import "../components/runGlyphs.js" as RunGlyphs
 import "../components/runControlFacts.js" as ControlFacts
 import "../components" as UI
 import "../theme" as T
+import "../../core/domain/compat.js" as Compat
 
 // The Runs section: every registered project's am runs, grouped by project
 // with a header each (name; live, parked and needs-attention counts; the

@@ -6,6 +6,7 @@ import "../components/runGlyphs.js" as RunGlyphs
 import "../components/runControlFacts.js" as ControlFacts
 import "../components" as UI
 import "../theme" as T
+import "../../core/domain/compat.js" as Compat
 
 // One am run (the "run" view): a header with its state, milestone, branch
 // prefix and base and lease; for a stopped run, Why it stopped
@@ -62,7 +63,7 @@ Column {
   readonly property var stopNote: screen.stopNoteFound.note
   readonly property string stopNoteCardId: screen.stopNoteFound.cardId
   // The rows the store holds; 0 when `events` is not an array.
-  readonly property int eventsHeld: Array.isArray(screen.app.runs.events) ? screen.app.runs.events.length : 0
+  readonly property int eventsHeld: Compat.isArray(screen.app.runs.events) ? screen.app.runs.events.length : 0
   // app.runOutput, or null when the app has none.
   readonly property var ro: screen.app.runOutput || null
   // ro's followStatus; "idle" without ro or for anything it does not name.

@@ -2,6 +2,7 @@ import QtQml
 import Quickshell
 import Quickshell.Io
 import "../domain/board.js" as Board
+import "../domain/compat.js" as Compat
 
 // The kanban board: the card tree from `brd tree`, the issues from
 // `brd issue list` (a card's blocked_by may name one), what is visible once the
@@ -254,7 +255,7 @@ Scope {
       onStreamFinished: {
         try {
           var parsed = JSON.parse(text || "{}")
-          board.applyIssueData(parsed.ok === true && Array.isArray(parsed.data) ? parsed.data : [])
+          board.applyIssueData(parsed.ok === true && Compat.isArray(parsed.data) ? parsed.data : [])
         } catch (e) {
           board.applyIssueData([])
         }

@@ -1,6 +1,7 @@
 .pragma library
 .import "text.js" as Text
 .import "results.js" as Results
+.import "compat.js" as Compat
 
 // Card shape, as returned by `brd tree`:
 // {id, title, description, status, blocked_by, created_at, updated_at, children}
@@ -235,7 +236,7 @@ function archivable(roots, now, minAgeDays) {
 // helper that could not run at all is one error with no per-id results.
 function parseArchiveResult(stdout, exitCode) {
   var r = Results.parseJsonLine(stdout, exitCode, "Could not archive the milestones", false)
-  var results = r.data && Array.isArray(r.data.results) ? r.data.results : null
+  var results = r.data && Compat.isArray(r.data.results) ? r.data.results : null
   if (!results) return { ok: false, failures: [], error: r.error }
   var failures = results.filter(function(x) { return !x || x.ok !== true }).map(function(x) {
     return { id: x && x.id ? String(x.id) : "", error: x && typeof x.error === "string" && x.error !== "" ? x.error : "archive failed" }

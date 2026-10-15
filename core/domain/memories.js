@@ -2,6 +2,7 @@
 .import "results.js" as Results
 .import "taxonomy.js" as Taxonomy
 .import "text.js" as Text
+.import "compat.js" as Compat
 
 // ---- Memories: a project's Claude Code memory notes (list-memories.py / memory-op.py)
 
@@ -37,7 +38,7 @@ function filterMemories(notes, query) {
 function parseMemoriesResult(stdout, exitCode) {
   var generic = "Could not read this project's memories."
   var result = Results.parseJsonLine(stdout, exitCode, generic)
-  if (!result.ok || !Array.isArray(result.data.notes)) {
+  if (!result.ok || !Compat.isArray(result.data.notes)) {
     var data = result.data
     var message = data && typeof data.error === "string" && data.error !== "" ? data.error : generic
     return { ok: false, found: false, memoryDir: "", notes: [], error: message }
