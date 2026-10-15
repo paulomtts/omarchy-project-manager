@@ -1,7 +1,7 @@
 // tests/core/stores/tst_run_control_store.qml
 // The run controls store: control requests and their settling, the resume
 // verify read and the Resume dialog, the still-waiting clock, the control error, the cancel
-// confirmation, the footer flash, the notify switch and the run settings
+// confirmation, the reset and the Close dialog, the footer flash, the notify switch and the run settings
 // load and save. Built alone and
 // driven through its `runs` and `active` inputs and settleAfterSnapshot();
 // and, through a RunStore wired to it the way App wires them, a real
@@ -109,6 +109,9 @@ TestCase {
     compare(c.cancelOpen, false)
     compare(c.cancelText, "")
     compare(c.cancelError, "")
+    compare(c.closeRunId, "")
+    compare(c.closeOpen, false)
+    compare(c.closeError, "")
     compare(c.flashText, "")
     compare(c.controlRunners.length, 0)
     compare(c.project, "")
@@ -1878,5 +1881,345 @@ TestCase {
     compare(controlOf(store).lastControlErrorRunId, "r1")
     compare(controlOf(store).pending.r1, undefined, "the request is settled")
     compare(controlOf(store).controlRunners.length, 0)
+  }
+
+  // ---- reset and the Close dialog (store-reset-and-close-63efef4f)
+
+  // Story B (042b0d8e) enables controls().close for a parked run; until then
+  // the tests that need a reset to start skip themselves.
+  readonly property bool closeImplemented: Runs.controls(held(ctlEntry("probe", "stopped", false))).close.enabled === true
+
+  // A parked run of project A: stopped, its process gone.
+  function parked(id) { return ctlEntry(id, "stopped", false) }
+
+  // The reason Runs.controls gives for closing the run built from entry `e`.
+  function closeReason(e) { return Runs.controls(held(e)).close.reason }
+
+  // A reset of `id` that am acknowledged; requestedAt "" leaves it out of the reply.
+  function resetAcked(store, id, requestedAt) {
+    compare(controlOf(store).control("reset", id), true)
+    var data = { run_id: id, command: "reset" }
+    if (requestedAt !== "") data.requested_at = requestedAt
+    reply(controlOf(store).controlRunners[controlOf(store).controlRunners.length - 1].current, ctlOk(data), 0)
+  }
+
+  // 2 (and Review Focus 3)
+  function test_refusal_of_reset_keeps_the_order_and_reads_controls_close() {
+    var store = make(); if (!store) return
+    compare(controlOf(store).refusalOf("reset", "r1"), "This run is no longer in the snapshot", "an empty snapshot")
+    var noRepo = held(parked("r0"), tc.rootA)
+    noRepo.repo_dir = ""
+    var e1 = running("r1"), e2 = parked("r2"), e3 = integrate("r3"), e4 = ctlEntry("r4", "done", false)
+    var e5 = running("r5"), e6 = parked("constructor")
+    store.runs = [noRepo, held(e1, tc.rootA), held(e2), held(e3, tc.rootA), held(e4, tc.rootA),
+                  held(e5, tc.rootA), held(e6, tc.rootA)]
+    compare(controlOf(store).refusalOf("reset", "nope"), "This run is no longer in the snapshot")
+    compare(controlOf(store).refusalOf("reset", ""), "This run is no longer in the snapshot", "an empty id")
+    compare(controlOf(store).refusalOf("reset", 7), "This run is no longer in the snapshot", "an id that is not a string")
+    compare(controlOf(store).refusalOf("reset", "r0"), "This run has no repository")
+    compare(controlOf(store).refusalOf("reset", "r2"), tc.closeReason(e2), "a run with no project root is not refused for that")
+    verify(controlOf(store).refusalOf("reset", "r2") !== "This run's project is not known")
+    compare(controlOf(store).refusalOf("reset", "r1"), tc.closeReason(e1), "running")
+    compare(controlOf(store).refusalOf("reset", "r3"), tc.closeReason(e3), "integrate")
+    compare(controlOf(store).refusalOf("reset", "r4"), tc.closeReason(e4), "done")
+    compare(controlOf(store).refusalOf("reset", "constructor"), tc.closeReason(e6), "an id like constructor is not pending")
+    compare(controlOf(store).refusalOf("close", "r2"), "Unknown control", "close is the UI's word, never the store's")
+    compare(controlOf(store).refusalOf("bogus", "r2"), "Unknown control")
+    compare(controlOf(store).refusalOf("Reset", "r2"), "Unknown control", "actions are exact")
+    compare(controlOf(store).control("close", "r2"), false)
+    compare(controlOf(store).control("close", "r1"), false)
+    compare(controlOf(store).controlRunners.length, 0, "refusalOf and a refused control start nothing")
+    compare(Object.keys(controlOf(store).pending).length, 0)
+    compare(controlOf(store).control("pause", "r5"), true)
+    compare(controlOf(store).refusalOf("reset", "r5"), "A request for this run is pending", "pending wins over the state's reason")
+    compare(controlOf(store).controlRunners.length, 1)
+  }
+
+  // 13
+  function test_a_reset_launches_the_exact_argv() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = make(); if (!store) return
+    store.runs = [held(parked("r1"), tc.rootA), held(parked("r2"))]
+    compare(controlOf(store).control("reset", "r1"), true)
+    compare(controlOf(store).pending.r1, "reset")
+    var runner = controlOf(store).controlRunners[0]
+    compare(runner.action, "reset")
+    compare(runner.seq, 1, "one launch: no settings step")
+    compare(argv(runner.current), tc.ctlCmd + "reset|r1|" + tc.rootA)
+    compare(runner.current.command.length, 5, "no --verify, no --allow-no-verification")
+    compare(controlOf(store).refusalOf("reset", "r2"), "", "a reset needs no project root")
+    compare(controlOf(store).control("reset", "r2"), true)
+    compare(argv(controlOf(store).controlRunners[1].current), tc.ctlCmd + "reset|r2|" + tc.rootA)
+    compare(controlOf(store).controlRunners[1].seq, 1)
+    compare(controlOf(store).controlRunners.length, 2)
+  }
+
+  // 14
+  function test_a_reset_settles_like_a_cancel() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = ctlStore([parked("r1")]); if (!store) return
+    resetAcked(store, "r1", "t1")
+    compare(controlOf(store).pending.r1, "reset", "acknowledged, not settled")
+    snapshot(store, [parked("r1")])
+    compare(controlOf(store).pending.r1, "reset", "same state and no request row")
+    snapshot(store, [running("r1")])
+    compare(controlOf(store).pending.r1, undefined, "the state changed")
+
+    var rows = ctlStore([parked("r1")]); if (!rows) return
+    resetAcked(rows, "r1", "t1")
+    snapshot(rows, [ctlEntry("r1", "stopped", false, "milestone", [amRequest("reset", "t1", "")])])
+    compare(controlOf(rows).pending.r1, "reset", "not handled yet")
+    snapshot(rows, [ctlEntry("r1", "stopped", false, "milestone", [amRequest("reset", "t1", "t1h")])])
+    compare(controlOf(rows).pending.r1, undefined, "am handled the reset row")
+
+    var last = ctlStore([parked("r1")]); if (!last) return
+    resetAcked(last, "r1", "")
+    snapshot(last, [ctlEntry("r1", "stopped", false, "milestone",
+      [amRequest("reset", "t0", "t0h"), amRequest("pause", "t1", "t1h"), amRequest("reset", "t2", "")])])
+    compare(controlOf(last).pending.r1, "reset", "the last reset row is not handled; a handled pause is another request")
+    snapshot(last, [ctlEntry("r1", "stopped", false, "milestone", [amRequest("reset", "t2", "t2h")])])
+    compare(controlOf(last).pending.r1, undefined)
+
+    var gone = ctlStore([parked("r1"), running("r2")]); if (!gone) return
+    resetAcked(gone, "r1", "t1")
+    snapshot(gone, [running("r2")])
+    compare(controlOf(gone).pending.r1, undefined, "the run left the snapshot")
+  }
+
+  // 15 (and Review Focus 5)
+  function test_a_failed_reset_says_why_with_the_reset_sentence() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = ctlStore([parked("r1"), parked("r2"), parked("r3")]); if (!store) return
+    var spy = createTemporaryObject(spyC, tc, { target: controlOf(store), signalName: "refreshRequested" })
+    var types = ["RunIsLiveError", "NotResettableError"]
+    for (var i = 0; i < types.length; i++) {
+      var id = "r" + (i + 1)
+      compare(controlOf(store).control("reset", id), true)
+      var text = ctlFail(types[i], "x")
+      reply(controlOf(store).controlRunners[0].current, text, 0)
+      compare(controlOf(store).pending[id], undefined, types[i] + ": the buttons come back")
+      compare(controlOf(store).lastControlError, Runs.controlError(JSON.parse(text), "reset"), types[i])
+      compare(controlOf(store).lastControlErrorRunId, id)
+      compare(controlOf(store).lastControlErrorType, types[i])
+      compare(spy.count, i + 1, "one refresh per applied reply")
+      compare(spy.signalArguments[i][0], "all")
+    }
+    compare(controlOf(store).control("reset", "r3"), true)
+    reply(controlOf(store).controlRunners[0].current, "Traceback (most recent call last):\nboom\n", 3)
+    compare(controlOf(store).pending.r3, undefined)
+    compare(controlOf(store).lastControlError, "The run control gave no usable result (exit 3).")
+    compare(controlOf(store).lastControlErrorRunId, "r3")
+    compare(controlOf(store).lastControlErrorType, "")
+    compare(spy.count, 3)
+    compare(controlOf(store).controlRunners.length, 0)
+  }
+
+  // 3 (and Review Focus 1)
+  function test_close_ask_on_a_refused_run_flashes_and_opens_nothing() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    compare(controlOf(store).closeAsk("nope"), false)
+    compare(controlOf(store).flashText, "This run is no longer in the snapshot")
+    compare(controlOf(store).closeOpen, false)
+    compare(controlOf(store).closeRunId, "")
+    var bad = [undefined, null, 7, ""]
+    for (var i = 0; i < bad.length; i++) {
+      controlOf(store).flash("")
+      compare(controlOf(store).closeAsk(bad[i]), false, String(bad[i]))
+      compare(controlOf(store).flashText, "This run is no longer in the snapshot", String(bad[i]))
+      compare(controlOf(store).closeOpen, false, String(bad[i]))
+    }
+    var reason = controlOf(store).refusalOf("reset", "r1")
+    verify(reason !== "", "a running run cannot be closed")
+    compare(controlOf(store).closeAsk("r1"), false)
+    compare(controlOf(store).flashText, reason)
+    compare(controlOf(store).closeOpen, false)
+    compare(controlOf(store).closeError, "")
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(Object.keys(controlOf(store).pending).length, 0)
+  }
+
+  // 4
+  function test_a_refused_close_ask_leaves_an_open_dialog_alone() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    controlOf(store).closeRunId = "r2"
+    controlOf(store).closeError = "old"
+    compare(controlOf(store).closeAsk("nope"), false)
+    compare(controlOf(store).closeRunId, "r2")
+    compare(controlOf(store).closeError, "old")
+    compare(controlOf(store).closeOpen, true)
+    compare(controlOf(store).closeAsk("r1"), false, "a running run")
+    compare(controlOf(store).closeRunId, "r2")
+    compare(controlOf(store).closeError, "old")
+    compare(controlOf(store).controlRunners.length, 0)
+  }
+
+  // 5
+  function test_close_keep_clears_every_field() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    controlOf(store).closeRunId = "r1"
+    controlOf(store).closeError = "old"
+    compare(controlOf(store).closeOpen, true)
+    controlOf(store).closeKeep()
+    compare(controlOf(store).closeRunId, "")
+    compare(controlOf(store).closeError, "")
+    compare(controlOf(store).closeOpen, false)
+    controlOf(store).closeKeep()
+    compare(controlOf(store).closeRunId, "", "a second closeKeep is harmless")
+    compare(controlOf(store).closeError, "")
+    compare(controlOf(store).closeOpen, false)
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(Object.keys(controlOf(store).pending).length, 0)
+  }
+
+  // 6
+  function test_close_confirm_with_the_dialog_closed_does_nothing() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    compare(controlOf(store).closeConfirm(), false)
+    compare(controlOf(store).closeError, "")
+    compare(controlOf(store).closeOpen, false)
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(Object.keys(controlOf(store).pending).length, 0)
+  }
+
+  // 7
+  function test_a_refused_reset_keeps_the_close_dialog_open_with_the_reason() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    controlOf(store).closeRunId = "r1"
+    var before = controlOf(store).pending
+    var reason = controlOf(store).refusalOf("reset", "r1")
+    verify(reason !== "", "a running run cannot be closed")
+    compare(controlOf(store).closeConfirm(), false)
+    compare(controlOf(store).closeOpen, true, "the dialog stays for the user to read why")
+    compare(controlOf(store).closeRunId, "r1")
+    compare(controlOf(store).closeError, reason)
+    compare(controlOf(store).controlRunners.length, 0)
+    verify(controlOf(store).pending === before, "pending unchanged")
+  }
+
+  // 8
+  function test_close_confirm_on_a_run_gone_from_the_snapshot() {
+    var store = ctlStore([running("r1")]); if (!store) return
+    controlOf(store).closeRunId = "gone"
+    compare(controlOf(store).closeConfirm(), false)
+    compare(controlOf(store).closeError, "This run is no longer in the snapshot")
+    compare(controlOf(store).closeOpen, true)
+    compare(controlOf(store).closeRunId, "gone")
+    compare(controlOf(store).controlRunners.length, 0)
+  }
+
+  // 9
+  function test_the_close_and_cancel_dialogs_are_independent() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    compare(controlOf(store).openCancel("r1"), true)
+    controlOf(store).cancelText = "can"
+    controlOf(store).closeRunId = "r2"
+    controlOf(store).closeError = "x"
+    controlOf(store).closeKeep()
+    compare(controlOf(store).cancelRunId, "r1", "closeKeep leaves the cancel dialog")
+    compare(controlOf(store).cancelText, "can")
+    compare(controlOf(store).cancelOpen, true)
+    controlOf(store).closeRunId = "r2"
+    controlOf(store).closeError = "x"
+    compare(controlOf(store).closeConfirm(), false, "r2 is running: refused")
+    compare(controlOf(store).cancelRunId, "r1", "a refused closeConfirm leaves the cancel dialog")
+    compare(controlOf(store).cancelError, "")
+    controlOf(store).closeCancel()
+    compare(controlOf(store).cancelOpen, false)
+    compare(controlOf(store).closeRunId, "r2", "closeCancel leaves the Close dialog")
+    compare(controlOf(store).closeOpen, true)
+    verify(controlOf(store).closeError !== "", "closeCancel leaves closeError")
+    compare(controlOf(store).openCancel("r1"), true)
+    compare(controlOf(store).closeRunId, "r2", "openCancel leaves the Close dialog")
+  }
+
+  // 10 (and Review Focus 4)
+  function test_a_project_switch_a_new_run_list_and_a_control_reply_keep_the_close_dialog() {
+    var store = ctlStore([running("r1"), running("r2")]); if (!store) return
+    controlOf(store).closeRunId = "r1"
+    controlOf(store).closeError = "x"
+    snapshot(store, [running("r2")])
+    compare(controlOf(store).closeRunId, "r1", "a new run list without the run")
+    compare(controlOf(store).closeError, "x")
+    compare(controlOf(store).control("pause", "r2"), true)
+    reply(controlOf(store).controlRunners[0].current, ctlFail("NotRunningError", "not running"), 0)
+    compare(controlOf(store).lastControlErrorRunId, "r2")
+    compare(controlOf(store).closeRunId, "r1", "a failed control reply")
+    compare(controlOf(store).closeError, "x")
+    store.project = rootB
+    compare(controlOf(store).closeRunId, "r1", "a project switch")
+    compare(controlOf(store).closeError, "x")
+    store.project = ""
+    compare(controlOf(store).closeRunId, "r1", "closing the project")
+    compare(controlOf(store).closeError, "x")
+    compare(controlOf(store).closeOpen, true)
+  }
+
+  // 11
+  function test_close_ask_opens_for_a_closable_run() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = ctlStore([parked("r1"), parked("r2")]); if (!store) return
+    controlOf(store).closeRunId = "r2"
+    controlOf(store).closeError = "old"
+    compare(controlOf(store).closeAsk("r1"), true)
+    compare(controlOf(store).closeRunId, "r1", "replaces the run the dialog was open for")
+    compare(controlOf(store).closeOpen, true)
+    compare(controlOf(store).closeError, "", "cleared on opening")
+    compare(controlOf(store).flashText, "")
+    compare(controlOf(store).controlRunners.length, 0, "asking starts nothing")
+    compare(Object.keys(controlOf(store).pending).length, 0)
+  }
+
+  // 12 (and Review Focus 2)
+  function test_close_confirm_starts_one_reset_and_closes() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = ctlStore([parked("r1")]); if (!store) return
+    compare(controlOf(store).closeAsk("r1"), true)
+    compare(controlOf(store).closeConfirm(), true)
+    compare(controlOf(store).controlRunners.length, 1)
+    compare(argv(controlOf(store).controlRunners[0].current), tc.ctlCmd + "reset|r1|" + tc.rootA)
+    compare(controlOf(store).pending.r1, "reset")
+    compare(controlOf(store).closeOpen, false)
+    compare(controlOf(store).closeRunId, "")
+    compare(controlOf(store).closeError, "")
+    compare(controlOf(store).closeConfirm(), false, "a second confirm finds the dialog closed")
+    compare(controlOf(store).controlRunners.length, 1, "no second reset")
+    compare(controlOf(store).closeAsk("r1"), false, "a pending reset refuses a new ask")
+    compare(controlOf(store).flashText, "A request for this run is pending")
+    compare(controlOf(store).closeOpen, false)
+  }
+
+  // 16
+  function test_a_run_that_changed_under_the_open_close_dialog_refuses_the_confirm() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = ctlStore([parked("r1")]); if (!store) return
+    compare(controlOf(store).closeAsk("r1"), true)
+    snapshot(store, [running("r1")])
+    var reason = controlOf(store).refusalOf("reset", "r1")
+    verify(reason !== "", "a running run cannot be closed")
+    compare(controlOf(store).closeConfirm(), false)
+    compare(controlOf(store).closeError, reason)
+    compare(controlOf(store).closeOpen, true)
+    compare(controlOf(store).closeRunId, "r1")
+    compare(controlOf(store).controlRunners.length, 0)
+    compare(controlOf(store).pending.r1, undefined)
+    snapshot(store, [])
+    compare(controlOf(store).closeConfirm(), false)
+    compare(controlOf(store).closeError, "This run is no longer in the snapshot")
+    compare(controlOf(store).closeOpen, true)
+    compare(controlOf(store).controlRunners.length, 0)
+  }
+
+  // 17
+  function test_a_pending_request_refuses_the_close_confirm() {
+    if (!closeImplemented) skip("controls().close not implemented yet (story B)")
+    var store = ctlStore([parked("r1")]); if (!store) return
+    compare(controlOf(store).closeAsk("r1"), true)
+    compare(controlOf(store).control("resume", "r1"), true)
+    compare(controlOf(store).closeConfirm(), false)
+    compare(controlOf(store).closeError, "A request for this run is pending")
+    compare(controlOf(store).closeOpen, true)
+    compare(controlOf(store).controlRunners.length, 1, "only the resume's runner")
+    compare(controlOf(store).controlRunners[0].action, "resume")
+    compare(controlOf(store).pending.r1, "resume")
   }
 }

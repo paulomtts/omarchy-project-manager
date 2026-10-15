@@ -13,7 +13,7 @@ function _has(map, key) {
   return key !== "" && map !== null && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, key)
 }
 
-// The action pending for the run ("pause" | "resume" | "cancel"), or "".
+// The action pending for the run ("pause" | "resume" | "cancel" | "reset"), or "".
 function pendingOf(pending, run) {
   var id = runIdOf(run)
   return _has(pending, id) && typeof pending[id] === "string" ? pending[id] : ""
