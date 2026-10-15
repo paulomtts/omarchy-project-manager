@@ -3069,6 +3069,30 @@ TestCase {
     checkAction(Runs.controls(run).close, "", "controls() close after mutating an earlier result")
   }
 
+  function test_run_level_edges() {
+    // [label, run, level]: input shapes the contract table does not list.
+    var cases = [
+      ["array workflow, read as controls() reads it", { workflow: ["task"] }, "subtask"],
+      ["task with a blank story", { workflow: "task", story_id: "" }, "subtask"],
+      ["object workflow", { workflow: {} }, "milestone"],
+      ["prototype-less workflow", { workflow: Object.create(null) }, "milestone"],
+      ["object story_id", { story_id: {} }, "milestone"],
+      ["prototype-less story_id", { story_id: Object.create(null) }, "milestone"],
+      ["array story_id", { story_id: ["s1"] }, "milestone"],
+      ["boolean story_id", { story_id: true }, "milestone"],
+      ["number story_id", { story_id: 5 }, "milestone"],
+      ["padded story_id", { story_id: " s1 " }, "story"],
+      ["tab and newline story_id", { story_id: "\ts1\n" }, "story"],
+      ["an array run", ["task"], "milestone"],
+      ["true", true, "milestone"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var level = Runs.runLevel(cases[i][1])
+      compare(typeof level, "string", cases[i][0] + ": a string")
+      compare(level, cases[i][2], cases[i][0])
+    }
+  }
+
   // [type, sentence] for every am control error controlError knows.
   function controlErrorTable() {
     return [

@@ -1231,10 +1231,14 @@ function controls(run) {
 }
 
 // The run's level in the milestone tree: "subtask" for a card run (workflow
-// "task", trimmed, case-sensitive), else "story" when story_id is a string that
-// is non-empty after trimming, else "milestone". Stub until story B (042b0d8e):
-// always "milestone". Never throws.
+// "task", read as controls() reads it: trimmed, case-sensitive), else "story"
+// when story_id is a string that is non-empty after trimming (a number or any
+// other non-string is no story id), else "milestone". Anything that is not an
+// object is "milestone". Never throws.
 function runLevel(run) {
+  if (!_isObject(run)) return "milestone"
+  if (_textOf(run.workflow) === "task") return "subtask"
+  if (typeof run.story_id === "string" && run.story_id.trim() !== "") return "story"
   return "milestone"
 }
 
