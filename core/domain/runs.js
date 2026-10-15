@@ -1170,6 +1170,7 @@ var _REASON_RESUME_RUNNING = "The run is still running"
 var _REASON_RESUME_CANCELLED = "A cancelled run cannot be resumed"
 var _REASON_RESUME_ESCALATED_CARD = "An escalated card run cannot be resumed; relaunch it"
 var _REASON_CANCEL_CANCELLED = "The run is already cancelled"
+var _REASON_CLOSE_RUNNING = "A running run is cancelled, not closed"
 
 // A fresh {enabled, reason}: enabled exactly when there is no reason.
 function _action(reason) { return { enabled: reason === "", reason: reason } }
@@ -1184,8 +1185,9 @@ function _inIntegrate(run) {
 // when enabled. Pause needs a running run outside Integrate; resume needs dead,
 // parked or escalated, except an escalated card run (workflow "task", trimmed),
 // and never looks at accepting; cancel needs a run that has not finished and is
-// not in Integrate. The state's reason wins over Integrate's. Close is a stub
-// until story B (042b0d8e): always disabled with the unknown-state reason.
+// not in Integrate; close needs dead, parked or escalated, escalated card runs
+// included, outside Integrate (a running run is cancelled, not closed). The
+// state's reason wins over Integrate's.
 //
 // Action names come in two vocabularies, never mixed. The UI (visibleActions,
 // RunControls.actionRequested, RunsScreen.requestControl) says pause, resume,
@@ -1198,29 +1200,34 @@ function _inIntegrate(run) {
 function controls(run) {
   var state = runState(run)
   var integrate = _inIntegrate(run)
-  var pause, resume, cancel
+  var pause, resume, cancel, close
   if (state === "running") {
     pause = integrate ? _REASON_INTEGRATE : ""
     resume = _REASON_RESUME_RUNNING
     cancel = integrate ? _REASON_INTEGRATE : ""
+    close = _REASON_CLOSE_RUNNING
   } else if (state === "dead" || state === "parked" || state === "escalated") {
     pause = _REASON_PAUSE_NOT_RUNNING
     resume = state === "escalated" && _textOf(run.workflow) === "task" ? _REASON_RESUME_ESCALATED_CARD : ""
     cancel = integrate ? _REASON_INTEGRATE : ""
+    close = integrate ? _REASON_INTEGRATE : ""
   } else if (state === "cancelled") {
     pause = _REASON_FINISHED
     resume = _REASON_RESUME_CANCELLED
     cancel = _REASON_CANCEL_CANCELLED
+    close = _REASON_CANCEL_CANCELLED
   } else if (state === "done") {
     pause = _REASON_FINISHED
     resume = _REASON_FINISHED
     cancel = _REASON_FINISHED
+    close = _REASON_FINISHED
   } else {
     pause = _REASON_UNKNOWN
     resume = _REASON_UNKNOWN
     cancel = _REASON_UNKNOWN
+    close = _REASON_UNKNOWN
   }
-  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel), close: _action(_REASON_UNKNOWN) }
+  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel), close: _action(close) }
 }
 
 // The run's level in the milestone tree: "subtask" for a card run (workflow

@@ -2767,6 +2767,7 @@ TestCase {
   readonly property string ctlResumeCancelled: "A cancelled run cannot be resumed"
   readonly property string ctlCancelCancelled: "The run is already cancelled"
   readonly property string ctlResumeEscalatedCard: "An escalated card run cannot be resumed; relaunch it"
+  readonly property string ctlCloseRunning: "A running run is cancelled, not closed"
 
   // mkRun with the lease's accepting flag set; live === null still means no lease.
   function ctlRun(status, live, accepting) {
@@ -2798,8 +2799,8 @@ TestCase {
   }
 
   // A whole controls() result; "" means that action is enabled. `close` must be
-  // present and well formed; its value belongs to the Runs row redesign's own
-  // tests (tst_run_row_contract.qml).
+  // present and well formed; its value is pinned by test_controls_close_by_state
+  // and by the Runs row redesign's own tests (tst_run_row_contract.qml).
   function checkControls(c, pause, resume, cancel, label) {
     compare(Object.keys(c).sort().join(","), "cancel,close,pause,resume", label + " keys")
     checkAction(c.pause, pause, label + " pause")
@@ -3009,6 +3010,44 @@ TestCase {
     delete a.pause
     checkControls(b, ctlPauseNotRunning, ctlResumeEscalatedCard, "", "the second result after mutating the first")
     checkControls(Runs.controls(run), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "a third call")
+  }
+
+  function test_controls_close_by_state() {
+    // [label, run, close reason ("" = enabled)]
+    var cases = [
+      ["running", ctlRun("started", true, true), ctlCloseRunning],
+      ["running, Integrate", ctlRun("started", true, false), ctlCloseRunning],
+      ["parked", ctlRun("stopped", false, true), ""],
+      ["parked, no lease", ctlRun("stopped", null, false), ""],
+      ["parked, Integrate", ctlRun("stopped", false, false), ctlIntegrate],
+      ["escalated", ctlRun("escalated", false, true), ""],
+      ["escalated, no lease", ctlRun("escalated", null, false), ""],
+      ["escalated, Integrate", ctlRun("escalated", false, false), ctlIntegrate],
+      ["escalated card run", ctlRunOf("escalated", false, true, "task"), ""],
+      ["escalated card run, no lease", ctlRunOf("escalated", null, false, "task"), ""],
+      ["escalated card run, Integrate", ctlRunOf("escalated", false, false, "task"), ctlIntegrate],
+      ["dead", ctlRun("started", false, true), ""],
+      ["dead, no lease", ctlRun("started", null, false), ""],
+      ["dead, Integrate", ctlRun("started", false, false), ctlIntegrate],
+      ["done", ctlRun("done", false, true), ctlFinished],
+      ["done, Integrate", ctlRun("done", false, false), ctlFinished],
+      ["done, live, Integrate", ctlRun("done", true, false), ctlFinished],
+      ["cancelled", ctlRun("cancelled", false, true), ctlCancelCancelled],
+      ["cancelled, Integrate", ctlRun("cancelled", false, false), ctlCancelCancelled],
+      ["canceled, no lease", ctlRun("canceled", null, true), ctlCancelCancelled],
+      ["canceled, live, Integrate", ctlRun("canceled", true, false), ctlCancelCancelled],
+      ["unknown", ctlRun("weird", true, true), ctlUnknown],
+      ["unknown, Integrate", ctlRun("weird", true, false), ctlUnknown],
+      ["undefined", undefined, ctlUnknown],
+      ["null", null, ctlUnknown],
+      ["{}", {}, ctlUnknown]
+    ]
+    for (var i = 0; i < cases.length; i++)
+      checkAction(Runs.controls(cases[i][1]).close, cases[i][2], cases[i][0] + " close")
+    // Close does not care about the card-run case; resume still does.
+    var card = Runs.controls(ctlRunOf("escalated", false, true, "task"))
+    checkAction(card.resume, ctlResumeEscalatedCard, "escalated card run resume")
+    checkAction(card.close, "", "escalated card run close")
   }
 
   // [type, sentence] for every am control error controlError knows.
