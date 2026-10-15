@@ -18,7 +18,6 @@ TestCase {
   readonly property string sentenceNotResettable: "This run cannot be closed (it is finished or already cancelled)."
   readonly property string sentenceLiveReset: "Another am process is still driving this run. Pause it first."
 
-
   readonly property string reasonIntegrate: "Integrate is running; it cannot be paused or cancelled"
   readonly property string reasonFinished: "The run has finished"
   readonly property string reasonUnknown: "The run's state is unknown"
