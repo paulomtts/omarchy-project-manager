@@ -42,10 +42,12 @@ QtObject {
   // Escape with toasts showing never goes Back or closes the panel. An open
   // dispatch -- any state but idle, or a Runs dispatch at any step -- closes
   // like the other modals; while its start is in flight closeDispatch()
-  // refuses, so that Escape does nothing at all. The Resume dialog closes
-  // after the cancel confirmation and before the toasts.
+  // refuses, so that Escape does nothing at all. The Close dialog closes
+  // (closeKeep) right before the cancel confirmation, matching Panel's focus
+  // order; the Resume dialog after the cancel confirmation and before the
+  // toasts.
   function closeRequested() {
-    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.runDispatch.dispatchState !== "idle" || keys.app.runDispatch.dispatchStep !== "") ? keys.app.runDispatch.closeDispatch() : keys.app.runControl.cancelOpen ? keys.app.runControl.closeCancel() : keys.app.runControl.resumeRunId !== "" ? keys.app.runControl.resumeClose() : keys.app.runAlerts.toasts.length > 0 ? keys.app.runAlerts.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
+    keys.app.deleter.deleteTarget ? keys.app.deleter.cancelDelete() : keys.app.board.archiveOpen ? keys.app.board.cancelArchive() : keys.app.memories.memoryDeleteOpen ? keys.app.memories.cancelMemoryDelete() : keys.app.memories.newMemoryOpen ? keys.app.memories.cancelNewMemory() : keys.app.milestones.dialogOpen ? keys.app.milestones.cancelDialog() : (keys.app.runDispatch.dispatchState !== "idle" || keys.app.runDispatch.dispatchStep !== "") ? keys.app.runDispatch.closeDispatch() : keys.app.runControl.closeOpen ? keys.app.runControl.closeKeep() : keys.app.runControl.cancelOpen ? keys.app.runControl.closeCancel() : keys.app.runControl.resumeRunId !== "" ? keys.app.runControl.resumeClose() : keys.app.runAlerts.toasts.length > 0 ? keys.app.runAlerts.dismissAllToasts() : (keys.app.nav.dropdownOpen ? keys.navigator.closeDropdown() : ((keys.app.nav.viewMode === "entry" || keys.app.nav.viewMode === "document" || keys.app.nav.viewMode === "memory" || keys.app.nav.viewMode === "issue" || keys.app.nav.viewMode === "run") ? keys.navigator.goBack() : keys.actions.close()))
   }
 
   // A modal is open: the global shortcuts, the run keys and d do nothing under
@@ -54,6 +56,7 @@ QtObject {
   function modalOpen() {
     return !!(keys.app.deleter.deleteTarget || keys.app.memories.memoryDeleteOpen || keys.app.memories.newMemoryOpen
               || keys.app.milestones.dialogOpen || keys.app.board.archiveOpen || keys.app.runControl.cancelOpen
+              || keys.app.runControl.closeOpen
               || keys.app.runDispatch.dispatchState !== "idle" || keys.app.runDispatch.dispatchStep !== ""
               || keys.app.runControl.resumeRunId !== "")
   }

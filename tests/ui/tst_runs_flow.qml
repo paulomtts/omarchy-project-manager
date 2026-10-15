@@ -1531,6 +1531,219 @@ TestCase {
     verify(p.focusItem.activeFocus, "the key catcher has the keyboard")
   }
 
+  // ---- the Close dialog (RR)
+
+  function closeModal(p) { return H.find(p, "runCloseModal") }
+
+  // The Runs list with the cursor on run `id`.
+  function runsCursorOn(p, id) {
+    p.navigator.showSection("runs")
+    wait(50)
+    p.app.nav.cursorIndex = indexOfRun(p, id)
+    wait(50)
+  }
+
+  // A part of run `id`'s row controls.
+  function rowControl(p, id, name) {
+    return H.find(H.find(p, "runRowControls" + indexOfRun(p, id)), "runControl" + name)
+  }
+
+  // Flow 1 + 2.
+  function test_close_on_a_parked_row_opens_the_dialog_and_keep_and_escape_dismiss_it() {
+    var p = make(); if (!p) return
+    p.app.board.applyTreeData([{ id: "delta", title: "Delta work", status: "todo", description: "",
+                                 blocked_by: [], children: [] }])
+    runsCursorOn(p, "run-0000000000d4")
+    var close = rowControl(p, "run-0000000000d4", "Close")
+    compare(close.visible, true)
+    compare(close.enabled, true)
+    mouseClick(close)
+    wait(50)
+    var modal = closeModal(p)
+    verify(modal, "the Close dialog is mounted")
+    compare(modal.visible, true)
+    compare(p.app.runControl.closeRunId, "run-0000000000d4")
+    compare(H.find(modal, "closeDialogTitle").text, "Close \"Delta work\"?")
+    compare(p.focusItem.objectName, "closeDialogKeys")
+    verify(H.find(modal, "closeDialogKeys").activeFocus, "the dialog has the keyboard")
+    compare(p.app.runControl.controlRunners.length, 0, "asking starts nothing")
+    compare(p.app.nav.viewMode, "runs", "the click did not open the run")
+
+    wait(450)
+    mouseClick(H.find(modal, "closeDialogKeep"))
+    compare(p.app.runControl.closeOpen, false)
+    compare(modal.visible, false)
+    wait(50)
+    compare(p.focusItem.objectName, "searchField", "the focus comes back")
+
+    p.app.runControl.closeAsk("run-0000000000d4")
+    wait(50)
+    compare(modal.visible, true)
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runControl.closeOpen, false)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.opened, true, "the panel stays open")
+    compare(p.app.runControl.controlRunners.length, 0)
+    wait(50)
+    compare(p.focusItem.objectName, "searchField")
+  }
+
+  // Flow 3 + 5 (a refused closeAsk).
+  function test_close_accept_starts_one_reset_and_the_row_reads_close_requested() {
+    var p = make(); if (!p) return
+    runsCursorOn(p, "run-0000000000d4")
+    mouseClick(rowControl(p, "run-0000000000d4", "Close"))
+    wait(50)
+    compare(H.find(closeModal(p), "closeDialogTitle").text, "Close \"milestone …delta\"?")
+    wait(450)
+    mouseClick(H.find(closeModal(p), "closeDialogAccept"))
+    compare(p.app.runControl.controlRunners.length, 1)
+    var runner = p.app.runControl.controlRunners[0]
+    compare(runner.action, "reset")
+    compare(runner.runId, "run-0000000000d4")
+    var command = argv(runner.current)
+    verify(command.indexOf("runs/run-control.py") >= 0, command)
+    verify(endsWith(command, "reset|run-0000000000d4|/home/u/a"), command)
+    compare(p.app.runControl.pending["run-0000000000d4"], "reset")
+    compare(p.app.runControl.closeOpen, false)
+    wait(50)
+    var marker = rowControl(p, "run-0000000000d4", "Close")
+    compare(marker.visible, true)
+    compare(marker.text, "Close requested…")
+    compare(marker.enabled, false)
+    compare(rowControl(p, "run-0000000000d4", "Resume").visible, false)
+
+    H.find(p, "runsView").closeRequested("run-0000000000d4")
+    compare(p.app.runControl.closeOpen, false, "a refused closeAsk opens nothing")
+    compare(H.find(p, "runsFooter").text, "A request for this run is pending")
+    compare(p.app.runControl.controlRunners.length, 1)
+  }
+
+  // Flow 4 + Review Focus 3.
+  function test_a_run_that_starts_running_under_the_dialog_keeps_it_open_with_why() {
+    var p = make(); if (!p) return
+    runsCursorOn(p, "run-0000000000d4")
+    mouseClick(rowControl(p, "run-0000000000d4", "Close"))
+    wait(50)
+    compare(p.app.runControl.closeOpen, true)
+    var runs = sampleRuns()
+    runs[3] = run("run-0000000000d4", "started", true, "delta")
+    p.app.runs.runs = runs
+    wait(450)
+    mouseClick(H.find(closeModal(p), "closeDialogAccept"))
+    compare(p.app.runControl.closeOpen, true)
+    var error = H.find(closeModal(p), "closeDialogError")
+    compare(error.visible, true)
+    compare(error.text, "A running run is cancelled, not closed")
+    compare(p.app.runControl.controlRunners.length, 0)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
+    p.app.runControl.closeKeep()
+  }
+
+  // Flow 5.
+  function test_a_running_row_never_offers_close() {
+    var p = make(); if (!p) return
+    runsCursorOn(p, "run-0000000000a1")
+    compare(rowControl(p, "run-0000000000a1", "Close").visible, false)
+    compare(rowControl(p, "run-0000000000a1", "Cancel").visible, true)
+    compare(rowControl(p, "run-0000000000a1", "Pause").visible, true)
+  }
+
+  // Flow 6.
+  function test_global_chords_and_run_keys_are_dead_under_the_close_dialog() {
+    var p = make(); if (!p) return
+    runsCursorOn(p, "run-0000000000d4")
+    compare(p.app.runControl.closeAsk("run-0000000000d4"), true)
+    wait(50)
+    compare(p.shortcuts.handleGlobalKey({ modifiers: Qt.ControlModifier, key: Qt.Key_1 }), false)
+    compare(p.app.nav.viewMode, "runs")
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_P)), false)
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_R)), false)
+    compare(p.shortcuts.handleRunKey(key(Qt.Key_C)), false)
+    compare(p.shortcuts.handleDispatchKey(key(Qt.Key_D)), false)
+    compare(p.app.runControl.cancelOpen, false)
+    compare(Object.keys(p.app.runControl.pending).length, 0)
+    compare(p.app.runControl.controlRunners.length, 0)
+    p.app.runControl.closeKeep()
+  }
+
+  // Review Focus 4.
+  function test_with_both_dialogs_open_the_close_dialog_takes_the_focus_and_escape_first() {
+    var p = make(); if (!p) return
+    runsCursorOn(p, "run-0000000000d4")
+    compare(p.app.runControl.openCancel("run-0000000000a1"), true)
+    compare(p.app.runControl.closeAsk("run-0000000000d4"), true)
+    wait(50)
+    compare(p.focusItem.objectName, "closeDialogKeys")
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runControl.closeOpen, false)
+    compare(p.app.runControl.cancelOpen, true)
+    wait(50)
+    compare(p.focusItem.objectName, "runCancelField")
+    p.app.runControl.closeCancel()
+  }
+
+  // Flow 7.
+  function test_relaunch_on_an_escalated_row_opens_the_prefilled_dispatch_dialog() {
+    var p = make(); if (!p) return
+    p.app.backendDir = "/plugin/core/backend/"
+    p.app.runControl.applyRunSettings(p.app.runs.project, { verify: ["uv run pytest"] })
+    p.app.board.applyTreeData([{ id: "m1", title: "M one", status: "todo", description: "d", children: [] }])
+    var r = run("run-0000000000e5", "escalated", null, "m1")
+    r.branch_prefix = "old-m1"
+    r.base_branch = "release"
+    p.app.runs.runs = [r]
+    runsCursorOn(p, "run-0000000000e5")
+    var relaunch = rowControl(p, "run-0000000000e5", "Relaunch")
+    compare(relaunch.visible, true)
+    compare(relaunch.enabled, true)
+    mouseClick(relaunch)
+    compare(p.app.runDispatch.dispatchState, "previewing")
+    wait(50)
+    compare(H.find(p, "dispatchDialog").visible, true)
+    compare(H.find(p, "dispatchPrefix").text, "old-m1")
+    compare(H.find(p, "dispatchBase").text, "release")
+    compare(p.app.runControl.controlRunners.length, 0, "relaunch is not a control request")
+    compare(p.app.nav.viewMode, "runs", "the click did not open the run")
+  }
+
+  // Flow 8 (and Card detail, the third surface).
+  function test_close_on_run_detail_and_on_a_card_opens_the_same_dialog() {
+    var p = make(); if (!p) return
+    p.navigator.showSection("runs")
+    p.navigator.openRun("run-0000000000d4")
+    wait(50)
+    var detail = H.find(p, "runDetailControls")
+    compare(H.find(detail, "runControlRelaunch").visible, false)
+    var close = H.find(detail, "runControlClose")
+    compare(close.visible, true)
+    mouseClick(close)
+    wait(50)
+    compare(closeModal(p).visible, true)
+    compare(p.app.runControl.closeRunId, "run-0000000000d4")
+    compare(p.focusItem.objectName, "closeDialogKeys")
+    keyClick(Qt.Key_Escape)
+    compare(p.app.runControl.closeOpen, false)
+    compare(p.app.nav.viewMode, "run", "Escape closed only the dialog")
+    wait(50)
+    compare(p.focusItem.objectName, "keyCatcher")
+
+    p.app.board.applyTreeData([{ id: "delta", title: "Delta work", status: "todo", description: "d",
+                                 blocked_by: [], children: [] }])
+    wait(50)
+    p.navigator.openCard("delta")
+    wait(50)
+    compare(p.app.nav.viewMode, "entry")
+    var cardClose = H.find(H.find(p, "cardRunControls0"), "runControlClose")
+    verify(cardClose, "the card's RUNS row carries the run's Close")
+    wait(450)
+    mouseClick(cardClose)
+    wait(50)
+    compare(closeModal(p).visible, true)
+    compare(p.app.runControl.closeRunId, "run-0000000000d4")
+    p.app.runControl.closeKeep()
+  }
+
   // ---- why it stopped (RR 3.3)
 
   // 22
