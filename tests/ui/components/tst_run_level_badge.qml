@@ -74,6 +74,8 @@ TestCase {
     compare(labelOf(badge).text, data.text)
     compare(badge.border.width, data.border)
     fuzzyCompare(badge.color.a, data.alpha, 0.01)
+    if (data.alpha > 0)
+      verify(Qt.colorEqual(Qt.alpha(badge.color, 1), Qt.alpha(badge.levelColor, 1)), "the fill is the level colour")
     verify(Qt.colorEqual(badge.border.color, badge.levelColor), "the border is the level colour")
     verify(Qt.colorEqual(labelOf(badge).color, badge.levelColor), "the label is the level colour")
     compare(badge.visible, true)
