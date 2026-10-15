@@ -5,15 +5,15 @@ import "../../../core/domain/runs.js" as Runs
 import "../../helpers/amFixtures.js" as F
 
 // The Runs row redesign's shared contract (card 6f9f8639): the action
-// vocabularies, and the signatures of runLevel, visibleActions,
-// controls().close and controlError(error, action). The contract tests run
-// against whatever runs.js has, stubs included. Fixture runs are built from
-// tests/fixtures/am/ via amRun, as in tst_runs.qml.
+// vocabularies, and runLevel, visibleActions, controls().close and
+// controlError(error, action). The contract tests pin the signatures and the
+// result shapes; the table tests pin the values runs.js gives. Fixture runs are
+// built from tests/fixtures/am/ via amRun, as in tst_runs.qml.
 TestCase {
   name: "DomainRunRowContract"
 
-  // Story B (runs.js domain) sets this to true; the table tests below are its definition of done.
-  readonly property bool domainImplemented: false
+  // True since runs.js implements the domain (story B, card ad1501fd); the table tests below are its definition of done.
+  readonly property bool domainImplemented: true
 
   readonly property string sentenceNotResettable: "This run cannot be closed (it is finished or already cancelled)."
   readonly property string sentenceLiveReset: "Another am process is still driving this run. Pause it first."
