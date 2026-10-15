@@ -119,6 +119,12 @@ TestCase {
         rc.controlCalls = rc.controlCalls.concat([action + "|" + id])
         return true
       }
+      // The footer flash (S2 4.3). `flash` records and shows the text.
+      property var flashes: []
+      function flash(text) {
+        rc.flashes = rc.flashes.concat([text])
+        rc.flashText = text
+      }
       // The Notify on escalation switch (S2 4.4). `setNotifyOnEscalation`
       // only records.
       property bool notifyOnEscalation: false
@@ -155,6 +161,19 @@ TestCase {
     }
   }
 
+  // The dispatch surface Relaunch reaches: relaunchOpenFor only records.
+  Component {
+    id: dispatchC
+    QtObject {
+      id: rd
+      property var relaunchCalls: []
+      function relaunchOpenFor(card, cardMap, relaunch) {
+        rd.relaunchCalls = rd.relaunchCalls.concat([{ card: card, cardMap: cardMap, relaunch: relaunch }])
+        return true
+      }
+    }
+  }
+
   Component {
     id: appC
     QtObject {
@@ -163,6 +182,9 @@ TestCase {
       property var runControl: null
       property var runTitles: null
       property var runHistory: null
+      property var runDispatch: null
+      // The open project's board: the card a relaunch opens on.
+      property var board: ({ cardMap: { M1: { id: "M1", title: "Milestone one", status: "in_progress" } } })
       // The project registry, as ProjectStore holds it: alpha and beta. A test
       // that changes it assigns a whole new object, so bindings follow.
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" },
@@ -194,7 +216,9 @@ TestCase {
     var control = controlC.createObject(host)
     var titles = titlesC.createObject(host)
     var history = historyC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles, runHistory: history })
+    var dispatch = dispatchC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles, runHistory: history,
+                                        runDispatch: dispatch })
     var navi = naviC.createObject(host)
     var sC = Qt.createComponent("../../../ui/screens/RunsScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
@@ -202,7 +226,7 @@ TestCase {
     nav.viewMode = "runs"
     runs.runs = list || []
     wait(20)
-    return { app: app, runs: runs, control: control, titles: titles, history: history, nav: nav, navi: navi, screen: screen }
+    return { app: app, runs: runs, control: control, titles: titles, history: history, dispatch: dispatch, nav: nav, navi: navi, screen: screen }
   }
 
   function ago(ms) { return new Date(Date.now() - ms).toISOString() }
@@ -1622,6 +1646,108 @@ TestCase {
     compare(cancelSpy.signalArguments[0][0], "run-20261004-live0001")
     compare(s.control.controlCalls.length, 0)
     compare(s.navi.opened, "")
+  }
+
+  SignalSpy { id: closeSpy; signalName: "closeRequested" }
+
+  // Spec 8: Close only asks the owner.
+  function test_close_asks_the_owner_and_never_the_store() {
+    var s = make(sample()); if (!s) return
+    closeSpy.target = s.screen
+    closeSpy.clear()
+    s.nav.cursorIndex = 3
+    wait(20)
+    tap(ctl(s, 3, "Close"))
+    compare(closeSpy.count, 1)
+    compare(closeSpy.signalArguments[0][0], "run-20261004-park0004")
+    compare(s.control.controlCalls.length, 0, "no control(close) and no control(reset)")
+    compare(s.navi.opened, "", "the button is not the row")
+  }
+
+  // Spec 8.
+  function test_request_control_routes_each_ui_action() {
+    var s = make(sample()); if (!s) return
+    closeSpy.target = s.screen
+    closeSpy.clear()
+    cancelSpy.target = s.screen
+    cancelSpy.clear()
+    var parked = s.runs.filteredRuns[3]
+    s.screen.requestControl("cancel", parked)
+    s.screen.requestControl("close", parked)
+    s.screen.requestControl("pause", parked)
+    s.screen.requestControl("resume", parked)
+    s.screen.requestControl("relaunch", parked)
+    compare(cancelSpy.count, 1)
+    compare(cancelSpy.signalArguments[0][0], "run-20261004-park0004")
+    compare(closeSpy.count, 1)
+    compare(closeSpy.signalArguments[0][0], "run-20261004-park0004")
+    compare(s.control.controlCalls.join(","), "pause|run-20261004-park0004,resume|run-20261004-park0004",
+            "relaunch never reaches control()")
+    s.screen.requestControl("close", null)
+    s.screen.requestControl("close", { id: 7 })
+    s.screen.requestControl("relaunch", { status: "escalated" })
+    compare(closeSpy.count, 1, "no run id: nothing")
+    compare(s.control.controlCalls.length, 2)
+  }
+
+  // An escalated milestone run of project A whose relaunch target is
+  // `milestone` (M1, on the stub board, by default).
+  function relaunchable(milestone) {
+    var r = tagged(run("run-a-escl0009", "escalated", null, { milestone: milestone === undefined ? "M1" : milestone }),
+                   "/home/u/a", "alpha")
+    r.branch_prefix = "old-m1"
+    r.base_branch = "release"
+    return r
+  }
+
+  // Spec 9 + Review Focus 2 (a trailing / on the open root).
+  function test_relaunch_opens_the_prefilled_dispatch_for_a_run_of_the_open_project() {
+    var s = make([relaunchable()]); if (!s) return
+    s.runs.project = "/home/u/a/"
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(ctl(s, 0, "Relaunch").visible, true)
+    tap(ctl(s, 0, "Relaunch"))
+    compare(s.dispatch.relaunchCalls.length, 1)
+    var call = s.dispatch.relaunchCalls[0]
+    verify(call.card === s.app.board.cardMap.M1, "the board's own card")
+    verify(call.cardMap === s.app.board.cardMap, "the board's card map")
+    compare(JSON.stringify(call.relaunch), '{"level":"milestone","cardId":"M1","prefix":"old-m1","base":"release"}')
+    compare(s.control.flashes.length, 0)
+    compare(s.control.controlCalls.length, 0, "relaunch never reaches control()")
+    compare(s.navi.opened, "", "the button is not the row")
+  }
+
+  // Spec 9 + Review Focus 2 (a prototype-key card id).
+  function test_relaunch_refusals_flash_why_and_open_nothing() {
+    var s = make([relaunchable("")]); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "This run has nothing to relaunch")
+    s.runs.runs = [relaunchable("M404")]
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "The card to relaunch is no longer on the board")
+    s.runs.runs = [relaunchable("constructor")]
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "The card to relaunch is no longer on the board", "a prototype key is no card")
+    s.runs.runs = [relaunchable()]
+    s.runs.project = "/home/u/b"
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "Open this run's project to relaunch it")
+    s.runs.project = ""
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "Open this run's project to relaunch it", "no project open")
+    var orphan = relaunchable()
+    delete orphan.project
+    s.runs.runs = [orphan]
+    s.runs.project = "/home/u/a"
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "Open this run's project to relaunch it", "a run with no project")
+    s.screen.relaunch(null)
+    compare(s.control.flashText, "This run has nothing to relaunch")
+    compare(s.control.flashes.length, 7)
+    compare(s.dispatch.relaunchCalls.length, 0)
+    compare(s.control.controlCalls.length, 0)
   }
 
   // 16

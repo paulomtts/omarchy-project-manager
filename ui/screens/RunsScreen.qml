@@ -36,10 +36,14 @@ import "../../core/domain/compat.js" as Compat
 // runs…` and takes no click while its page is in flight, and a failed
 // page's sentence shows under it in urgent. A footer says whether the runs
 // are watched. The row with the cursor shows RunControls' buttons
-// (Runs.visibleActions). It reads the run store, the run history and the
-// run titles and asks the navigator to open a run or move the cursor, the
-// run titles to read every project's titles again and the run history for
-// older runs; it owns no state of its own.
+// (Runs.visibleActions): Pause and Resume go to the store, Cancel and Close
+// ask the owner (cancelRequested, closeRequested) and Relaunch opens the
+// dispatch prefilled, as Run detail's does (relaunch). It reads the run
+// store, the run history, the run titles and the open board and asks the
+// navigator to open a run or move the cursor, the run titles to read every
+// project's titles again, the run history for older runs, run control to
+// flash a refused relaunch and the dispatch to open one; it owns no state of
+// its own.
 // Ages are read against the clock once per snapshot: there is no timer.
 Column {
   id: screen
@@ -54,6 +58,9 @@ Column {
   // A run's Cancel was clicked. Cancelling needs a typed confirmation, which is
   // the owner's to ask for; nothing here cancels a run.
   signal cancelRequested(string runId)
+  // A run's Close was clicked. Closing (am's reset) asks first, in a dialog
+  // that is the owner's; nothing here resets a run.
+  signal closeRequested(string runId)
 
   // Re-read whenever the list changes, i.e. with every snapshot.
   readonly property real nowMs: screen.app.runs.filteredRuns ? Date.now() : 0
@@ -359,13 +366,43 @@ Column {
     return parts.join(" · ")
   }
 
-  // A row's control button: pause and resume go straight to the store, a
-  // cancel only asks (cancelRequested).
+  // A row's control button, by its UI name: pause and resume go straight to
+  // the store, cancel and close only ask the owner (cancelRequested,
+  // closeRequested), and relaunch opens the dispatch (relaunch). No run id:
+  // nothing.
   function requestControl(action, run) {
     var id = ControlFacts.runIdOf(run)
     if (id === "") return
     if (action === "cancel") screen.cancelRequested(id)
+    else if (action === "close") screen.closeRequested(id)
+    else if (action === "relaunch") screen.relaunch(run)
     else screen.app.runControl.control(action, id)
+  }
+
+  // Relaunch from a row, Run detail's path applied to the row's run: a run
+  // with a relaunch target, in the open project (roots by rootKey), whose
+  // card is an own key of the open board's cardMap opens the dispatch dialog
+  // prefilled (relaunchOpenFor); nothing starts until Start run. Otherwise
+  // it flashes why and opens nothing.
+  function relaunch(run) {
+    var report = Runs.stopReport(run)
+    if (!report || report.relaunch === null || typeof report.relaunch !== "object") {
+      screen.app.runControl.flash("This run has nothing to relaunch")
+      return
+    }
+    var project = run.project !== null && typeof run.project === "object" ? run.project : null
+    var root = screen.rootKey(project !== null ? project.root : "")
+    if (screen.openRoot === "" || root !== screen.openRoot) {
+      screen.app.runControl.flash("Open this run's project to relaunch it")
+      return
+    }
+    var map = screen.app.board ? screen.app.board.cardMap : null
+    var cardId = report.relaunch.cardId
+    if (!map || typeof map !== "object" || !Object.prototype.hasOwnProperty.call(map, cardId)) {
+      screen.app.runControl.flash("The card to relaunch is no longer on the board")
+      return
+    }
+    screen.app.runDispatch.relaunchOpenFor(map[cardId], map, report.relaunch)
   }
 
   UI.ThemedText {
