@@ -12,6 +12,13 @@ import "../../helpers/amFixtures.js" as F
 TestCase {
   name: "DomainRunRowContract"
 
+  // Story B (runs.js domain) sets this to true; the table tests below are its definition of done.
+  readonly property bool domainImplemented: false
+
+  readonly property string sentenceNotResettable: "This run cannot be closed (it is finished or already cancelled)."
+  readonly property string sentenceLiveReset: "Another am process is still driving this run. Pause it first."
+
+
   readonly property string reasonIntegrate: "Integrate is running; it cannot be paused or cancelled"
   readonly property string reasonFinished: "The run has finished"
   readonly property string reasonUnknown: "The run's state is unknown"
@@ -244,6 +251,120 @@ TestCase {
         verify(ui.indexOf(keys[k]) >= 0, label + ": controls key " + keys[k] + " is a UI action")
         verify(keys[k] !== "relaunch", label + ": relaunch has no controls() entry")
       }
+    }
+  }
+
+  // ---- Table tests: story B's definition of done ----------------------------------------
+
+  function test_table_controls_close() {
+    if (!domainImplemented) skip("runs.js domain not implemented yet (story B)")
+    var table = rowTable()
+    for (var i = 0; i < table.length; i++) {
+      var close = Runs.controls(table[i][1]).close
+      compare(close.reason, table[i][2], table[i][0] + ": close reason")
+      compare(close.enabled, table[i][2] === "", table[i][0] + ": close enabled")
+    }
+  }
+
+  function test_table_visible_actions() {
+    if (!domainImplemented) skip("runs.js domain not implemented yet (story B)")
+    var table = rowTable()
+    for (var i = 0; i < table.length; i++)
+      compare(Runs.visibleActions(table[i][1]).join(","), table[i][3], table[i][0] + ": visible actions")
+    var runs = allRuns()
+    for (var j = 0; j < runs.length; j++) {
+      var shown = Runs.visibleActions(runs[j][1])
+      var c = Runs.controls(runs[j][1])
+      for (var k = 0; k < shown.length; k++) {
+        if (shown[k] === "relaunch") continue
+        verify(c[shown[k]].enabled, runs[j][0] + ": " + shown[k] + " is shown, so it is enabled")
+      }
+      verify(shown.indexOf("resume") < 0 || ["escalated", "dead"].indexOf(Runs.runState(runs[j][1])) < 0,
+             runs[j][0] + ": resume is never shown on an escalated or dead run")
+    }
+  }
+
+  function test_table_run_level() {
+    if (!domainImplemented) skip("runs.js domain not implemented yet (story B)")
+    var noProtoTask = Object.create(null)
+    noProtoTask.workflow = "task"
+    var table = [
+      ["task", { workflow: "task" }, "subtask"],
+      ["padded task", { workflow: "  task  " }, "subtask"],
+      ["tab and newline task", { workflow: "\ttask\n" }, "subtask"],
+      ["task with a story: workflow wins", { workflow: "task", story_id: "s1" }, "subtask"],
+      ["milestone workflow with a story", { workflow: "milestone", story_id: "s1" }, "story"],
+      ["story only", { story_id: "s1" }, "story"],
+      ["__proto__ story", { story_id: "__proto__" }, "story"],
+      ["constructor story", { story_id: "constructor" }, "story"],
+      ["empty story", { story_id: "" }, "milestone"],
+      ["blank story", { story_id: "   " }, "milestone"],
+      ["null story", { story_id: null }, "milestone"],
+      ["number story", { story_id: 5 }, "milestone"],
+      ["Task", { workflow: "Task" }, "milestone"],
+      ["tasks", { workflow: "tasks" }, "milestone"],
+      ["story workflow", { workflow: "story" }, "milestone"],
+      ["{}", {}, "milestone"],
+      ["undefined", undefined, "milestone"],
+      ["null", null, "milestone"],
+      ["5", 5, "milestone"],
+      ["the string task", "task", "milestone"],
+      ["[]", [], "milestone"],
+      ["prototype-less", Object.create(null), "milestone"],
+      ["prototype-less task", noProtoTask, "subtask"],
+      ["normalised story (synthetic: no fixture has one)",
+       Runs.normalizeRun({ row: { id: "r", workflow: "milestone", story_id: "s1" } }), "story"]
+    ]
+    var rows = F.load("runs.json").data.runs
+    for (var r = 0; r < rows.length; r++) {
+      var run = Runs.normalizeRun({ row: rows[r] })
+      compare(run.workflow, "milestone", "runs.json row " + r + " precondition: workflow")
+      compare(run.story_id, "", "runs.json row " + r + " precondition: story_id")
+      table.push(["runs.json row " + r, run, "milestone"])
+    }
+    var captures = ["status-started.json", "status-done.json", "status-escalated.json",
+                    "status-done-integrate.json", "status-escalated-integrate.json"]
+    for (var c = 0; c < captures.length; c++)
+      table.push([captures[c], fixtureRun(captures[c]), "milestone"])
+    for (var i = 0; i < table.length; i++)
+      compare(Runs.runLevel(table[i][1]), table[i][2], table[i][0])
+  }
+
+  function test_table_control_error_reset() {
+    if (!domainImplemented) skip("runs.js domain not implemented yet (story B)")
+    var sentenceLive = controlErrorTable()[4][1]
+    compare(controlErrorTable()[4][0], "RunIsLiveError", "table row 4 is RunIsLiveError")
+
+    var notResettable = [["envelope", { ok: false, error: { type: "NotResettableError", message: "m" } }],
+                         ["bare", { type: "NotResettableError" }]]
+    var anyAction = [undefined, "reset", "  reset  ", "pause", "resume", "cancel", "close", 5, null]
+    for (var i = 0; i < notResettable.length; i++) {
+      compare(Runs.controlError(notResettable[i][1]), sentenceNotResettable, notResettable[i][0] + ", missing action")
+      for (var j = 0; j < anyAction.length; j++)
+        compare(Runs.controlError(notResettable[i][1], anyAction[j]), sentenceNotResettable,
+                notResettable[i][0] + ", action " + j)
+      compare(Runs.offersRelaunch(notResettable[i][1]), false, notResettable[i][0] + ": no relaunch offer")
+    }
+
+    var live = [["envelope", { ok: false, error: { type: "RunIsLiveError", message: "m" } }],
+                ["bare", { type: "RunIsLiveError" }]]
+    var resetActions = ["reset", "  reset  "]
+    var otherActions = ["pause", "resume", "cancel", undefined, "close", 5]
+    for (var k = 0; k < live.length; k++) {
+      for (var a = 0; a < resetActions.length; a++)
+        compare(Runs.controlError(live[k][1], resetActions[a]), sentenceLiveReset, live[k][0] + ", reset " + a)
+      for (var b = 0; b < otherActions.length; b++)
+        compare(Runs.controlError(live[k][1], otherActions[b]), sentenceLive, live[k][0] + ", other action " + b)
+      compare(Runs.controlError(live[k][1]), sentenceLive, live[k][0] + ", missing action")
+    }
+
+    var table = controlErrorTable()
+    var everyAction = [undefined, "reset", "pause", "resume", "cancel", "close", 5]
+    for (var t = 0; t < table.length; t++) {
+      if (table[t][0] === "RunIsLiveError") continue
+      for (var e = 0; e < everyAction.length; e++)
+        compare(Runs.controlError({ ok: false, error: { type: table[t][0], message: "m" } }, everyAction[e]),
+                table[t][1], table[t][0] + ", action " + e)
     }
   }
 }
