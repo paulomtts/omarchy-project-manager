@@ -2768,6 +2768,7 @@ TestCase {
   readonly property string ctlCancelCancelled: "The run is already cancelled"
   readonly property string ctlResumeEscalatedCard: "An escalated card run cannot be resumed; relaunch it"
   readonly property string ctlCloseRunning: "A running run is cancelled, not closed"
+  readonly property string ctlLiveReset: "Another am process is still driving this run. Pause it first."
 
   // mkRun with the lease's accepting flag set; live === null still means no lease.
   function ctlRun(status, live, accepting) {
@@ -3104,13 +3105,14 @@ TestCase {
       ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
       ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
       ["ClaimedError", "Another run has already claimed this work"],
-      ["LockTimeoutError", "am is busy; try again in a moment"]
+      ["LockTimeoutError", "am is busy; try again in a moment"],
+      ["NotResettableError", "This run cannot be closed (it is finished or already cancelled)."]
     ]
   }
 
   function test_control_error_table() {
     var table = controlErrorTable()
-    compare(table.length, 9)
+    compare(table.length, 10)
     for (var i = 0; i < table.length; i++)
       compare(Runs.controlError({ ok: false, error: { type: table[i][0], message: "am said so" } }), table[i][1],
               table[i][0])
@@ -3164,6 +3166,30 @@ TestCase {
     compare(Runs.controlError({ ok: false, error: { type: noProto, message: "m" } }), "m",
             "a prototype-less type object reads as no type")
     compare(Runs.controlError({ type: noProto }), "unknown error", "a prototype-less type object alone")
+  }
+
+  function test_control_error_reset_action() {
+    compare(controlErrorTable()[4][0], "RunIsLiveError", "table row 4 is RunIsLiveError")
+    var liveSentence = controlErrorTable()[4][1]
+    var live = [["envelope", { ok: false, error: { type: "RunIsLiveError", message: "m" } }],
+                ["bare", { type: "RunIsLiveError" }]]
+    var resetActions = ["reset", "  reset  "]
+    var otherActions = ["Reset", "close", "pause", undefined, null, 5, {}, ["reset"], "__proto__", "constructor"]
+    for (var i = 0; i < live.length; i++) {
+      for (var j = 0; j < resetActions.length; j++)
+        compare(Runs.controlError(live[i][1], resetActions[j]), ctlLiveReset, live[i][0] + ", reset " + j)
+      for (var k = 0; k < otherActions.length; k++)
+        compare(Runs.controlError(live[i][1], otherActions[k]), liveSentence, live[i][0] + ", other action " + k)
+      compare(Runs.controlError(live[i][1]), liveSentence, live[i][0] + ", no action")
+    }
+    var others = [["NotResettableError", "This run cannot be closed (it is finished or already cancelled)."],
+                  ["ClaimedError", "Another run has already claimed this work"]]
+    for (var m = 0; m < others.length; m++) {
+      var envelope = { ok: false, error: { type: others[m][0], message: "m" } }
+      compare(Runs.controlError(envelope), others[m][1], others[m][0] + ", no action")
+      compare(Runs.controlError(envelope, "reset"), others[m][1], others[m][0] + ", reset")
+      compare(Runs.controlError({ type: others[m][0] }, "reset"), others[m][1], others[m][0] + ", bare, reset")
+    }
   }
 
   function test_control_sentences_are_ascii() {

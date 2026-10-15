@@ -1282,8 +1282,13 @@ var _CONTROL_ERRORS = [
   ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
   ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
   ["ClaimedError", "Another run has already claimed this work"],
-  ["LockTimeoutError", "am is busy; try again in a moment"]
+  ["LockTimeoutError", "am is busy; try again in a moment"],
+  ["NotResettableError", "This run cannot be closed (it is finished or already cancelled)."]
 ]
+
+// RunIsLiveError's sentence on a reset: close takes a paused run, so pausing is
+// the way forward, not waiting or resuming.
+var _LIVE_ON_RESET = "Another am process is still driving this run. Pause it first."
 
 // The trimmed, case-sensitive type of an am control error, envelope or bare, the
 // way errorText reads it; "" when error is not an object or is ok:true.
@@ -1296,10 +1301,12 @@ function _controlErrorType(error) {
 // The sentence for a failed pause / resume / cancel / reset. A known type gives
 // its sentence without am's message; anything else gives errorText(error).
 // `action` is the store's action name (pause, resume, cancel, reset) and is
-// optional; it is accepted and ignored until story B (042b0d8e) gives reset its
-// own sentences.
+// optional. It is read only when it is a string, trimmed and case-sensitive:
+// on "reset", a RunIsLiveError gives its own sentence. Every other type, and
+// every other action, gives the same sentence as with no action.
 function controlError(error, action) {
   var type = _controlErrorType(error)
+  if (type === "RunIsLiveError" && typeof action === "string" && action.trim() === "reset") return _LIVE_ON_RESET
   for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
     if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
   }
