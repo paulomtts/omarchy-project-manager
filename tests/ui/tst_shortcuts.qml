@@ -677,6 +677,41 @@ TestCase {
     compare(tc.calls.indexOf("close"), -1)
   }
 
+  // Close dialog 1 + 2.
+  function test_the_close_dialog_is_a_modal_and_escape_closes_only_it() {
+    var s = inRunKeys(); if (!s) return
+    s.navigator.openRun("run-0000000000b2")
+    compare(s.modalOpen(), false)
+    compare(s.app.runControl.closeAsk("run-0000000000b2"), true)
+    compare(s.modalOpen(), true)
+    compare(s.handleGlobalKey(ctrl(Qt.Key_6)), false)
+    compare(s.app.nav.viewMode, "run")
+    compare(s.handleRunKey(plain(Qt.Key_R)), false)
+    compare(Object.keys(s.app.runControl.pending).length, 0)
+    s.closeRequested()
+    compare(s.app.runControl.closeOpen, false)
+    compare(s.app.nav.viewMode, "run", "Escape closed the dialog only")
+    compare(tc.calls.indexOf("close"), -1)
+    compare(s.app.runControl.controlRunners.length, 0, "closeKeep starts nothing")
+    compare(s.modalOpen(), false)
+    s.closeRequested()
+    compare(s.app.nav.viewMode, "runs", "the next Escape goes back as before")
+  }
+
+  // Review Focus 4.
+  function test_escape_closes_the_close_dialog_before_the_cancel_confirmation() {
+    var s = inRunKeys(); if (!s) return
+    compare(s.app.runControl.openCancel("run-0000000000a1"), true)
+    compare(s.app.runControl.closeAsk("run-0000000000b2"), true)
+    s.closeRequested()
+    compare(s.app.runControl.closeOpen, false)
+    compare(s.app.runControl.cancelOpen, true, "the cancel confirmation is next")
+    s.closeRequested()
+    compare(s.app.runControl.cancelOpen, false)
+    compare(s.app.nav.viewMode, "runs")
+    compare(tc.calls.indexOf("close"), -1)
+  }
+
   // 23
   function test_escape_in_the_search_field_dismisses_the_toasts_first() {
     var s = inRunKeys(); if (!s) return

@@ -6,6 +6,7 @@ import QtQuick
 import QtTest
 import "../helpers/find.js" as H
 import "../helpers/amFixtures.js" as F
+import "../../core/domain/runs.js" as Runs
 
 TestCase {
   id: tc
@@ -112,11 +113,14 @@ TestCase {
     verify(!H.find(p, "runRow2"), "two runs only")
     compare(p.app.runs.filteredRuns[0].id, startedRun)
     compare(p.app.runs.filteredRuns[1].id, doneRun)
-    compare(H.find(p, "runRowProgress0").text, "3/8")
-    compare(H.find(p, "runRowProgress1").text, "10/10")
-    compare(H.find(p, "runRowPhase0").text, "explore")
-    compare(H.find(p, "runRowPhase1").text, "")
-    compare(H.find(p, "runRowPhase1").visible, false)
+    var nowMs = H.find(p, "runsView").nowMs
+    var age0 = Runs.runAgeText(p.app.runs.filteredRuns[0], nowMs)
+    var age1 = Runs.runAgeText(p.app.runs.filteredRuns[1], nowMs)
+    compare(H.find(p, "runRowMeta0").text, ["3/8", "explore", age0].filter(function(x) { return x !== "" }).join(" · "))
+    compare(H.find(p, "runRowMeta1").text, ["10/10", age1].filter(function(x) { return x !== "" }).join(" · "))
+    compare(H.find(H.find(p, "runRowLevel0"), "runLevelBadgeText").text, "MILESTONE")
+    compare(H.find(H.find(p, "runRowLevel1"), "runLevelBadgeText").text, "MILESTONE")
+    compare(H.find(p, "runRowId0").text, "e795ad19", "the milestone's first 8")
     compare(String(H.find(p, "navCountRuns").text), "", "a live run and a done run need no attention")
   }
 
@@ -228,15 +232,15 @@ TestCase {
     feedFixtures(p)
     p.navigator.showSection("runs")
     wait(50)
-    var shortId = String(H.find(p, "runRowId0").text)
-    verify(shortId !== "", "the Runs list names the started run")
+    var rowId = String(H.find(p, "runRowId0").text)
+    verify(rowId !== "", "the Runs list names the started run")
     p.navigator.openCard(subRunning)
     wait(50)
     compare(p.app.nav.viewMode, "entry")
     compare(H.find(p, "cardRunsHeader").visible, true)
     verify(H.find(p, "cardRunRow0"), "the started run's row")
     verify(!H.find(p, "cardRunRow1"), "only the started run touches the card")
-    compare(H.find(p, "cardRunId0").text, shortId)
+    compare(H.find(p, "cardRunId0").text, "…" + rowId, "the card keeps …<8>; am's run id ends with the milestone's first 8")
     compare(H.find(p, "cardRunPhase0").text, "explore")
   }
 }

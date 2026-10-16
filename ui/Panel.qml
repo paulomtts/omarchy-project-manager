@@ -105,6 +105,7 @@ Panel {
   Connections {
     target: appStores.runControl
     function onCancelOpenChanged() { root.focusForView() }
+    function onCloseOpenChanged() { root.focusForView() }
     function onResumeRunIdChanged() { root.focusForView() }
   }
   Connections {
@@ -191,6 +192,7 @@ Panel {
     : appStores.memories.newMemoryOpen ? newMemoryDialog.focusItem
     : appStores.milestones.dialogOpen ? newMilestoneDialog.focusItem
     : root.dispatchOpen ? dispatchDialog.focusItem
+    : appStores.runControl.closeOpen ? runCloseModal.focusItem
     : appStores.runControl.cancelOpen ? runCancelModal.focusItem
     : appStores.runControl.resumeRunId !== "" ? resumeDialog.focusItem
     : (appStores.nav.viewMode === "memory" && appStores.memories.memoryEditing) ? memoryNoteScreen.editorItem
@@ -737,6 +739,7 @@ Panel {
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
             onCancelRequested: function(runId) { appStores.runControl.openCancel(runId) }
+            onCloseRequested: function(runId) { appStores.runControl.closeAsk(runId) }
             onDispatchRequested: function(cardId) { root.openDispatch(cardId) }
           }
 
@@ -763,6 +766,7 @@ Panel {
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
             onCancelRequested: function(runId) { appStores.runControl.openCancel(runId) }
+            onCloseRequested: function(runId) { appStores.runControl.closeAsk(runId) }
           }
 
           RunDetailScreen {
@@ -772,6 +776,7 @@ Panel {
             theme: panelTheme
             onRevealRequested: function(item) { root.scrollItemIntoView(item) }
             onCancelRequested: function(runId) { appStores.runControl.openCancel(runId) }
+            onCloseRequested: function(runId) { appStores.runControl.closeAsk(runId) }
           }
         }
       }
@@ -853,6 +858,28 @@ Panel {
         onTypedEdited: function(text) { appStores.runControl.cancelText = text }
         onConfirmRequested: appStores.runControl.confirmCancel()
         onCancelRequested: appStores.runControl.closeCancel()
+      }
+
+      // The Close dialog (RR): any run surface's Close asks the run store
+      // (closeAsk), which opens it or flashes why not; only its Close button
+      // resets the run (closeConfirm); Keep, the backdrop and Escape dismiss
+      // it (closeKeep). Its focus comes before the cancel confirmation's.
+      CloseRunDialog {
+        id: runCloseModal
+        objectName: "runCloseModal"
+        // The run the dialog asks about; null when it is not listed.
+        readonly property var closeRun: appStores.runs.runById(appStores.runControl.closeRunId)
+        anchors.fill: parent
+        shown: appStores.runControl.closeOpen
+        runTitle: runCloseModal.closeRun
+          ? Runs.runTitle(runCloseModal.closeRun, Runs.titlesOfRun(runCloseModal.closeRun, appStores.runTitles.titlesByRoot))
+          : ""
+        openIn: ""
+        busy: false
+        error: appStores.runControl.closeError
+        theme: panelTheme
+        onConfirmRequested: appStores.runControl.closeConfirm()
+        onCancelRequested: appStores.runControl.closeKeep()
       }
 
       // The Resume dialog: a milestone resume with no stored verify set asks

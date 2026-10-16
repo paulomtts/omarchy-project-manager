@@ -10,7 +10,6 @@ import QtQuick
 import QtTest
 import "../../helpers/find.js" as H
 import "../../../core/domain/runs.js" as Runs
-import "../../../ui/components/runGlyphs.js" as RG
 
 TestCase {
   id: tc
@@ -120,6 +119,12 @@ TestCase {
         rc.controlCalls = rc.controlCalls.concat([action + "|" + id])
         return true
       }
+      // The footer flash (S2 4.3). `flash` records and shows the text.
+      property var flashes: []
+      function flash(text) {
+        rc.flashes = rc.flashes.concat([text])
+        rc.flashText = text
+      }
       // The Notify on escalation switch (S2 4.4). `setNotifyOnEscalation`
       // only records.
       property bool notifyOnEscalation: false
@@ -156,6 +161,19 @@ TestCase {
     }
   }
 
+  // The dispatch surface Relaunch reaches: relaunchOpenFor only records.
+  Component {
+    id: dispatchC
+    QtObject {
+      id: rd
+      property var relaunchCalls: []
+      function relaunchOpenFor(card, cardMap, relaunch) {
+        rd.relaunchCalls = rd.relaunchCalls.concat([{ card: card, cardMap: cardMap, relaunch: relaunch }])
+        return true
+      }
+    }
+  }
+
   Component {
     id: appC
     QtObject {
@@ -164,6 +182,9 @@ TestCase {
       property var runControl: null
       property var runTitles: null
       property var runHistory: null
+      property var runDispatch: null
+      // The open project's board: the card a relaunch opens on.
+      property var board: ({ cardMap: { M1: { id: "M1", title: "Milestone one", status: "in_progress" } } })
       // The project registry, as ProjectStore holds it: alpha and beta. A test
       // that changes it assigns a whole new object, so bindings follow.
       property var projects: ({ selectedProject: { root_path: "/home/u/a", name: "alpha" },
@@ -195,7 +216,9 @@ TestCase {
     var control = controlC.createObject(host)
     var titles = titlesC.createObject(host)
     var history = historyC.createObject(host)
-    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles, runHistory: history })
+    var dispatch = dispatchC.createObject(host)
+    var app = appC.createObject(host, { nav: nav, runs: runs, runControl: control, runTitles: titles, runHistory: history,
+                                        runDispatch: dispatch })
     var navi = naviC.createObject(host)
     var sC = Qt.createComponent("../../../ui/screens/RunsScreen.qml")
     if (sC.status !== Component.Ready) { fail(sC.errorString()); return null }
@@ -203,7 +226,7 @@ TestCase {
     nav.viewMode = "runs"
     runs.runs = list || []
     wait(20)
-    return { app: app, runs: runs, control: control, titles: titles, history: history, nav: nav, navi: navi, screen: screen }
+    return { app: app, runs: runs, control: control, titles: titles, history: history, dispatch: dispatch, nav: nav, navi: navi, screen: screen }
   }
 
   function ago(ms) { return new Date(Date.now() - ms).toISOString() }
@@ -309,69 +332,152 @@ TestCase {
 
   // ---- rows
 
-  function test_each_state_shows_its_glyph() {
-    var s = make(sample()); if (!s) return
-    var states = ["running", "escalated", "dead", "parked", "cancelled", "done"]
-    for (var i = 0; i < states.length; i++) {
-      var glyph = H.find(s.screen, "runRowGlyph" + i)
-      verify(glyph, "row " + i)
-      compare(String(glyph.text), RG.glyphOf(states[i]), states[i])
-      compare(glyph.visible, true, states[i])
+  // `n` real subtasks t0…t<n-1>, the first `done` of them done; when `phase`
+  // is not "", it is started on the first subtask that is not done.
+  function subtaskTree(n, done, phase) {
+    var out = []
+    for (var i = 0; i < n; i++) {
+      var st = { card_id: "t" + i, status: i < done ? "done" : "todo", phases: [] }
+      if (i === done && phase !== "") st.phases = [{ name: phase, status: "started" }]
+      out.push(st)
+    }
+    return { stories: [], subtasks: out }
+  }
+
+  // filteredRuns' index of the run whose id is `id` (compared with ===); -1 when none.
+  function rowIndexOf(s, id) {
+    for (var i = 0; i < s.runs.filteredRuns.length; i++) {
+      if (s.runs.filteredRuns[i] && s.runs.filteredRuns[i].id === id) return i
+    }
+    return -1
+  }
+
+  // Spec 1: the milestone's first 8, else the run id's last 8, else "".
+  function test_the_row_id_is_the_milestone_prefix_else_the_run_ids_tail() {
+    var odd = run("run-x-live0003", "started", true, {})
+    odd.id = 42
+    var s = make([run("run-x-live0001", "started", true, { milestone: "e795ad19-c81f-43ec-bdda-ef61ab5f860b" }),
+                  run("run-20261004-live0002", "started", true, {}), odd]); if (!s) return
+    compare(H.find(s.screen, "runRowId" + rowIndexOf(s, "run-x-live0001")).text, "e795ad19")
+    compare(H.find(s.screen, "runRowId" + rowIndexOf(s, "run-20261004-live0002")).text, "live0002")
+    var oddId = H.find(s.screen, "runRowId" + rowIndexOf(s, 42))
+    compare(oddId.text, "")
+    compare(oddId.visible, false)
+    for (var i = 0; i < 3; i++)
+      verify(String(H.find(s.screen, "runRowId" + i).text).indexOf("…") < 0, "no … in row " + i)
+    compare(s.screen.rowIdOf(null), "")
+    compare(s.screen.rowIdOf({ id: "abc", milestone_id: "" }), "abc", "a short id is all of it")
+  }
+
+  // Spec 2.
+  function test_the_level_badge_names_milestone_story_and_subtask_runs() {
+    var story = run("run-x-stor0002", "started", true, { milestone: "M1" })
+    story.story_id = "s1"
+    var task = run("run-x-task0003", "started", true, { milestone: "M1" })
+    task.workflow = "task"
+    task.card_id = "t1"
+    var s = make([run("run-x-mile0001", "started", true, { milestone: "M1" }), story, task]); if (!s) return
+    var want = { "run-x-mile0001": "MILESTONE", "run-x-stor0002": "STORY", "run-x-task0003": "SUBTASK" }
+    for (var i = 0; i < 3; i++) {
+      var badge = H.find(s.screen, "runRowLevel" + i)
+      verify(badge, "row " + i)
+      compare(badge.visible, true, "always shown")
+      compare(H.find(badge, "runLevelBadgeText").text, want[s.runs.filteredRuns[i].id])
     }
   }
 
-  // Escalated and dead runs are the ones that need attention: their glyph, the
-  // dead line and the escalation reason are drawn in `urgent`.
-  function test_runs_that_need_attention_are_drawn_urgent() {
+  // Spec 3. sample(): 0 running, 1 escalated, 2 dead, 3 parked, 4 cancelled, 5 done.
+  function test_the_state_badge_shows_for_running_and_escalated_only() {
     var s = make(sample()); if (!s) return
-    var urgent = s.screen.theme.urgent
-    verify(!Qt.colorEqual(urgent, s.screen.theme.foreground), "the theme tells urgent from foreground")
-    verify(Qt.colorEqual(H.find(s.screen, "runRowGlyph1").color, urgent), "escalated glyph")
-    verify(Qt.colorEqual(H.find(s.screen, "runRowGlyph2").color, urgent), "dead glyph")
-    verify(Qt.colorEqual(H.find(s.screen, "runRowGlyph0").color, s.screen.theme.foreground), "running glyph")
-    verify(Qt.colorEqual(H.find(s.screen, "runRowGlyph3").color, s.screen.theme.foreground), "parked glyph")
-    verify(Qt.colorEqual(H.find(s.screen, "runRowState2").color, urgent), "the dead line")
-    verify(!Qt.colorEqual(H.find(s.screen, "runRowState3").color, urgent), "the parked line is not urgent")
-    verify(Qt.colorEqual(H.find(s.screen, "runRowReason1").color, urgent), "the escalation reason")
+    var want = ["RUNNING", "ESCALATED", "", "", "", ""]
+    for (var i = 0; i < 6; i++) {
+      var badge = H.find(s.screen, "runRowStateBadge" + i)
+      verify(badge, "row " + i)
+      compare(badge.visible, want[i] !== "", "row " + i)
+      if (want[i] !== "") compare(H.find(badge, "runStateBadgeText").text, want[i])
+    }
   }
 
-  function test_a_row_shows_short_id_title_progress_phase_and_age() {
-    var s = make(sample()); if (!s) return
-    compare(H.find(s.screen, "runRowId0").text, "…live0001")
-    compare(H.find(s.screen, "runRowTitle0").text, "milestone …alpha")
-    compare(H.find(s.screen, "runRowProgress0").text, "1/2")
-    compare(H.find(s.screen, "runRowPhase0").text, "implement")
-    compare(H.find(s.screen, "runRowAge0").text, "5m")
-    compare(H.find(s.screen, "runRowAge0").visible, true)
-    compare(H.find(s.screen, "runRowState0").visible, false)
+  // Spec 4.
+  function test_the_meta_reads_progress_then_phase_then_age_on_the_right() {
+    var s = make([run("run-x-live0001", "started", true, { started_at: ago(120 * tc.minute), tree: subtaskTree(8, 3, "explore") }),
+                  run("run-x-park0002", "stopped", null, { started_at: ago(5 * 1440 * tc.minute), tree: subtaskTree(11, 0, "") })]); if (!s) return
+    var live = H.find(s.screen, "runRowMeta0")
+    compare(live.text, "3/8 · explore · " + Runs.runAgeText(s.runs.filteredRuns[0], s.screen.nowMs))
+    compare(live.text, "3/8 · explore · 2h")
+    compare(String(live.color), String(s.screen.theme.dim))
+    var parked = H.find(s.screen, "runRowMeta1")
+    compare(parked.text, "0/11 · parked · " + Runs.runAgeText(s.runs.filteredRuns[1], s.screen.nowMs))
+    compare(parked.text, "0/11 · parked · 5d")
+    var line = H.find(s.screen, "runRowLine0")
+    compare(Math.round(live.mapToItem(s.screen, 0, 0).x + live.width),
+            Math.round(line.mapToItem(s.screen, 0, 0).x + line.width), "right-aligned on the first line")
+    verify(Math.abs(live.mapToItem(s.screen, 0, 0).y - H.find(s.screen, "runRowTitle0").mapToItem(s.screen, 0, 0).y) < live.height,
+           "on the title's line")
   }
 
-  function test_empty_values_are_left_out() {
+  function test_the_sample_rows_meta() {
     var s = make(sample()); if (!s) return
-    compare(H.find(s.screen, "runRowTitle4").text, "…canc0005", "the title falls back to the short id")
-    compare(H.find(s.screen, "runRowProgress4").visible, false)
-    compare(H.find(s.screen, "runRowPhase4").visible, false)
-    compare(H.find(s.screen, "runRowAge4").visible, false)
-    compare(H.find(s.screen, "runRowReason4").visible, false)
-    compare(H.find(s.screen, "runRowState4").visible, false)
+    compare(H.find(s.screen, "runRowMeta0").text, "1/2 · implement · 5m")
+    compare(H.find(s.screen, "runRowMeta1").text, "0/1", "escalated: no started phase, no start")
+    compare(H.find(s.screen, "runRowMeta2").text, "dead - lease lost 7m ago")
+    verify(Qt.colorEqual(H.find(s.screen, "runRowMeta2").color, s.screen.theme.urgent), "the dead line is urgent")
+    compare(H.find(s.screen, "runRowMeta3").text, "parked · 2h")
+    compare(String(H.find(s.screen, "runRowMeta3").color), String(s.screen.theme.dim), "every other meta is dim")
+    compare(H.find(s.screen, "runRowMeta4").visible, false, "no subtasks, no phase, no start: hidden")
+    compare(H.find(s.screen, "runRowMeta5").visible, false)
+  }
+
+  // Spec 6.
+  function test_the_old_row_parts_are_gone() {
+    var s = make(sample().concat(twoProjects())); if (!s) return
+    s.runs.project = "/home/u/a"
+    var names = ["runRowGlyph", "runRowOpenProject", "runRowState", "runRowProgress", "runRowPhase", "runRowAge"]
+    for (var i = 0; i < s.runs.filteredRuns.length; i++) {
+      s.nav.cursorIndex = i
+      wait(20)
+      for (var n = 0; n < names.length; n++) compare(H.find(s.screen, names[n] + i), null, names[n] + i)
+    }
+  }
+
+  // Review Focus: a long title leaves the badges and the meta on the row.
+  function test_a_long_title_leaves_the_badges_and_the_meta_on_the_row() {
+    var long = ""
+    for (var i = 0; i < 40; i++) long += "a very long run title "
+    var s = make([tagged(run("run-a-live0001", "started", true, { milestone: "zeta", started_at: ago(5 * tc.minute),
+                                                                 tree: subtaskTree(8, 3, "explore") }), "/home/u/a", "alpha")]); if (!s) return
+    s.titles.titlesByRoot = { "/home/u/a": { zeta: long } }
+    wait(20)
+    var title = H.find(s.screen, "runRowTitle0")
+    compare(title.elide, Text.ElideRight)
+    verify(title.width < title.implicitWidth, "the title is elided")
+    var names = ["runRowId0", "runRowLevel0", "runRowStateBadge0", "runRowMeta0"]
+    for (var n = 0; n < names.length; n++) {
+      var item = H.find(s.screen, names[n])
+      compare(item.visible, true, names[n])
+      var right = item.mapToItem(s.screen, 0, 0).x + item.width
+      verify(right <= s.screen.width, names[n] + " stays on the row: right edge " + right)
+    }
+    var state = H.find(s.screen, "runRowStateBadge0")
+    verify(state.mapToItem(s.screen, 0, 0).x + state.width <= H.find(s.screen, "runRowMeta0").mapToItem(s.screen, 0, 0).x,
+           "the badges never overlap the meta")
   }
 
   // ---- titles (4.1)
 
   // twoProjects(): row 2 is beta's run-b-live0003, milestone zeta.
-  function test_a_row_reads_its_title_then_its_short_id_in_dim() {
+  function test_a_row_reads_its_id_in_dim_then_its_title() {
     var s = make(twoProjects()); if (!s) return
     s.titles.titlesByRoot = { "/home/u/b": { zeta: "Ship zeta" } }
     wait(20)
-    var glyph = H.find(s.screen, "runRowGlyph2")
     var title = H.find(s.screen, "runRowTitle2")
     var id = H.find(s.screen, "runRowId2")
     compare(title.text, "Ship zeta")
-    compare(id.text, "…live0003")
+    compare(id.text, "zeta")
     compare(id.visible, true)
-    compare(String(id.color), String(s.screen.theme.dim), "the short id is dim")
-    verify(glyph.x < title.x, "the glyph comes first")
-    verify(title.x < id.x, "the short id follows the title")
+    compare(String(id.color), String(s.screen.theme.dim), "the id is dim")
+    verify(id.x < title.x, "the id comes first")
+    verify(title.x < H.find(s.screen, "runRowLevel2").x, "the level badge follows the title")
   }
 
   function test_the_open_and_another_project_title_from_their_own_maps() {
@@ -381,9 +487,9 @@ TestCase {
     s.titles.titlesByRoot = { "/home/u/a": { m1: "Alpha M" }, "/home/u/b": { m1: "Beta M" } }
     wait(20)
     compare(H.find(s.screen, "runRowTitle0").text, "Alpha M", "the open project's run")
-    compare(H.find(s.screen, "runRowId0").text, "…live0001")
+    compare(H.find(s.screen, "runRowId0").text, "m1")
     compare(H.find(s.screen, "runRowTitle1").text, "Beta M", "another project's run, from its own map")
-    compare(H.find(s.screen, "runRowId1").text, "…live0002")
+    compare(H.find(s.screen, "runRowId1").text, "m1")
   }
 
   function test_without_a_map_the_row_falls_back() {
@@ -397,7 +503,7 @@ TestCase {
     for (var i = 0; i < garbage.length; i++) {
       s.titles.titlesByRoot = garbage[i]
       compare(H.find(s.screen, "runRowTitle2").text, "milestone …zeta", "garbage " + i)
-      compare(H.find(s.screen, "runRowId2").text, "…live0003", "garbage " + i + " keeps the id")
+      compare(H.find(s.screen, "runRowId2").text, "zeta", "garbage " + i + " keeps the id")
     }
     s.runs.runs = [run("run-x-none0009", "started", true, { milestone: "zeta" })]
     s.titles.titlesByRoot = { "": { zeta: "Never" } }
@@ -416,7 +522,7 @@ TestCase {
     var id = H.find(s.screen, "runRowId2")
     compare(title.elide, Text.ElideRight)
     verify(title.width < title.implicitWidth, "the title is elided")
-    compare(id.text, "…live0003")
+    compare(id.text, "zeta")
     var right = id.mapToItem(s.screen, 0, 0).x + id.width
     verify(right <= s.screen.width, "the short id stays on the row: right edge " + right)
   }
@@ -435,7 +541,7 @@ TestCase {
     verify(H.find(s.screen, "runGroupCounts1").x < beta.x, "after the counts")
     compare(H.find(s.screen, "runGroupName1").text, "beta")
     compare(H.find(s.screen, "runGroupTitles0").visible, false, "alpha's titles are ok")
-    compare(H.find(s.screen, "runRowId2").text, "…live0003", "beta's run keeps its id")
+    compare(H.find(s.screen, "runRowId2").text, "zeta", "beta's run keeps its id")
     s.titles.titleStatus = { "/home/u/b": "loading" }
     wait(20)
     compare(H.find(s.screen, "runGroupTitles1").visible, false, "loading")
@@ -509,29 +615,25 @@ TestCase {
     compare(H.find(s.screen, "runRow2").hasCursor, true)
   }
 
-  function test_an_escalated_row_carries_its_reason() {
+  function test_an_escalated_row_carries_its_reason_in_warn_flush_left() {
     var s = make(sample()); if (!s) return
     var reason = H.find(s.screen, "runRowReason1")
     compare(reason.visible, true)
     compare(reason.text, "tests red after 3 attempts")
+    verify(Qt.colorEqual(reason.color, s.screen.theme.warn), "warn, not urgent")
+    compare(reason.mapToItem(s.screen, 0, 0).x, H.find(s.screen, "runRowId1").mapToItem(s.screen, 0, 0).x, "flush left with the id")
     compare(H.find(s.screen, "runRowReason0").visible, false, "only escalated rows")
-  }
-
-  function test_dead_and_parked_rows_name_their_state_with_the_age_once() {
-    var s = make(sample()); if (!s) return
-    compare(H.find(s.screen, "runRowState2").text, "dead - lease lost 7m ago")
-    compare(H.find(s.screen, "runRowState2").visible, true)
-    compare(H.find(s.screen, "runRowAge2").visible, false, "the age is not shown twice")
-    compare(H.find(s.screen, "runRowState3").text, "parked 2h")
-    compare(H.find(s.screen, "runRowAge3").visible, false)
+    compare(H.find(s.screen, "runRowReason2").visible, false, "not a dead row")
   }
 
   function test_dead_and_parked_rows_without_an_age() {
     var s = make([run("run-x-dead0001", "started", null, {}), run("run-x-park0002", "stopped", null, {}),
                   run("run-x-just0003", "started", false, { heartbeat_at: ago(10000) })]); if (!s) return
-    compare(H.find(s.screen, "runRowState0").text, "dead - lease lost")
-    compare(H.find(s.screen, "runRowState1").text, "parked")
-    compare(H.find(s.screen, "runRowState2").text, "dead - lease lost just now", "never \"just now ago\"")
+    compare(H.find(s.screen, "runRowMeta0").text, "dead - lease lost")
+    compare(H.find(s.screen, "runRowMeta1").text, "parked")
+    compare(H.find(s.screen, "runRowMeta2").text, "dead - lease lost just now", "never \"just now ago\"")
+    compare(s.screen.stateText("parked", "2h"), "", "stateText names dead runs only")
+    compare(s.screen.stateText("running", "2h"), "")
   }
 
   function test_clicking_a_row_asks_the_navigator_to_open_that_run() {
@@ -812,7 +914,7 @@ TestCase {
     wait(20)
     verify(H.find(s.screen, "runsShowOlder0"), "a button between the groups")
     for (var i = 0; i < 20; i++)
-      compare(H.find(s.screen, "runRowId" + i).text, Runs.runSubtitle(s.runs.filteredRuns[i]), "row " + i)
+      compare(H.find(s.screen, "runRowId" + i).text, s.runs.filteredRuns[i].id.slice(-8), "row " + i)
     compare(H.find(s.screen, "runRow20"), null)
     s.nav.cursorIndex = 19
     for (var j = 0; j < 20; j++) compare(H.find(s.screen, "runRow" + j).hasCursor, j === 19, "row " + j)
@@ -916,14 +1018,14 @@ TestCase {
     tap(H.find(s.screen, "runChipattention"))
     compare(s.runs.runFilter, "attention")
     compare(H.find(s.screen, "runChipattention").active, true)
-    compare(H.find(s.screen, "runRowId0").text, "…escl0002")
-    compare(H.find(s.screen, "runRowId1").text, "…dead0003")
+    compare(H.find(s.screen, "runRowId0").text, "beta")
+    compare(H.find(s.screen, "runRowId1").text, "gamma")
     compare(H.find(s.screen, "runRow2"), null)
     tap(H.find(s.screen, "runChiplive"))
-    compare(H.find(s.screen, "runRowId0").text, "…live0001")
+    compare(H.find(s.screen, "runRowId0").text, "alpha")
     compare(H.find(s.screen, "runRow1"), null)
     tap(H.find(s.screen, "runChipparked"))
-    compare(H.find(s.screen, "runRowId0").text, "…park0004")
+    compare(H.find(s.screen, "runRowId0").text, "delta")
     compare(H.find(s.screen, "runRow1"), null)
     tap(H.find(s.screen, "runChipparked"))
     compare(s.runs.runFilter, "", "the active chip again means All")
@@ -937,7 +1039,7 @@ TestCase {
     var s = make(sample()); if (!s) return
     s.nav.searchQuery = "gamma"
     compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
-    compare(H.find(s.screen, "runRowId0").text, "…dead0003")
+    compare(H.find(s.screen, "runRowId0").text, "gamma")
     compare(H.find(s.screen, "runRow1"), null)
   }
 
@@ -998,7 +1100,7 @@ TestCase {
     compare(s.runs.filteredRuns.map(function(r) { return r.id }).join(","),
             "run-b-dead0003,run-A-live0002,run-A-park0004,run-g-done0001")
     for (var i = 0; i < 4; i++)
-      compare(H.find(s.screen, "runRowId" + i).text, Runs.shortId(s.runs.filteredRuns[i]), "row " + i)
+      compare(H.find(s.screen, "runRowId" + i).text, s.runs.filteredRuns[i].id.slice(-8), "row " + i)
     compare(H.find(s.screen, "runRow4"), null)
     verify(topOf(s, "runRow0") < topOf(s, "runGroup1"))
     verify(topOf(s, "runGroup1") < topOf(s, "runRow1"))
@@ -1010,7 +1112,7 @@ TestCase {
     var s = make(sample()); if (!s) return
     compare(H.find(s.screen, "runGroup0"), null)
     verify(H.find(s.screen, "runRow0"), "the rows are there")
-    compare(H.find(s.screen, "runRowId5").text, "…done0006")
+    compare(H.find(s.screen, "runRowId5").text, "epsilon")
   }
 
   function test_a_project_name_that_is_empty_shows_the_root() {
@@ -1024,7 +1126,7 @@ TestCase {
     var s = make(twoProjects()); if (!s) return
     s.nav.cursorIndex = 2
     compare(H.find(s.screen, "runRow2").hasCursor, true)
-    compare(H.find(s.screen, "runRowId2").text, "…live0003", "B's run")
+    compare(H.find(s.screen, "runRowId2").text, "zeta", "B's run")
     compare(H.find(s.screen, "runRow0").hasCursor, false)
     compare(H.find(s.screen, "runRow1").hasCursor, false)
     verify(H.find(s.screen, "runGroup1").hasCursor !== true, "a header never has the cursor")
@@ -1081,14 +1183,14 @@ TestCase {
   function test_a_new_snapshot_reorders_headers_rows_and_the_cursor() {
     var s = make(twoProjects()); if (!s) return
     s.nav.cursorIndex = 0
-    compare(H.find(s.screen, "runRowId0").text, "…escl0001")
+    compare(H.find(s.screen, "runRowId0").text, "escl0001")
     s.runs.runs = [tagged(run("run-a-live0005", "started", true, {}), "/home/u/a", "alpha"),
                    tagged(run("run-b-escl0006", "escalated", null, {}), "/home/u/b", "beta")]
     compare(H.find(s.screen, "runGroupName0").text, "beta")
     compare(H.find(s.screen, "runGroupName1").text, "alpha")
-    compare(H.find(s.screen, "runRowId0").text, "…escl0006")
+    compare(H.find(s.screen, "runRowId0").text, "escl0006")
     compare(H.find(s.screen, "runRow0").hasCursor, true)
-    compare(H.find(s.screen, "runRowId1").text, "…live0005")
+    compare(H.find(s.screen, "runRowId1").text, "live0005")
     compare(H.find(s.screen, "runRow1").hasCursor, false)
     compare(H.find(s.screen, "runRow2"), null)
   }
@@ -1143,7 +1245,7 @@ TestCase {
     var s = make(twoProjects()); if (!s) return
     s.runs.projectFilter = "/home/u/b"
     compare(H.find(s.screen, "runGroup0"), null)
-    compare(H.find(s.screen, "runRowId0").text, "…live0003")
+    compare(H.find(s.screen, "runRowId0").text, "zeta")
     compare(H.find(s.screen, "runRow1"), null)
     compare(shown(s, "runsProjectError"), false)
     s.runs.projectErrors = { "/home/u/b/": "AmTimeout: am status timed out." }
@@ -1460,13 +1562,19 @@ TestCase {
 
   function test_malformed_runs_render_without_throwing() {
     var s = make([{}, { id: 42, status: 7, lease: "x", rows: "y", tree: null, milestone_id: {} },
-                  run("run-20261004-good0007", "done", null, {})]); if (!s) return
-    compare(H.find(s.screen, "runRowId0").text, "…")
-    compare(H.find(s.screen, "runRowGlyph0").visible, false, "an unknown state has no glyph")
-    compare(H.find(s.screen, "runRowId1").text, "…")
+                  run("run-20261004-good0007", "done", null, {}),
+                  { id: "run-x-objm0008", status: "stopped", milestone_id: {}, tree: "z" }]); if (!s) return
+    compare(H.find(s.screen, "runRowId0").text, "")
+    compare(H.find(s.screen, "runRowId0").visible, false)
+    compare(H.find(H.find(s.screen, "runRowLevel0"), "runLevelBadgeText").text, "MILESTONE")
+    compare(H.find(s.screen, "runRowStateBadge0").visible, false, "an unknown state has no state badge")
+    compare(H.find(s.screen, "runRowMeta0").visible, false)
+    compare(H.find(s.screen, "runRowId1").text, "")
     compare(H.find(s.screen, "runRowTitle1").text, "…")
-    compare(H.find(s.screen, "runRowProgress1").visible, false)
-    compare(H.find(s.screen, "runRowId2").text, "…good0007")
+    compare(H.find(s.screen, "runRowMeta1").visible, false)
+    compare(H.find(s.screen, "runRowId2").text, "good0007")
+    compare(H.find(s.screen, "runRowId3").text, "objm0008", "a non-string milestone id falls back to the run id")
+    compare(H.find(s.screen, "runRowMeta3").text, "parked")
     compare(H.find(s.screen, "runChipall").text, "All")
   }
 
@@ -1540,6 +1648,108 @@ TestCase {
     compare(s.navi.opened, "")
   }
 
+  SignalSpy { id: closeSpy; signalName: "closeRequested" }
+
+  // Spec 8: Close only asks the owner.
+  function test_close_asks_the_owner_and_never_the_store() {
+    var s = make(sample()); if (!s) return
+    closeSpy.target = s.screen
+    closeSpy.clear()
+    s.nav.cursorIndex = 3
+    wait(20)
+    tap(ctl(s, 3, "Close"))
+    compare(closeSpy.count, 1)
+    compare(closeSpy.signalArguments[0][0], "run-20261004-park0004")
+    compare(s.control.controlCalls.length, 0, "no control(close) and no control(reset)")
+    compare(s.navi.opened, "", "the button is not the row")
+  }
+
+  // Spec 8.
+  function test_request_control_routes_each_ui_action() {
+    var s = make(sample()); if (!s) return
+    closeSpy.target = s.screen
+    closeSpy.clear()
+    cancelSpy.target = s.screen
+    cancelSpy.clear()
+    var parked = s.runs.filteredRuns[3]
+    s.screen.requestControl("cancel", parked)
+    s.screen.requestControl("close", parked)
+    s.screen.requestControl("pause", parked)
+    s.screen.requestControl("resume", parked)
+    s.screen.requestControl("relaunch", parked)
+    compare(cancelSpy.count, 1)
+    compare(cancelSpy.signalArguments[0][0], "run-20261004-park0004")
+    compare(closeSpy.count, 1)
+    compare(closeSpy.signalArguments[0][0], "run-20261004-park0004")
+    compare(s.control.controlCalls.join(","), "pause|run-20261004-park0004,resume|run-20261004-park0004",
+            "relaunch never reaches control()")
+    s.screen.requestControl("close", null)
+    s.screen.requestControl("close", { id: 7 })
+    s.screen.requestControl("relaunch", { status: "escalated" })
+    compare(closeSpy.count, 1, "no run id: nothing")
+    compare(s.control.controlCalls.length, 2)
+  }
+
+  // An escalated milestone run of project A whose relaunch target is
+  // `milestone` (M1, on the stub board, by default).
+  function relaunchable(milestone) {
+    var r = tagged(run("run-a-escl0009", "escalated", null, { milestone: milestone === undefined ? "M1" : milestone }),
+                   "/home/u/a", "alpha")
+    r.branch_prefix = "old-m1"
+    r.base_branch = "release"
+    return r
+  }
+
+  // Spec 9 + Review Focus 2 (a trailing / on the open root).
+  function test_relaunch_opens_the_prefilled_dispatch_for_a_run_of_the_open_project() {
+    var s = make([relaunchable()]); if (!s) return
+    s.runs.project = "/home/u/a/"
+    s.nav.cursorIndex = 0
+    wait(20)
+    compare(ctl(s, 0, "Relaunch").visible, true)
+    tap(ctl(s, 0, "Relaunch"))
+    compare(s.dispatch.relaunchCalls.length, 1)
+    var call = s.dispatch.relaunchCalls[0]
+    verify(call.card === s.app.board.cardMap.M1, "the board's own card")
+    verify(call.cardMap === s.app.board.cardMap, "the board's card map")
+    compare(JSON.stringify(call.relaunch), '{"level":"milestone","cardId":"M1","prefix":"old-m1","base":"release"}')
+    compare(s.control.flashes.length, 0)
+    compare(s.control.controlCalls.length, 0, "relaunch never reaches control()")
+    compare(s.navi.opened, "", "the button is not the row")
+  }
+
+  // Spec 9 + Review Focus 2 (a prototype-key card id).
+  function test_relaunch_refusals_flash_why_and_open_nothing() {
+    var s = make([relaunchable("")]); if (!s) return
+    s.runs.project = "/home/u/a"
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "This run has nothing to relaunch")
+    s.runs.runs = [relaunchable("M404")]
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "The card to relaunch is no longer on the board")
+    s.runs.runs = [relaunchable("constructor")]
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "The card to relaunch is no longer on the board", "a prototype key is no card")
+    s.runs.runs = [relaunchable()]
+    s.runs.project = "/home/u/b"
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "Open this run's project to relaunch it")
+    s.runs.project = ""
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "Open this run's project to relaunch it", "no project open")
+    var orphan = relaunchable()
+    delete orphan.project
+    s.runs.runs = [orphan]
+    s.runs.project = "/home/u/a"
+    s.screen.relaunch(s.runs.filteredRuns[0])
+    compare(s.control.flashText, "Open this run's project to relaunch it", "a run with no project")
+    s.screen.relaunch(null)
+    compare(s.control.flashText, "This run has nothing to relaunch")
+    compare(s.control.flashes.length, 7)
+    compare(s.dispatch.relaunchCalls.length, 0)
+    compare(s.control.controlCalls.length, 0)
+  }
+
   // 16
   function test_the_error_and_waiting_lines_show_under_their_own_run_only() {
     var s = make(sample()); if (!s) return
@@ -1572,6 +1782,34 @@ TestCase {
     wait(20)
     compare(ctl(s, 1, "Resume").text, "Resume")
     compare(ctl(s, 1, "Resume").enabled, true)
+  }
+
+  // Row i's visible control buttons, left to right, by label.
+  function shownButtons(s, i) {
+    wait(20)
+    var row = H.find(H.find(s.screen, "runRowControls" + i), "runControlButtons")
+    var kids = []
+    for (var k = 0; k < row.children.length; k++) {
+      if (row.children[k].visible) kids.push(row.children[k])
+    }
+    kids.sort(function(a, b) { return a.x - b.x })
+    return kids.map(function(b) { return b.text }).join(",")
+  }
+
+  // Spec 7.
+  function test_the_buttons_follow_the_cursor_and_the_table() {
+    var s = make(sample()); if (!s) return
+    s.nav.cursorIndex = -1
+    wait(20)
+    for (var i = 0; i < 6; i++) compare(H.find(s.screen, "runRowControls" + i).height, 0, "row " + i + " without the cursor")
+    var want = ["Cancel,Pause", "Close,Relaunch", "Close,Relaunch", "Close,Resume", "", ""]
+    for (var j = 0; j < 6; j++) {
+      s.nav.cursorIndex = j
+      compare(shownButtons(s, j), want[j], "row " + j)
+      for (var o = 0; o < 6; o++) {
+        if (o !== j) compare(H.find(s.screen, "runRowControls" + o).height, 0, "row " + o + " while row " + j + " has the cursor")
+      }
+    }
   }
 
   // ---- the footer flash (S2 4.3)
@@ -1794,7 +2032,7 @@ TestCase {
     compare(H.find(s.screen, "runProjectChip/home/u/b").active, true)
     compare(H.find(s.screen, "runProjectChipall").active, false)
     compare(H.find(s.screen, "runGroup0"), null, "flat")
-    compare(H.find(s.screen, "runRowId0").text, "…live0003")
+    compare(H.find(s.screen, "runRowId0").text, "zeta")
     compare(H.find(s.screen, "runRow1"), null)
     tap(H.find(s.screen, "runProjectChip/home/u/b"))
     compare(s.runs.projectToggles.length, 2)
@@ -1819,8 +2057,8 @@ TestCase {
     compare(s.runs.projectFilter, "/home/u/a")
     compare(H.find(s.screen, "runProjectChipthis").active, true)
     compare(H.find(s.screen, "runProjectChipall").active, false)
-    compare(H.find(s.screen, "runRowId0").text, "…escl0001")
-    compare(H.find(s.screen, "runRowId1").text, "…dead0002")
+    compare(H.find(s.screen, "runRowId0").text, "escl0001")
+    compare(H.find(s.screen, "runRowId1").text, "dead0002")
     compare(H.find(s.screen, "runRow2"), null, "alpha's runs only")
     s.runs.project = "/home/u/a/"
     compare(H.find(s.screen, "runProjectChipthis").active, true, "a trailing / on the open project still matches")
@@ -1864,7 +2102,7 @@ TestCase {
     compare(s.runs.projectFilter, "/home/u/b")
     compare(H.find(s.screen, "runProjectChip/home/u/b").active, true)
     compare(H.find(s.screen, "runProjectChip/home/u/a").active, false)
-    compare(H.find(s.screen, "runRowId0").text, "…escl0003")
+    compare(H.find(s.screen, "runRowId0").text, "escl0003")
   }
 
   // Review Focus 4.
@@ -1912,7 +2150,7 @@ TestCase {
   function test_the_search_changes_neither_project_chips_nor_status_counts() {
     var s = make(twoProjects()); if (!s) return
     s.nav.searchQuery = "zeta"
-    compare(H.find(s.screen, "runRowId0").text, "…live0003")
+    compare(H.find(s.screen, "runRowId0").text, "zeta")
     compare(H.find(s.screen, "runRow1"), null)
     compare(projectChipText(s, "/home/u/a"), "alpha 2", "alpha's runs are all searched out; its chip stays")
     compare(projectChipText(s, "/home/u/b"), "beta 1")
@@ -1932,212 +2170,5 @@ TestCase {
     compare(H.find(s.screen, "runChipattention").text, "Needs attention 2")
     compare(H.find(s.screen, "runChiplive").text, "Live 0")
     compare(H.find(s.screen, "runChipparked").text, "Parked 0")
-  }
-
-  // ---- Open project (4.4)
-
-  // Row i's Open project button; the test fails when the row has none.
-  function openButton(s, i) {
-    var b = H.find(s.screen, "runRowOpenProject" + i)
-    verify(b, "row " + i + " has an Open project button")
-    return b
-  }
-
-  // The stub registry: alpha's selected, `list` the registry.
-  function registry(list) {
-    return { selectedProject: { root_path: "/home/u/a", name: "alpha" }, projects: list }
-  }
-
-  // twoProjects(): rows 0 and 1 are alpha's, row 2 is beta's.
-  // 1
-  function test_open_project_shows_on_the_cursor_row_of_another_projects_run() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.nav.cursorIndex = 2
-    wait(20)
-    compare(openButton(s, 2).visible, true)
-    compare(openButton(s, 2).text, "Open project")
-    s.nav.cursorIndex = 0
-    wait(20)
-    compare(openButton(s, 0).visible, false, "alpha is the open project")
-    compare(openButton(s, 2).visible, false, "beta's row lost the cursor")
-  }
-
-  // 2
-  function test_open_project_is_hidden_off_the_cursor() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.nav.cursorIndex = 0
-    wait(20)
-    var row = H.find(s.screen, "runRow2")
-    compare(openButton(s, 2).visible, false)
-    var before = row.height
-    s.nav.cursorIndex = 2
-    wait(20)
-    compare(openButton(s, 2).visible, true)
-    s.nav.cursorIndex = 0
-    wait(20)
-    compare(openButton(s, 2).visible, false)
-    compare(row.height, before, "the row is as tall as before the cursor came")
-  }
-
-  // 3
-  function test_open_project_is_hidden_for_the_open_project_with_a_trailing_slash() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a/"
-    s.nav.cursorIndex = 0
-    wait(20)
-    compare(openButton(s, 0).visible, false)
-    s.nav.cursorIndex = 1
-    wait(20)
-    compare(openButton(s, 1).visible, false)
-    s.nav.cursorIndex = 2
-    wait(20)
-    compare(openButton(s, 2).visible, true, "beta is not the open project")
-  }
-
-  // 4
-  function test_with_no_project_open_every_registered_projects_run_shows_open_project() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = ""
-    s.nav.cursorIndex = 0
-    wait(20)
-    compare(openButton(s, 0).visible, true, "alpha's run")
-    s.nav.cursorIndex = 2
-    wait(20)
-    compare(openButton(s, 2).visible, true, "beta's run")
-  }
-
-  // 5
-  function test_open_project_is_hidden_for_a_run_with_no_project_or_an_unregistered_one() {
-    var s = make([run("run-20261004-plain001", "started", true, {}),
-                  tagged(run("run-c-live0009", "started", true, {}), "/home/u/c", "gamma")]); if (!s) return
-    s.runs.project = "/home/u/a"
-    for (var i = 0; i < 2; i++) {
-      s.nav.cursorIndex = i
-      wait(20)
-      compare(openButton(s, i).visible, false, "row " + i)
-    }
-  }
-
-  // 6
-  function test_open_project_tolerates_a_missing_registry() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.nav.cursorIndex = 2
-    wait(20)
-    compare(openButton(s, 2).visible, true, "the full registry shows it")
-    var lists = [undefined, null, "abc", 7, ({ length: 1 })]
-    for (var i = 0; i < lists.length; i++) {
-      s.app.projects = registry(lists[i])
-      compare(openButton(s, 2).visible, false, "registry " + i)
-    }
-    s.app.projects = { selectedProject: { root_path: "/home/u/a", name: "alpha" } }
-    compare(openButton(s, 2).visible, false, "no projects key at all")
-  }
-
-  // Review Focus 2.
-  function test_a_malformed_run_project_hides_open_project_without_throwing() {
-    var bad = [run("run-x-null0001", "started", true, {}), run("run-x-strg0002", "started", true, {}),
-               run("run-x-nort0003", "started", true, {}), run("run-x-arry0004", "started", true, {})]
-    bad[0].project = null
-    bad[1].project = "/home/u/b"
-    bad[2].project = { root: 7, name: "beta" }
-    bad[3].project = ["/home/u/b"]
-    var s = make(bad.concat([{}])); if (!s) return
-    s.runs.project = "/home/u/a"
-    for (var i = 0; i < 5; i++) {
-      s.nav.cursorIndex = i
-      wait(20)
-      compare(openButton(s, i).visible, false, "row " + i)
-    }
-  }
-
-  // Review Focus 3.
-  function test_malformed_registry_entries_are_skipped() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.app.projects = registry([null, 5, "/home/u/b", { root_path: 7 }, { name: "no root" }])
-    s.nav.cursorIndex = 2
-    wait(20)
-    compare(openButton(s, 2).visible, false, "no well-formed entry for beta")
-    s.app.projects = registry([null, { root_path: 7 }, { root_path: "/home/u/b/", name: "beta" }])
-    compare(openButton(s, 2).visible, true, "the well-formed entry past the bad ones")
-  }
-
-  // Review Focus 4.
-  function test_open_project_follows_the_open_project_and_the_registry() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.nav.cursorIndex = 2
-    wait(20)
-    compare(openButton(s, 2).visible, true)
-    s.runs.project = "/home/u/b"
-    compare(openButton(s, 2).visible, false, "beta is open now")
-    s.runs.project = "/home/u/a"
-    compare(openButton(s, 2).visible, true)
-    s.app.projects = registry([{ root_path: "/home/u/a", name: "alpha" }])
-    compare(openButton(s, 2).visible, false, "beta left the registry")
-    s.app.projects = registry([{ root_path: "/home/u/a", name: "alpha" }, { root_path: "/home/u/b", name: "beta" }])
-    compare(openButton(s, 2).visible, true, "beta is back")
-  }
-
-  // 7
-  function test_open_project_click_chooses_the_registry_entry_and_does_not_open_the_run() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.nav.cursorIndex = 2
-    wait(20)
-    tap(openButton(s, 2))
-    compare(s.navi.chosen.length, 1)
-    compare(s.navi.chosen[0].name, "beta")
-    verify(s.navi.chosen[0] === s.app.projects.projects[1], "the registry's own beta entry")
-    compare(s.navi.opened, "", "the button is not the row")
-    compare(s.runs.projectToggles.length, 0, "the project filter is not touched")
-    compare(s.runs.projectFilter, "")
-  }
-
-  // 8
-  function test_open_project_picks_the_first_of_two_entries_with_one_root() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.app.projects = registry([{ root_path: "/home/u/a", name: "alpha" },
-                               { root_path: "/home/u/b/", name: "beta-1" },
-                               { root_path: "/home/u/b", name: "beta-2" }])
-    s.nav.cursorIndex = 2
-    wait(20)
-    tap(openButton(s, 2))
-    compare(s.navi.chosen.length, 1)
-    compare(s.navi.chosen[0].name, "beta-1")
-    verify(s.navi.chosen[0] === s.app.projects.projects[1], "the entry object itself")
-  }
-
-  // 9: a pin — the row's own click is unchanged, so this passes before the
-  // button has a click handler.
-  function test_a_row_click_still_opens_any_projects_run() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.nav.cursorIndex = 2
-    wait(20)
-    compare(openButton(s, 2).visible, true)
-    tap(H.find(s.screen, "runRowTitle2"))
-    compare(s.navi.opened, "run-b-live0003")
-    compare(s.navi.chosen.length, 0)
-  }
-
-  // Review Focus 5.
-  function test_open_project_under_a_project_filter_leaves_the_filter_alone() {
-    var s = make(twoProjects()); if (!s) return
-    s.runs.project = "/home/u/a"
-    s.runs.toggleProjectFilter("/home/u/b")
-    s.runs.projectToggles = []
-    s.nav.cursorIndex = 0
-    wait(20)
-    compare(H.find(s.screen, "runRowId0").text, "…live0003", "beta's run, flat")
-    tap(openButton(s, 0))
-    compare(s.navi.chosen.length, 1)
-    compare(s.navi.chosen[0].root_path, "/home/u/b")
-    compare(s.runs.projectToggles.length, 0)
-    compare(s.runs.projectFilter, "/home/u/b")
   }
 }
