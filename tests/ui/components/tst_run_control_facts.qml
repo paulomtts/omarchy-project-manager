@@ -20,6 +20,7 @@ TestCase {
   function test_pending_of() {
     var r = { id: "r1" }
     compare(Facts.pendingOf({ r1: "pause" }, r), "pause")
+    compare(Facts.pendingOf({ r1: "reset" }, r), "reset", "a reset passes through as the store says it")
     compare(Facts.pendingOf({ r2: "pause" }, r), "")
     compare(Facts.pendingOf({ r1: 5 }, r), "", "only a string is an action")
     compare(Facts.pendingOf({ r1: "pause" }, null), "")

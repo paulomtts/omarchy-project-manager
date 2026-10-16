@@ -525,7 +525,8 @@ TestCase {
     "controlRunners", "pendingTimer", "flashTimer", "notifyOnEscalation", "notifySaved", "notifyTouched",
     "settingsLoadRunner", "settingsSaveRunner", "control", "refusalOf", "flash", "openCancel", "closeCancel",
     "confirmCancel", "setNotifyOnEscalation", "lastControlErrorType", "resumeRunId", "resumeVerify",
-    "resumeAllowNoVerification", "resumeError", "resumeOpenFor", "resumeClose", "resumeConfirm", "resumeSaveRunner"]
+    "resumeAllowNoVerification", "resumeError", "resumeOpenFor", "resumeClose", "resumeConfirm", "resumeSaveRunner",
+    "closeRunId", "closeOpen", "closeError", "closeAsk", "closeKeep", "closeConfirm"]
   property var renamedOnControl: ["runSettings", "runSettingsRunner"]
   property var movedToAlerts: ["armedRoots", "alertsArmed", "toasts", "toastMs", "toastTimer",
     "raiseAlerts", "expireToasts", "dismissToast", "dismissAllToasts"]
@@ -561,7 +562,7 @@ TestCase {
   function test_the_run_store_has_none_of_the_moved_members() {
     var app = makeBare(); if (!app) return
     var names = tc.movedToControl.concat(tc.renamedOnControl, tc.movedToAlerts, tc.movedToDispatch, tc.runStoreHandles)
-    compare(names.length, 91, "88 moved members and 3 handles")
+    compare(names.length, 97, "94 moved members and 3 handles")
     compare(answered(app.runs, names, true).join(", "), "", "the run store still answers to these")
     compare(answered(app.runs, ["runs", "project", "refresh", "requestSnapshot", "snapshotReplied", "runsChanged"],
                      false).join(", "), "", "members that stay are still there")
