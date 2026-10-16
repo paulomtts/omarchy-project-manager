@@ -1170,6 +1170,7 @@ var _REASON_RESUME_RUNNING = "The run is still running"
 var _REASON_RESUME_CANCELLED = "A cancelled run cannot be resumed"
 var _REASON_RESUME_ESCALATED_CARD = "An escalated card run cannot be resumed; relaunch it"
 var _REASON_CANCEL_CANCELLED = "The run is already cancelled"
+var _REASON_CLOSE_RUNNING = "A running run is cancelled, not closed"
 
 // A fresh {enabled, reason}: enabled exactly when there is no reason.
 function _action(reason) { return { enabled: reason === "", reason: reason } }
@@ -1184,8 +1185,9 @@ function _inIntegrate(run) {
 // when enabled. Pause needs a running run outside Integrate; resume needs dead,
 // parked or escalated, except an escalated card run (workflow "task", trimmed),
 // and never looks at accepting; cancel needs a run that has not finished and is
-// not in Integrate. The state's reason wins over Integrate's. Close is a stub
-// until story B (042b0d8e): always disabled with the unknown-state reason.
+// not in Integrate; close needs dead, parked or escalated, escalated card runs
+// included, outside Integrate (a running run is cancelled, not closed). The
+// state's reason wins over Integrate's.
 //
 // Action names come in two vocabularies, never mixed. The UI (visibleActions,
 // RunControls.actionRequested, RunsScreen.requestControl) says pause, resume,
@@ -1198,47 +1200,75 @@ function _inIntegrate(run) {
 function controls(run) {
   var state = runState(run)
   var integrate = _inIntegrate(run)
-  var pause, resume, cancel
+  var pause, resume, cancel, close
   if (state === "running") {
     pause = integrate ? _REASON_INTEGRATE : ""
     resume = _REASON_RESUME_RUNNING
     cancel = integrate ? _REASON_INTEGRATE : ""
+    close = _REASON_CLOSE_RUNNING
   } else if (state === "dead" || state === "parked" || state === "escalated") {
     pause = _REASON_PAUSE_NOT_RUNNING
     resume = state === "escalated" && _textOf(run.workflow) === "task" ? _REASON_RESUME_ESCALATED_CARD : ""
     cancel = integrate ? _REASON_INTEGRATE : ""
+    close = integrate ? _REASON_INTEGRATE : ""
   } else if (state === "cancelled") {
     pause = _REASON_FINISHED
     resume = _REASON_RESUME_CANCELLED
     cancel = _REASON_CANCEL_CANCELLED
+    close = _REASON_CANCEL_CANCELLED
   } else if (state === "done") {
     pause = _REASON_FINISHED
     resume = _REASON_FINISHED
     cancel = _REASON_FINISHED
+    close = _REASON_FINISHED
   } else {
     pause = _REASON_UNKNOWN
     resume = _REASON_UNKNOWN
     cancel = _REASON_UNKNOWN
+    close = _REASON_UNKNOWN
   }
-  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel), close: _action(_REASON_UNKNOWN) }
+  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel), close: _action(close) }
 }
 
 // The run's level in the milestone tree: "subtask" for a card run (workflow
-// "task", trimmed, case-sensitive), else "story" when story_id is a string that
-// is non-empty after trimming, else "milestone". Stub until story B (042b0d8e):
-// always "milestone". Never throws.
+// "task", read as controls() reads it: trimmed, case-sensitive), else "story"
+// when story_id is a string that is non-empty after trimming (a number or any
+// other non-string is no story id), else "milestone". Anything that is not an
+// object is "milestone". Never throws.
 function runLevel(run) {
+  if (!_isObject(run)) return "milestone"
+  if (_textOf(run.workflow) === "task") return "subtask"
+  if (typeof run.story_id === "string" && run.story_id.trim() !== "") return "story"
   return "milestone"
 }
+
+// [state, UI actions] for the Runs row, left to right as rendered. A state not
+// listed shows no actions.
+var _ACTIONS_BY_STATE = [
+  ["running", ["cancel", "pause"]],
+  ["parked", ["close", "resume"]],
+  ["escalated", ["close", "relaunch"]],
+  ["dead", ["close", "relaunch"]]
+]
 
 // The UI actions the Runs row shows for a run, a fresh array, left to right as
 // rendered: the state's buttons (running: cancel, pause; parked: close, resume;
 // escalated and dead: close, relaunch; anything else: none) minus every one
 // whose controls(run) entry is disabled. relaunch has no controls() entry and
-// is never dropped. Stub until story B (042b0d8e): always a fresh []. Never
-// throws.
+// is never dropped, and resume is never shown on an escalated or dead run.
+// controls(run) is computed once per call. Never throws.
 function visibleActions(run) {
-  return []
+  var state = runState(run)
+  var allowed = controls(run)
+  var out = []
+  for (var i = 0; i < _ACTIONS_BY_STATE.length; i++) {
+    if (_ACTIONS_BY_STATE[i][0] !== state) continue
+    var names = _ACTIONS_BY_STATE[i][1]
+    for (var j = 0; j < names.length; j++) {
+      if (names[j] === "relaunch" || allowed[names[j]].enabled) out.push(names[j])
+    }
+  }
+  return out
 }
 
 // [type, sentence] for each am control error, matched with === by linear scan so
@@ -1252,8 +1282,13 @@ var _CONTROL_ERRORS = [
   ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
   ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
   ["ClaimedError", "Another run has already claimed this work"],
-  ["LockTimeoutError", "am is busy; try again in a moment"]
+  ["LockTimeoutError", "am is busy; try again in a moment"],
+  ["NotResettableError", "This run cannot be closed (it is finished or already cancelled)."]
 ]
+
+// RunIsLiveError's sentence on a reset: close takes a paused run, so pausing is
+// the way forward, not waiting or resuming.
+var _LIVE_ON_RESET = "Another am process is still driving this run. Pause it first."
 
 // The trimmed, case-sensitive type of an am control error, envelope or bare, the
 // way errorText reads it; "" when error is not an object or is ok:true.
@@ -1266,10 +1301,12 @@ function _controlErrorType(error) {
 // The sentence for a failed pause / resume / cancel / reset. A known type gives
 // its sentence without am's message; anything else gives errorText(error).
 // `action` is the store's action name (pause, resume, cancel, reset) and is
-// optional; it is accepted and ignored until story B (042b0d8e) gives reset its
-// own sentences.
+// optional. It is read only when it is a string, trimmed and case-sensitive:
+// on "reset", a RunIsLiveError gives its own sentence. Every other type, and
+// every other action, gives the same sentence as with no action.
 function controlError(error, action) {
   var type = _controlErrorType(error)
+  if (type === "RunIsLiveError" && typeof action === "string" && action.trim() === "reset") return _LIVE_ON_RESET
   for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
     if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
   }
