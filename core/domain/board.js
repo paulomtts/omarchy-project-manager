@@ -194,7 +194,8 @@ function isArchiveReadyStatus(status) {
   return status === "merged" || status === "canceled" || status === "archived"
 }
 
-// Milestones (root cards) that are safe to archive in bulk: not archived yet,
+// Milestones (root cards) that are safe to archive in bulk: the milestone card
+// itself is merged (not done, not already archived),
 // at least one descendant, every descendant archive-ready (see
 // isArchiveReadyStatus: merged, never merely done),
 // and nothing in the whole subtree -- the milestone card included -- updated
@@ -209,7 +210,7 @@ function archivable(roots, now, minAgeDays) {
   var out = []
 
   ;(roots || []).forEach(function(root) {
-    if (!root || root.status === "archived") return
+    if (!root || root.status !== "merged") return
     var count = 0
     var allFinished = true
     var newest = Date.parse(root.updated_at)
