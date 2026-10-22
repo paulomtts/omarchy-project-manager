@@ -315,9 +315,9 @@ TestCase {
     var app = make(); if (!app) return null
     app.board.nowMs = Date.parse(archNow)
     app.board.applyTreeData(roots || [
-      aged("old", "done", 9, [aged("o1", "done", 9)]),
+      aged("old", "done", 9, [aged("o1", "merged", 9)]),
       aged("older", "done", 20, [aged("o2", "merged", 20, [aged("o3", "canceled", 20)])]),
-      aged("young", "done", 1, [aged("y1", "done", 1)]),
+      aged("young", "done", 1, [aged("y1", "merged", 1)]),
       aged("open", "todo", 20, [aged("p1", "todo", 20)])
     ])
     return app
@@ -339,7 +339,7 @@ TestCase {
   function test_open_recomputes_from_the_current_board_and_runs_nothing() {
     var app = archApp(); if (!app) return
     var b = app.board
-    b.applyTreeData([aged("m", "done", 5, [aged("a", "done", 5)])])
+    b.applyTreeData([aged("m", "done", 5, [aged("a", "merged", 5)])])
     b.openArchive()
     compare(b.archiveOpen, true)
     compare(ids(b.archiveCandidates), "m")
@@ -348,7 +348,7 @@ TestCase {
   }
 
   function test_open_with_no_candidates_or_no_project_stays_closed() {
-    var app = archApp([aged("young", "done", 1, [aged("y", "done", 1)])]); if (!app) return
+    var app = archApp([aged("young", "done", 1, [aged("y", "merged", 1)])]); if (!app) return
     app.board.openArchive()
     compare(app.board.archiveOpen, false)
     var bare = make(); bare.projects.applyProjectsList([])
@@ -372,8 +372,8 @@ TestCase {
     b.openArchive()
     // the board changes while the dialog is open: "old" gets a todo child
     b.applyTreeData([
-      aged("old", "done", 9, [aged("o1", "done", 9), aged("o9", "todo", 9)]),
-      aged("older", "done", 20, [aged("o2", "done", 20)])])
+      aged("old", "done", 9, [aged("o1", "merged", 9), aged("o9", "todo", 9)]),
+      aged("older", "done", 20, [aged("o2", "merged", 20)])])
     b.archiveAll()
     compare(b.archiveBusy, true)
     var cmd = b.archiveRunner.current.command
@@ -414,7 +414,7 @@ TestCase {
     verify(b.archiveError.indexOf("old") >= 0 && b.archiveError.indexOf("locked") >= 0, b.archiveError)
     verify(b.archiveError.indexOf("older") < 0 || b.archiveError.indexOf("older: ") < 0, "the archived one is not reported as failed")
     // the board refetch drops the archived one; a retry carries only what is left
-    b.applyTreeData([aged("old", "done", 9, [aged("o1", "done", 9)])])
+    b.applyTreeData([aged("old", "done", 9, [aged("o1", "merged", 9)])])
     b.archiveAll()
     compare(b.archiveError, "")
     compare(b.archiveRunner.current.command.slice(3).join(), "old")

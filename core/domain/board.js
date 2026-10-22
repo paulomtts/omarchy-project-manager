@@ -188,8 +188,15 @@ function isFinishedStatus(status) {
   return status === "done" || status === "merged" || status === "canceled" || status === "archived"
 }
 
+// A card the archive rule accepts: merged (not merely done), or already put out
+// of play (canceled, archived).
+function isArchiveReadyStatus(status) {
+  return status === "merged" || status === "canceled" || status === "archived"
+}
+
 // Milestones (root cards) that are safe to archive in bulk: not archived yet,
-// at least one descendant, every descendant finished (see isFinishedStatus),
+// at least one descendant, every descendant archive-ready (see
+// isArchiveReadyStatus: merged, never merely done),
 // and nothing in the whole subtree -- the milestone card included -- updated
 // within the last `minAgeDays` days. `now` is a Date or epoch milliseconds,
 // injected so callers and tests are deterministic. A timestamp that cannot be
@@ -210,7 +217,7 @@ function archivable(roots, now, minAgeDays) {
     function visit(card) {
       ;(card.children || []).forEach(function(child) {
         count += 1
-        if (!isFinishedStatus(child.status)) allFinished = false
+        if (!isArchiveReadyStatus(child.status)) allFinished = false
         var t = Date.parse(child.updated_at)
         if (isNaN(t) || isNaN(newest)) newest = NaN
         else if (t > newest) newest = t

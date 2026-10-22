@@ -334,7 +334,7 @@ TestCase {
   function arch(roots) { return Board.archivable(roots, new Date(nowIso)) }
 
   function test_archivable_takes_a_finished_old_milestone() {
-    var m = ageCard("m", "done", days(5), [ageCard("s", "done", days(5), [ageCard("t", "merged", days(5))])])
+    var m = ageCard("m", "done", days(5), [ageCard("s", "merged", days(5), [ageCard("t", "merged", days(5))])])
     m.title = "Milestone M"
     var out = arch([m])
     compare(out.length, 1)
@@ -345,82 +345,90 @@ TestCase {
   }
 
   function test_archivable_boundary_is_two_days() {
-    var young = ageCard("y", "done", days(1.99), [ageCard("a", "done", days(5))])
-    var exact = ageCard("e", "done", days(2), [ageCard("b", "done", days(5))])
+    var young = ageCard("y", "done", days(1.99), [ageCard("a", "merged", days(5))])
+    var exact = ageCard("e", "done", days(2), [ageCard("b", "merged", days(5))])
     compare(ids(arch([young])).length, 0)
     compare(ids(arch([exact])).join(), "e")
-    compare(arch([ageCard("one", "done", days(1), [ageCard("c", "done", days(1))])]).length, 0)
+    compare(arch([ageCard("one", "done", days(1), [ageCard("c", "merged", days(1))])]).length, 0)
   }
 
   function test_archivable_min_age_is_a_parameter() {
-    var m = ageCard("m", "done", days(1), [ageCard("a", "done", days(1))])
+    var m = ageCard("m", "done", days(1), [ageCard("a", "merged", days(1))])
     compare(Board.archivable([m], new Date(nowIso), 1).length, 1)
     compare(Board.archivable([m], new Date(nowIso), 3).length, 0)
   }
 
-  function test_archivable_every_finished_status_counts() {
+  function test_archivable_merged_canceled_and_archived_count() {
     var m = ageCard("m", "todo", days(9), [
-      ageCard("a", "done", days(9)), ageCard("b", "merged", days(9)),
+      ageCard("a", "merged", days(9)), ageCard("b", "merged", days(9)),
       ageCard("c", "canceled", days(9)), ageCard("d", "archived", days(9))])
     compare(ids(arch([m])).join(), "m")
+  }
+
+  function test_archivable_a_merely_done_descendant_blocks() {
+    var m = ageCard("m", "merged", days(9), [
+      ageCard("a", "merged", days(9)), ageCard("b", "done", days(9))])
+    compare(arch([m]).length, 0)
+    var deep = ageCard("s", "merged", days(9), [ageCard("t", "done", days(9))])
+    compare(arch([ageCard("m2", "merged", days(9), [deep])]).length, 0)
   }
 
   function test_archivable_any_unfinished_descendant_blocks() {
     var statuses = ["todo", "in_progress", "blocked"]
     statuses.forEach(function(st) {
-      var m = ageCard("m", "done", days(9), [ageCard("a", "done", days(9)), ageCard("b", st, days(9))])
+      var m = ageCard("m", "done", days(9), [ageCard("a", "merged", days(9)), ageCard("b", st, days(9))])
       compare(arch([m]).length, 0, st)
     })
   }
 
   function test_archivable_looks_at_every_depth() {
     var deep = ageCard("d", "in_progress", days(9))
-    var m = ageCard("m", "done", days(9), [ageCard("s", "done", days(9), [ageCard("t", "done", days(9), [deep])])])
+    var m = ageCard("m", "done", days(9), [ageCard("s", "merged", days(9), [ageCard("t", "merged", days(9), [deep])])])
     compare(arch([m]).length, 0)
-    deep.status = "done"
+    deep.status = "merged"
     var out = arch([m])
     compare(out.length, 1)
     compare(out[0].cardCount, 3)
   }
 
   function test_archivable_skips_empty_and_already_archived_milestones() {
-    var empty = ageCard("e", "done", days(30))
-    var archived = ageCard("a", "archived", days(30), [ageCard("x", "done", days(30))])
+    var empty = ageCard("e", "merged", days(30))
+    var archived = ageCard("a", "archived", days(30), [ageCard("x", "merged", days(30))])
     compare(arch([empty, archived]).length, 0)
   }
 
   function test_archivable_milestone_status_itself_does_not_matter_unless_archived() {
-    var todo = ageCard("t", "todo", days(9), [ageCard("x", "done", days(9))])
+    var todo = ageCard("t", "todo", days(9), [ageCard("x", "merged", days(9))])
     compare(ids(arch([todo])).join(), "t")
   }
 
   function test_archivable_idle_is_measured_from_the_newest_update_in_the_subtree() {
-    var m = ageCard("m", "done", days(9), [ageCard("s", "done", days(9), [ageCard("t", "done", days(0.5))])])
+    var m = ageCard("m", "done", days(9), [ageCard("s", "merged", days(9), [ageCard("t", "merged", days(0.5))])])
     compare(arch([m]).length, 0, "a recent grandchild keeps it alive")
-    var m2 = ageCard("m2", "done", days(0.5), [ageCard("s", "done", days(9))])
+    var m2 = ageCard("m2", "done", days(0.5), [ageCard("s", "merged", days(9))])
     compare(arch([m2]).length, 0, "a recent milestone card keeps it alive")
-    var m3 = ageCard("m3", "done", days(4), [ageCard("s", "done", days(7))])
+    var m3 = ageCard("m3", "done", days(4), [ageCard("s", "merged", days(7))])
     compare(arch([m3])[0].idleDays, 4)
   }
 
   function test_archivable_unreadable_timestamps_are_never_candidates() {
     var m = ageCard("m", "done", days(9), [ageCard("s", "done", "")])
     compare(arch([m]).length, 0)
-    var n = ageCard("n", "done", "garbage", [ageCard("s", "done", days(9))])
+    var n = ageCard("n", "done", "garbage", [ageCard("s", "merged", days(9))])
     compare(arch([n]).length, 0)
   }
 
   function test_archivable_orders_oldest_first_and_tolerates_junk_input() {
-    var a = ageCard("a", "done", days(3), [ageCard("x", "done", days(3))])
-    var b = ageCard("b", "done", days(10), [ageCard("x2", "done", days(10))])
-    var c = ageCard("c", "done", days(6), [ageCard("x3", "done", days(6))])
+    var a = ageCard("a", "done", days(3), [ageCard("x", "merged", days(3))])
+    var b = ageCard("b", "done", days(10), [ageCard("x2", "merged", days(10))])
+    var c = ageCard("c", "done", days(6), [ageCard("x3", "merged", days(6))])
     compare(ids(arch([a, b, c])).join(), "b,c,a")
     compare(Board.archivable(null, new Date(nowIso)).length, 0)
     compare(Board.archivable([], new Date(nowIso)).length, 0)
   }
 
   function test_archivable_accepts_a_millisecond_now() {
-    var m = ageCard("m", "done", days(5), [ageCard("s", "done", days(5))])
+    var m = ageCard("m", "done", days(5), [ageCard("s", "merged", days(5))])
     compare(Board.archivable([m], Date.parse(nowIso)).length, 1)
   }
 }
