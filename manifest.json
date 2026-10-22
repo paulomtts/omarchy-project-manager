@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "paulomtts.omarchy-project-manager",
   "name": "Omarchy Project Manager",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "paulomtts",
   "license": "MIT",
   "description": "Per-project board, milestone graph, documents and Claude memories for brd projects, right from the bar.",

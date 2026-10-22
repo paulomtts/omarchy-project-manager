@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Pause, resume or cancel one run: an `am pause|resume|cancel` passthrough.
+"""Pause, resume, cancel or reset one run: an `am pause|resume|cancel|reset` passthrough.
 
-    run-control.py <pause|resume|cancel> RUN REPO [--verify CMD]... [--allow-no-verification]
+    run-control.py <pause|resume|cancel|reset> RUN REPO [--verify CMD]... [--allow-no-verification]
 
 Runs `am ACTION RUN --repo-dir REPO` as an argv list (no shell, stdin
 /dev/null). Only resume takes options: every `--verify CMD` pair is forwarded
@@ -9,7 +9,7 @@ in the order given (CMD is the next argument verbatim, even if it starts with
 `-`), then `--allow-no-verification`. --pretty is never sent. RUN, REPO and CMD
 reach am unaltered; am refuses a bad repo or an unknown run itself.
 
-pause and cancel answer at once and run with a 60 s timeout. An accepted resume
+pause, cancel and reset answer at once and run with a 60 s timeout. An accepted resume
 is the run itself and must outlive this helper, so am is started in its own
 session with its output going to unlinked temp files: the helper waits up to
 RESUME_GRACE seconds and, if am is still going, reports it detached and leaves
@@ -26,7 +26,7 @@ Prints exactly one JSON line on EVERY path:
   without an envelope;
 - {"ok": false, "error": {"type": "AmMissing", ...}} when am is not on PATH;
 - {"ok": false, "error": {"type": "HelperError", ...}} on any unexpected
-  failure (a pause/cancel timeout, an am that cannot start);
+  failure (a pause/cancel/reset timeout, an am that cannot start);
 - {"ok": false, "error": {"type": "Usage", ...}} for any other command line.
 Exit 0 whenever a line was printed, refusals and errors included; exit 2 for
 Usage only.
@@ -41,9 +41,9 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common.json_line import emit  # noqa: E402
 
-USAGE = ("usage: run-control.py <pause|resume|cancel> RUN REPO"
+USAGE = ("usage: run-control.py <pause|resume|cancel|reset> RUN REPO"
          " [--verify CMD]... [--allow-no-verification]")
-ACTIONS = ("pause", "resume", "cancel")
+ACTIONS = ("pause", "resume", "cancel", "reset")
 AM_TIMEOUT = 60
 RESUME_GRACE = 10
 TAIL_LINES = 20
@@ -125,7 +125,7 @@ def report(action, stdout, stderr, returncode):
 
 
 def run_am(am, argv):
-    """pause/cancel: am answers at once. Returns (stdout, stderr, returncode)."""
+    """pause/cancel/reset: am answers at once. Returns (stdout, stderr, returncode)."""
     proc = subprocess.run([am, *argv], capture_output=True, encoding="utf-8",
                           errors="replace", stdin=subprocess.DEVNULL, timeout=AM_TIMEOUT)
     return proc.stdout, proc.stderr, proc.returncode

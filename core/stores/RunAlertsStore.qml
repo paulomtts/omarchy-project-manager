@@ -2,6 +2,7 @@ import QtQml
 import Quickshell
 import Quickshell.Io
 import "../domain/runs.js" as Runs
+import "../domain/compat.js" as Compat
 
 // The run alerts (S2 4.4): a toast for every run of any registered project
 // that newly needs a human while the panel is open. Its one entry point for
@@ -53,7 +54,7 @@ Scope {
     }
     if (outcome !== "ok" || !alerts.active) return
     if (Runs.hasKey(alerts.armedRoots, root)) {
-      var found = Runs.newAlerts(Array.isArray(previousRuns) ? previousRuns : [], runs, alerts.titlesByRoot)
+      var found = Runs.newAlerts(Compat.isArray(previousRuns) ? previousRuns : [], runs, alerts.titlesByRoot)
       for (var i = 0; i < found.length; i++) {
         var run = Runs.runById(runs, found[i].id)
         var project = run !== null && run.project !== null && typeof run.project === "object" ? run.project.name : ""
@@ -90,7 +91,7 @@ Scope {
   // One toast per alert, newest last: a run's older toast goes first, then the
   // oldest beyond three. It does not check `active`.
   function raiseAlerts(items) {
-    var list = Array.isArray(items) ? items : []
+    var list = Compat.isArray(items) ? items : []
     for (var i = 0; i < list.length; i++) {
       var a = list[i]
       toastState.nextKey += 1

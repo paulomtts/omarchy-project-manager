@@ -1,4 +1,4 @@
-"""run-control.py: an `am pause|resume|cancel` passthrough, one JSON line on every path.
+"""run-control.py: an `am pause|resume|cancel|reset` passthrough, one JSON line on every path.
 
 Hermetic: a fake `am` lives on a temp PATH and serves hand-written fixtures from
 FAKE_AM_DIR, appending each call's argv to calls.log; HOME and XDG_DATA_HOME are
@@ -21,8 +21,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..", "..", "..", "..")
 SCRIPT = os.path.join(ROOT, "core", "backend", "runs", "run-control.py")
 
-# The fake am logs its argv, then (keyed on the subcommand: pause, resume or
-# cancel) writes FAKE_AM_DIR/<name>.err to stderr if present, prints
+# The fake am logs its argv, then (keyed on the subcommand: pause, resume,
+# cancel or reset) writes FAKE_AM_DIR/<name>.err to stderr if present, prints
 # FAKE_AM_DIR/<name>.out verbatim and exits with FAKE_AM_DIR/<name>.code
 # (default 0). Fixtures are copied as bytes, so they may hold invalid UTF-8. A
 # missing .out fixture behaves like real am for an unknown run: an
@@ -33,7 +33,7 @@ d = os.environ["FAKE_AM_DIR"]
 args = sys.argv[1:]
 with open(os.path.join(d, "calls.log"), "a") as f:
     f.write(json.dumps(args) + "\\n")
-name = args[0] if args[:1] in (["pause"], ["resume"], ["cancel"]) else "other"
+name = args[0] if args[:1] in (["pause"], ["resume"], ["cancel"], ["reset"]) else "other"
 out = os.path.join(d, name + ".out")
 if not os.path.exists(out):
     sys.stdout.write(json.dumps({"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": False}) + "\\n")
@@ -50,7 +50,7 @@ sys.exit(int(open(code).read()) if os.path.exists(code) else 0)
 
 UNKNOWN_RUN = {"error": {"message": "unknown run", "type": "UnknownRunError"}, "ok": False}
 USAGE = {"ok": False, "error": {"type": "Usage", "message":
-         "usage: run-control.py <pause|resume|cancel> RUN REPO"
+         "usage: run-control.py <pause|resume|cancel|reset> RUN REPO"
          " [--verify CMD]... [--allow-no-verification]"}}
 TRACEBACK = "Traceback (most recent call last):\nValueError: boom\n"
 
@@ -154,6 +154,16 @@ def test_cancel_argv(world):
     assert calls(world) == [["cancel", "r1", "--repo-dir", "/p"]]
 
 
+def test_reset_argv(world):
+    set_envelope(world, "reset", OK)
+    code, _ = run(world, ["reset", "r1", "/p"])
+    assert code == 0
+    made = calls(world)
+    assert made == [["reset", "r1", "--repo-dir", "/p"]]
+    assert "--pretty" not in made[0]
+    assert "--verify" not in made[0]
+
+
 def test_resume_argv_bare(world):
     set_envelope(world, "resume", OK)
     code, _ = run(world, ["resume", "r1", "/p"])
@@ -199,12 +209,21 @@ def test_args_reach_am_verbatim(world):
                              "--verify", "echo hi; ls $(pwd) &"]]
 
 
+def test_reset_args_reach_am_verbatim(world):
+    # reset has no options, but RUN and REPO still arrive as one argv element each.
+    set_envelope(world, "reset", OK)
+    code, _ = run(world, ["reset", "r 1; echo x", "/p $(whoami) & y"])
+    assert code == 0
+    assert calls(world) == [["reset", "r 1; echo x", "--repo-dir", "/p $(whoami) & y"]]
+
+
 # --- envelope passthrough ------------------------------------------------------
 
 @pytest.mark.parametrize("action,data", [
     ("pause", {"run_id": "r1", "action": "pause", "already_requested": True}),
     ("cancel", {"run_id": "r1", "action": "cancel", "already_requested": False}),
     ("resume", {"run_id": "r1", "status": "done"}),
+    ("reset", {"run_id": "r1", "action": "reset", "status": "canceled", "open_in": []}),
 ])
 def test_ok_envelope_passed_through(world, action, data):
     # resume's fake exits at once, so it lands inside the grace window.
@@ -224,6 +243,8 @@ def test_ok_envelope_passed_through(world, action, data):
     ("resume", "NotResumableError"),
     ("resume", "ClaimedError"),
     ("cancel", "LockTimeoutError"),
+    ("reset", "RunIsLiveError"),
+    ("reset", "NotResettableError"),
 ])
 def test_refusal_passed_through_exit_0(world, action, kind):
     refusal = {"ok": False, "error": {"type": kind, "message": "refused: " + kind}}
@@ -239,6 +260,14 @@ def test_missing_fixture_unknown_run(world):
     assert code == 0
     assert out == UNKNOWN_RUN
     assert calls(world) == [["pause", "r1", "--repo-dir", "/p"]]
+
+
+def test_reset_missing_fixture_unknown_run(world):
+    # No reset.out: the fake am answers UnknownRunError with exit 3.
+    code, out = run(world, ["reset", "r1", "/p"])
+    assert code == 0
+    assert out == UNKNOWN_RUN
+    assert calls(world) == [["reset", "r1", "--repo-dir", "/p"]]
 
 
 def test_ok_wins_over_exit_code_and_stderr(world):
@@ -277,10 +306,29 @@ def test_exit_0_without_envelope_is_am_bad_output(world, text):
     assert out["error"]["message"].endswith("(exit 0).")
 
 
+def test_reset_bad_output_names_reset(world):
+    set_raw(world, "reset", "not json\n", code=0, stderr=TRACEBACK)
+    code, out = run(world, ["reset", "r1", "/p"])
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "AmBadOutput"
+    assert out["error"]["message"].startswith("am reset ")
+    assert out["error"]["message"].endswith("(exit 0).")
+
+
 def test_am_missing(world):
     empty = world["tmp"] / "empty-bin"
     empty.mkdir()
     code, out = run(world, ["pause", "r1", "/p"], PATH=str(empty))
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "AmMissing", "message": "am is not installed."}}
+    assert calls(world) == []
+
+
+def test_reset_am_missing(world):
+    empty = world["tmp"] / "empty-bin"
+    empty.mkdir()
+    code, out = run(world, ["reset", "r1", "/p"], PATH=str(empty))
     assert code == 0
     assert out == {"ok": False, "error": {"type": "AmMissing", "message": "am is not installed."}}
     assert calls(world) == []
@@ -308,9 +356,18 @@ def test_usage_wins_over_am_missing(world):
     ["pause", "", "/p"],
     ["pause", "r1", ""],
     ["pause", "-r1", "/p"],
+    ["reset", "r1", "/p", "--verify", "pytest"],
+    ["reset", "r1", "/p", "--allow-no-verification"],
+    ["reset", "r1", "/p", "extra"],
+    ["Reset", "r1", "/p"],
+    ["reset", "-r1", "/p"],
+    ["reset", "", "/p"],
+    ["reset", "r1"],
 ], ids=["none", "two", "unknown-action", "extra-positional", "verify-pause",
         "verify-cancel", "allow-pause", "verify-last", "unknown-option",
-        "empty-run", "empty-repo", "dash-run"])
+        "empty-run", "empty-repo", "dash-run", "verify-reset", "allow-reset",
+        "extra-reset", "capital-reset", "dash-run-reset", "empty-run-reset",
+        "two-reset"])
 def test_usage(world, args):
     code, out = run(world, args)
     assert code == 2
@@ -318,7 +375,7 @@ def test_usage(world, args):
     assert calls(world) == []
 
 
-@pytest.mark.parametrize("action", ["pause", "resume"])
+@pytest.mark.parametrize("action", ["pause", "resume", "reset"])
 def test_am_cannot_start_is_helper_error(world, action):
     # Executable (so shutil.which finds it) but unstartable: subprocess raises
     # OSError and guarded() must still print exactly one JSON line.
@@ -372,6 +429,39 @@ def test_pause_timeout_is_helper_error(world, monkeypatch, capsys):
     assert out["error"]["type"] == "HelperError"
     assert out["error"]["message"].startswith("The run control failed: ")
 
+
+def test_reset_timeout_is_helper_error(world, monkeypatch, capsys):
+    # reset answers at once like pause: a hanging am is cut off after AM_TIMEOUT.
+    write_exec(world["bin"] / "am", "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n")
+    helper = load_helper()
+    assert helper.AM_TIMEOUT == 60
+    monkeypatch.setattr(helper, "AM_TIMEOUT", 0.5)
+    use_world(world, monkeypatch)
+    code = helper.guarded(["reset", "r1", "/p"])
+    out = one_line(capsys)
+    assert code == 0
+    assert out["ok"] is False
+    assert out["error"]["type"] == "HelperError"
+    assert out["error"]["message"].startswith("The run control failed: ")
+
+
+def test_reset_is_never_detached(world, monkeypatch, capsys):
+    # An am reset slower than RESUME_GRACE is still waited for and its envelope
+    # printed: only resume is ever started detached.
+    envelope = {"ok": True, "data": {"run_id": "r1", "action": "reset",
+                                     "status": "canceled", "open_in": []}}
+    write_exec(world["bin"] / "am",
+               "#!/usr/bin/env python3\nimport json, time\ntime.sleep(1)\n"
+               "print(json.dumps(%r))\n" % (envelope,))
+    helper = load_helper()
+    monkeypatch.setattr(helper, "RESUME_GRACE", 0.2)
+    use_world(world, monkeypatch)
+    code = helper.guarded(["reset", "r1", "/p"])
+    out = one_line(capsys)
+    assert code == 0
+    assert out == envelope
+
+
 # --- am crashed -----------------------------------------------------------------
 
 
@@ -410,6 +500,23 @@ def test_am_failed_with_no_stderr(world):
     assert code == 0
     assert out == {"ok": False, "error": {"type": "AmFailed",
                                           "message": "am cancel exited 1 with no output."}}
+
+
+def test_reset_am_failed(world):
+    set_raw(world, "reset", "", code=1, stderr=TRACEBACK)
+    code, out = run(world, ["reset", "r1", "/p"])
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "AmFailed",
+                                          "message": "Traceback (most recent call last):\n"
+                                                     "ValueError: boom"}}
+
+
+def test_reset_am_failed_with_no_stderr(world):
+    set_raw(world, "reset", "", code=1)
+    code, out = run(world, ["reset", "r1", "/p"])
+    assert code == 0
+    assert out == {"ok": False, "error": {"type": "AmFailed",
+                                          "message": "am reset exited 1 with no output."}}
 
 
 def test_am_failed_with_invalid_utf8_stderr(world):

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "../theme" as T
 
 // A filter pill: the tint at 12% behind a caption, filled and bold while
@@ -13,7 +14,7 @@ Rectangle {
   // value is never painted.
   property var theme: null
   property string text: ""
-  property color tint: chip.palette ? chip.palette.dim : Color.foreground
+  property color tint: chip.palette ? chip.palette.dim : Cm.Color.foreground
   property bool active: false
   property bool busy: false
 
@@ -35,7 +36,7 @@ Rectangle {
     theme: chip.palette
     variant: "caption"
     text: chip.text
-    color: chip.palette ? chip.palette.foreground : Color.foreground
+    color: chip.palette ? chip.palette.foreground : Cm.Color.foreground
     font.bold: chip.active
   }
 

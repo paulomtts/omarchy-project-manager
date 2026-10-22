@@ -912,7 +912,7 @@ TestCase {
     return store
   }
 
-  property string savedJson: '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4,"prefixByMilestone":{"m1":"old"}}'
+  property string savedJson: '{"allowNoVerification":false,"parallelism":4,"prefixByMilestone":{"m1":"old"},"prefixHistory":["old"],"verify":["uv run pytest"]}'
 
   // 20 (the start half)
   function test_subtask_start_argv_uses_card() {
@@ -1058,7 +1058,7 @@ TestCase {
     var bareRunner = bare.dispatchStartRunners[0]
     reply(bareRunner.current, startOk("r-2", ""), 0)
     compare(argv(saveOf(bare).current), tc.viewerCmd +
-            'set-run-settings|/home/u/my proj|{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["m3"],"parallelism":4,"prefixByMilestone":{"m1":"m3"}}')
+            'set-run-settings|/home/u/my proj|{"allowNoVerification":false,"parallelism":4,"prefixByMilestone":{"m1":"m3"},"prefixHistory":["m3"],"verify":["make test"]}')
   }
 
   // 27
@@ -1594,7 +1594,7 @@ TestCase {
     reply(runner.current, startOk("r-1", ""), 0)
     compare(store.dispatchState, "started")
     compare(argv(saveOf(store).current), tc.viewerCmd + "set-run-settings|/home/u/my proj|" +
-            '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4,"prefixByMilestone":{"m1":"old"}}')
+            '{"allowNoVerification":false,"parallelism":4,"prefixByMilestone":{"m1":"old"},"prefixHistory":["old"],"verify":["uv run pytest"]}')
     var map = store.runSettings.prefixByMilestone
     compare(Object.keys(map).sort().join(","), "m1,m9", "merged locally")
     compare(map.m9, "x", "the stored entry is kept")
@@ -1612,7 +1612,7 @@ TestCase {
     compare(saveOf(store).current.command[4], tc.savedJson, "a milestone start keys its own id")
     compare(store.runSettings.prefixByMilestone.m1, "old")
 
-    var plain = '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["old"],"parallelism":4}'
+    var plain = '{"allowNoVerification":false,"parallelism":4,"prefixHistory":["old"],"verify":["uv run pytest"]}'
     var cards = dispatchCards()
     var subtask = dispatchStore(); if (!subtask) return
     subtask.openDispatch(cards.t1, cards)
@@ -1663,8 +1663,8 @@ TestCase {
     compare(store.dispatchStart(), true)
     var runner = store.dispatchStartRunners[0]
     compare(runner.current.command[8], "m3-spaced", "sent trimmed")
-    compare(runner.savedJson, '{"verify":["uv run pytest"],"allowNoVerification":false,"prefixHistory":["m3-spaced","old"],' +
-                              '"parallelism":4,"prefixByMilestone":{"m1":"m3-spaced"}}')
+    compare(runner.savedJson, '{"allowNoVerification":false,"parallelism":4,"prefixByMilestone":{"m1":"m3-spaced"},' +
+                              '"prefixHistory":["m3-spaced","old"],"verify":["uv run pytest"]}')
     reply(runner.current, startOk("r-1", ""), 0)
     compare(store.runSettings.prefixByMilestone.m1, "m3-spaced")
   }
@@ -2038,7 +2038,7 @@ TestCase {
     return store
   }
 
-  property string bSavedJson: '{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["bpre","bold"],"parallelism":2,"prefixByMilestone":{"m1":"bpre"}}'
+  property string bSavedJson: '{"allowNoVerification":false,"parallelism":2,"prefixByMilestone":{"m1":"bpre"},"prefixHistory":["bpre","bold"],"verify":["make test"]}'
 
   // 2.1 RunStore dispatch test 6 + Review Focus 5
   function test_dispatch_start_for_other_root_argv_save_and_refresh() {
@@ -2112,7 +2112,7 @@ TestCase {
     reply(runner.current, startOk("r-s", ""), 0)
     compare(store.dispatchState, "started")
     compare(argv(saveOf(store).current), tc.viewerCmd + "set-run-settings|/home/u/b|" +
-            '{"verify":["make test"],"allowNoVerification":false,"prefixHistory":["bpre"],"parallelism":2,"prefixByMilestone":{"m1":"bpre"}}')
+            '{"allowNoVerification":false,"parallelism":2,"prefixByMilestone":{"m1":"bpre"},"prefixHistory":["bpre"],"verify":["make test"]}')
     var map = store.dispatchRunSettings.prefixByMilestone
     compare(Object.keys(map).sort().join(","), "m1,m9", "merged into B's settings")
     compare(map.m9, "b9", "B's stored entry is kept")

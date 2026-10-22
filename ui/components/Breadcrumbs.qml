@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Cm
 import "../theme" as T
 
 // The trail that says where the panel is: `crumbs` is [{ label, clickable }],
@@ -83,7 +84,7 @@ Item {
             // Font Awesome chevron-right, drawn in the theme's font like every
             // other icon (tests/architecture/test_icon_glyphs.py checks it).
             text: ""
-            color: bar.theme ? bar.theme.dim : Color.foreground
+            color: bar.theme ? bar.theme.dim : Cm.Color.foreground
           }
 
           ThemedText {

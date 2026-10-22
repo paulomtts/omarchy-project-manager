@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "../theme" as T
 
 // A Text drawn in the panel's theme. `variant` picks the font size and the
@@ -19,7 +20,7 @@ Text {
 
   readonly property var palette: label.theme || labelTheme
 
-  color: !label.palette ? Color.foreground
+  color: !label.palette ? Cm.Color.foreground
     : (label.variant === "caption" || label.variant === "dim") ? label.palette.dim
     : label.palette.foreground
   font.family: label.palette ? label.palette.fontFamily : Style.font.family

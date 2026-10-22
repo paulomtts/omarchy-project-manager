@@ -1,8 +1,10 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "runGlyphs.js" as RunGlyphs
 import "../components" as UI
 import "../theme" as T
+import "../../core/domain/compat.js" as Compat
 
 // Why a stopped run stopped, for Run detail, top to bottom: "Why it stopped";
 // the headline (the state's glyph, Runs.stopReport's headline, the card as
@@ -65,7 +67,7 @@ Column {
   visible: block.hasReport
   spacing: Style.space(2)
 
-  function isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+  function isObject(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
   function textOf(v) { return typeof v === "string" ? v : "" }
   // Not Array.isArray: a list handed in through createObject's property map
   // arrives as a QML list, for which Array.isArray is false although length
@@ -109,7 +111,7 @@ Column {
   }
 
   function colorOf(isUrgent) {
-    if (!block.theme) return isUrgent ? Color.urgent : Color.foreground
+    if (!block.theme) return isUrgent ? Cm.Color.urgent : Cm.Color.foreground
     return isUrgent ? block.theme.urgent : block.theme.foreground
   }
 

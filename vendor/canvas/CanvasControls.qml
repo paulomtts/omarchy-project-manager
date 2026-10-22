@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import qs.Ui
 
 // Floating controls for a Canvas, reusable by any plugin that imports it.
@@ -51,7 +52,7 @@ Item {
       anchors.verticalCenter: parent.verticalCenter
       textFormat: Text.PlainText
       text: "Culling"
-      color: Color.foreground
+      color: Cm.Color.foreground
       font.pixelSize: Style.font.body
     }
 
@@ -66,7 +67,7 @@ Item {
         anchors.centerIn: parent
         textFormat: Text.PlainText
         text: "?"
-        color: Color.foreground
+        color: Cm.Color.foreground
         font.pixelSize: Style.font.caption
       }
 

@@ -2,6 +2,7 @@
 .import "results.js" as Results
 .import "taxonomy.js" as Taxonomy
 .import "text.js" as Text
+.import "compat.js" as Compat
 
 var MAX_DOC_BYTES = 1048576
 
@@ -42,7 +43,7 @@ function filterDocs(docs, query) {
 function parseDocsResult(stdout, exitCode) {
   var result = Results.parseJsonLine(stdout, exitCode, "Could not list documents.")
   if (result.ok)
-    return { ok: true, docs: Array.isArray(result.data.docs) ? result.data.docs : [],
+    return { ok: true, docs: Compat.isArray(result.data.docs) ? result.data.docs : [],
              truncated: result.data.truncated === true, error: "" }
   return { ok: false, docs: [], truncated: false, error: result.error }
 }

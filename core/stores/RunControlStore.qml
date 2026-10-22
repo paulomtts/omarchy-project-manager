@@ -3,10 +3,12 @@ import Quickshell
 import Quickshell.Io
 import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
+import "../domain/compat.js" as Compat
 
-// The run controls (S2 4.1), the cancel confirmation (S2 4.3) and the footer
-// flash, for a run of any registered project. control(action, runId) starts a
-// pause, resume or cancel of a run in `runs`, each on a HelperRunner of its
+// The run controls (S2 4.1), the cancel confirmation (S2 4.3), the Close
+// dialog and the footer flash, for a run of any registered project.
+// control(action, runId) starts a pause, resume, cancel or reset (the UI's
+// Close) of a run in `runs`, each on a HelperRunner of its
 // own; `pending` ({runId: action}) holds a request until settleAfterSnapshot()
 // sees it settled, `stillWaiting` ({runId: true}) the pending ones 30 s or
 // more old. Both are replaced, never changed in place. The control error is
@@ -50,6 +52,13 @@ Scope {
   readonly property bool cancelOpen: control.cancelRunId !== ""
   property string cancelText: ""
   property string cancelError: ""
+  // The Close dialog (a reset, the UI's Close, asks first): the run it asks
+  // about ("" = closed) and why the last confirm was refused. No typed word.
+  // Independent of the cancel confirmation; a project switch or a new run
+  // list changes neither.
+  property string closeRunId: ""
+  readonly property bool closeOpen: control.closeRunId !== ""
+  property string closeError: ""
   // The footer flash: why a run key was refused. flashTimer clears it.
   property string flashText: ""
   // "Notify on escalation", viewer-wide and off until read: the switch's
@@ -98,10 +107,12 @@ Scope {
     return runner
   }
 
-  // Starts a pause, resume or cancel of one run in `runs`, of any project, and
-  // returns whether it started: only when refusalOf(action, runId) is "".
-  // The request acts on the run's repo_dir; a milestone resume reads the run
-  // settings of the run's project.root. Confirming a cancel is the caller's job.
+  // Starts a pause, resume, cancel or reset of one run in `runs`, of any
+  // project, and returns whether it started: only when refusalOf(action,
+  // runId) is "". The request acts on the run's repo_dir; a milestone resume
+  // reads the run settings of the run's project.root, and every other action
+  // launches run-control at once with no extra argument. Confirming a cancel
+  // or a reset is the caller's job.
   function control(action, runId) {
     if (control.refusalOf(action, runId) !== "") return false
     var run = Runs.runById(control.runs, runId)
@@ -179,8 +190,9 @@ Scope {
   // One run-control.py reply, whatever project is open. ok:true
   // means am has the request: pending stays until a snapshot settles it, and
   // the requested_at am gave it is remembered. Anything else ends it with a
-  // sentence. Either way the runner goes, then refreshRequested("all"). A
-  // reply for a request that is no longer the pending one changes nothing.
+  // sentence (am's error through Runs.controlError with the request's action).
+  // Either way the runner goes, then refreshRequested("all"). A reply for a
+  // request that is no longer the pending one changes nothing.
   function controlReplied(runner, stdout, exitCode) {
     var req = control.requestOf(runner)
     if (req === null) {
@@ -203,7 +215,7 @@ Scope {
     } else if (envelope !== null && envelope.ok === false) {
       var err = envelope.error
       var type = err !== null && typeof err === "object" && typeof err.type === "string" ? err.type : ""
-      control.failControl(runner.runId, Runs.controlError(envelope), type)
+      control.failControl(runner.runId, Runs.controlError(envelope, req.action), type)
     } else {
       control.failControl(runner.runId, "The run control gave no usable result (exit " + exitCode + ").", "")
     }
@@ -224,7 +236,7 @@ Scope {
       control.dropRunner(runner)
       return
     }
-    var verify = Array.isArray(settings.verify) ? settings.verify : []
+    var verify = Compat.isArray(settings.verify) ? settings.verify : []
     var usable = verify.length > 0
     for (var i = 0; i < verify.length; i++) {
       if (typeof verify[i] !== "string") usable = false
@@ -245,8 +257,9 @@ Scope {
 
   // After every good snapshot: an acknowledged request is settled when its run
   // is gone from `runs`, when the run's state moved since the request started,
-  // or (pause, cancel) when am marks its request handled. A request still in
-  // flight is never settled by a snapshot: its buttons stay off until the reply.
+  // or (pause, cancel, reset) when am marks its request handled. A request
+  // still in flight is never settled by a snapshot: its buttons stay off until
+  // the reply.
   function settleAfterSnapshot() {
     var ids = Object.keys(control.pending)
     for (var i = 0; i < ids.length; i++) {
@@ -263,7 +276,7 @@ Scope {
   // The run's am request row for this request has a handled_at: the row with
   // the requested_at am's reply gave, else the last row of the same command.
   function isHandled(run, req) {
-    var list = Array.isArray(run.requests) ? run.requests : []
+    var list = Compat.isArray(run.requests) ? run.requests : []
     var match = null
     for (var i = 0; i < list.length; i++) {
       var row = list[i]
@@ -287,15 +300,17 @@ Scope {
   // "" when control(action, runId) would start a request; otherwise why not:
   // a run that is not in `runs`, then a run with no repo_dir, then a resume
   // (not of a task run) of a run with no project root, then a request already
-  // pending for it, then the reason Runs.controls gives. Changes nothing.
+  // pending for it, then the reason Runs.controls gives -- for a reset, its
+  // `close` entry. Actions are pause, resume, cancel and reset; "close" is
+  // the UI's word for reset and is an unknown control here. Changes nothing.
   function refusalOf(action, runId) {
-    if (action !== "pause" && action !== "resume" && action !== "cancel") return "Unknown control"
+    if (action !== "pause" && action !== "resume" && action !== "cancel" && action !== "reset") return "Unknown control"
     var run = typeof runId !== "string" || runId === "" ? null : Runs.runById(control.runs, runId)
     if (run === null) return "This run is no longer in the snapshot"
     if (typeof run.repo_dir !== "string" || run.repo_dir === "") return "This run has no repository"
     if (action === "resume" && run.workflow !== "task" && Runs.runRoot(run) === "") return "This run's project is not known"
     if (Runs.hasKey(control.pending, runId)) return "A request for this run is pending"
-    return Runs.controls(run)[action].reason
+    return Runs.controls(run)[action === "reset" ? "close" : action].reason
   }
 
   // Shows text in the footers for 3 s; a new flash replaces it and restarts
@@ -342,6 +357,45 @@ Scope {
       return false
     }
     control.closeCancel()
+    return true
+  }
+
+  // Opens the Close dialog for a run that can be reset now, replacing any run
+  // it was open for, and returns true; otherwise flashes why not, leaves any
+  // dialog as it is and returns false. Starts no request.
+  function closeAsk(runId) {
+    var reason = control.refusalOf("reset", runId)
+    if (reason !== "") {
+      control.flash(reason)
+      return false
+    }
+    control.closeError = ""
+    control.closeRunId = runId
+    return true
+  }
+
+  // Dismisses the Close dialog (its Keep button). Starts nothing; safe when
+  // it is already closed. Not closeCancel, which closes the cancel dialog.
+  function closeKeep() {
+    control.closeRunId = ""
+    control.closeError = ""
+  }
+
+  // The Close dialog's confirm. The run is checked again: one that changed or
+  // vanished under the open dialog, or got a request pending, keeps it open
+  // with the reason. A started reset closes it.
+  function closeConfirm() {
+    if (control.closeRunId === "") return false
+    var reason = control.refusalOf("reset", control.closeRunId)
+    if (reason !== "") {
+      control.closeError = reason
+      return false
+    }
+    if (!control.control("reset", control.closeRunId)) {
+      control.closeError = "The run could not be closed"
+      return false
+    }
+    control.closeKeep()
     return true
   }
 
@@ -514,7 +568,7 @@ Scope {
       merged[key] = key === "prefixByMilestone" ? Runs.mergedPrefixes(merged.prefixByMilestone, patch[key]) : patch[key]
     }
     control.applyRunSettings(root, merged)
-    var json = JSON.stringify(patch)
+    var json = Compat.stringify(patch)
     control.launchRunSettings({ root: root, json: json, saving: true }, ["set-run-settings", root, json])
   }
 

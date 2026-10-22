@@ -7,6 +7,7 @@ import "../../core/domain/board.js" as Board
 import "../../core/domain/graph.js" as Graph
 import "../components" as UI
 import "../theme" as T
+import "../../core/domain/compat.js" as Compat
 
 // The Graph section on a pan/zoom canvas, in either of its two views: one node
 // per milestone, or one per story with a labelled box around each milestone's
@@ -38,7 +39,7 @@ Item {
   property bool runStale: false
 
   function _ownValue(map, id) {
-    return map !== null && map !== undefined && typeof map === "object" && !Array.isArray(map)
+    return map !== null && map !== undefined && typeof map === "object" && !Compat.isArray(map)
       && typeof id === "string" && id !== "" && Object.prototype.hasOwnProperty.call(map, id) ? map[id] : null
   }
   function runMarkOf(id) { return view._ownValue(view.runMarks, id) }

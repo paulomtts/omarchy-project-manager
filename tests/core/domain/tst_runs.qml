@@ -2767,6 +2767,8 @@ TestCase {
   readonly property string ctlResumeCancelled: "A cancelled run cannot be resumed"
   readonly property string ctlCancelCancelled: "The run is already cancelled"
   readonly property string ctlResumeEscalatedCard: "An escalated card run cannot be resumed; relaunch it"
+  readonly property string ctlCloseRunning: "A running run is cancelled, not closed"
+  readonly property string ctlLiveReset: "Another am process is still driving this run. Pause it first."
 
   // mkRun with the lease's accepting flag set; live === null still means no lease.
   function ctlRun(status, live, accepting) {
@@ -2789,12 +2791,23 @@ TestCase {
     compare(a.reason, reason, label + " reason")
   }
 
-  // A whole controls() result; "" means that action is enabled.
+  // An action whose value is not fixed here: exactly {enabled, reason}, reason a
+  // string, enabled iff reason is "".
+  function checkWellFormed(a, label) {
+    compare(Object.keys(a).sort().join(","), "enabled,reason", label + " keys")
+    compare(typeof a.reason, "string", label + " reason is a string")
+    compare(a.enabled, a.reason === "", label + " enabled")
+  }
+
+  // A whole controls() result; "" means that action is enabled. `close` must be
+  // present and well formed; its value is pinned by test_controls_close_by_state
+  // and by the Runs row redesign's own tests (tst_run_row_contract.qml).
   function checkControls(c, pause, resume, cancel, label) {
-    compare(Object.keys(c).sort().join(","), "cancel,pause,resume", label + " keys")
+    compare(Object.keys(c).sort().join(","), "cancel,close,pause,resume", label + " keys")
     checkAction(c.pause, pause, label + " pause")
     checkAction(c.resume, resume, label + " resume")
     checkAction(c.cancel, cancel, label + " cancel")
+    checkWellFormed(c.close, label + " close")
   }
 
   function test_controls_shape() {
@@ -2804,18 +2817,31 @@ TestCase {
     var b = Runs.controls(run)
     verify(a !== b, "a fresh result per call")
     verify(a.pause !== b.pause && a.resume !== b.resume && a.cancel !== b.cancel, "fresh actions per call")
+    verify(a.close !== b.close, "a fresh close per call")
     verify(a.pause !== a.resume && a.resume !== a.cancel && a.pause !== a.cancel, "no action shared within a result")
+    verify(a.close !== a.pause && a.close !== a.resume && a.close !== a.cancel, "close shared with no other action")
+    var closeBefore = b.close.reason
     a.pause.enabled = false
     a.pause.reason = "changed"
     a.resume.reason = "changed"
+    a.close.enabled = !a.close.enabled
+    a.close.reason = "changed"
     delete a.cancel
-    checkControls(Runs.controls(run), "", ctlResumeRunning, "", "after mutating an earlier result")
+    var after = Runs.controls(run)
+    checkControls(after, "", ctlResumeRunning, "", "after mutating an earlier result")
+    compare(after.close.reason, closeBefore, "close unchanged after mutating an earlier result")
 
     var u = Runs.controls(undefined)
     verify(u.pause !== u.resume && u.resume !== u.cancel && u.pause !== u.cancel, "no action shared in an unknown result")
+    verify(u.close !== u.pause && u.close !== u.resume && u.close !== u.cancel, "close shared with no other unknown action")
+    var unknownClose = Runs.controls(null).close.reason
     u.pause.reason = "changed"
     u.resume.enabled = true
-    checkControls(Runs.controls(null), ctlUnknown, ctlUnknown, ctlUnknown, "after mutating an unknown result")
+    u.close.reason = "changed"
+    u.close.enabled = !u.close.enabled
+    var u2 = Runs.controls(null)
+    checkControls(u2, ctlUnknown, ctlUnknown, ctlUnknown, "after mutating an unknown result")
+    compare(u2.close.reason, unknownClose, "unknown close unchanged after mutating an earlier result")
 
     var d = Runs.controls(ctlRun("done", null, true))
     d.cancel.reason = ""
@@ -2987,6 +3013,87 @@ TestCase {
     checkControls(Runs.controls(run), ctlPauseNotRunning, ctlResumeEscalatedCard, "", "a third call")
   }
 
+  function test_controls_close_by_state() {
+    // [label, run, close reason ("" = enabled)]
+    var cases = [
+      ["running", ctlRun("started", true, true), ctlCloseRunning],
+      ["running, Integrate", ctlRun("started", true, false), ctlCloseRunning],
+      ["parked", ctlRun("stopped", false, true), ""],
+      ["parked, no lease", ctlRun("stopped", null, false), ""],
+      ["parked, Integrate", ctlRun("stopped", false, false), ctlIntegrate],
+      ["escalated", ctlRun("escalated", false, true), ""],
+      ["escalated, no lease", ctlRun("escalated", null, false), ""],
+      ["escalated, Integrate", ctlRun("escalated", false, false), ctlIntegrate],
+      ["escalated card run", ctlRunOf("escalated", false, true, "task"), ""],
+      ["escalated card run, no lease", ctlRunOf("escalated", null, false, "task"), ""],
+      ["escalated card run, Integrate", ctlRunOf("escalated", false, false, "task"), ctlIntegrate],
+      ["dead", ctlRun("started", false, true), ""],
+      ["dead, no lease", ctlRun("started", null, false), ""],
+      ["dead, Integrate", ctlRun("started", false, false), ctlIntegrate],
+      ["done", ctlRun("done", false, true), ctlFinished],
+      ["done, Integrate", ctlRun("done", false, false), ctlFinished],
+      ["done, live, Integrate", ctlRun("done", true, false), ctlFinished],
+      ["cancelled", ctlRun("cancelled", false, true), ctlCancelCancelled],
+      ["cancelled, Integrate", ctlRun("cancelled", false, false), ctlCancelCancelled],
+      ["canceled, no lease", ctlRun("canceled", null, true), ctlCancelCancelled],
+      ["canceled, live, Integrate", ctlRun("canceled", true, false), ctlCancelCancelled],
+      ["unknown", ctlRun("weird", true, true), ctlUnknown],
+      ["unknown, Integrate", ctlRun("weird", true, false), ctlUnknown],
+      ["undefined", undefined, ctlUnknown],
+      ["null", null, ctlUnknown],
+      ["{}", {}, ctlUnknown]
+    ]
+    for (var i = 0; i < cases.length; i++)
+      checkAction(Runs.controls(cases[i][1]).close, cases[i][2], cases[i][0] + " close")
+    // Close does not care about the card-run case; resume still does.
+    var card = Runs.controls(ctlRunOf("escalated", false, true, "task"))
+    checkAction(card.resume, ctlResumeEscalatedCard, "escalated card run resume")
+    checkAction(card.close, "", "escalated card run close")
+  }
+
+  function test_visible_actions_fresh() {
+    var run = ctlRun("stopped", false, true)
+    var a = Runs.visibleActions(run)
+    var b = Runs.visibleActions(run)
+    compare(a.join(","), "close,resume", "parked")
+    verify(a !== b, "a fresh array per call")
+    a.push("pause")
+    a[0] = "bogus"
+    compare(b.join(","), "close,resume", "the second result after mutating the first")
+    compare(Runs.visibleActions(run).join(","), "close,resume", "a third call after mutating the first")
+    var c = Runs.controls(run)
+    c.close.enabled = false
+    c.close.reason = "changed"
+    c.resume.enabled = false
+    delete c.pause
+    compare(Runs.visibleActions(run).join(","), "close,resume", "after mutating a controls() result")
+    checkAction(Runs.controls(run).close, "", "controls() close after mutating an earlier result")
+  }
+
+  function test_run_level_edges() {
+    // [label, run, level]: input shapes the contract table does not list.
+    var cases = [
+      ["array workflow, read as controls() reads it", { workflow: ["task"] }, "subtask"],
+      ["task with a blank story", { workflow: "task", story_id: "" }, "subtask"],
+      ["object workflow", { workflow: {} }, "milestone"],
+      ["prototype-less workflow", { workflow: Object.create(null) }, "milestone"],
+      ["object story_id", { story_id: {} }, "milestone"],
+      ["prototype-less story_id", { story_id: Object.create(null) }, "milestone"],
+      ["array story_id", { story_id: ["s1"] }, "milestone"],
+      ["boolean story_id", { story_id: true }, "milestone"],
+      ["number story_id", { story_id: 5 }, "milestone"],
+      ["padded story_id", { story_id: " s1 " }, "story"],
+      ["tab and newline story_id", { story_id: "\ts1\n" }, "story"],
+      ["an array run", ["task"], "milestone"],
+      ["true", true, "milestone"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var level = Runs.runLevel(cases[i][1])
+      compare(typeof level, "string", cases[i][0] + ": a string")
+      compare(level, cases[i][2], cases[i][0])
+    }
+  }
+
   // [type, sentence] for every am control error controlError knows.
   function controlErrorTable() {
     return [
@@ -2998,13 +3105,14 @@ TestCase {
       ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
       ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
       ["ClaimedError", "Another run has already claimed this work"],
-      ["LockTimeoutError", "am is busy; try again in a moment"]
+      ["LockTimeoutError", "am is busy; try again in a moment"],
+      ["NotResettableError", "This run cannot be closed (it is finished or already cancelled)."]
     ]
   }
 
   function test_control_error_table() {
     var table = controlErrorTable()
-    compare(table.length, 9)
+    compare(table.length, 10)
     for (var i = 0; i < table.length; i++)
       compare(Runs.controlError({ ok: false, error: { type: table[i][0], message: "am said so" } }), table[i][1],
               table[i][0])
@@ -3058,6 +3166,30 @@ TestCase {
     compare(Runs.controlError({ ok: false, error: { type: noProto, message: "m" } }), "m",
             "a prototype-less type object reads as no type")
     compare(Runs.controlError({ type: noProto }), "unknown error", "a prototype-less type object alone")
+  }
+
+  function test_control_error_reset_action() {
+    compare(controlErrorTable()[4][0], "RunIsLiveError", "table row 4 is RunIsLiveError")
+    var liveSentence = controlErrorTable()[4][1]
+    var live = [["envelope", { ok: false, error: { type: "RunIsLiveError", message: "m" } }],
+                ["bare", { type: "RunIsLiveError" }]]
+    var resetActions = ["reset", "  reset  "]
+    var otherActions = ["Reset", "close", "pause", undefined, null, 5, {}, ["reset"], "__proto__", "constructor"]
+    for (var i = 0; i < live.length; i++) {
+      for (var j = 0; j < resetActions.length; j++)
+        compare(Runs.controlError(live[i][1], resetActions[j]), ctlLiveReset, live[i][0] + ", reset " + j)
+      for (var k = 0; k < otherActions.length; k++)
+        compare(Runs.controlError(live[i][1], otherActions[k]), liveSentence, live[i][0] + ", other action " + k)
+      compare(Runs.controlError(live[i][1]), liveSentence, live[i][0] + ", no action")
+    }
+    var others = [["NotResettableError", "This run cannot be closed (it is finished or already cancelled)."],
+                  ["ClaimedError", "Another run has already claimed this work"]]
+    for (var m = 0; m < others.length; m++) {
+      var envelope = { ok: false, error: { type: others[m][0], message: "m" } }
+      compare(Runs.controlError(envelope), others[m][1], others[m][0] + ", no action")
+      compare(Runs.controlError(envelope, "reset"), others[m][1], others[m][0] + ", reset")
+      compare(Runs.controlError({ type: others[m][0] }, "reset"), others[m][1], others[m][0] + ", bare, reset")
+    }
   }
 
   function test_control_sentences_are_ascii() {

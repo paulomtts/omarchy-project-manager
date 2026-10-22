@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import qs.Commons
+import qs.Commons as Cm
 import "../../../ui/components" as UI
 import "../../../ui/theme" as T
 
@@ -61,7 +62,7 @@ TestCase {
 
   function test_without_a_theme_it_uses_the_shell_defaults() {
     var item = createTemporaryObject(plainC, tc)
-    compare(item.color, Color.foreground)
+    compare(item.color, Cm.Color.foreground)
     compare(item.font.family, Style.font.family)
     compare(item.font.pixelSize, Style.font.body)
   }

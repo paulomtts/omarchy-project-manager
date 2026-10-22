@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 
 // The modal every dialog in the panel is built from: a dimmed backdrop that
 // dismisses on a click, and a centred card that swallows its own clicks. The
@@ -44,9 +45,9 @@ Item {
     height: modal.maxHeight >= 0 ? Math.min(modal.maxHeight, column.implicitHeight + Style.space(36))
       : column.implicitHeight + Style.space(36)
     radius: Style.space(10)
-    color: Color.popups.background
+    color: Cm.Color.popups.background
     border.width: 1
-    border.color: Color.popups.border
+    border.color: Cm.Color.popups.border
 
     MouseArea { anchors.fill: parent }
 

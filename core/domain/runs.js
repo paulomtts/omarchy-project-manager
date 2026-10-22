@@ -1,5 +1,6 @@
 .pragma library
 .import "board.js" as Board
+.import "compat.js" as Compat
 
 // Run domain model: one `am` orchestrator run, normalised from the CLI's
 // output.
@@ -45,9 +46,9 @@
 // copies, never am's objects. Never throws: anything missing or malformed
 // becomes its default, and a missing lease means the run is not live.
 function normalizeRun(raw) {
-  function isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+  function isObject(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
   function objectOr(v) { return isObject(v) ? v : {} }
-  function arrayOr(v) { return Array.isArray(v) ? v : [] }
+  function arrayOr(v) { return Compat.isArray(v) ? v : [] }
   function text(v) { return v === undefined || v === null ? "" : String(v) }
   function firstText(a, b) { var s = text(a); return s !== "" ? s : text(b) }
   function asGiven(v) { return v === undefined || v === null ? "" : v }
@@ -171,8 +172,8 @@ function runState(run) {
 // default. Card ids are compared with === on strings by linear scan, so ids such
 // as `__proto__` or `constructor` behave like any other id.
 
-function _isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
-function _arrayOr(v) { return Array.isArray(v) ? v : [] }
+function _isObject(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
+function _arrayOr(v) { return Compat.isArray(v) ? v : [] }
 function _stringOr(v) { return typeof v === "string" ? v : "" }
 function _isFiniteNumber(v) { return typeof v === "number" && isFinite(v) }
 function _treeOf(run) { return _isObject(run) && _isObject(run.tree) ? run.tree : {} }
@@ -181,7 +182,7 @@ function _lastOf(list) { var a = _arrayOr(list); return a.length > 0 ? a[a.lengt
 // A JSON-like deep copy of arrays and objects. An own `__proto__` key is
 // dropped, so every copied object's prototype is Object.prototype.
 function _copyOf(v) {
-  if (Array.isArray(v)) {
+  if (Compat.isArray(v)) {
     var list = []
     for (var a = 0; a < v.length; a++) list.push(_copyOf(v[a]))
     return list
@@ -466,7 +467,7 @@ function displayOrder(groups) {
   var out = []
   for (var i = 0; i < list.length; i++) {
     var group = list[i]
-    if (!_isObject(group) || !Array.isArray(group.runs)) continue
+    if (!_isObject(group) || !Compat.isArray(group.runs)) continue
     for (var j = 0; j < group.runs.length; j++) out.push(group.runs[j])
   }
   return out
@@ -476,7 +477,7 @@ function displayOrder(groups) {
 // else its `projects` when `probe` is a plain object whose `projects` is an
 // array, else [].
 function _probeEntries(probe) {
-  if (Array.isArray(probe)) return probe
+  if (Compat.isArray(probe)) return probe
   return _isObject(probe) ? _arrayOr(probe.projects) : []
 }
 
@@ -852,7 +853,7 @@ function historyStatuses(filter, finishedState) {
 // no such run, `root` is not a non-empty string or `runs` is not an array.
 // Never mutates, never throws.
 function historyCursor(runs, root) {
-  if (typeof root !== "string" || root === "" || !Array.isArray(runs)) return ""
+  if (typeof root !== "string" || root === "" || !Compat.isArray(runs)) return ""
   var best = "", bestMs = NaN
   for (var i = 0; i < runs.length; i++) {
     var run = runs[i]
@@ -1169,6 +1170,7 @@ var _REASON_RESUME_RUNNING = "The run is still running"
 var _REASON_RESUME_CANCELLED = "A cancelled run cannot be resumed"
 var _REASON_RESUME_ESCALATED_CARD = "An escalated card run cannot be resumed; relaunch it"
 var _REASON_CANCEL_CANCELLED = "The run is already cancelled"
+var _REASON_CLOSE_RUNNING = "A running run is cancelled, not closed"
 
 // A fresh {enabled, reason}: enabled exactly when there is no reason.
 function _action(reason) { return { enabled: reason === "", reason: reason } }
@@ -1179,37 +1181,94 @@ function _inIntegrate(run) {
   return _isObject(run) && _isObject(run.lease) && run.lease.accepting !== true
 }
 
-// {pause, resume, cancel}, each a fresh {enabled, reason}; reason is "" when
-// enabled. Pause needs a running run outside Integrate; resume needs dead,
+// {pause, resume, cancel, close}, each a fresh {enabled, reason}; reason is ""
+// when enabled. Pause needs a running run outside Integrate; resume needs dead,
 // parked or escalated, except an escalated card run (workflow "task", trimmed),
 // and never looks at accepting; cancel needs a run that has not finished and is
-// not in Integrate. The state's reason wins over Integrate's.
+// not in Integrate; close needs dead, parked or escalated, escalated card runs
+// included, outside Integrate (a running run is cancelled, not closed). The
+// state's reason wins over Integrate's.
+//
+// Action names come in two vocabularies, never mixed. The UI (visibleActions,
+// RunControls.actionRequested, RunsScreen.requestControl) says pause, resume,
+// cancel, close and relaunch; controls() has keys pause, resume, cancel and
+// close. The store (RunControlStore.control, refusalOf) and the backend
+// (run-control.py ACTIONS) say pause, resume, cancel and reset, and so does the
+// `action` argument of controlError(error, action). UI `close` is store, backend
+// and am `reset`. `relaunch` is UI only: it starts a fresh run, so it has no
+// controls() entry and no store control action.
 function controls(run) {
   var state = runState(run)
   var integrate = _inIntegrate(run)
-  var pause, resume, cancel
+  var pause, resume, cancel, close
   if (state === "running") {
     pause = integrate ? _REASON_INTEGRATE : ""
     resume = _REASON_RESUME_RUNNING
     cancel = integrate ? _REASON_INTEGRATE : ""
+    close = _REASON_CLOSE_RUNNING
   } else if (state === "dead" || state === "parked" || state === "escalated") {
     pause = _REASON_PAUSE_NOT_RUNNING
     resume = state === "escalated" && _textOf(run.workflow) === "task" ? _REASON_RESUME_ESCALATED_CARD : ""
     cancel = integrate ? _REASON_INTEGRATE : ""
+    close = integrate ? _REASON_INTEGRATE : ""
   } else if (state === "cancelled") {
     pause = _REASON_FINISHED
     resume = _REASON_RESUME_CANCELLED
     cancel = _REASON_CANCEL_CANCELLED
+    close = _REASON_CANCEL_CANCELLED
   } else if (state === "done") {
     pause = _REASON_FINISHED
     resume = _REASON_FINISHED
     cancel = _REASON_FINISHED
+    close = _REASON_FINISHED
   } else {
     pause = _REASON_UNKNOWN
     resume = _REASON_UNKNOWN
     cancel = _REASON_UNKNOWN
+    close = _REASON_UNKNOWN
   }
-  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel) }
+  return { pause: _action(pause), resume: _action(resume), cancel: _action(cancel), close: _action(close) }
+}
+
+// The run's level in the milestone tree: "subtask" for a card run (workflow
+// "task", read as controls() reads it: trimmed, case-sensitive), else "story"
+// when story_id is a string that is non-empty after trimming (a number or any
+// other non-string is no story id), else "milestone". Anything that is not an
+// object is "milestone". Never throws.
+function runLevel(run) {
+  if (!_isObject(run)) return "milestone"
+  if (_textOf(run.workflow) === "task") return "subtask"
+  if (typeof run.story_id === "string" && run.story_id.trim() !== "") return "story"
+  return "milestone"
+}
+
+// [state, UI actions] for the Runs row, left to right as rendered. A state not
+// listed shows no actions.
+var _ACTIONS_BY_STATE = [
+  ["running", ["cancel", "pause"]],
+  ["parked", ["close", "resume"]],
+  ["escalated", ["close", "relaunch"]],
+  ["dead", ["close", "relaunch"]]
+]
+
+// The UI actions the Runs row shows for a run, a fresh array, left to right as
+// rendered: the state's buttons (running: cancel, pause; parked: close, resume;
+// escalated and dead: close, relaunch; anything else: none) minus every one
+// whose controls(run) entry is disabled. relaunch has no controls() entry and
+// is never dropped, and resume is never shown on an escalated or dead run.
+// controls(run) is computed once per call. Never throws.
+function visibleActions(run) {
+  var state = runState(run)
+  var allowed = controls(run)
+  var out = []
+  for (var i = 0; i < _ACTIONS_BY_STATE.length; i++) {
+    if (_ACTIONS_BY_STATE[i][0] !== state) continue
+    var names = _ACTIONS_BY_STATE[i][1]
+    for (var j = 0; j < names.length; j++) {
+      if (names[j] === "relaunch" || allowed[names[j]].enabled) out.push(names[j])
+    }
+  }
+  return out
 }
 
 // [type, sentence] for each am control error, matched with === by linear scan so
@@ -1223,8 +1282,13 @@ var _CONTROL_ERRORS = [
   ["NotResumableError", "am cannot resume this run (cancelled, finished, or an escalated card run). Relaunch starts a new run of the same work."],
   ["CheckpointMismatchError", "The workflow changed since this run saved its progress, so it cannot be resumed. Relaunch starts those cards again from their first phase."],
   ["ClaimedError", "Another run has already claimed this work"],
-  ["LockTimeoutError", "am is busy; try again in a moment"]
+  ["LockTimeoutError", "am is busy; try again in a moment"],
+  ["NotResettableError", "This run cannot be closed (it is finished or already cancelled)."]
 ]
+
+// RunIsLiveError's sentence on a reset: close takes a paused run, so pausing is
+// the way forward, not waiting or resuming.
+var _LIVE_ON_RESET = "Another am process is still driving this run. Pause it first."
 
 // The trimmed, case-sensitive type of an am control error, envelope or bare, the
 // way errorText reads it; "" when error is not an object or is ok:true.
@@ -1234,10 +1298,15 @@ function _controlErrorType(error) {
   return _textOf(e.type)
 }
 
-// The sentence for a failed pause / resume / cancel. A known type gives its
-// sentence without am's message; anything else gives errorText(error).
-function controlError(error) {
+// The sentence for a failed pause / resume / cancel / reset. A known type gives
+// its sentence without am's message; anything else gives errorText(error).
+// `action` is the store's action name (pause, resume, cancel, reset) and is
+// optional. It is read only when it is a string, trimmed and case-sensitive:
+// on "reset", a RunIsLiveError gives its own sentence. Every other type, and
+// every other action, gives the same sentence as with no action.
+function controlError(error, action) {
   var type = _controlErrorType(error)
+  if (type === "RunIsLiveError" && typeof action === "string" && action.trim() === "reset") return _LIVE_ON_RESET
   for (var i = 0; i < _CONTROL_ERRORS.length; i++) {
     if (_CONTROL_ERRORS[i][0] === type) return _CONTROL_ERRORS[i][1]
   }
@@ -1532,7 +1601,7 @@ function _noteFieldsOf(lines) {
 // runId, trimmed, is not a non-empty string. Never mutates its inputs.
 function stopComment(comments, runId) {
   var id = typeof runId === "string" ? _textOf(runId) : ""
-  if (id === "" || !Array.isArray(comments)) return null
+  if (id === "" || !Compat.isArray(comments)) return null
   for (var i = comments.length - 1; i >= 0; i--) {
     var lines = _noteLinesFor(comments[i], id)
     if (lines === null) continue
@@ -1578,7 +1647,7 @@ function _hasAlert(alerts, id) {
 // run's reason is always "process died". title is runTitle with the run's map
 // in titlesByRoot (see titlesOfRun); without one it is the fallback title.
 function newAlerts(prevRuns, nextRuns, titlesByRoot) {
-  if (!Array.isArray(prevRuns) || !Array.isArray(nextRuns)) return []
+  if (!Compat.isArray(prevRuns) || !Compat.isArray(nextRuns)) return []
   var out = []
   for (var i = 0; i < nextRuns.length; i++) {
     var run = nextRuns[i]
@@ -1953,7 +2022,7 @@ function _storyPreview(plan) {
 // non-blank string. Only subtasks listed in levels count. No array levels
 // means unreadable at every level: board false and both lines "".
 function previewSummary(dryRunData, level) {
-  if (!_isObject(dryRunData) || !Array.isArray(dryRunData.levels)) return _unreadablePreview()
+  if (!_isObject(dryRunData) || !Compat.isArray(dryRunData.levels)) return _unreadablePreview()
   if (level === "story") return _storyPreview(dryRunData)
   var levels = _objectsOf(dryRunData.levels)
   if (dryRunData.board === true) {
@@ -1989,7 +2058,7 @@ function previewSummary(dryRunData, level) {
 // `id`; null when there is none or `runs` is not an array. The entry itself,
 // not a copy.
 function runById(runs, id) {
-  if (!Array.isArray(runs)) return null
+  if (!Compat.isArray(runs)) return null
   for (var i = 0; i < runs.length; i++) {
     if (runs[i] && runs[i].id === id) return runs[i]
   }
@@ -2032,7 +2101,7 @@ function usableRoots(projectRoots) {
   var seen = {}
   for (var i = 0; i < n; i++) {
     var p = list[i]
-    if (p === null || typeof p !== "object" || Array.isArray(p)) continue
+    if (p === null || typeof p !== "object" || Compat.isArray(p)) continue
     var root = p.root
     if (typeof root !== "string" || root === "" || root.charAt(0) === "-" || hasKey(seen, root)) continue
     seen[root] = true
@@ -2044,7 +2113,7 @@ function usableRoots(projectRoots) {
 // The form's verify commands that are non-blank strings, verbatim, in order;
 // [] when form.verify is not an array.
 function verifyCommands(form) {
-  var list = form !== null && typeof form === "object" && Array.isArray(form.verify) ? form.verify : []
+  var list = form !== null && typeof form === "object" && Compat.isArray(form.verify) ? form.verify : []
   return list.filter(function(c) { return typeof c === "string" && c.trim() !== "" })
 }
 
@@ -2052,7 +2121,7 @@ function verifyCommands(form) {
 // an object that is not an array, then entry's, which override them, as
 // set-run-settings merges prefixByMilestone.
 function mergedPrefixes(stored, entry) {
-  var merged = stored !== null && typeof stored === "object" && !Array.isArray(stored) ? copyMap(stored) : {}
+  var merged = stored !== null && typeof stored === "object" && !Compat.isArray(stored) ? copyMap(stored) : {}
   for (var id in entry) merged[id] = entry[id]
   return merged
 }

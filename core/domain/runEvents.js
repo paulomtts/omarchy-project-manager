@@ -1,5 +1,6 @@
 .pragma library
 .import "runs.js" as Runs
+.import "compat.js" as Compat
 
 // Run events timeline: one row per am journal event (`am events`).
 //
@@ -18,7 +19,7 @@ var _RUN_WORDS = { started: "started", done: "done", stopped: "paused", escalate
 
 var _TS_RE = /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})(\.\d+)?Z$/
 
-function _isObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v) }
+function _isObject(v) { return v !== null && typeof v === "object" && !Compat.isArray(v) }
 function _has(o, key) { return Object.prototype.hasOwnProperty.call(o, key) }
 function _isFiniteNumber(v) { return typeof v === "number" && isFinite(v) }
 function _stringOr(v) { return typeof v === "string" ? v : "" }
@@ -120,7 +121,7 @@ function _isRow(v) { return _isObject(v) && _isFiniteNumber(v.seq) }
 function foldEvents(rows, events, cap) {
   var bySeq = {}
   var seqs = []
-  var sources = [Array.isArray(rows) ? rows : [], Array.isArray(events) ? events : []]
+  var sources = [Compat.isArray(rows) ? rows : [], Compat.isArray(events) ? events : []]
   for (var s = 0; s < sources.length; s++) {
     for (var i = 0; i < sources[s].length; i++) {
       var row = sources[s][i]
@@ -147,7 +148,7 @@ var _FAILURES = { failed: true, escalated: true, gate_failed: true, schema_inval
 // level. "All" and any other filter: every object entry. [] when rows is not
 // an array. No input is modified.
 function filterRows(rows, filter) {
-  if (!Array.isArray(rows)) return []
+  if (!Compat.isArray(rows)) return []
   var out = []
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i]

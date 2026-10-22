@@ -102,6 +102,12 @@ MOVED = {
     "dispatchTargetPick": "runDispatch",
     "dispatchBack": "runDispatch",
     "relaunchOpenFor": "runDispatch",
+    "closeRunId": "runControl",
+    "closeOpen": "runControl",
+    "closeError": "runControl",
+    "closeAsk": "runControl",
+    "closeKeep": "runControl",
+    "closeConfirm": "runControl",
 }
 
 MOVED_RE = re.compile(r"\.runs\.(" + "|".join(sorted(MOVED, key=len, reverse=True)) + r")\b")

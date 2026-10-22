@@ -1,6 +1,7 @@
 .pragma library
 .import "text.js" as Text
 .import "results.js" as Results
+.import "compat.js" as Compat
 
 // Card shape, as returned by `brd tree`:
 // {id, title, description, status, blocked_by, created_at, updated_at, children}
@@ -187,8 +188,15 @@ function isFinishedStatus(status) {
   return status === "done" || status === "merged" || status === "canceled" || status === "archived"
 }
 
+// A card the archive rule accepts: merged (not merely done), or already put out
+// of play (canceled, archived).
+function isArchiveReadyStatus(status) {
+  return status === "merged" || status === "canceled" || status === "archived"
+}
+
 // Milestones (root cards) that are safe to archive in bulk: not archived yet,
-// at least one descendant, every descendant finished (see isFinishedStatus),
+// at least one descendant, every descendant archive-ready (see
+// isArchiveReadyStatus: merged, never merely done),
 // and nothing in the whole subtree -- the milestone card included -- updated
 // within the last `minAgeDays` days. `now` is a Date or epoch milliseconds,
 // injected so callers and tests are deterministic. A timestamp that cannot be
@@ -209,7 +217,7 @@ function archivable(roots, now, minAgeDays) {
     function visit(card) {
       ;(card.children || []).forEach(function(child) {
         count += 1
-        if (!isFinishedStatus(child.status)) allFinished = false
+        if (!isArchiveReadyStatus(child.status)) allFinished = false
         var t = Date.parse(child.updated_at)
         if (isNaN(t) || isNaN(newest)) newest = NaN
         else if (t > newest) newest = t
@@ -235,7 +243,7 @@ function archivable(roots, now, minAgeDays) {
 // helper that could not run at all is one error with no per-id results.
 function parseArchiveResult(stdout, exitCode) {
   var r = Results.parseJsonLine(stdout, exitCode, "Could not archive the milestones", false)
-  var results = r.data && Array.isArray(r.data.results) ? r.data.results : null
+  var results = r.data && Compat.isArray(r.data.results) ? r.data.results : null
   if (!results) return { ok: false, failures: [], error: r.error }
   var failures = results.filter(function(x) { return !x || x.ok !== true }).map(function(x) {
     return { id: x && x.id ? String(x.id) : "", error: x && typeof x.error === "string" && x.error !== "" ? x.error : "archive failed" }

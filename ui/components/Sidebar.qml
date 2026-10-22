@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Cm
 import qs.Ui
 import "runGlyphs.js" as RunGlyphs
 import "../components" as UI
@@ -136,8 +137,8 @@ Item {
     y: projectButton.y + projectButton.height + Style.space(4)
     width: sidebar.width
     height: dropdownColumn.implicitHeight + Style.space(12)
-    color: Color.popups.background
-    border.color: Color.popups.border
+    color: Cm.Color.popups.background
+    border.color: Cm.Color.popups.border
     border.width: 1
     radius: Style.space(6)
 

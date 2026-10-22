@@ -25,6 +25,9 @@ Column {
   // A run's Cancel was clicked. Cancelling needs a typed confirmation, which is
   // the owner's to ask for; nothing here cancels a run.
   signal cancelRequested(string runId)
+  // A run's Close was clicked. Closing (am's reset) asks first, in a dialog
+  // that is the owner's; nothing here resets a run.
+  signal closeRequested(string runId)
   // The card's Dispatch was clicked. Opening a dispatch is the owner's job;
   // nothing here starts a run.
   signal dispatchRequested(string cardId)
@@ -41,13 +44,16 @@ Column {
     ? [] : Runs.runsTouching(detailCard.app.runs.runs, detailCard.card.id)
   // Ages are read against the clock once per run snapshot: there is no timer.
   readonly property real nowMs: detailCard.touchingRuns ? Date.now() : 0
-  // A run row's control button: pause and resume go straight to the store, a
-  // cancel only asks (cancelRequested).
+  // A run row's control button, by its UI name: pause and resume go straight
+  // to the store, cancel and close only ask the owner (cancelRequested,
+  // closeRequested); relaunch does nothing here (a card has no relaunch path;
+  // a click on the row opens Run detail).
   function requestControl(action, run) {
     var id = ControlFacts.runIdOf(run)
     if (id === "") return
     if (action === "cancel") detailCard.cancelRequested(id)
-    else detailCard.app.runControl.control(action, id)
+    else if (action === "close") detailCard.closeRequested(id)
+    else if (action !== "relaunch") detailCard.app.runControl.control(action, id)
   }
 
   DetailLink {
@@ -304,6 +310,7 @@ Column {
         errorText: ControlFacts.errorOf(detailCard.app.runControl.lastControlError, detailCard.app.runControl.lastControlErrorRunId, runRow.run)
         wholeRun: !!detailCard.card && detailCard.card.depth >= 1
         showButtons: true
+        relaunchShown: false
         onActionRequested: function(action) { detailCard.requestControl(action, runRow.run) }
       }
     ]

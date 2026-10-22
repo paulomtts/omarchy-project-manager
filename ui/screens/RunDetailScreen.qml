@@ -6,6 +6,7 @@ import "../components/runGlyphs.js" as RunGlyphs
 import "../components/runControlFacts.js" as ControlFacts
 import "../components" as UI
 import "../theme" as T
+import "../../core/domain/compat.js" as Compat
 
 // One am run (the "run" view): a header with its state, milestone, branch
 // prefix and base and lease; for a stopped run, Why it stopped
@@ -47,6 +48,9 @@ Column {
   // The run's Cancel was clicked. Cancelling needs a typed confirmation, which
   // is the owner's to ask for; nothing here cancels a run.
   signal cancelRequested(string runId)
+  // The run's Close was clicked. Closing (am's reset) asks first, in a
+  // dialog that is the owner's; nothing here resets a run.
+  signal closeRequested(string runId)
 
   readonly property var run: screen.runById(screen.app.runs.runs, screen.app.runs.selectedRunId)
   readonly property var tree: Runs.runTree(screen.run)
@@ -62,7 +66,7 @@ Column {
   readonly property var stopNote: screen.stopNoteFound.note
   readonly property string stopNoteCardId: screen.stopNoteFound.cardId
   // The rows the store holds; 0 when `events` is not an array.
-  readonly property int eventsHeld: Array.isArray(screen.app.runs.events) ? screen.app.runs.events.length : 0
+  readonly property int eventsHeld: Compat.isArray(screen.app.runs.events) ? screen.app.runs.events.length : 0
   // app.runOutput, or null when the app has none.
   readonly property var ro: screen.app.runOutput || null
   // ro's followStatus; "idle" without ro or for anything it does not name.
@@ -257,12 +261,16 @@ Column {
     return screen.tree.synthetic[k] || ({ id: "", label: "", status: "" })
   }
 
-  // A control button: pause and resume go straight to the store, a cancel
-  // only asks (cancelRequested).
+  // A control button, by its UI name: pause and resume go straight to the
+  // store, cancel and close only ask the owner (cancelRequested,
+  // closeRequested). relaunch takes the stop block's path (relaunch); the
+  // controls here never show it.
   function requestControl(action) {
     var id = ControlFacts.runIdOf(screen.run)
     if (id === "") return
     if (action === "cancel") screen.cancelRequested(id)
+    else if (action === "close") screen.closeRequested(id)
+    else if (action === "relaunch") screen.relaunch()
     else screen.app.runControl.control(action, id)
   }
 
@@ -404,6 +412,8 @@ Column {
       errorText: ControlFacts.errorOf(screen.app.runControl.lastControlError, screen.app.runControl.lastControlErrorRunId, screen.run)
       wholeRun: false
       showButtons: true
+      // The stop block has this run's Relaunch, gated by offersRelaunch.
+      relaunchShown: false
       onActionRequested: function(action) { screen.requestControl(action) }
     }
 

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import "../components" as UI
 import "../theme" as T
 
@@ -34,7 +35,7 @@ Item {
   // Read through the field's children, so a row made again is picked up.
   readonly property Item focusItem: dialog.firstRow(verifyField.children)
   readonly property bool canResume: dialog.allowNoVerification || dialog.holdsCommand(dialog.commands)
-  readonly property color urgentColor: dialog.theme ? dialog.theme.urgent : Color.urgent
+  readonly property color urgentColor: dialog.theme ? dialog.theme.urgent : Cm.Color.urgent
 
   signal commandsEdited(var commands)
   signal allowNoVerificationEdited(bool on)

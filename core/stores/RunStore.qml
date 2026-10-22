@@ -4,6 +4,7 @@ import Quickshell.Io
 import "../domain/results.js" as Results
 import "../domain/runs.js" as Runs
 import "../domain/runEvents.js" as RunEvents
+import "../domain/compat.js" as Compat
 
 // The am run monitor's data. One list snapshot covers every registered
 // project: runs-snapshot-all.py with each usable root of `projectRoots`, in
@@ -484,10 +485,10 @@ Scope {
     if (text === "") return
     var value = null
     try { value = JSON.parse(text) } catch (e) { return }
-    if (value === null || typeof value !== "object" || Array.isArray(value)) return
-    if (Array.isArray(value.changed)) store.recordNudges(value.changed)
+    if (value === null || typeof value !== "object" || Compat.isArray(value)) return
+    if (Compat.isArray(value.changed)) store.recordNudges(value.changed)
     else if (value.ok === false) proc.envelope = value
-    else if (value.hello !== null && typeof value.hello === "object" && !Array.isArray(value.hello)) {
+    else if (value.hello !== null && typeof value.hello === "object" && !Compat.isArray(value.hello)) {
       var schema = value.hello.schema
       store.amSchema = typeof schema === "number" && Number.isInteger(schema) && schema >= 1 ? schema : 0
       store.amVersion = typeof value.hello.am === "string" ? value.hello.am : ""
@@ -505,7 +506,7 @@ Scope {
     var next = null
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i]
-      if (e === null || typeof e !== "object" || Array.isArray(e)) continue
+      if (e === null || typeof e !== "object" || Compat.isArray(e)) continue
       if (typeof e.run !== "string" || e.run === "" || !store.isSeq(e.seq) || e.seq < 1) continue
       if (next === null) next = Runs.copyMap(store.nudges)
       if (!Runs.hasKey(next, e.run) || next[e.run] < e.seq) next[e.run] = e.seq
@@ -730,12 +731,12 @@ Scope {
   // whose id no entry before it lists. `runs` itself when `history` is not
   // an array.
   function listed(runs, history) {
-    if (!Array.isArray(history)) return runs
+    if (!Compat.isArray(history)) return runs
     var out = runs.slice()
     var ids = runs.map(function(run) { return run === null || typeof run !== "object" ? undefined : run.id })
     for (var i = 0; i < history.length; i++) {
       var run = history[i]
-      if (run === null || typeof run !== "object" || Array.isArray(run) || ids.indexOf(run.id) >= 0) continue
+      if (run === null || typeof run !== "object" || Compat.isArray(run) || ids.indexOf(run.id) >= 0) continue
       ids.push(run.id)
       out.push(run)
     }
@@ -913,7 +914,7 @@ Scope {
   // fetch is in flight, one follow-up queued behind it (followUpEvents); the
   // fetch in flight is left alone. The run's status is never read.
   function nudgeEvents(ids) {
-    if (!store.active || store.selectedRunId === "" || !Array.isArray(ids)) return
+    if (!store.active || store.selectedRunId === "" || !Compat.isArray(ids)) return
     if (ids.indexOf(store.selectedRunId) < 0) return
     if (eventsRunner.busy) {
       eventsState.followUp = true
@@ -954,14 +955,14 @@ Scope {
   function eventTitles() {
     var out = {}
     var own = store.titles
-    if (own !== null && typeof own === "object" && !Array.isArray(own)) {
+    if (own !== null && typeof own === "object" && !Compat.isArray(own)) {
       for (var key in own) {
         if (Runs.hasKey(own, key) && typeof own[key] === "string" && own[key] !== "") out[key] = own[key]
       }
     }
     var run = store.runById(store.selectedRunId)
     var tree = run !== null && typeof run === "object" && run.tree !== null && typeof run.tree === "object" ? run.tree : {}
-    var stories = Array.isArray(tree.stories) ? tree.stories : []
+    var stories = Compat.isArray(tree.stories) ? tree.stories : []
     for (var i = 0; i < stories.length; i++) {
       var s = stories[i]
       if (s === null || typeof s !== "object") continue
@@ -981,7 +982,7 @@ Scope {
   function applyEvents(stdout, exitCode, launchedGuard) {
     if (launchedGuard !== store.selectedRunId) return
     var envelope = Results.parseEnvelope(stdout)
-    if (envelope !== null && envelope.ok === true && Array.isArray(envelope.events)) {
+    if (envelope !== null && envelope.ok === true && Compat.isArray(envelope.events)) {
       if (store.isSeq(envelope.last_seq) && envelope.last_seq < store.eventsCursor) {
         store.eventsStatus = "ok"
         store.eventsError = ""
@@ -1091,7 +1092,7 @@ Scope {
     if (line === "") return null
     var value = null
     try { value = JSON.parse(line) } catch (e) { return null }
-    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
+    return value !== null && typeof value === "object" && !Compat.isArray(value) ? value : null
   }
 
   // The `am runs` summary without its `status` key: the helper replaced the
@@ -1118,7 +1119,7 @@ Scope {
   function applySnapshot(stdout, exitCode, launched) {
     var envelope = Results.parseEnvelope(stdout)
     if (envelope !== null && envelope.ok === true) {
-      store.applyProjects(Array.isArray(envelope.projects) ? envelope.projects : [], exitCode, launched)
+      store.applyProjects(Compat.isArray(envelope.projects) ? envelope.projects : [], exitCode, launched)
       return
     }
     store.amStatus = "error"
@@ -1153,14 +1154,14 @@ Scope {
     var seen = {}
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i]
-      if (e === null || typeof e !== "object" || Array.isArray(e)) continue
+      if (e === null || typeof e !== "object" || Compat.isArray(e)) continue
       if (typeof e.root !== "string" || !Runs.hasKey(names, e.root) || Runs.hasKey(seen, e.root)) continue
       seen[e.root] = true
       matched.push(e)
     }
     if (matched.length === 0) {
       var gone = true
-      var roots = Array.isArray(launched) ? launched : []
+      var roots = Compat.isArray(launched) ? launched : []
       for (var g = 0; g < roots.length; g++) {
         if (Runs.hasKey(names, roots[g])) gone = false
       }
@@ -1201,11 +1202,11 @@ Scope {
         anyOk = true
         okRoots[root] = true
         outcomes[root] = "ok"
-        var list = Array.isArray(entry.runs) ? entry.runs : []
+        var list = Compat.isArray(entry.runs) ? entry.runs : []
         var out = []
         for (var r = 0; r < list.length; r++) {
           var item = list[r]
-          if (item === null || typeof item !== "object" || Array.isArray(item)) continue
+          if (item === null || typeof item !== "object" || Compat.isArray(item)) continue
           out.push(Runs.withProject(Runs.normalizeRun({ row: store.rowOf(item), status: item.status }), root, names[root]))
         }
         byProject[root] = out

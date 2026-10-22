@@ -25,8 +25,8 @@ TestCase {
              updated_at: new Date(Date.parse(nowIso) - daysAgo * 86400000).toISOString(), children: children || [] }
   }
   function finished() {
-    return [aged("a", "done", 9, [aged("a1", "done", 9), aged("a2", "merged", 9)]),
-            aged("b", "done", 4, [aged("b1", "done", 4)]),
+    return [aged("a", "done", 9, [aged("a1", "merged", 9), aged("a2", "merged", 9)]),
+            aged("b", "done", 4, [aged("b1", "merged", 4)]),
             aged("c", "todo", 9, [aged("c1", "todo", 9)])]
   }
 

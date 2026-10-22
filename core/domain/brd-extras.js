@@ -3,6 +3,7 @@
 .import "taxonomy.js" as Taxonomy
 .import "text.js" as Text
 .import "documents.js" as Documents
+.import "compat.js" as Compat
 
 // The three read-only brd views' data, parsed from `brd export` (comments,
 // refs, issues) and `brd doc list` (registered documents). Pure: no Qt, no I/O.
@@ -131,13 +132,13 @@ var EXPORT_COLLECTIONS = ["cards", "issues", "documents", "comments", "tags", "r
 // project); several entries (`--all`) are concatenated. The older flat shape
 // (collections at the top level) passes through unchanged.
 function flattenExport(data) {
-  if (!data || !Array.isArray(data.projects)) return data
+  if (!data || !Compat.isArray(data.projects)) return data
   var flat = { brd_export: data.brd_export }
   EXPORT_COLLECTIONS.forEach(function(key) { flat[key] = [] })
   data.projects.forEach(function(entry) {
     if (!entry || typeof entry !== "object") return
     EXPORT_COLLECTIONS.forEach(function(key) {
-      if (Array.isArray(entry[key])) flat[key] = flat[key].concat(entry[key])
+      if (Compat.isArray(entry[key])) flat[key] = flat[key].concat(entry[key])
     })
   })
   return flat
@@ -151,7 +152,7 @@ function parseExport(stdout, exitCode) {
   var result = Results.parseJsonLine(stdout, exitCode, "Could not read this project's extras.")
   if (!result.ok) return { ok: false, issues: [], commentsByEntity: {}, refsByEntity: {}, error: result.error }
   var data = result.data.data
-  if (!data || typeof data !== "object" || Array.isArray(data)) return empty
+  if (!data || typeof data !== "object" || Compat.isArray(data)) return empty
   data = flattenExport(data)
   var commentsByEntity = indexComments(data)
   return { ok: true, issues: issueList(data, commentsByEntity), commentsByEntity: commentsByEntity,
@@ -227,7 +228,7 @@ function relativeTime(iso, nowMs) {
 function parseDocList(stdout, exitCode) {
   var result = Results.parseJsonLine(stdout, exitCode, "Could not list brd's documents.")
   if (!result.ok) return { ok: false, registered: [], error: result.error }
-  var rows = Array.isArray(result.data.data) ? result.data.data : []
+  var rows = Compat.isArray(result.data.data) ? result.data.data : []
   return {
     ok: true,
     // A source_path is joined onto the project root to open the file, so one

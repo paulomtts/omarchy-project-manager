@@ -1,11 +1,12 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Cm
 import qs.Ui
 import "../theme" as T
 
 // The shell's Button with the style every action in the panel repeats: a
-// bordered small button in the theme's font, urgent-coloured when it is
-// destructive, dimmed while disabled.
+// bordered small button in the theme's font, coloured by its tone (danger,
+// warn, close or accent; anything else is the foreground), dimmed while disabled.
 Button {
   id: button
 
@@ -19,8 +20,12 @@ Button {
   readonly property var palette: button.theme || buttonTheme
 
   bordered: true
-  foreground: !button.palette ? Color.foreground
-    : button.tone === "danger" ? button.palette.urgent : button.palette.foreground
+  foreground: !button.palette ? Cm.Color.foreground
+    : button.tone === "danger" ? button.palette.urgent
+    : button.tone === "warn" ? button.palette.warn
+    : button.tone === "close" ? button.palette.closeTone
+    : button.tone === "accent" ? button.palette.accent
+    : button.palette.foreground
   fontFamily: button.palette ? button.palette.fontFamily : Style.font.family
   fontSize: Style.font.bodySmall
   verticalPadding: Style.spacing.controlPaddingY
